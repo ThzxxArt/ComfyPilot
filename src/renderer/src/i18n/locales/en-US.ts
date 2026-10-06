@@ -35,5 +35,11 @@ export default {
   settings: {
     language: 'Language',
     theme: 'Theme'
+  },
+  header: {
+    embed: 'Embed Frontend',
+    embedTip: 'Embed the official ComfyUI Frontend in-app',
+    openExternal: 'Open externally',
+    crumb: 'ComfyUI Manager · MIT'
   }
 }

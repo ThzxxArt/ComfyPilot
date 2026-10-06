@@ -35,5 +35,11 @@ export default {
   settings: {
     language: '界面语言',
     theme: '主题'
+  },
+  header: {
+    embed: '内嵌 Frontend',
+    embedTip: '在应用内嵌入官方 ComfyUI Frontend',
+    openExternal: '外链打开',
+    crumb: 'ComfyUI 全能管理器 · MIT'
   }
 }

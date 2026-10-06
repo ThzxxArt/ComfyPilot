@@ -27,13 +27,17 @@ async function refresh(): Promise<void> {
 }
 
 async function importFile(): Promise<void> {
-  const path = await ipc('shell.pickFile', {
-    filters: [{ name: 'Workflow', extensions: ['json', 'png'] }]
-  })
-  if (!path) return
-  const rec = await ipc('workflow.import', path)
-  message.success(`已导入 ${rec.name}`)
-  await refresh()
+  try {
+    const path = await ipc('shell.pickFile', {
+      filters: [{ name: 'Workflow', extensions: ['json', 'png'] }]
+    })
+    if (!path) return
+    const rec = await ipc('workflow.import', path)
+    message.success(`已导入 ${rec.name}`)
+    await refresh()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 async function launch(row: WorkflowRecord): Promise<void> {

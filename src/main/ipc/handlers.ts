@@ -116,7 +116,8 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       await shell.openExternal(baseUrl)
       return true
     }
-    return shell.openPath(path).then((r) => !r)
+    if (!isSafeOpenPath(path)) throw new Error('Blocked opening executable/script file')
+    return shell.openPath(path).then((r) => r === '')
   }))
   ipcMain.handle('workflow.tag', wrap((id: string, tags: string[]) => workflowService.tag(id, tags)))
   ipcMain.handle('workflow.queue', wrap((opts: { workflowPath: string; instanceId: string; seed?: number }) => workflowService.queue(opts)))
@@ -161,7 +162,10 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
   // output
   ipcMain.handle('output.list', wrap((opts?: { root?: string; type?: string; limit?: number }) => outputService.list(opts)))
-  ipcMain.handle('output.open', wrap((path: string) => shell.openPath(path).then((r) => !r)))
+  ipcMain.handle('output.open', wrap(async (path: string) => {
+    if (!isSafeOpenPath(path)) throw new Error('Blocked opening executable/script file')
+    return shell.openPath(path).then((r) => r === '')
+  }))
   ipcMain.handle('output.importToWorkflow', wrap(async (path: string): Promise<WorkflowRecord | null> => {
     const meta = await workflowService.parsePngMeta(path)
     if (meta?.workflow) {

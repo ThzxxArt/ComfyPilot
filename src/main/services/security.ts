@@ -24,7 +24,10 @@ export function assertSafeRelativeFilename(name: string): string {
   return cleaned.slice(0, 180)
 }
 
-/** Reject Win32 trailing-space / trailing-dot tricks and control chars. */
+/**
+ * Normalize a single path segment (not the whole path):
+ * strip control chars, trailing/leading spaces & dots (Win32 does this at FS layer).
+ */
 export function normalizePathSegment(segment: string): string {
   return String(segment || '')
     .replace(/[\x00-\x1f]/g, '')
@@ -32,15 +35,41 @@ export function normalizePathSegment(segment: string): string {
     .replace(/^[. ]+/, '')
 }
 
+/**
+ * Normalize every segment of a relative/absolute path string.
+ * Critical: Win32 strips trailing spaces per component, so `.. ` must become `..`
+ * BEFORE resolve, or isPathInside will be bypassed.
+ */
+export function normalizePathEverySegment(pathStr: string): string {
+  const raw = String(pathStr || '')
+  // Preserve drive prefix like `C:` on Windows
+  let prefix = ''
+  let rest = raw
+  const drive = raw.match(/^([a-zA-Z]:)(.*)$/)
+  if (drive) {
+    prefix = drive[1]
+    rest = drive[2]
+  }
+  const sep = rest.includes('\\') && !rest.includes('/') ? '\\' : '/'
+  const parts = rest.split(/[\\/]+/).filter((p) => p.length > 0)
+  const cleaned = parts.map((p) => normalizePathSegment(p)).filter((p) => p.length > 0)
+  // If any segment collapsed to empty after normalize, reject later via ..
+  const joined = cleaned.join(sep)
+  if (raw.startsWith('/') || raw.startsWith('\\')) {
+    return prefix + sep + joined
+  }
+  return prefix + joined
+}
+
 export function isPathInside(child: string, parent: string): boolean {
-  const resolvedChild = resolve(normalizePathSegment(child))
+  const resolvedChild = resolve(child)
   const resolvedParent = resolve(parent)
   if (resolvedChild === resolvedParent) return true
   return resolvedChild.startsWith(resolvedParent.endsWith(sep) ? resolvedParent : resolvedParent + sep)
 }
 
 export function safeJoin(root: string, ...parts: string[]): string {
-  const cleaned = parts.map((p) => normalizePathSegment(String(p).replace(/[\\/]/g, sep)))
+  const cleaned = parts.map((p) => normalizePathEverySegment(String(p)))
   const target = normalize(resolve(root, ...cleaned))
   if (!isPathInside(target, root) && resolve(root) !== target) {
     throw new Error(`Path escapes root: ${target}`)
@@ -50,16 +79,22 @@ export function safeJoin(root: string, ...parts: string[]): string {
 
 export function safeResolveUnder(appRoot: string, relative: string): string | null {
   try {
-    // Decode repeatedly to defeat double-encoding; reject any remaining % or ..
+    // Decode repeatedly to defeat double-encoding; reject any remaining %
     let decoded = String(relative || '')
-    for (let i = 0; i < 3 && decoded.includes('%'); i++) {
+    for (let i = 0; i < 4 && decoded.includes('%'); i++) {
       decoded = decodeURIComponent(decoded)
     }
     decoded = decoded.replace(/^[/\\]+/, '')
     if (decoded.includes('\0') || decoded.includes('%')) return null
-    // Strip Win32 trailing spaces/dots before resolve
-    const normalized = normalizePathSegment(decoded)
+    if (/^[a-zA-Z]:/.test(decoded)) return null // absolute drive not allowed as relative
+    // Per-segment normalize THEN resolve — blocks `.. ` Win32 trailing-space hops
+    const normalized = normalizePathEverySegment(decoded)
     if (!normalized) return null
+    // After per-segment clean, no empty or `.` `..` may remain as meaningful hops
+    const segs = normalized.split(/[\\/]+/).filter(Boolean)
+    for (const s of segs) {
+      if (s === '..') return null
+    }
     const target = resolve(appRoot, normalized)
     return isPathInside(target, appRoot) ? target : null
   } catch {

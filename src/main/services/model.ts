@@ -15,7 +15,7 @@ import {
   mkdirSync,
   readFileSync
 } from 'fs'
-import { join, extname, basename, dirname, parse } from 'path'
+import { join, extname, basename, dirname, parse, resolve } from 'path'
 import { homedir } from 'os'
 import { load } from 'js-yaml'
 import type {
@@ -447,8 +447,23 @@ export class ModelService extends EventEmitter {
     fileName?: string
   }): Promise<DownloadTask> {
     const settings = loadSettings()
-    const destDir =
-      opts.destDir || settings.downloadDir || join(homedir(), 'Downloads', 'ComfyPilot')
+    const defaultDir = settings.downloadDir || join(homedir(), 'Downloads', 'ComfyPilot')
+    let destDir = opts.destDir || defaultDir
+    // Constrain destDir to known-safe roots (settings.downloadDir, default Downloads, model scan roots)
+    {
+      const { isPathInside } = await import('./security')
+      const allowedRoots = [
+        settings.downloadDir,
+        join(homedir(), 'Downloads'),
+        ...settings.modelScanRoots,
+        settings.defaultInstancePath && join(settings.defaultInstancePath, 'models')
+      ].filter(Boolean) as string[]
+      const resolvedDest = resolve(destDir)
+      const allowed = allowedRoots.some(
+        (root) => root && (isPathInside(resolvedDest, root) || resolvedDest === resolve(root))
+      )
+      if (!allowed) destDir = defaultDir
+    }
     mkdirSync(destDir, { recursive: true })
     let url = opts.url
 

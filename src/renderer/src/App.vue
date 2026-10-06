@@ -129,22 +129,22 @@ function openGithub(): void {
             <header class="header glass">
               <div class="header-left">
                 <div class="header-title">{{ nav.find((n) => n.key === activeKey)?.label }}</div>
-                <div class="header-crumb">ComfyUI · MIT · ThzxxArt</div>
+                <div class="header-crumb">{{ t('header.crumb') }}</div>
               </div>
               <NSpace align="center" :size="10">
                 <NTooltip trigger="hover">
                   <template #trigger>
                     <NButton secondary type="primary" :disabled="!store.activeInstance?.url" @click="openEmbed">
-                      内嵌 Frontend
+                      {{ t('header.embed') }}
                     </NButton>
                   </template>
-                  在应用内嵌入官方 ComfyUI Frontend
+                  {{ t('header.embedTip') }}
                 </NTooltip>
                 <NButton secondary :disabled="!store.activeInstance?.url" @click="openComfy">
                   <template #icon>
                     <NIcon :component="OpenOutline" />
                   </template>
-                  外链打开
+                  {{ t('header.openExternal') }}
                 </NButton>
                 <NAvatar round size="small" class="avatar">C</NAvatar>
               </NSpace>

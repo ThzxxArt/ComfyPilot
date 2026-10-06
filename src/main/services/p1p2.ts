@@ -61,12 +61,21 @@ export class BatchService extends EventEmitter {
     let prompt: Record<string, unknown> | null = null
     try {
       const raw = readFileSync(job.workflowPath, 'utf-8')
-      prompt = JSON.parse(raw)
-    } catch {
-      if (extname(job.workflowPath).toLowerCase() === '.png') {
-        const meta = extractPngTextMeta(readFileSync(job.workflowPath))
-        if (meta.prompt) prompt = JSON.parse(String(meta.prompt))
+      try {
+        prompt = JSON.parse(raw)
+      } catch {
+        prompt = null
       }
+      if (!prompt && extname(job.workflowPath).toLowerCase() === '.png') {
+        try {
+          const meta = extractPngTextMeta(readFileSync(job.workflowPath))
+          if (meta.prompt) prompt = JSON.parse(String(meta.prompt))
+        } catch {
+          prompt = null
+        }
+      }
+    } catch {
+      prompt = null
     }
     if (!prompt) {
       job.status = 'error'
@@ -76,6 +85,7 @@ export class BatchService extends EventEmitter {
     }
     try {
       const { toApiPrompt, applySeedForIteration } = await import('./workflowConvert')
+      const { COMFY_CLIENT_ID } = await import('./comfyApi')
       const baseSeed = Date.now() % 2 ** 32
       for (let i = 0; i < job.count; i++) {
         const current = listBatchJobs().find((j) => j.id === id)
@@ -88,7 +98,8 @@ export class BatchService extends EventEmitter {
         }
         const promptForRun = applySeedForIteration(toApiPrompt(prompt), baseSeed, i)
         try {
-          const promptId = await client.queuePrompt(promptForRun, `comfy-pilot-batch-${job.id}-${i}`)
+          // Same clientId as WS so live progress is visible in Monitor
+          const promptId = await client.queuePrompt(promptForRun, COMFY_CLIENT_ID)
           if (promptId) {
             job.promptIds.push(promptId)
             job.completed += 1

@@ -47,24 +47,36 @@ async function pickPath(field: 'path' | 'pythonPath' | 'venvPath'): Promise<void
 }
 
 async function discover(): Promise<void> {
-  const found = await ipc('instance.discover', draft.value.path || undefined)
-  if (found[0]) {
-    draft.value.path = found[0].path
-    message.success(`发现候选：${found[0].path}（${found[0].reason}）`)
-  } else {
-    message.info('未在常见路径发现 ComfyUI，请手动选择目录')
+  try {
+    const found = await ipc('instance.discover', draft.value.path || undefined)
+    if (found[0]) {
+      draft.value.path = found[0].path
+      message.success(`发现候选：${found[0].path}（${found[0].reason}）`)
+    } else {
+      message.info('未在常见路径发现 ComfyUI，请手动选择目录')
+    }
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
   }
 }
 
 async function suggestPort(): Promise<void> {
-  draft.value.port = await ipc('instance.suggestPort')
-  message.success(`已分配空闲端口 ${draft.value.port}`)
+  try {
+    draft.value.port = await ipc('instance.suggestPort')
+    message.success(`已分配空闲端口 ${draft.value.port}`)
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 async function checkPort(): Promise<void> {
-  const r = await ipc('instance.checkPort', draft.value.port)
-  portChecks.value[draft.value.port] = r
-  message[r.available ? 'success' : 'warning'](`端口 ${r.port} ${r.available ? '可用' : '占用：' + (r.owner || '')}`)
+  try {
+    const r = await ipc('instance.checkPort', draft.value.port)
+    portChecks.value[draft.value.port] = r
+    message[r.available ? 'success' : 'warning'](`端口 ${r.port} ${r.available ? '可用' : '占用：' + (r.owner || '')}`)
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 async function createInstance(): Promise<void> {
@@ -137,14 +149,22 @@ async function removeInstance(info: ComfyInstanceInfo): Promise<void> {
 }
 
 async function probeEnv(info: ComfyInstanceInfo): Promise<void> {
-  envProbes.value[info.id] = await ipc('instance.probeEnv', info.id)
-  message.success(`已探测 ${info.name} 环境`)
+  try {
+    envProbes.value[info.id] = await ipc('instance.probeEnv', info.id)
+    message.success(`已探测 ${info.name} 环境`)
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 async function exportDiag(info: ComfyInstanceInfo): Promise<void> {
-  const pkg = await ipc('instance.exportDiagnostics', info.id)
-  message.success(`诊断包：${pkg.path}`)
-  void ipc('shell.openPath', pkg.path)
+  try {
+    const pkg = await ipc('instance.exportDiagnostics', info.id)
+    message.success(`诊断包：${pkg.path}`)
+    void ipc('shell.openPath', pkg.path).catch(() => undefined)
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 function statusClass(s: string): string {

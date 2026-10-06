@@ -2,7 +2,7 @@
 import { computed, h, onMounted, onUnmounted, ref } from 'vue'
 import {
   CloudDownloadOutline, SearchOutline, RefreshOutline,
-  DuplicateOutline, PauseOutline, PlayOutline
+  DuplicateOutline
 } from '@vicons/ionicons5'
 import {
   NButton, NDataTable, NIcon, NInput, NSpace, NSpin, NTag, NPopconfirm, NModal,
@@ -155,27 +155,57 @@ async function scan(hash = false): Promise<void> {
 }
 
 async function findDuplicates(): Promise<void> {
-  duplicates.value = await ipc('model.findDuplicates')
-  message.success(`发现 ${duplicates.value.length} 组重复`)
+  try {
+    duplicates.value = await ipc('model.findDuplicates')
+    message.success(`发现 ${duplicates.value.length} 组重复`)
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 async function ensureThumbs(): Promise<void> {
-  const n = await ipc('model.ensureThumbs')
-  message.success(`已生成/复用 ${n} 个缩略图`)
-  await refresh()
+  try {
+    const n = await ipc('model.ensureThumbs')
+    message.success(`已生成/复用 ${n} 个缩略图`)
+    await refresh()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 async function batchRename(dryRun = true): Promise<void> {
-  const ids = filtered.value.slice(0, 50).map((m) => m.id)
-  renameResult.value = await ipc('model.batchRename', {
-    ids,
-    pattern: renamePattern.value,
-    dryRun
-  })
-  if (!dryRun) {
-    showRename.value = false
-    await refresh()
-    message.success('批量改名完成')
+  try {
+    const ids = filtered.value.slice(0, 50).map((m) => m.id)
+    renameResult.value = await ipc('model.batchRename', {
+      ids,
+      pattern: renamePattern.value,
+      dryRun
+    })
+    if (!dryRun) {
+      showRename.value = false
+      await refresh()
+      message.success('批量改名完成')
+    }
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function pauseDl(id: string): Promise<void> {
+  try {
+    await ipc('model.pauseDownload', id)
+    downloads.value = await ipc('model.downloads')
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function resumeDl(id: string): Promise<void> {
+  try {
+    await ipc('model.resumeDownload', id)
+    downloads.value = await ipc('model.downloads')
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
   }
 }
 
@@ -256,12 +286,8 @@ onUnmounted(() => {
         <span class="chip" :class="d.status === 'done' ? 'chip-success' : d.status === 'error' ? 'chip-danger' : 'chip-warning'">{{ d.status }}</span>
         <span class="mono">{{ formatBytes(d.receivedBytes) }} / {{ formatBytes(d.totalBytes) }}</span>
         <span v-if="d.speedBps" class="mono">{{ formatBytes(d.speedBps) }}/s</span>
-        <NButton v-if="d.status === 'running'" size="tiny" secondary @click="ipc('model.pauseDownload', d.id)">
-          <template #icon><NIcon :component="PauseOutline" /></template>暂停
-        </NButton>
-        <NButton v-if="d.status === 'paused'" size="tiny" secondary @click="ipc('model.resumeDownload', d.id)">
-          <template #icon><NIcon :component="PlayOutline" /></template>继续
-        </NButton>
+        <NButton v-if="d.status === 'running'" size="tiny" secondary @click="pauseDl(d.id)">暂停</NButton>
+        <NButton v-if="d.status === 'paused'" size="tiny" secondary @click="resumeDl(d.id)">继续</NButton>
       </div>
     </div>
 

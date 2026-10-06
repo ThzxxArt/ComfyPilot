@@ -33,12 +33,16 @@ async function refresh(): Promise<void> {
 }
 
 async function create(): Promise<void> {
-  const b = await ipc('backup.create', { name: name.value || `backup-${Date.now()}`, notes: notes.value })
-  showCreate.value = false
-  name.value = ''
-  notes.value = ''
-  message.success(`已创建备份 ${b.name}`)
-  await refresh()
+  try {
+    const b = await ipc('backup.create', { name: name.value || `backup-${Date.now()}`, notes: notes.value })
+    showCreate.value = false
+    name.value = ''
+    notes.value = ''
+    message.success(`已创建备份 ${b.name}`)
+    await refresh()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 async function restore(id: string): Promise<void> {

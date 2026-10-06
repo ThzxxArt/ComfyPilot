@@ -35,9 +35,22 @@ const NON_EXECUTABLE_TYPES = new Set([
   'PrimitiveNode',
   'Primitive',
   'Group',
-  'MarkdownNote',
-  'Image Comparer (rgthree)',
-  'Power Lora Loader (rgthree)' // keep? actually executable — leave out
+  'MarkdownNote'
+])
+
+/** Widget names that exist only in the UI and must NOT be sent as API inputs. */
+const UI_ONLY_WIDGETS = new Set([
+  'control_after_generate',
+  'upload',
+  'choose file to upload',
+  'image_upload',
+  'audio_upload',
+  'video_upload',
+  'auto',
+  'fixed',
+  'increment',
+  'decrement',
+  'randomize'
 ])
 
 /**
@@ -151,11 +164,57 @@ function mapWidgets(node: UiNode, linkedNames: Set<string>): Record<string, unkn
   for (let i = 0; i < values.length; i++) {
     const name = widgetNames[i]
     if (!name) continue
+    if (UI_ONLY_WIDGETS.has(name)) continue
     if (linkedNames.has(name)) continue
     inputs[name] = values[i]
   }
 
   return inputs
+}
+
+/**
+ * Resolve a link origin through Reroute / muted / Note chains to the
+ * nearest executable source node+slot.
+ */
+function resolveLinkOrigin(
+  originId: string,
+  originSlot: number,
+  nodesById: Map<string, UiNode>,
+  links: Map<number, [string, number]>,
+  seen = new Set<string>()
+): [string, number] | null {
+  const key = `${originId}:${originSlot}`
+  if (seen.has(key)) return null
+  seen.add(key)
+
+  const node = nodesById.get(originId)
+  if (!node) return null
+  if (!isNonExecutable(node.type) && node.mode !== 2 && node.mode !== 4) {
+    return [originId, originSlot]
+  }
+
+  // Reroute: single in, single out — follow its input link
+  if (node.type === 'Reroute') {
+    const inLink = node.inputs?.[0]?.link
+    if (inLink != null) {
+      const prev = links.get(Number(inLink))
+      if (prev) return resolveLinkOrigin(prev[0], prev[1], nodesById, links, seen)
+    }
+    return null
+  }
+
+  // Muted / bypassed: ComfyUI bypass reconnects same-index inputs → outputs
+  if (node.mode === 2 || node.mode === 4) {
+    // Try to find an input with a live link matching this output slot
+    const inputs = node.inputs || []
+    const inLink = inputs[Math.min(originSlot, inputs.length - 1)]?.link
+    if (inLink != null) {
+      const prev = links.get(Number(inLink))
+      if (prev) return resolveLinkOrigin(prev[0], prev[1], nodesById, links, seen)
+    }
+  }
+
+  return null
 }
 
 export function uiWorkflowToApiPrompt(wf: UiWorkflow): ApiPrompt {
@@ -166,6 +225,11 @@ export function uiWorkflowToApiPrompt(wf: UiWorkflow): ApiPrompt {
     if (!Array.isArray(link) || link.length < 4) continue
     const [linkId, originId, originSlot] = link as number[]
     links.set(Number(linkId), [String(originId), Number(originSlot || 0)])
+  }
+
+  const nodesById = new Map<string, UiNode>()
+  for (const n of wf.nodes || []) {
+    nodesById.set(String(n.id), n)
   }
 
   for (const node of wf.nodes || []) {
@@ -179,8 +243,12 @@ export function uiWorkflowToApiPrompt(wf: UiWorkflow): ApiPrompt {
 
     for (const input of node.inputs || []) {
       if (input.link != null && links.has(Number(input.link))) {
-        inputs[input.name] = links.get(Number(input.link))
-        linkedNames.add(input.name)
+        const origin = links.get(Number(input.link))!
+        const resolved = resolveLinkOrigin(origin[0], origin[1], nodesById, links)
+        if (resolved) {
+          inputs[input.name] = resolved
+          linkedNames.add(input.name)
+        }
       }
     }
 
@@ -212,9 +280,9 @@ export function toApiPrompt(raw: unknown): ApiPrompt {
 
 export function applySeedToPrompt(prompt: ApiPrompt, seed: number): ApiPrompt {
   for (const node of Object.values(prompt)) {
-    if (node.inputs && typeof node.inputs.seed === 'number') {
-      node.inputs.seed = seed
-    }
+    if (!node.inputs) continue
+    if (typeof node.inputs.seed === 'number') node.inputs.seed = seed
+    if (typeof node.inputs.noise_seed === 'number') node.inputs.noise_seed = seed
   }
   return prompt
 }

@@ -17,11 +17,36 @@ const instance = ref<ComfyInstanceInfo | null>(null)
 
 const id = computed(() => String(route.params.id || ''))
 
+async function start(): Promise<void> {
+  try {
+    await ipc('instance.start', id.value)
+    await refresh()
+    message.success('启动中…')
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function stop(): Promise<void> {
+  try {
+    await ipc('instance.stop', id.value)
+    await refresh()
+    message.success('已停止')
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
 async function refresh(): Promise<void> {
-  await store.refreshInstances()
-  instance.value = store.instances.find((i) => i.id === id.value) || null
-  logs.value = await ipc('instance.getLogs', id.value, 400)
-  loading.value = false
+  try {
+    await store.refreshInstances()
+    instance.value = store.instances.find((i) => i.id === id.value) || null
+    logs.value = await ipc('instance.getLogs', id.value, 400)
+  } catch (err) {
+    console.error(err)
+  } finally {
+    loading.value = false
+  }
 }
 
 let off: (() => void) | null = null
@@ -34,18 +59,6 @@ onMounted(() => {
 })
 
 onUnmounted(() => off?.())
-
-async function start(): Promise<void> {
-  await ipc('instance.start', id.value)
-  await refresh()
-  message.success('启动中…')
-}
-
-async function stop(): Promise<void> {
-  await ipc('instance.stop', id.value)
-  await refresh()
-  message.success('已停止')
-}
 </script>
 
 <template>

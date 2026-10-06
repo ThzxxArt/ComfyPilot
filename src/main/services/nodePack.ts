@@ -202,6 +202,7 @@ export class NodePackService {
   list(instancePath?: string): NodePackRecord[] {
     const root = detectCustomNodesRoot(instancePath)
     if (!root || !existsSync(root)) return []
+    const known = new Map(listNodePacks().map((p) => [p.name, p]))
     const packs: NodePackRecord[] = []
     for (const name of readdirSync(root)) {
       if (
@@ -219,15 +220,18 @@ export class NodePackService {
       }
       const meta = readPackMeta(dir)
       const issues = collectIssues(dir, meta)
-      const disabled = existsSync(join(dir, '.disabled')) || name.endsWith('.disabled')
+      const disabledMarker = join(dir, '.disabled')
+      const disabled = existsSync(disabledMarker) || name.endsWith('.disabled')
       const id = createHash('sha1').update(dir).digest('hex').slice(0, 16)
+      const prev = known.get(meta.name || name)
       packs.push({
         id,
         name: meta.name || name,
         displayName: meta.displayName || name,
         description: meta.description || '',
-        author: '',
+        author: prev?.author || '',
         version: meta.version || '0.0.0',
+        latestVersion: prev?.latestVersion,
         status: disabled
           ? 'disabled'
           : issues.some((i) => i.severity === 'error')
@@ -236,11 +240,11 @@ export class NodePackService {
         path: dir,
         repository: meta.repository,
         nodeCount: meta.nodeList?.length || 0,
-        tags: [],
-        installSource: 'local',
+        tags: prev?.tags || [],
+        installSource: prev?.installSource || 'local',
         lastCheckedAt: Date.now(),
         issues,
-        locked: false,
+        locked: prev?.locked || false,
         nodeList: meta.nodeList || [],
         license: meta.license,
         pythonCompatible: meta.pythonCompatible
@@ -401,42 +405,23 @@ export class NodePackService {
     const tmpZip = join(root, `._install_${Date.now()}.zip`)
     writeFileSync(tmpZip, buf)
     const dest = join(root, sanitizeInstallName(opts.id))
-    if (process.platform === 'win32') {
-      await execFileAsync(
-        'powershell',
-        [
-          '-NoProfile',
-          '-Command',
-          `Expand-Archive -Path '${tmpZip.replace(/'/g, "''")}' -DestinationPath '${dest.replace(/'/g, "''")}' -Force`
-        ],
-        { timeout: 60000 }
-      )
-    } else {
-      // unzip with -^ and post-validate entries aren't zip-slip
-      await execFileAsync('unzip', ['-o', tmpZip, '-d', dest], { timeout: 60000 })
-    }
-    // Zip-slip guard: ensure all content stayed under dest
     try {
-      const { readdirSync, statSync: st } = await import('fs')
-      const stack = [dest]
-      const { isPathInside } = await import('./security')
-      while (stack.length) {
-        const dir = stack.pop()!
-        for (const name of readdirSync(dir)) {
-          const full = join(dir, name)
-          if (!isPathInside(full, dest)) throw new Error(`Zip-slip blocked: ${full}`)
-          if (st(full).isDirectory()) stack.push(full)
-        }
-      }
+      const { safeUnzip } = await import('./zipSafe')
+      await safeUnzip(tmpZip, dest)
     } catch (e) {
-      if (String(e).includes('Zip-slip')) {
+      try {
+        unlinkSync(tmpZip)
+      } catch {
+        /* ignore */
+      }
+      if (existsSync(dest)) {
         try {
           rmSync(dest, { recursive: true, force: true })
         } catch {
           /* ignore */
         }
-        throw e
       }
+      throw e
     }
     try {
       unlinkSync(tmpZip)
@@ -535,13 +520,25 @@ export class NodePackService {
     const packs = this.list()
     const pack = packs.find((p) => p.id === idOrName || p.name === idOrName)
     if (!pack?.path) return undefined
-    const disabledMarker = join(pack.path, '.disabled')
-    if (enabled) {
-      if (existsSync(disabledMarker)) unlinkSync(disabledMarker)
-      pack.status = 'installed'
-    } else {
+    // Also handle `name.disabled` folder convention
+    let dir = pack.path
+    if (!enabled) {
+      const disabledMarker = join(dir, '.disabled')
       writeFileSync(disabledMarker, String(Date.now()))
       pack.status = 'disabled'
+    } else {
+      const disabledMarker = join(dir, '.disabled')
+      if (existsSync(disabledMarker)) unlinkSync(disabledMarker)
+      // rename foo.disabled → foo if needed
+      if (dir.endsWith('.disabled')) {
+        const target = dir.slice(0, -'.disabled'.length)
+        if (!existsSync(target)) {
+          renameSync(dir, target)
+          dir = target
+          pack.path = target
+        }
+      }
+      pack.status = 'installed'
     }
     upsertNodePack(pack)
     return pack
