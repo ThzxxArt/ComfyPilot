@@ -21,6 +21,9 @@ const scanProgress = ref('')
 const models = ref<ModelRecord[]>([])
 const keyword = ref('')
 const showDownload = ref(false)
+const showRename = ref(false)
+const renamePattern = ref('{name}')
+const renameResult = ref<Array<{ from: string; to: string; ok: boolean; error?: string }>>([])
 const downloadUrl = ref('')
 const downloads = ref<DownloadTask[]>([])
 const storage = ref<StorageStats[]>([])
@@ -148,6 +151,26 @@ async function findDuplicates(): Promise<void> {
   message.success(`发现 ${duplicates.value.length} 组重复`)
 }
 
+async function ensureThumbs(): Promise<void> {
+  const n = await ipc('model.ensureThumbs')
+  message.success(`已生成/复用 ${n} 个缩略图`)
+  await refresh()
+}
+
+async function batchRename(dryRun = true): Promise<void> {
+  const ids = filtered.value.slice(0, 50).map((m) => m.id)
+  renameResult.value = await ipc('model.batchRename', {
+    ids,
+    pattern: renamePattern.value,
+    dryRun
+  })
+  if (!dryRun) {
+    showRename.value = false
+    await refresh()
+    message.success('批量改名完成')
+  }
+}
+
 async function startDownload(): Promise<void> {
   if (!downloadUrl.value.trim()) return
   try {
@@ -191,6 +214,8 @@ onMounted(async () => {
         <NButton secondary :loading="scanning" @click="scan(true)">
           <template #icon><NIcon :component="DuplicateOutline" /></template>扫描+哈希
         </NButton>
+        <NButton secondary @click="ensureThumbs">生成缩略图</NButton>
+        <NButton secondary @click="showRename = true">批量改名</NButton>
         <NButton type="primary" @click="showDownload = true">
           <template #icon><NIcon :component="CloudDownloadOutline" /></template>下载
         </NButton>
@@ -255,6 +280,26 @@ onMounted(async () => {
       <div v-else class="panel-sub">点击「分析重复」按哈希查找重复文件。</div>
     </div>
 
+    <NModal v-model:show="showRename" preset="card" title="批量改名" style="width: 560px; border-radius: 20px">
+      <NSpace vertical>
+        <NInput v-model:value="renamePattern" placeholder="命名模板，如 {category}_{index}_{name}" />
+        <div class="meta">占位符：{name} {category} {index} {arch}　·　默认对当前筛选结果前 50 条生效</div>
+        <div v-if="renameResult.length" class="rename-preview">
+          <div v-for="(r, i) in renameResult" :key="i" class="mono">
+            <span :style="{ color: r.ok ? '#059669' : '#b91c1c' }">{{ r.ok ? 'OK' : 'ERR' }}</span>
+            {{ r.from }} → {{ r.to }}<span v-if="r.error"> ({{ r.error }})</span>
+          </div>
+        </div>
+      </NSpace>
+      <template #footer>
+        <NSpace justify="end">
+          <NButton @click="showRename = false">取消</NButton>
+          <NButton secondary @click="batchRename(true)">预览</NButton>
+          <NButton type="primary" @click="batchRename(false)">执行改名</NButton>
+        </NSpace>
+      </template>
+    </NModal>
+
     <NModal v-model:show="showDownload" preset="card" title="下载模型" style="width: 520px; border-radius: 20px">
       <NInput v-model:value="downloadUrl" placeholder="粘贴 HuggingFace / Civitai / 直链 URL" />
       <template #footer>
@@ -286,4 +331,13 @@ onMounted(async () => {
 .dup-group { padding: 10px 0; border-top: 1px solid $color-border; }
 .dup-hash { color: $color-primary; font-size: 12px; }
 .dup-file { font-size: 11.5px; color: $color-text-muted; margin-top: 4px; word-break: break-all; }
+.rename-preview {
+  max-height: 220px;
+  overflow: auto;
+  background: $color-surface-2;
+  border-radius: 10px;
+  padding: 10px;
+  font-size: 11.5px;
+}
+.meta { font-size: 12px; color: $color-text-muted; }
 </style>

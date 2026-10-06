@@ -75,11 +75,20 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle('model.storageStats', wrap(() => modelService.storageStats()))
   ipcMain.handle('model.parseExtraPaths', wrap((file?: string) => import('../services/model').then((m) => m.parseExtraModelPaths(file))))
   ipcMain.handle('model.fetchCivitaiMeta', wrap((id: string) => modelService.fetchCivitaiMeta(id)))
+  ipcMain.handle('model.ensureThumbs', wrap(async () => {
+    const { thumbnailService } = await import('../services/media')
+    return thumbnailService.ensureAll()
+  }))
+  ipcMain.handle('model.batchRename', wrap(async (opts: { ids: string[]; pattern: string; dryRun?: boolean }) => {
+    const { renameService } = await import('../services/media')
+    return renameService.batchRename(opts.ids, opts.pattern, opts.dryRun)
+  }))
 
   // node packs
   ipcMain.handle('node.list', wrap(() => nodePackService.list()))
   ipcMain.handle('node.refresh', wrap(() => nodePackService.refresh()))
   ipcMain.handle('node.registrySearch', wrap((opts?: { query?: string; limit?: number }) => nodePackService.registrySearch(opts)))
+  ipcMain.handle('node.managerChannel', wrap(() => nodePackService.managerChannelList()))
   ipcMain.handle('node.install', wrap((opts: { id: string; version?: string; source: 'registry' | 'git' | 'manager'; url?: string }) => nodePackService.install(opts)))
   ipcMain.handle('node.uninstall', wrap((id: string) => nodePackService.uninstall(id)))
   ipcMain.handle('node.update', wrap((id: string, version?: string) => nodePackService.update(id, version)))

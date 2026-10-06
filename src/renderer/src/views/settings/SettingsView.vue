@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   NButton, NCard, NForm, NFormItem, NInput, NSwitch, NSpace, useMessage,
   NDivider, NSelect, NList, NListItem, NPopconfirm, NTag, NModal
@@ -10,6 +11,12 @@ import type { AppSettings, RemoteInstanceConfig, EnvProbe } from '@shared/types'
 
 const store = useAppStore()
 const message = useMessage()
+const { t, locale } = useI18n()
+
+function setLocale(loc: 'zh-CN' | 'en-US'): void {
+  form.value.locale = loc
+  locale.value = loc
+}
 const form = ref<AppSettings>({ ...(store.settings as AppSettings) })
 const saving = ref(false)
 const remotes = ref<RemoteInstanceConfig[]>([])
@@ -171,12 +178,12 @@ onMounted(async () => {
           <NFormItem label="优先内嵌 ComfyUI Frontend">
             <NSwitch v-model:value="form.embedFrontend" />
           </NFormItem>
-          <NFormItem label="界面语言">
+          <NFormItem :label="t('settings.language')">
             <NSpace>
-              <NButton :type="form.locale === 'zh-CN' ? 'primary' : 'default'" secondary @click="form.locale = 'zh-CN'">
+              <NButton :type="form.locale === 'zh-CN' ? 'primary' : 'default'" secondary @click="setLocale('zh-CN')">
                 简体中文
               </NButton>
-              <NButton :type="form.locale === 'en-US' ? 'primary' : 'default'" secondary @click="form.locale = 'en-US'">
+              <NButton :type="form.locale === 'en-US' ? 'primary' : 'default'" secondary @click="setLocale('en-US')">
                 English
               </NButton>
             </NSpace>

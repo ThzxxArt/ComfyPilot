@@ -396,3 +396,13 @@ ComfyPilot/
 - [x] 内嵌 Frontend + 外链
 - [x] MIT / README / electron-builder
 - [x] 类型检查与构建通过
+
+### 补齐项（2026-10-06 二次核验后）
+- [x] 模型缩略图（sidecar / Civitai / 生成卡片 → userData/cache）
+- [x] 批量改名（模板 {name}/{category}/{index}/{arch}，支持预览）
+- [x] i18n（vue-i18n，zh-CN / en-US）
+- [x] aria2 可选下载通道
+- [x] 节点安装前自动快照
+- [x] electron-updater 应用自更新（打包后生效）
+- [x] Manager channel 列表拉取
+- [x] Vitest 单元测试（tests/unit）

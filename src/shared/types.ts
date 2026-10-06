@@ -479,11 +479,14 @@ export type IpcChannelMap = {
   'model.storageStats': { args: []; result: StorageStats[] }
   'model.parseExtraPaths': { args: [string?]; result: string[] }
   'model.fetchCivitaiMeta': { args: [string]; result: Record<string, unknown> | null }
+  'model.ensureThumbs': { args: []; result: number }
+  'model.batchRename': { args: [{ ids: string[]; pattern: string; dryRun?: boolean }]; result: Array<{ from: string; to: string; ok: boolean; error?: string }> }
 
   // node packs
   'node.list': { args: []; result: NodePackRecord[] }
   'node.refresh': { args: []; result: NodePackRecord[] }
   'node.registrySearch': { args: [{ query?: string; limit?: number }?]; result: RegistryNodePack[] }
+  'node.managerChannel': { args: []; result: RegistryNodePack[] }
   'node.install': { args: [{ id: string; version?: string; source: 'registry' | 'git' | 'manager'; url?: string }]; result: NodePackRecord }
   'node.uninstall': { args: [string]; result: boolean }
   'node.update': { args: [string, string?]; result: NodePackRecord }

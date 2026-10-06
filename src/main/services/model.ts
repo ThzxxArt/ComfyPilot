@@ -450,6 +450,31 @@ export class ModelService extends EventEmitter {
   }
 
   private async runDownload(task: DownloadTask, resume = false): Promise<void> {
+    // Optional aria2 path (PLAN)
+    const settings = loadSettings()
+    if (settings.useAria2 && (settings.aria2Path || 'aria2c')) {
+      try {
+        const { aria2Service } = await import('./media')
+        if (aria2Service.available()) {
+          task.status = 'running'
+          this.emit('download', { ...task })
+          const res = await aria2Service.download(task.url, task.destPath)
+          task.status = res.ok ? 'done' : 'error'
+          task.error = res.ok ? undefined : res.log.slice(0, 300)
+          task.finishedAt = Date.now()
+          if (res.ok && existsSync(task.destPath)) {
+            task.receivedBytes = statSync(task.destPath).size
+            task.totalBytes = task.receivedBytes
+          }
+          upsertDownloadTask(task)
+          this.emit('download', { ...task })
+          return
+        }
+      } catch {
+        /* fall back to native */
+      }
+    }
+
     const controller = new AbortController()
     this.abortControllers.set(task.id, controller)
     try {

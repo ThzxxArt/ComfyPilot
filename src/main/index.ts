@@ -1,5 +1,6 @@
 import { app, BrowserWindow, shell, protocol } from 'electron'
 import { join } from 'path'
+import { autoUpdater } from 'electron-updater'
 import { registerIpcHandlers, broadcast } from './ipc/handlers'
 import { instanceService } from './services/instance'
 import { modelService } from './services/model'
@@ -52,6 +53,15 @@ app.whenReady().then(() => {
   getDb()
   registerIpcHandlers(() => mainWindow)
   createWindow()
+
+  // PLAN: electron-updater 应用自身自动更新（打包后生效）
+  if (app.isPackaged) {
+    try {
+      autoUpdater.checkForUpdatesAndNotify()
+    } catch {
+      /* ignore update errors in dev */
+    }
+  }
 
   instanceService.on('status', (info) => broadcast(IPC_EVENTS.instanceStatus, info))
   instanceService.on('log', (id, line) => broadcast(IPC_EVENTS.instanceLog, { id, line }))

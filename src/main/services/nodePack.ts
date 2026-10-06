@@ -226,6 +226,45 @@ export class NodePackService {
     return packs
   }
 
+  /** Manager channel list (PLAN: Registry + Manager channel + 本地) */
+  async managerChannelList(): Promise<RegistryNodePack[]> {
+    const settings = loadSettings()
+    const endpoints = [
+      'https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main/custom-node-list.json',
+      'https://raw.githubusercontent.com/Comfy-Org/ComfyUI-Manager/manager-v4/custom-node-list.json'
+    ]
+    const out: RegistryNodePack[] = []
+    for (const url of endpoints) {
+      try {
+        const res = await fetch(url, {
+          signal: AbortSignal.timeout(8000),
+          headers: { 'User-Agent': 'ComfyPilot/0.1' }
+        })
+        if (!res.ok) continue
+        const data = (await res.json()) as Array<Record<string, unknown>>
+        for (const n of data.slice(0, 200)) {
+          out.push({
+            id: String(n.id || n.title || n.name),
+            name: String(n.name || n.title || ''),
+            displayName: String(n.title || n.name || ''),
+            description: String(n.description || ''),
+            author: String(n.author || ''),
+            latestVersion: String(n.version || ''),
+            repository: String(n.repository || ''),
+            tags: Array.isArray(n.tags) ? n.tags.map(String) : [],
+            downloads: Number(n.downloads || 0),
+            score: 0,
+            status: 'active'
+          })
+        }
+        if (out.length) break
+      } catch {
+        if (settings.networkMode === 'offline') break
+      }
+    }
+    return out
+  }
+
   async registrySearch(opts?: { query?: string; limit?: number }): Promise<RegistryNodePack[]> {
     const settings = loadSettings()
     const q = encodeURIComponent(opts?.query || '')
@@ -267,6 +306,12 @@ export class NodePackService {
     source: 'registry' | 'git' | 'manager'
     url?: string
   }): Promise<NodePackRecord> {
+    // PLAN: 安装前自动快照
+    try {
+      this.createSnapshot(`auto-pre-install-${opts.id}`)
+    } catch {
+      /* snapshot is best-effort */
+    }
     const settings = loadSettings()
     const root = detectCustomNodesRoot()
     if (!root) throw new Error('custom_nodes root not found — add a ComfyUI instance first')
