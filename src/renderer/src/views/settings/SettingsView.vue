@@ -7,26 +7,10 @@ import {
 } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 import { ipc } from '@/composables/useIpc'
-import type { AppSettings, RemoteInstanceConfig, EnvProbe } from '@shared/types'
-import { APP_VERSION } from '@shared/constants'
+import type { AppSettings, RemoteInstanceConfig, EnvProbe, ProxySettings } from '@shared/types'
+import { APP_VERSION, DEFAULT_SETTINGS } from '@shared/constants'
 
-const store = useAppStore()
-const message = useMessage()
-const { t, locale } = useI18n()
-
-function setLocale(loc: 'zh-CN' | 'en-US'): void {
-  form.value.locale = loc
-  locale.value = loc
-}
-const defaultProxy = {
-  enabled: false,
-  protocol: 'http' as const,
-  host: '',
-  port: 7890,
-  username: '',
-  password: '',
-  bypass: 'localhost,127.0.0.1,::1'
-}
+const defaultProxy: ProxySettings = { ...DEFAULT_SETTINGS.proxy }
 
 function cloneSettings(s: Partial<AppSettings> | null | undefined): AppSettings {
   const base = (s && typeof s === 'object' ? JSON.parse(JSON.stringify(s)) : {}) as Partial<AppSettings>
@@ -36,29 +20,44 @@ function cloneSettings(s: Partial<AppSettings> | null | undefined): AppSettings 
   } as AppSettings
 }
 
+const store = useAppStore()
+const message = useMessage()
+const { t, locale } = useI18n()
+
+function setLocale(loc: 'zh-CN' | 'en-US'): void {
+  form.value.locale = loc
+  locale.value = loc
+}
+
 const form = ref<AppSettings>(cloneSettings(store.settings))
 const saving = ref(false)
 const remotes = ref<RemoteInstanceConfig[]>([])
 const showRemote = ref(false)
-const remoteDraft = ref<RemoteInstanceConfig>({ id: '', name: '', baseUrl: '', label: '', enabled: true })
+const emptyRemote = (): RemoteInstanceConfig => ({
+  id: '',
+  name: '',
+  baseUrl: '',
+  label: '',
+  enabled: true
+})
+const remoteDraft = ref<RemoteInstanceConfig>(emptyRemote())
 const envProbe = ref<EnvProbe | null>(null)
 const pythons = ref<Array<{ path: string; version: string }>>([])
 const testingProxy = ref(false)
 const proxyTestResult = ref<{ ok: boolean; via: string; ms: number; error?: string } | null>(null)
+/** Skip watch merge while we are the ones writing store.settings */
+let suppressSettingsWatch = false
 
 watch(
   () => store.settings,
   (s) => {
-    if (!s) return
-    // Merge into existing form (not wholesale replace) so in-flight edits survive
+    if (!s || suppressSettingsWatch) return
+    // Merge non-proxy keys; leave in-flight proxy edits alone
     const incoming = cloneSettings(s)
     for (const key of Object.keys(incoming) as Array<keyof AppSettings>) {
-      if (key === 'proxy') {
-        form.value.proxy = { ...form.value.proxy, ...incoming.proxy }
-      } else {
-        // @ts-expect-error index write
-        form.value[key] = incoming[key]
-      }
+      if (key === 'proxy' || key === 'remoteInstances') continue
+      // @ts-expect-error index write
+      form.value[key] = incoming[key]
     }
     proxyTestResult.value = null
   },
@@ -67,6 +66,7 @@ watch(
 
 async function save(opts?: { silent?: boolean }): Promise<boolean> {
   saving.value = true
+  suppressSettingsWatch = true
   try {
     const next = await ipc('settings.set', form.value)
     store.settings = next
@@ -76,6 +76,7 @@ async function save(opts?: { silent?: boolean }): Promise<boolean> {
     message.error(err instanceof Error ? err.message : String(err))
     return false
   } finally {
+    suppressSettingsWatch = false
     saving.value = false
   }
 }
@@ -126,11 +127,22 @@ async function saveRemote(): Promise<void> {
     if (!remoteDraft.value.id) remoteDraft.value.id = `remote-${Date.now()}`
     await ipc('remote.save', remoteDraft.value)
     showRemote.value = false
+    remoteDraft.value = emptyRemote()
     message.success('远程实例已保存')
     await loadRemotes()
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   }
+}
+
+function openRemoteDialog(): void {
+  remoteDraft.value = emptyRemote()
+  showRemote.value = true
+}
+
+function cancelRemoteDialog(): void {
+  showRemote.value = false
+  remoteDraft.value = emptyRemote()
 }
 
 async function probeEnv(): Promise<void> {
@@ -368,7 +380,7 @@ onMounted(async () => {
           </NListItem>
         </NList>
         <div v-else class="meta">暂无远程实例</div>
-        <NButton style="margin-top: 12px" secondary @click="showRemote = true">添加远程实例</NButton>
+        <NButton style="margin-top: 12px" secondary @click="openRemoteDialog">添加远程实例</NButton>
       </NCard>
 
       <NCard title="Python 环境" class="card" size="small">
@@ -409,7 +421,7 @@ onMounted(async () => {
       </NSpace>
       <template #footer>
         <NSpace justify="end">
-          <NButton @click="showRemote = false">取消</NButton>
+          <NButton @click="cancelRemoteDialog">取消</NButton>
           <NButton type="primary" @click="saveRemote">保存</NButton>
         </NSpace>
       </template>

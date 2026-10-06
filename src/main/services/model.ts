@@ -504,6 +504,9 @@ export class ModelService extends EventEmitter {
   }
 
   private async runDownload(task: DownloadTask, resume = false): Promise<void> {
+    if (this.abortControllers.has(task.id)) {
+      throw new Error('Download already in progress')
+    }
     // Optional aria2 path (PLAN)
     const settings = loadSettings()
     if (settings.useAria2 && (settings.aria2Path || 'aria2c')) {
@@ -512,13 +515,15 @@ export class ModelService extends EventEmitter {
         if (aria2Service.available()) {
           task.status = 'running'
           this.emit('download', { ...task })
-          const res = await aria2Service.download(task.url, task.destPath)
+          // aria2 -c continues partial downloads
+          const res = await aria2Service.download(task.url, task.destPath, { resume })
           task.status = res.ok ? 'done' : 'error'
           task.error = res.ok ? undefined : res.log.slice(0, 300)
           task.finishedAt = Date.now()
           if (res.ok && existsSync(task.destPath)) {
             task.receivedBytes = statSync(task.destPath).size
             task.totalBytes = task.receivedBytes
+            if (resume) task.resumedFrom = Math.max(0, task.receivedBytes)
           }
           upsertDownloadTask(task)
           this.emit('download', { ...task })
@@ -669,6 +674,9 @@ export class ModelService extends EventEmitter {
   async resumeDownload(id: string): Promise<DownloadTask> {
     const task = this.downloads.get(id) || listDownloadTasks().find((t) => t.id === id)
     if (!task) throw new Error('Download not found')
+    if (this.abortControllers.has(id)) {
+      throw new Error('Download already in progress')
+    }
     task.status = 'queued'
     this.downloads.set(id, task)
     this.emit('download', { ...task })

@@ -445,7 +445,11 @@ export class InstallerService extends EventEmitter {
       const comfyDir = join(installRoot, 'ComfyUI')
       this.setStep('comfyui', 'running', '克隆 ComfyUI…')
       if (existsSync(join(comfyDir, 'main.py'))) {
+        // Reuse only if the user didn't ask for a specific different branch
         this.log('comfyui', '已存在 ComfyUI，跳过克隆')
+        if (plan.comfyBranch) {
+          this.log('comfyui', `注意：已复用现有目录，未切换到分支 ${plan.comfyBranch}`)
+        }
         this.setStep('comfyui', 'done', '复用已有 ComfyUI')
       } else {
         const repo = plan.comfyRepo || COMFY_REPO
@@ -559,7 +563,7 @@ export class InstallerService extends EventEmitter {
       this.emitProgress('安装完成')
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      const cancelled = this.cancelled || /cancel/i.test(message)
+      const cancelled = this.cancelled || message === 'Installation cancelled' || /Installation cancelled/i.test(message)
       if (this.progress) {
         this.progress.status = 'failed'
         this.progress.error = cancelled ? 'Installation cancelled' : message

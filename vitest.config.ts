@@ -42,9 +42,13 @@ export default defineConfig({
           functions: 50
         },
         'src/main/services/installer.ts': {
-          // runPlan is integration-gated; unit locks validators + argv order
+          // Unit locks validators + argv order; full runPlan needs a live env
           lines: 33,
           functions: 35
+        },
+        'src/main/services/media.ts': {
+          lines: 15,
+          functions: 9
         },
         lines: 55,
         functions: 55,

@@ -70,7 +70,7 @@ describe.skipIf(skip)('electron app smoke (real bundle)', () => {
         done(null)
       })
       p.on('exit', (code) => done(code))
-      // Graceful: ask main to quit via env-driven timeout; force after 12s
+      // Hard stop only if the app fails to quit (graceful --e2e-smoke path)
       setTimeout(() => {
         text += 'TIMEOUT_KILLED'
         try {
@@ -84,14 +84,17 @@ describe.skipIf(skip)('electron app smoke (real bundle)', () => {
 
     // Must not have failed to spawn
     expect(result.text).not.toContain('spawn-error:')
-    // Must not be the trivial ELECTRON_RUN_AS_NODE path
-    expect(result.text).not.toContain('E2E_OK_ONLY')
-    // Process either exited or was timeout-killed after running — "ran" is required
-    const ran = result.text.length > 0 || result.code !== null
-    expect(ran).toBe(true)
-    // A hard crash with missing electron dist is a failure
+    // Must not hit the force-kill path — main exits via --e2e-smoke
+    expect(result.text).not.toContain('TIMEOUT_KILLED')
     if (/Electron failed to install correctly/i.test(result.text)) {
       throw new Error('Electron runtime missing: ' + result.text.slice(0, 200))
     }
+    // 0xC0000135 = STATUS_DLL_NOT_FOUND (missing VC++ redist on the host)
+    if (result.code === 3221225781 || result.code === -1073741515) {
+      throw new Error(
+        'Electron cannot start: missing system DLL (install Microsoft Visual C++ Redistributable)'
+      )
+    }
+    expect(result.code === 0 || result.code === null).toBe(true)
   }, 20000)
 })

@@ -5,6 +5,7 @@ import { existsSync, readdirSync, statSync, rmSync } from 'fs'
 import { isPathInside, normalizePathEverySegment } from './security'
 
 const execFileAsync = promisify(execFile)
+const EXEC = { timeout: 60000, windowsHide: true, maxBuffer: 20 * 1024 * 1024 } as const
 
 /** List zip entry names without extracting. */
 export async function listZipEntries(zipPath: string): Promise<string[]> {
@@ -18,7 +19,7 @@ export async function listZipEntries(zipPath: string): Promise<string[]> {
     const { stdout } = await execFileAsync(
       'powershell',
       ['-NoProfile', '-Command', ps],
-      { timeout: 30000 }
+      EXEC
     )
     return stdout
       .split(/\r?\n/)
@@ -26,10 +27,10 @@ export async function listZipEntries(zipPath: string): Promise<string[]> {
       .filter(Boolean)
   }
   try {
-    const { stdout } = await execFileAsync('unzip', ['-Z1', zipPath], { timeout: 30000 })
+    const { stdout } = await execFileAsync('unzip', ['-Z1', zipPath], EXEC)
     return stdout.split(/\n/).map((s) => s.trim()).filter(Boolean)
   } catch {
-    const { stdout } = await execFileAsync('zipinfo', ['-1', zipPath], { timeout: 30000 })
+    const { stdout } = await execFileAsync('zipinfo', ['-1', zipPath], EXEC)
     return stdout.split(/\n/).map((s) => s.trim()).filter(Boolean)
   }
 }
@@ -67,9 +68,9 @@ export async function safeUnzip(zipPath: string, destDir: string): Promise<void>
       'Add-Type -AssemblyName System.IO.Compression.FileSystem',
       `[System.IO.Compression.ZipFile]::ExtractToDirectory('${zipPath.replace(/'/g, "''")}','${destDir.replace(/'/g, "''")}', $true)`
     ].join(';')
-    await execFileAsync('powershell', ['-NoProfile', '-Command', ps], { timeout: 60000 })
+    await execFileAsync('powershell', ['-NoProfile', '-Command', ps], EXEC)
   } else {
-    await execFileAsync('unzip', ['-o', zipPath, '-d', destDir], { timeout: 60000 })
+    await execFileAsync('unzip', ['-o', zipPath, '-d', destDir], EXEC)
   }
 
   // Post-extract containment walk (defense in depth)

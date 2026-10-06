@@ -192,7 +192,11 @@ export class Aria2Service {
     return Boolean(bin) && settings.useAria2
   }
 
-  async download(url: string, destPath: string): Promise<{ ok: boolean; log: string }> {
+  async download(
+    url: string,
+    destPath: string,
+    opts?: { resume?: boolean }
+  ): Promise<{ ok: boolean; log: string }> {
     const { isSafeExternalUrl } = await import('./security')
     if (!isSafeExternalUrl(url)) {
       return { ok: false, log: `Blocked URL scheme: ${url.slice(0, 40)}` }
@@ -200,16 +204,16 @@ export class Aria2Service {
     const settings = loadSettings()
     const bin = settings.aria2Path || 'aria2c'
     const { proxyEnv } = await import('./proxy')
+    const args = ['-x', '8', '-s', '8', '-d', dirname(destPath), '-o', basename(destPath)]
+    // -c continue / resume partial
+    if (opts?.resume !== false) args.push('-c')
+    args.push(url)
     try {
-      const { stdout, stderr } = await execFileAsync(
-        bin,
-        ['-x', '8', '-s', '8', '-c', '-d', dirname(destPath), '-o', basename(destPath), url],
-        {
-          timeout: 30 * 60 * 1000,
-          maxBuffer: 20 * 1024 * 1024,
-          env: proxyEnv(settings.proxy)
-        }
-      )
+      const { stdout, stderr } = await execFileAsync(bin, args, {
+        timeout: 30 * 60 * 1000,
+        maxBuffer: 20 * 1024 * 1024,
+        env: proxyEnv(settings.proxy)
+      })
       return { ok: true, log: (stdout || '') + (stderr || '') }
     } catch (e) {
       return { ok: false, log: e instanceof Error ? e.message : String(e) }

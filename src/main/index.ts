@@ -94,6 +94,8 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  const e2e = process.env.COMFYPILOT_E2E === '1' || process.argv.includes('--e2e-smoke')
+
   // Custom protocol with strict path containment (no traversal outside app root)
   protocol.handle('comfy-pilot', (request) => {
     const appRoot = app.getAppPath()
@@ -108,8 +110,20 @@ app.whenReady().then(() => {
   getDb()
   registerIpcHandlers(() => mainWindow)
   createWindow()
-  // Apply saved proxy to Electron session on startup
   syncProxyFromSettings()
+
+  if (e2e) {
+    // Boot the real window then quit cleanly for the smoke suite
+    const quitE2e = (): void => app.quit()
+    setTimeout(() => {
+      try {
+        mainWindow?.webContents.once('did-finish-load', () => setTimeout(quitE2e, 300))
+      } catch {
+        /* ignore */
+      }
+      setTimeout(quitE2e, 2500)
+    }, 150)
+  }
 
   if (app.isPackaged) {
     try {

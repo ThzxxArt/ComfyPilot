@@ -401,6 +401,10 @@ export class NodePackService {
     const downloadUrl = data.url || data.downloadUrl
     if (data.status === 'banned') throw new Error('Node pack is banned on Registry')
     if (!downloadUrl) throw new Error('Registry did not return a download URL')
+    const { isSafeExternalUrl } = await import('./security')
+    if (!isSafeExternalUrl(downloadUrl)) {
+      throw new Error('Blocked registry download URL scheme')
+    }
 
     const zipRes = await fetch(downloadUrl, { signal: AbortSignal.timeout(180000) })
     if (!zipRes.ok) throw new Error(`Download failed: HTTP ${zipRes.status}`)
