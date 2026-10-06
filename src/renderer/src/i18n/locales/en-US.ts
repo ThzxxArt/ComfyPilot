@@ -14,6 +14,7 @@ export default {
     output: 'Outputs',
     monitor: 'Monitor',
     doctor: 'Doctor',
+    install: 'Install',
     backup: 'Backup',
     settings: 'Settings'
   },

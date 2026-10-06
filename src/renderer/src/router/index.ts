@@ -18,6 +18,7 @@ export const router = createRouter({
     { path: '/output', name: 'output', component: () => import('@/views/output/OutputView.vue') },
     { path: '/monitor', name: 'monitor', component: () => import('@/views/monitor/MonitorView.vue') },
     { path: '/doctor', name: 'doctor', component: () => import('@/views/doctor/DoctorView.vue') },
+    { path: '/install', name: 'install', component: () => import('@/views/install/InstallView.vue') },
     { path: '/backup', name: 'backup', component: () => import('@/views/backup/BackupView.vue') },
     { path: '/settings', name: 'settings', component: () => import('@/views/settings/SettingsView.vue') },
     { path: '/embed', name: 'embed', component: () => import('@/views/embed/EmbedView.vue') },

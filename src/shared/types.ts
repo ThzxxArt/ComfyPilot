@@ -432,6 +432,65 @@ export interface MarketItem {
   rating: number
 }
 
+// ---------- Installer (one-click isolated setup) ----------
+export type InstallStepId =
+  | 'preflight'
+  | 'python'
+  | 'venv'
+  | 'comfyui'
+  | 'torch'
+  | 'requirements'
+  | 'register'
+  | 'done'
+
+export type InstallStepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped'
+
+export interface InstallStep {
+  id: InstallStepId
+  title: string
+  status: InstallStepStatus
+  detail: string
+  log: string[]
+}
+
+export type TorchChannel =
+  | 'cu130'
+  | 'cu126'
+  | 'cu124'
+  | 'rocm'
+  | 'xpu'
+  | 'mps'
+  | 'cpu'
+
+export interface InstallPlan {
+  installRoot: string
+  instanceName: string
+  useUv: boolean
+  pythonPath: string
+  torchChannel: TorchChannel
+  comfyRepo: string
+  comfyBranch: string
+  createDesktopShortcut: boolean
+  autoStart: boolean
+}
+
+export interface InstallProgress {
+  runId: string
+  step: InstallStepId
+  status: InstallStepStatus
+  steps: InstallStep[]
+  message: string
+  percent: number
+  error?: string
+}
+
+export interface GpuCapability {
+  vendor: string
+  model: string
+  recommendedTorch: TorchChannel
+  notes: string
+}
+
 // ---------- IPC ----------
 export interface IpcResult<T = unknown> {
   ok: boolean
@@ -532,6 +591,13 @@ export type IpcChannelMap = {
   'env.listPythons': { args: []; result: Array<{ path: string; version: string }> }
   'env.installTorch': { args: [{ pythonPath: string; index: string }]; result: boolean }
 
+  // installer
+  'installer.detectGpu': { args: []; result: GpuCapability[] }
+  'installer.preflight': { args: [{ installRoot: string; useUv: boolean }]; result: { ok: boolean; checks: Array<{ id: string; ok: boolean; detail: string }> } }
+  'installer.start': { args: [InstallPlan]; result: { runId: string } }
+  'installer.status': { args: []; result: InstallProgress | null }
+  'installer.cancel': { args: []; result: boolean }
+
   // batch
   'batch.list': { args: []; result: BatchJob[] }
   'batch.create': { args: [Omit<BatchJob, 'id' | 'status' | 'completed' | 'failed' | 'createdAt' | 'promptIds'>]; result: BatchJob }
@@ -580,6 +646,7 @@ export const IPC_EVENTS = {
   doctorProgress: 'event:doctor-progress',
   batchProgress: 'event:batch-progress',
   nodeInstallProgress: 'event:node-install-progress',
+  installProgress: 'event:install-progress',
   notification: 'event:notification'
 } as const
 

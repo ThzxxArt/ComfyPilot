@@ -15,7 +15,8 @@ import {
   StorefrontOutline,
   PlayForwardOutline,
   ImagesOutline,
-  SaveOutline
+  SaveOutline,
+  RocketOutline
 } from '@vicons/ionicons5'
 import { NIcon, NAvatar, NButton, NSpace, NTooltip, NMessageProvider, NDialogProvider, NConfigProvider } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
@@ -39,6 +40,7 @@ const nav = computed(() => [
   { key: 'output', label: t('nav.output'), icon: ImagesOutline, path: '/output' },
   { key: 'monitor', label: t('nav.monitor'), icon: PulseOutline, path: '/monitor' },
   { key: 'doctor', label: t('nav.doctor'), icon: MedkitOutline, path: '/doctor' },
+  { key: 'install', label: t('nav.install'), icon: RocketOutline, path: '/install' },
   { key: 'backup', label: t('nav.backup'), icon: SaveOutline, path: '/backup' },
   { key: 'settings', label: t('nav.settings'), icon: SettingsOutline, path: '/settings' }
 ])

@@ -14,6 +14,7 @@ export default {
     output: '产物',
     monitor: '监控',
     doctor: '诊断',
+    install: '装机',
     backup: '备份',
     settings: '设置'
   },

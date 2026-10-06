@@ -1,5 +1,5 @@
 import { ipcMain, dialog, shell, BrowserWindow, WebContentsView, clipboard } from 'electron'
-import type { IpcResult, ComfyInstanceConfig, RemoteInstanceConfig, NodePackRecord, BatchJob, EnvCreateRequest, WorkflowRecord, AppSettings } from '@shared/types'
+import type { IpcResult, ComfyInstanceConfig, RemoteInstanceConfig, NodePackRecord, BatchJob, EnvCreateRequest, WorkflowRecord, AppSettings, InstallPlan } from '@shared/types'
 import { isSafeExternalUrl, isSafeEmbedUrl, sanitizeId, isSafeOpenPath, isLocalhostUrl } from '../services/security'
 import { loadSettings, saveSettings, loadInstanceConfigs, upsertInstanceConfig, deleteInstanceConfig } from '../services/db'
 import { LAUNCH_TEMPLATES } from '@shared/constants'
@@ -12,6 +12,7 @@ import { doctorService } from '../services/doctor'
 import { backupService } from '../services/backup'
 import { envService } from '../services/env'
 import { batchService, outputService, remoteService, marketService } from '../services/p1p2'
+import { installerService } from '../services/installer'
 
 function ok<T>(data: T): IpcResult<T> {
   return { ok: true, data }
@@ -152,6 +153,13 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle('env.createVenv', wrap((req: EnvCreateRequest) => envService.createVenv(req)))
   ipcMain.handle('env.listPythons', wrap(() => envService.listPythons()))
   ipcMain.handle('env.installTorch', wrap((opts: { pythonPath: string; index: string }) => envService.installTorch(opts)))
+
+  // installer
+  ipcMain.handle('installer.detectGpu', wrap(() => installerService.detectGpu()))
+  ipcMain.handle('installer.preflight', wrap((opts: { installRoot: string; useUv: boolean }) => installerService.preflight(opts)))
+  ipcMain.handle('installer.start', wrap((plan: InstallPlan) => installerService.start(plan)))
+  ipcMain.handle('installer.status', wrap(() => installerService.getStatus()))
+  ipcMain.handle('installer.cancel', wrap(() => installerService.cancel()))
 
   // batch
   ipcMain.handle('batch.list', wrap(() => batchService.list()))

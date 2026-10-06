@@ -3,7 +3,7 @@ import { onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   AddOutline, PlayOutline, StopOutline, TrashOutline, FolderOpenOutline,
-  OpenOutline, RefreshOutline, PowerOutline, CopyOutline, LinkOutline
+  OpenOutline, RefreshOutline, PowerOutline, CopyOutline, LinkOutline, RocketOutline
 } from '@vicons/ionicons5'
 import {
   NButton, NEmpty, NIcon, NModal, NForm, NFormItem, NInput, NInputNumber, NSpace,
@@ -260,7 +260,20 @@ function statusClass(s: string): string {
           </div>
         </article>
       </div>
-      <NEmpty v-else description="还没有 ComfyUI 实例，点击右上角添加或自动发现" class="empty" />
+      <div v-else class="empty-state">
+        <NEmpty description="还没有 ComfyUI 实例">
+          <template #extra>
+            <NSpace>
+              <NButton type="primary" @click="showCreate = true">手动添加已有实例</NButton>
+              <NButton secondary @click="router.push('/install')">
+                <template #icon><NIcon :component="RocketOutline" /></template>
+                一键装机（隔离环境）
+              </NButton>
+              <NButton secondary @click="discover">自动发现</NButton>
+            </NSpace>
+          </template>
+        </NEmpty>
+      </div>
     </NSpin>
 
     <NModal v-model:show="showCreate" preset="card" title="添加 ComfyUI 实例" style="width: 640px; border-radius: 20px">

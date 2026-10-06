@@ -10,6 +10,7 @@ ComfyPilot **不替代** ComfyUI 节点工作台，而是管理它的整套生�
 | 模块 | 能力 |
 |------|------|
 | **总览 Dashboard** | 实例 / 模型 / 节点 / 负载一屏掌握 |
+| **一键装机 Install** | **独立 venv/uv + 按 GPU 装 torch + 克隆 ComfyUI + 装依赖，不污染系统 Python** |
 | **实例 Instances** | 发现、启停、重启、强杀、端口检测、参数模板、环境探测、诊断包 |
 | **模型库 Models** | 扫描、safetensors 元数据、SHA256 去重、断点下载、存储分析 |
 | **节点 Node Packs** | Registry 浏览安装、更新/锁定、冲突检测、冒烟、快照回滚 |

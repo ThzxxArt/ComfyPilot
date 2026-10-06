@@ -7,6 +7,7 @@ import { instanceService } from './services/instance'
 import { modelService } from './services/model'
 import { monitorService } from './services/monitor'
 import { batchService } from './services/p1p2'
+import { installerService } from './services/installer'
 import { IPC_EVENTS } from '@shared/types'
 import { APP_NAME } from '@shared/constants'
 import { getDb } from './services/db'
@@ -121,6 +122,7 @@ app.whenReady().then(() => {
   modelService.on('download', (t) => broadcast(IPC_EVENTS.downloadProgress, t))
   monitorService.on('ws', (evt) => broadcast(IPC_EVENTS.monitorWs, evt))
   batchService.on('progress', (job) => broadcast(IPC_EVENTS.batchProgress, job))
+  installerService.on('progress', (p) => broadcast(IPC_EVENTS.installProgress, p))
 
   const timer = setInterval(() => {
     void monitorService.systemSnapshot().then((snap) => broadcast(IPC_EVENTS.monitorTick, snap))
