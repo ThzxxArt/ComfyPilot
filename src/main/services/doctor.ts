@@ -316,7 +316,8 @@ export class DoctorService {
   async fix(instanceId: string, fixId: string): Promise<{ ok: boolean; message: string }> {
     const configs = loadInstanceConfigs()
     const config = configs.find((c) => c.id === instanceId) || configs[0]
-    const installPath = config?.path
+    const settings = loadSettings()
+    const installPath = config?.path || settings.defaultInstancePath
     if (!installPath) return { ok: false, message: 'No instance path' }
 
     switch (fixId) {

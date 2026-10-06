@@ -75,37 +75,41 @@ export class BatchService extends EventEmitter {
       throw new Error('Cannot parse workflow')
     }
     try {
-      const { toApiPrompt, applySeedToPrompt } = await import('./workflowConvert')
-      prompt = applySeedToPrompt(toApiPrompt(prompt), Date.now() % 2 ** 32)
+      const { toApiPrompt, applySeedForIteration } = await import('./workflowConvert')
+      const baseSeed = Date.now() % 2 ** 32
+      for (let i = 0; i < job.count; i++) {
+        const current = listBatchJobs().find((j) => j.id === id)
+        if (current?.status === 'cancelled') {
+          job.status = 'cancelled'
+          job.finishedAt = Date.now()
+          upsertBatchJob(job)
+          this.emit('progress', job)
+          return job
+        }
+        const promptForRun = applySeedForIteration(toApiPrompt(prompt), baseSeed, i)
+        try {
+          const promptId = await client.queuePrompt(promptForRun, `comfy-pilot-batch-${job.id}-${i}`)
+          if (promptId) {
+            job.promptIds.push(promptId)
+            job.completed += 1
+          } else {
+            job.failed += 1
+          }
+        } catch {
+          job.failed += 1
+        }
+        const after = listBatchJobs().find((j) => j.id === id)
+        if (after?.status === 'cancelled') {
+          return after
+        }
+        upsertBatchJob(job)
+        this.emit('progress', job)
+      }
     } catch (e) {
       job.status = 'error'
       job.finishedAt = Date.now()
       upsertBatchJob(job)
       throw e
-    }
-
-    for (let i = 0; i < job.count; i++) {
-      const current = listBatchJobs().find((j) => j.id === id)
-      if (current?.status === 'cancelled') {
-        job.status = 'cancelled'
-        job.finishedAt = Date.now()
-        upsertBatchJob(job)
-        this.emit('progress', job)
-        return job
-      }
-      try {
-        const promptId = await client.queuePrompt(prompt, `comfy-pilot-batch-${job.id}-${i}`)
-        if (promptId) {
-          job.promptIds.push(promptId)
-          job.completed += 1
-        } else {
-          job.failed += 1
-        }
-      } catch {
-        job.failed += 1
-      }
-      upsertBatchJob(job)
-      this.emit('progress', job)
     }
 
     // Do not overwrite a cancel that landed after the last iteration check

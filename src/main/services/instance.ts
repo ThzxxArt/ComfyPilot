@@ -43,6 +43,7 @@ const LOG_CAP = 5000
 
 export class InstanceService extends EventEmitter {
   private runtimes = new Map<string, RuntimeEntry>()
+  private startingIds = new Set<string>()
 
   private ensureRuntime(config: ComfyInstanceConfig): RuntimeEntry {
     let rt = this.runtimes.get(config.id)
@@ -129,7 +130,13 @@ export class InstanceService extends EventEmitter {
   remove(id: string): boolean {
     const rt = this.runtimes.get(id)
     if (rt?.process) {
-      rt.process.kill()
+      rt.intentionalStop = true
+      rt.generation += 1
+      try {
+        rt.process.kill()
+      } catch {
+        /* ignore */
+      }
       rt.process = undefined
     }
     this.runtimes.delete(id)
@@ -427,6 +434,18 @@ export class InstanceService extends EventEmitter {
   }
 
   async start(id: string): Promise<ComfyInstanceInfo> {
+    if (this.startingIds.has(id)) {
+      throw new Error('Instance start already in progress')
+    }
+    this.startingIds.add(id)
+    try {
+      return await this.startInner(id)
+    } finally {
+      this.startingIds.delete(id)
+    }
+  }
+
+  private async startInner(id: string): Promise<ComfyInstanceInfo> {
     const config = loadInstanceConfigs().find((c) => c.id === id)
     if (!config) throw new Error(`Instance not found: ${id}`)
     const rt = this.ensureRuntime(config)

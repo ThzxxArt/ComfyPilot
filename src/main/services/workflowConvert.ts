@@ -1,23 +1,23 @@
 /**
  * ComfyUI workflow → API prompt conversion.
  *
- * Two on-disk formats exist:
- *  - API format: { "<nodeId>": { class_type, inputs } }  — send as-is
- *  - UI format:  { nodes, links, ... }                   — must convert
+ * Formats:
+ *  - API:  { "<id>": { class_type, inputs } }
+ *  - UI:   { nodes, links, ... }
  *
- * Conversion heuristic (works for standard widgets):
- *  1. Collect link map: linkId -> { fromNode, fromSlot }
- *  2. For each node, wire named inputs with `link` to ["<fromNode>", slot]
- *  3. Remaining widgets_values (excluding converted widget names) fill
- *     widget-backed inputs in declaration order.
+ * Widget mapping strategy:
+ *  1. Prefer node.widgets[].name metadata when present
+ *  2. Else map widgets_values to widget-backed inputs (input.widget.name)
+ *  3. Else use builtin widget order tables for popular node types
  */
 export type ApiPrompt = Record<string, { class_type: string; inputs: Record<string, unknown> }>
 
 interface UiNode {
   id: number | string
   type: string
-  inputs?: Array<{ name: string; link?: number | null; widget?: { name?: string } }>
-  outputs?: Array<{ links?: number[] | null }>
+  mode?: number
+  inputs?: Array<{ name: string; link?: number | null; widget?: { name?: string }; type?: string }>
+  outputs?: Array<{ links?: number[] | null; name?: string }>
   widgets_values?: unknown[]
   widgets?: Array<{ name?: string }>
   properties?: Record<string, unknown>
@@ -26,7 +26,87 @@ interface UiNode {
 interface UiWorkflow {
   nodes?: UiNode[]
   links?: Array<[number, number, number, number, number, string] | number[]>
-  extra?: Record<string, unknown>
+}
+
+/** Node types that must never enter the API prompt. */
+const NON_EXECUTABLE_TYPES = new Set([
+  'Note',
+  'Reroute',
+  'PrimitiveNode',
+  'Primitive',
+  'Group',
+  'MarkdownNote',
+  'Image Comparer (rgthree)',
+  'Power Lora Loader (rgthree)' // keep? actually executable — leave out
+])
+
+/**
+ * Common widget orders for built-in / popular nodes.
+ * First N widgets_values map to these names in order.
+ */
+const WIDGET_ORDER: Record<string, string[]> = {
+  KSampler: ['seed', 'control_after_generate', 'steps', 'cfg', 'sampler_name', 'scheduler', 'denoise'],
+  KSamplerAdvanced: ['add_noise', 'noise_seed', 'control_after_generate', 'steps', 'cfg', 'sampler_name', 'scheduler', 'start_at_step', 'end_at_step', 'return_with_leftover_noise'],
+  CheckpointLoaderSimple: ['ckpt_name'],
+  LoraLoader: ['lora_name', 'strength_model', 'strength_clip'],
+  CLIPTextEncode: ['text'],
+  EmptyLatentImage: ['width', 'height', 'batch_size'],
+  EmptySD3LatentImage: ['width', 'height', 'batch_size'],
+  LatentUpscale: ['upscale_method', 'width', 'height', 'crop', 'samples'],
+  LatentUpscaleBy: ['upscale_method', 'scale_by', 'samples'],
+  SaveImage: ['filename_prefix'],
+  LoadImage: ['image', 'upload'],
+  LoadAudio: ['audio', 'upload'],
+  LoadVideo: ['video', 'force_rate', 'force_size', 'custom_width', 'custom_height', 'frame_load_cap', 'skip_first_frames', 'select_every_nth'],
+  PreviewImage: [],
+  ImageScale: ['upscale_method', 'width', 'height', 'crop', 'image'],
+  ImageScaleBy: ['upscale_method', 'scale_by', 'image'],
+  VAEDecode: ['samples', 'vae'],
+  VAEEncode: ['pixels', 'vae'],
+  ControlNetApplyAdvanced: ['strength', 'start_percent', 'end_percent', 'positive', 'negative', 'control_net', 'image', 'vae'],
+  ConditioningCombine: ['conditioning_1', 'conditioning_2'],
+  ConditioningConcat: ['conditioning_to', 'conditioning_from'],
+  ConditioningSetArea: ['conditioning', 'width', 'height', 'x', 'y', 'strength'],
+  ConditioningSetMask: ['conditioning', 'mask', 'set_cond_area', 'strength'],
+  LatentComposite: ['samples_to', 'samples_from', 'x', 'y', 'resize_source'],
+  LatentBlend: ['samples1', 'samples2', 'blend_factor'],
+  SetLatentNoiseMask: ['samples', 'mask'],
+  RepeatLatentBatch: ['amount', 'samples'],
+  LatentFromBatch: ['batch_index', 'length', 'samples'],
+  RebatchLatents: ['batch_size', 'samples'],
+  ImageBatch: ['image1', 'image2'],
+  ImagePadForOutpaint: ['left', 'top', 'right', 'bottom', 'feathering', 'image'],
+  unCLIPCheckpointLoader: ['ckpt_name'],
+  CheckpointLoader: ['config_name', 'ckpt_name'],
+  UNETLoader: ['unet_name', 'weight_dtype'],
+  CLIPLoader: ['clip_name', 'type'],
+  DualCLIPLoader: ['clip_name1', 'clip_name2', 'type'],
+  VAELoader: ['vae_name'],
+  LoraLoaderModelOnly: ['lora_name', 'strength_model'],
+  ModelSamplingDiscrete: ['sampling', 'zsnr'],
+  ModelSamplingFlux: ['max_shift', 'base_shift', 'width', 'height'],
+  FluxGuidance: ['guidance', 'conditioning'],
+  FluxDisableRoPE: ['conditioning'],
+  FluxApplyRoPE: ['conditioning', 'pos', 'grid', 'max_size'],
+  CLIPVisionLoader: ['clip_name'],
+  CLIPVisionEncode: ['crop', 'clip_vision', 'image'],
+  StyleModelLoader: ['style_model_name'],
+  StyleModelApply: ['style_model', 'conditioning'],
+  unCLIPConditioning: ['strength', 'noise_augmentation', 'conditioning', 'clip_vision_output'],
+  GLIGENLoader: ['gligen_name'],
+  GLIGENTextBoxApply: ['position', 'size', 'conditioning', 'clip', 'gligen_textbox_model', 'text', 'strength'],
+  DiffusersLoader: ['unet_path', 'vae_path', 'weight_dtype'],
+  DifferentialDiffusion: ['model', 'conditioning'],
+  UNETLoaderGGUF: ['unet_name', 'weight_dtype']
+}
+
+function isNonExecutable(type: string): boolean {
+  return (
+    NON_EXECUTABLE_TYPES.has(type) ||
+    type.startsWith('Note') ||
+    type === 'Reroute' ||
+    type.startsWith('Primitive')
+  )
 }
 
 export function isApiPrompt(value: unknown): value is ApiPrompt {
@@ -45,15 +125,42 @@ export function isUiWorkflow(value: unknown): value is UiWorkflow {
   return Array.isArray(v.nodes)
 }
 
-/** Convert UI workflow JSON to API prompt graph. */
-export function uiWorkflowToApiPrompt(wf: UiWorkflow): ApiPrompt {
-  const prompt: ApiPrompt = {}
-  const nodesById = new Map<string, UiNode>()
-  for (const n of wf.nodes || []) {
-    nodesById.set(String(n.id), n)
+function mapWidgets(node: UiNode, linkedNames: Set<string>): Record<string, unknown> {
+  const values = node.widgets_values || []
+  const inputs: Record<string, unknown> = {}
+  if (!values.length) return inputs
+
+  // 1) widgets metadata
+  let widgetNames: string[] = []
+  if (Array.isArray(node.widgets) && node.widgets.length) {
+    widgetNames = node.widgets.map((w) => w?.name || '').filter(Boolean)
   }
 
-  // linkId -> [fromNodeId, fromSlotIndex]
+  // 2) widget-backed inputs (declared order)
+  if (!widgetNames.length) {
+    const widgetLike = (node.inputs || []).filter((i) => i.widget?.name)
+    widgetNames = widgetLike.map((w) => w.widget?.name || w.name)
+  }
+
+  // 3) builtin table
+  if (!widgetNames.length) {
+    widgetNames = WIDGET_ORDER[node.type] || []
+  }
+
+  // Some UI versions pack control_after_generate as a separate widget after seed
+  for (let i = 0; i < values.length; i++) {
+    const name = widgetNames[i]
+    if (!name) continue
+    if (linkedNames.has(name)) continue
+    inputs[name] = values[i]
+  }
+
+  return inputs
+}
+
+export function uiWorkflowToApiPrompt(wf: UiWorkflow): ApiPrompt {
+  const prompt: ApiPrompt = {}
+
   const links = new Map<number, [string, number]>()
   for (const link of wf.links || []) {
     if (!Array.isArray(link) || link.length < 4) continue
@@ -62,11 +169,14 @@ export function uiWorkflowToApiPrompt(wf: UiWorkflow): ApiPrompt {
   }
 
   for (const node of wf.nodes || []) {
+    if (isNonExecutable(node.type)) continue
+    // mode 2 = muted / 4 = bypassed in ComfyUI
+    if (node.mode === 2 || node.mode === 4) continue
+
     const nodeId = String(node.id)
+    const linkedNames = new Set<string>()
     const inputs: Record<string, unknown> = {}
 
-    // 1) graph-linked inputs
-    const linkedNames = new Set<string>()
     for (const input of node.inputs || []) {
       if (input.link != null && links.has(Number(input.link))) {
         inputs[input.name] = links.get(Number(input.link))
@@ -74,30 +184,7 @@ export function uiWorkflowToApiPrompt(wf: UiWorkflow): ApiPrompt {
       }
     }
 
-    // 2) widget values → input names
-    // Prefer node.widgets names; fall back to known ComfyUI widget ordering.
-    const widgetNames: string[] = []
-    if (Array.isArray((node as { widgets?: Array<{ name?: string }> }).widgets)) {
-      for (const w of (node as { widgets: Array<{ name?: string }> }).widgets) {
-        if (w?.name) widgetNames.push(w.name)
-      }
-    } else if (Array.isArray(node.widgets_values)) {
-      // Without widget metadata, map remaining values by common slot names if inputs declare widgets
-      const widgetLike = (node.inputs || []).filter((i) => i.widget?.name)
-      for (const w of widgetLike) widgetNames.push(w.widget?.name || w.name)
-    }
-
-    const values = node.widgets_values || []
-    if (widgetNames.length && values.length) {
-      // ComfyUI sometimes packs combo widgets as single values; map 1:1 until exhausted.
-      for (let i = 0; i < widgetNames.length && i < values.length; i++) {
-        const name = widgetNames[i]
-        if (linkedNames.has(name)) continue
-        inputs[name] = values[i]
-      }
-    } else {
-      // Last resort: leave inputs empty but keep class_type so user sees the node.
-    }
+    Object.assign(inputs, mapWidgets(node, linkedNames))
 
     prompt[nodeId] = {
       class_type: node.type,
@@ -108,18 +195,13 @@ export function uiWorkflowToApiPrompt(wf: UiWorkflow): ApiPrompt {
   return prompt
 }
 
-/**
- * Normalize any loaded workflow JSON into an API prompt.
- * Throws a clear error when conversion is impossible.
- */
 export function toApiPrompt(raw: unknown): ApiPrompt {
   if (isApiPrompt(raw)) return raw
   if (isUiWorkflow(raw)) {
     const api = uiWorkflowToApiPrompt(raw)
-    if (!Object.keys(api).length) throw new Error('UI workflow has no nodes')
+    if (!Object.keys(api).length) throw new Error('UI workflow has no executable nodes')
     return api
   }
-  // Sometimes saved as { prompt: {...} } or { workflow: {...} }
   if (raw && typeof raw === 'object') {
     const wrapper = raw as { prompt?: unknown; workflow?: unknown }
     if (wrapper.prompt) return toApiPrompt(wrapper.prompt)
@@ -135,4 +217,9 @@ export function applySeedToPrompt(prompt: ApiPrompt, seed: number): ApiPrompt {
     }
   }
   return prompt
+}
+
+/** Per-iteration seed variation for batch jobs. */
+export function applySeedForIteration(prompt: ApiPrompt, baseSeed: number, iteration: number): ApiPrompt {
+  return applySeedToPrompt(prompt, (baseSeed + iteration) % 2 ** 32)
 }

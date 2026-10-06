@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { PlayOutline, CloseOutline, TrashOutline, AddOutline } from '@vicons/ionicons5'
 import {
   NButton, NIcon, NInput, NInputNumber, NSpace, NSpin, NTag, NEmpty, useMessage,
@@ -86,11 +86,15 @@ async function removeJob(id: string): Promise<void> {
   }
 }
 
+let offBatch: (() => void) | null = null
+
 onMounted(async () => {
-  await store.bootstrap()
+  await store.bootstrap({ keepSelection: true })
   await refresh()
-  onIpc(IPC_EVENTS.batchProgress, () => void refresh())
+  offBatch = onIpc(IPC_EVENTS.batchProgress, () => void refresh())
 })
+
+onUnmounted(() => offBatch?.())
 </script>
 
 <template>

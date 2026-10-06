@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync, readFileSync, statSync, rmSync, cpSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, readFileSync, statSync, rmSync } from 'fs'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
 import type { BackupManifest } from '@shared/types'
@@ -20,6 +20,16 @@ import {
   listNodePacks,
   upsertNodePack
 } from './db'
+import { sanitizeId, isPathInside } from './security'
+
+function resolveBackupDir(id: string): string {
+  const safe = sanitizeId(id)
+  const dir = join(backupDir(), safe)
+  if (!isPathInside(dir, backupDir())) {
+    throw new Error('Invalid backup id')
+  }
+  return dir
+}
 
 export class BackupService {
   list(): BackupManifest[] {
@@ -27,7 +37,7 @@ export class BackupService {
   }
 
   create(opts: { name: string; notes?: string }): BackupManifest {
-    const id = randomUUID()
+    const id = sanitizeId(randomUUID())
     const dir = join(backupDir(), id)
     mkdirSync(dir, { recursive: true })
 
@@ -82,7 +92,7 @@ export class BackupService {
   }
 
   restore(id: string): boolean {
-    const dir = join(backupDir(), id)
+    const dir = resolveBackupDir(id)
     if (!existsSync(dir)) return false
 
     const settingsFile = join(dir, 'settings.json')
@@ -135,20 +145,20 @@ export class BackupService {
   }
 
   delete(id: string): boolean {
-    const dir = join(backupDir(), id)
+    const dir = resolveBackupDir(id)
     try {
-      if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
+      if (existsSync(dir) && isPathInside(dir, backupDir())) {
+        rmSync(dir, { recursive: true, force: true })
+      }
     } catch {
       /* ignore */
     }
-    return deleteBackup(id)
+    return deleteBackup(sanitizeId(id))
   }
 
   openFolder(id: string): string {
-    return join(backupDir(), id)
+    return resolveBackupDir(id)
   }
 }
 
 export const backupService = new BackupService()
-
-void cpSync

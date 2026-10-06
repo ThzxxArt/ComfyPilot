@@ -462,7 +462,9 @@ export class ModelService extends EventEmitter {
       }
     }
 
-    const fileName = opts.fileName || basename(new URL(url).pathname) || `download-${Date.now()}`
+    const rawName = opts.fileName || basename(new URL(url).pathname) || `download-${Date.now()}`
+    const { assertSafeRelativeFilename } = await import('./security')
+    const fileName = assertSafeRelativeFilename(rawName)
     const destPath = join(destDir, fileName)
     const id = createHash('sha1').update(url + destPath).digest('hex').slice(0, 12)
     const task: DownloadTask = {
@@ -523,6 +525,16 @@ export class ModelService extends EventEmitter {
       }
 
       const res = await fetch(task.url, { headers, signal: controller.signal })
+      // 416 Range Not Satisfiable → file already fully downloaded
+      if (resume && res.status === 416 && existsSync(task.destPath)) {
+        task.status = 'done'
+        task.receivedBytes = statSync(task.destPath).size
+        task.totalBytes = task.receivedBytes
+        task.finishedAt = Date.now()
+        upsertDownloadTask(task)
+        this.emit('download', { ...task })
+        return
+      }
       const isPartial = res.status === 206
       if (!res.ok && !isPartial) throw new Error(`HTTP ${res.status}`)
 
@@ -539,32 +551,55 @@ export class ModelService extends EventEmitter {
 
       const mode = appendMode ? 'a' : 'w'
       const file = createWriteStream(task.destPath, { flags: mode as 'w' | 'a' })
+      let streamClosed = false
+      const closeStream = (): Promise<void> =>
+        new Promise((resolve) => {
+          if (streamClosed) return resolve()
+          streamClosed = true
+          try {
+            file.end(() => resolve())
+          } catch {
+            try {
+              file.destroy()
+            } catch {
+              /* ignore */
+            }
+            resolve()
+          }
+        })
+
       const reader = res.body?.getReader()
-      if (!reader) throw new Error('No response body')
+      if (!reader) {
+        await closeStream()
+        throw new Error('No response body')
+      }
       let lastTick = Date.now()
       let windowBytes = 0
 
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        file.write(Buffer.from(value))
-        task.receivedBytes += value.byteLength
-        windowBytes += value.byteLength
-        const now = Date.now()
-        if (now - lastTick > 500) {
-          task.speedBps = (windowBytes / (now - lastTick)) * 1000
-          windowBytes = 0
-          lastTick = now
-          upsertDownloadTask(task)
-          this.emit('download', { ...task })
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          file.write(Buffer.from(value))
+          task.receivedBytes += value.byteLength
+          windowBytes += value.byteLength
+          const now = Date.now()
+          if (now - lastTick > 500) {
+            task.speedBps = (windowBytes / (now - lastTick)) * 1000
+            windowBytes = 0
+            lastTick = now
+            upsertDownloadTask(task)
+            this.emit('download', { ...task })
+          }
         }
+      } finally {
+        try {
+          reader.cancel().catch(() => undefined)
+        } catch {
+          /* ignore */
+        }
+        await closeStream()
       }
-
-      await new Promise<void>((resolve, reject) => {
-        file.on('finish', () => resolve())
-        file.on('error', reject)
-        file.end()
-      })
 
       task.status = 'done'
       task.finishedAt = Date.now()

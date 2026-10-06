@@ -236,7 +236,8 @@ export class WorkflowService {
     if (opts.seed != null) prompt = applySeedToPrompt(prompt, opts.seed)
 
     const client = new ComfyApiClient(url)
-    const promptId = await client.queuePrompt(prompt, `comfy-pilot-${Date.now()}`)
+    const { COMFY_CLIENT_ID } = await import('./comfyApi')
+    const promptId = await client.queuePrompt(prompt, COMFY_CLIENT_ID)
     if (!promptId) {
       throw new Error('ComfyUI rejected prompt (check instance is running and workflow is valid)')
     }

@@ -412,7 +412,31 @@ export class NodePackService {
         { timeout: 60000 }
       )
     } else {
+      // unzip with -^ and post-validate entries aren't zip-slip
       await execFileAsync('unzip', ['-o', tmpZip, '-d', dest], { timeout: 60000 })
+    }
+    // Zip-slip guard: ensure all content stayed under dest
+    try {
+      const { readdirSync, statSync: st } = await import('fs')
+      const stack = [dest]
+      const { isPathInside } = await import('./security')
+      while (stack.length) {
+        const dir = stack.pop()!
+        for (const name of readdirSync(dir)) {
+          const full = join(dir, name)
+          if (!isPathInside(full, dest)) throw new Error(`Zip-slip blocked: ${full}`)
+          if (st(full).isDirectory()) stack.push(full)
+        }
+      }
+    } catch (e) {
+      if (String(e).includes('Zip-slip')) {
+        try {
+          rmSync(dest, { recursive: true, force: true })
+        } catch {
+          /* ignore */
+        }
+        throw e
+      }
     }
     try {
       unlinkSync(tmpZip)
@@ -598,7 +622,7 @@ export class NodePackService {
       name: p.name,
       version: p.version,
       path: p.path || '',
-      source: p.installSource
+      source: p.status === 'disabled' ? `${p.installSource}@disabled` : p.installSource
     }))
     const snapshot: NodeSnapshot = {
       id: randomUUID(),
@@ -622,38 +646,47 @@ export class NodePackService {
     const current = this.list()
     const currentNames = new Set(current.map((p) => p.name))
     const snapNames = new Set(snap.packs.map((p) => p.name))
+    // Snapshot records disabled state via source suffix "@disabled"
+    const snapDisabled = new Set(
+      snap.packs.filter((p) => p.source.endsWith('@disabled')).map((p) => p.name)
+    )
+    const snapEnabled = new Set(
+      snap.packs.filter((p) => !p.source.endsWith('@disabled')).map((p) => p.name)
+    )
 
-    // Disable packs that were not in the snapshot
     for (const p of current) {
-      if (!snapNames.has(p.name)) this.toggle(p.name, false)
+      if (!snapNames.has(p.name)) {
+        this.toggle(p.name, false)
+      } else if (snapDisabled.has(p.name)) {
+        this.toggle(p.name, false)
+      } else if (snapEnabled.has(p.name)) {
+        this.toggle(p.name, true)
+      }
     }
-    // Enable packs that should be present
     for (const s of snap.packs) {
-      if (currentNames.has(s.name)) {
-        this.toggle(s.name, true)
-      } else if (s.path && existsSync(s.path)) {
-        // Pack directory still exists on disk (e.g. disabled/renamed) — re-enable marker
+      if (!currentNames.has(s.name) && s.path && existsSync(s.path)) {
         try {
           const marker = join(s.path, '.disabled')
-          if (existsSync(marker)) unlinkSync(marker)
+          if (snapDisabled.has(s.name) && !existsSync(marker)) writeFileSync(marker, String(Date.now()))
+          if (snapEnabled.has(s.name) && existsSync(marker)) unlinkSync(marker)
         } catch {
           /* ignore */
         }
       }
-      // Note: packs whose files were deleted cannot be re-downloaded without Registry id;
-      // we record the gap rather than pretending restore succeeded.
     }
     return true
   }
 
   deleteSnapshot(id: string): boolean {
+    const { sanitizeId, isPathInside } = require('./security') as typeof import('./security')
+    const safe = sanitizeId(id)
     try {
-      const file = join(snapshotDir(), `${id}.json`)
-      if (existsSync(file)) unlinkSync(file)
+      const file = join(snapshotDir(), `${safe}.json`)
+      if (existsSync(file) && isPathInside(file, snapshotDir())) unlinkSync(file)
     } catch {
       /* ignore */
     }
-    return dbDeleteSnapshot(id)
+    return dbDeleteSnapshot(safe)
   }
 }
 

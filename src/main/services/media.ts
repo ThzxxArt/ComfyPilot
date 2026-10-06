@@ -140,12 +140,14 @@ export class RenameService {
         continue
       }
       const newName = pattern
-        .replace(/\{name\}/g, rec.name)
+        .replace(/\{name\}/g, rec.name.replace(/[\\/]/g, '_'))
         .replace(/\{category\}/g, rec.category)
         .replace(/\{index\}/g, String(index).padStart(3, '0'))
-        .replace(/\{arch\}/g, rec.architecture || 'unknown')
+        .replace(/\{arch\}/g, (rec.architecture || 'unknown').replace(/[\\/]/g, '_'))
+      // Prevent path escape via pattern content
+      const safeBase = basename(newName.replace(/[\\/]/g, '_')).slice(0, 120)
       const ext = extname(rec.fileName)
-      const dest = join(dirname(rec.path), `${newName}${ext}`)
+      const dest = join(dirname(rec.path), `${safeBase}${ext}`)
       index += 1
       if (dest === rec.path) {
         results.push({ from: rec.path, to: dest, ok: true })

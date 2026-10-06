@@ -9,7 +9,7 @@ import { batchService } from './services/p1p2'
 import { IPC_EVENTS } from '@shared/types'
 import { APP_NAME } from '@shared/constants'
 import { getDb } from './services/db'
-import { isSafeExternalUrl, safeResolveUnder } from './services/security'
+import { isSafeExternalUrl, safeResolveUnder, isLocalhostUrl } from './services/security'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -41,8 +41,7 @@ function createWindow(): void {
 
   mainWindow.webContents.on('will-navigate', (event, url) => {
     const allowed =
-      url.startsWith('http://localhost') ||
-      url.startsWith('http://127.0.0.1') ||
+      isLocalhostUrl(url) ||
       url.startsWith('file:') ||
       Boolean(process.env.ELECTRON_RENDERER_URL && url.startsWith(process.env.ELECTRON_RENDERER_URL))
     if (!allowed) {

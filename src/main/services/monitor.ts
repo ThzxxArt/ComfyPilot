@@ -7,7 +7,7 @@ import type {
   QueueSnapshot,
   SystemSnapshot
 } from '@shared/types'
-import { ComfyApiClient } from './comfyApi'
+import { ComfyApiClient, COMFY_CLIENT_ID } from './comfyApi'
 
 export class MonitorService extends EventEmitter {
   private last: SystemSnapshot | null = null
@@ -100,7 +100,7 @@ export class MonitorService extends EventEmitter {
   }
 
   private openWs(baseUrl: string): boolean {
-    const wsUrl = baseUrl.replace(/^http/, 'ws').replace(/\/$/, '') + '/ws?clientId=comfy-pilot'
+    const wsUrl = baseUrl.replace(/^http/, 'ws').replace(/\/$/, '') + '/ws?clientId=' + COMFY_CLIENT_ID
     try {
       const ws = new WebSocket(wsUrl)
       this.ws = ws

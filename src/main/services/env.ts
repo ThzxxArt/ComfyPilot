@@ -6,14 +6,16 @@ import type { EnvCreateRequest, EnvProbe } from '@shared/types'
 
 const execFileAsync = promisify(execFile)
 
-async function safeExec(cmd: string, args: string[], cwd?: string): Promise<string> {
+async function safeExec(cmd: string, args: string[], cwd?: string, timeoutMs = 20000): Promise<string> {
   try {
-    const { stdout } = await execFileAsync(cmd, args, { cwd, timeout: 20000, windowsHide: true })
+    const { stdout } = await execFileAsync(cmd, args, { cwd, timeout: timeoutMs, windowsHide: true, maxBuffer: 20 * 1024 * 1024 })
     return stdout.trim()
   } catch (err) {
     return err instanceof Error ? err.message : String(err)
   }
 }
+
+const LONG_TIMEOUT_MS = 30 * 60 * 1000
 
 export class EnvService {
   async probe(opts: { pythonPath: string; venvPath?: string }): Promise<EnvProbe> {
@@ -89,16 +91,21 @@ export class EnvService {
     mkdirSync(req.basePath, { recursive: true })
     const venvPath = join(req.basePath, req.name)
     if (req.useUv) {
-      await safeExec('uv', ['venv', venvPath, '--python', req.pythonPath])
+      await safeExec('uv', ['venv', venvPath, '--python', req.pythonPath], undefined, LONG_TIMEOUT_MS)
     } else {
-      await safeExec(req.pythonPath, ['-m', 'venv', venvPath])
+      await safeExec(req.pythonPath, ['-m', 'venv', venvPath], undefined, LONG_TIMEOUT_MS)
     }
     const python = existsSync(join(venvPath, 'Scripts', 'python.exe'))
       ? join(venvPath, 'Scripts', 'python.exe')
       : join(venvPath, 'bin', 'python')
 
     if (req.torchIndex) {
-      await safeExec(python, ['-m', 'pip', 'install', 'torch', 'torchvision', 'torchaudio', '--index-url', req.torchIndex])
+      await safeExec(
+        python,
+        ['-m', 'pip', 'install', 'torch', 'torchvision', 'torchaudio', '--index-url', req.torchIndex],
+        undefined,
+        LONG_TIMEOUT_MS
+      )
     }
 
     return this.probe({ pythonPath: python, venvPath })
@@ -127,16 +134,21 @@ export class EnvService {
   }
 
   async installTorch(opts: { pythonPath: string; index: string }): Promise<boolean> {
-    const out = await safeExec(opts.pythonPath, [
-      '-m',
-      'pip',
-      'install',
-      'torch',
-      'torchvision',
-      'torchaudio',
-      '--index-url',
-      opts.index
-    ])
+    const out = await safeExec(
+      opts.pythonPath,
+      [
+        '-m',
+        'pip',
+        'install',
+        'torch',
+        'torchvision',
+        'torchaudio',
+        '--index-url',
+        opts.index
+      ],
+      undefined,
+      LONG_TIMEOUT_MS
+    )
     const ok = /Successfully installed|already satisfied|Requirement already satisfied/i.test(out)
     if (!ok) {
       throw new Error(`pip install torch failed: ${out.slice(0, 300)}`)

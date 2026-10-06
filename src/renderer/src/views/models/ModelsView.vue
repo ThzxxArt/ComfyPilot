@@ -85,9 +85,13 @@ const columns = computed<DataTableColumns<ModelRecord>>(() => [
           NPopconfirm,
           {
             onPositiveClick: async () => {
-              await ipc('model.delete', row.id, true)
-              await refresh()
-              message.success('已删除')
+              try {
+                await ipc('model.delete', row.id, true)
+                await refresh()
+                message.success('已删除')
+              } catch (err) {
+                message.error(err instanceof Error ? err.message : String(err))
+              }
             }
           },
           {
@@ -102,11 +106,15 @@ const columns = computed<DataTableColumns<ModelRecord>>(() => [
             size: 'tiny',
             secondary: true,
             onClick: async () => {
-              const dir = await ipc('shell.pickDirectory')
-              if (dir) {
-                await ipc('model.move', row.id, dir)
-                await refresh()
-                message.success('已移动')
+              try {
+                const dir = await ipc('shell.pickDirectory')
+                if (dir) {
+                  await ipc('model.move', row.id, dir)
+                  await refresh()
+                  message.success('已移动')
+                }
+              } catch (err) {
+                message.error(err instanceof Error ? err.message : String(err))
               }
             }
           },

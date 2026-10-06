@@ -1,6 +1,6 @@
 import { ipcMain, dialog, shell, BrowserWindow, WebContentsView, clipboard } from 'electron'
 import type { IpcResult, ComfyInstanceConfig, RemoteInstanceConfig, NodePackRecord, BatchJob, EnvCreateRequest, WorkflowRecord, AppSettings } from '@shared/types'
-import { isSafeExternalUrl, isSafeEmbedUrl, sanitizeId } from '../services/security'
+import { isSafeExternalUrl, isSafeEmbedUrl, sanitizeId, isSafeOpenPath, isLocalhostUrl } from '../services/security'
 import { loadSettings, saveSettings, loadInstanceConfigs, upsertInstanceConfig, deleteInstanceConfig } from '../services/db'
 import { LAUNCH_TEMPLATES } from '@shared/constants'
 import { instanceService } from '../services/instance'
@@ -104,8 +104,8 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle('node.smokeTest', wrap((id: string) => nodePackService.smokeTest(id)))
   ipcMain.handle('node.snapshots', wrap(() => nodePackService.snapshots()))
   ipcMain.handle('node.createSnapshot', wrap((name?: string) => nodePackService.createSnapshot(name)))
-  ipcMain.handle('node.restoreSnapshot', wrap((id: string) => nodePackService.restoreSnapshot(id)))
-  ipcMain.handle('node.deleteSnapshot', wrap((id: string) => nodePackService.deleteSnapshot(id)))
+  ipcMain.handle('node.deleteSnapshot', wrap((id: string) => nodePackService.deleteSnapshot(sanitizeId(id))))
+  ipcMain.handle('node.restoreSnapshot', wrap((id: string) => nodePackService.restoreSnapshot(sanitizeId(id))))
 
   // workflows
   ipcMain.handle('workflow.list', wrap(() => workflowService.list()))
@@ -139,9 +139,12 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   // backup
   ipcMain.handle('backup.list', wrap(() => backupService.list()))
   ipcMain.handle('backup.create', wrap((opts: { name: string; notes?: string }) => backupService.create(opts)))
-  ipcMain.handle('backup.restore', wrap((id: string) => backupService.restore(id)))
-  ipcMain.handle('backup.delete', wrap((id: string) => backupService.delete(id)))
-  ipcMain.handle('backup.openFolder', wrap((id: string) => shell.openPath(backupService.openFolder(id)).then((r) => !r)))
+  ipcMain.handle('backup.restore', wrap((id: string) => backupService.restore(sanitizeId(id))))
+  ipcMain.handle('backup.delete', wrap((id: string) => backupService.delete(sanitizeId(id))))
+  ipcMain.handle('backup.openFolder', wrap(async (id: string) => {
+    const folder = backupService.openFolder(sanitizeId(id))
+    return shell.openPath(folder).then((r) => r === '')
+  }))
 
   // env
   ipcMain.handle('env.probe', wrap((opts: { pythonPath: string; venvPath?: string }) => envService.probe(opts)))
@@ -187,6 +190,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     return true
   }))
   ipcMain.handle('shell.openPath', wrap(async (path: string) => {
+    if (!isSafeOpenPath(path)) throw new Error('Blocked opening executable/script file')
     const result = await shell.openPath(path)
     return result === ''
   }))
@@ -236,7 +240,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       return { action: 'deny' }
     })
     view.webContents.on('will-navigate', (event, navUrl) => {
-      if (!isSafeEmbedUrl(navUrl) && !navUrl.startsWith('http://127.0.0.1') && !navUrl.startsWith('http://localhost')) {
+      if (!isSafeEmbedUrl(navUrl) && !isLocalhostUrl(navUrl)) {
         event.preventDefault()
       }
     })

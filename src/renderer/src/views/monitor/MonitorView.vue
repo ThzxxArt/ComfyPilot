@@ -31,9 +31,13 @@ function pct(used: number, total: number): number {
 }
 
 async function refreshQueue(): Promise<void> {
-  const inst = store.activeInstance
-  if (!inst?.url) return
-  queue.value = await ipc('monitor.queue', inst.url)
+  try {
+    const inst = store.activeInstance
+    if (!inst?.url) return
+    queue.value = await ipc('monitor.queue', inst.url)
+  } catch {
+    /* instance offline */
+  }
 }
 
 let off: (() => void) | null = null

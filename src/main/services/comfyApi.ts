@@ -1,3 +1,6 @@
+/** Stable client id so WS progress events match queued prompts. */
+export const COMFY_CLIENT_ID = 'comfy-pilot'
+
 /** Lightweight ComfyUI HTTP helper used by monitor + batch + embed. */
 export class ComfyApiClient {
   constructor(private baseUrl: string) {}
