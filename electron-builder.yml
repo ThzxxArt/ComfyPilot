@@ -1,0 +1,44 @@
+appId: com.comfy-pilot.app
+productName: ComfyPilot
+copyright: Copyright © 2026 ComfyPilot Contributors
+directories:
+  buildResources: resources
+  output: release
+files:
+  - out/**
+  - package.json
+  - '!**/*.map'
+  - '!src/**'
+  - '!tests/**'
+  - '!docs/**'
+asar: true
+asarUnpack:
+  - '**/node_modules/better-sqlite3/**'
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: resources/icon.ico
+  artifactName: ${productName}-${version}-win-${arch}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: ComfyPilot
+mac:
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+  icon: resources/icon.icns
+  category: public.app-category.productivity
+  artifactName: ${productName}-${version}-mac-${arch}.${ext}
+linux:
+  target:
+    - target: AppImage
+      arch: [x64]
+    - target: deb
+      arch: [x64]
+  icon: resources/icon.png
+  category: Utility
+  artifactName: ${productName}-${version}-linux-${arch}.${ext}

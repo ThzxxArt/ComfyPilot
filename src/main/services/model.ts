@@ -1,0 +1,575 @@
+import { EventEmitter } from 'events'
+import { createHash, randomUUID } from 'crypto'
+import {
+  existsSync,
+  readdirSync,
+  statSync,
+  unlinkSync,
+  createWriteStream,
+  createReadStream,
+  openSync,
+  readSync,
+  closeSync,
+  renameSync,
+  symlinkSync,
+  mkdirSync,
+  readFileSync
+} from 'fs'
+import { join, extname, basename, dirname, parse } from 'path'
+import { homedir } from 'os'
+import { load } from 'js-yaml'
+import type {
+  DownloadTask,
+  DuplicateGroup,
+  ModelCategory,
+  ModelRecord,
+  ModelScanProgress,
+  StorageStats
+} from '@shared/types'
+import {
+  findModelByPath,
+  listModels,
+  deleteModel as dbDeleteModel,
+  loadSettings,
+  upsertModel,
+  updateModel,
+  upsertDownloadTask,
+  listDownloadTasks
+} from './db'
+
+const MODEL_EXT = new Set(['.safetensors', '.ckpt', '.pt', '.pth', '.bin', '.gguf', '.onnx'])
+
+const CATEGORY_BY_DIR: Record<string, ModelCategory> = {
+  checkpoints: 'checkpoints',
+  diffusion_models: 'diffusion_models',
+  unet: 'unet',
+  loras: 'loras',
+  vae: 'vae',
+  clip: 'clip',
+  text_encoders: 'text_encoders',
+  controlnet: 'controlnet',
+  upscale_models: 'upscale_models',
+  embeddings: 'embeddings',
+  hypernetworks: 'other',
+  style_models: 'other'
+}
+
+function categorize(path: string): ModelCategory {
+  const norm = path.replace(/\\/g, '/').toLowerCase()
+  for (const [key, cat] of Object.entries(CATEGORY_BY_DIR)) {
+    if (norm.includes(`/${key}/`) || norm.includes(`\\${key}\\`)) return cat
+  }
+  return 'other'
+}
+
+function inferArchitecture(name: string): string | undefined {
+  const n = name.toLowerCase()
+  if (n.includes('sdxl') || n.includes('xl-base')) return 'SDXL'
+  if (n.includes('sd3') || n.includes('sd-3')) return 'SD3'
+  if (n.includes('flux')) return 'Flux'
+  if (n.includes('wan')) return 'Wan'
+  if (n.includes('hunyuan') || n.includes('hyvideo')) return 'Hunyuan'
+  if (n.includes('qwen')) return 'Qwen'
+  if (n.includes('ltx')) return 'LTX'
+  if (n.includes('sd15') || n.includes('sd-1') || n.includes('v1-5')) return 'SD1.5'
+  return undefined
+}
+
+function detectSourceFromPath(path: string): ModelRecord['source'] {
+  const p = path.toLowerCase()
+  if (p.includes('civitai')) return 'civitai'
+  if (p.includes('huggingface') || p.includes('hf_')) return 'huggingface'
+  return 'local'
+}
+
+/** Parse extra_model_paths.yaml and return additional model roots. */
+export function parseExtraModelPaths(filePath?: string): string[] {
+  const settings = loadSettings()
+  const candidates = [filePath, settings.extraModelPathsFile].filter(Boolean) as string[]
+  const roots: string[] = []
+  for (const file of candidates) {
+    if (!file || !existsSync(file)) continue
+    try {
+      const doc = load(readFileSyncSafe(file)) as Record<string, Record<string, unknown>> | null
+      if (!doc) continue
+      for (const section of Object.values(doc)) {
+        if (!section || typeof section !== 'object') continue
+        for (const [key, val] of Object.entries(section)) {
+          if (key === 'base_path' && typeof val === 'string') roots.push(val)
+          if (['checkpoints', 'loras', 'vae', 'clip', 'controlnet', 'upscale_models', 'embeddings', 'unet', 'diffusion_models', 'text_encoders'].includes(key) && typeof val === 'string') {
+            // relative to base_path or absolute
+            const base = typeof section.base_path === 'string' ? section.base_path : ''
+            const full = val.match(/^[a-zA-Z]:[\\/]|^\//) ? val : join(base || dirname(file), val)
+            if (existsSync(full)) roots.push(full)
+          }
+        }
+      }
+    } catch {
+      /* ignore malformed yaml */
+    }
+  }
+  return [...new Set(roots.map((r) => r.replace(/\\/g, '/'))) ]
+}
+
+function readFileSyncSafe(file: string): string {
+  return readFileSync(file, 'utf-8')
+}
+
+/** Read safetensors header (first 8 bytes LE u64 + JSON). */
+export function readSafetensorsMeta(filePath: string): Record<string, unknown> | null {
+  try {
+    const fd = openSync(filePath, 'r')
+    const headerLenBuf = Buffer.alloc(8)
+    readSync(fd, headerLenBuf, 0, 8, 0)
+    const headerLen = Number(headerLenBuf.readBigUInt64LE(0))
+    if (headerLen <= 0 || headerLen > 100 * 1024 * 1024) {
+      closeSync(fd)
+      return null
+    }
+    const jsonBuf = Buffer.alloc(Math.min(headerLen, 8 * 1024 * 1024))
+    readSync(fd, jsonBuf, 0, jsonBuf.length, 8)
+    closeSync(fd)
+    const json = JSON.parse(jsonBuf.toString('utf-8').replace(/\0+$/, ''))
+    const meta = json.__metadata__ || {}
+    return { tensors: Object.keys(json).filter((k) => k !== '__metadata__').length, ...meta }
+  } catch {
+    return null
+  }
+}
+
+export async function sha256File(filePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = createHash('sha256')
+    const stream = createReadStream(filePath)
+    stream.on('data', (chunk) => hash.update(chunk))
+    stream.on('end', () => resolve(hash.digest('hex')))
+    stream.on('error', reject)
+  })
+}
+
+export class ModelService extends EventEmitter {
+  private downloads = new Map<string, DownloadTask>()
+  private abortControllers = new Map<string, AbortController>()
+
+  list(): ModelRecord[] {
+    return listModels()
+  }
+
+  storageStats(): StorageStats[] {
+    const map = new Map<string, StorageStats>()
+    let total = { category: 'total' as const, count: 0, bytes: 0 }
+    for (const m of listModels()) {
+      const s = map.get(m.category) || { category: m.category, count: 0, bytes: 0 }
+      s.count += 1
+      s.bytes += m.size
+      map.set(m.category, s)
+      total.count += 1
+      total.bytes += m.size
+    }
+    return [...map.values(), total]
+  }
+
+  private walk(dir: string, out: string[], depth = 0): void {
+    if (depth > 10 || out.length > 50000) return
+    let entries: string[] = []
+    try {
+      entries = readdirSync(dir)
+    } catch {
+      return
+    }
+    for (const name of entries) {
+      if (name.startsWith('.')) continue
+      const full = join(dir, name)
+      try {
+        const st = statSync(full)
+        if (st.isDirectory()) this.walk(full, out, depth + 1)
+        else if (MODEL_EXT.has(extname(name).toLowerCase())) out.push(full)
+      } catch {
+        /* skip */
+      }
+    }
+  }
+
+  async scan(opts?: { roots?: string[]; hash?: boolean }): Promise<ModelRecord[]> {
+    const settings = loadSettings()
+    const extraRoots = parseExtraModelPaths()
+    const scanRoots = (
+      opts?.roots?.length ? opts.roots : [...settings.modelScanRoots, ...extraRoots]
+    ).filter(Boolean)
+
+    // Also auto-derive models/ under known instances
+    const instanceModels = settings.defaultInstancePath
+      ? [join(settings.defaultInstancePath, 'models')]
+      : []
+    const allRoots = [...new Set([...scanRoots, ...instanceModels])]
+
+    const files: string[] = []
+    for (const root of allRoots) {
+      if (!existsSync(root)) continue
+      const bucket: string[] = []
+      this.walk(root, bucket)
+      files.push(...bucket)
+    }
+
+    let scanned = 0
+    for (const file of files) {
+      scanned += 1
+      this.emit('progress', {
+        scanned,
+        total: files.length,
+        currentPath: file,
+        phase: 'walk'
+      } satisfies ModelScanProgress)
+
+      try {
+        const st = statSync(file)
+        const id = createHash('sha1').update(file).digest('hex').slice(0, 16)
+        const category = categorize(file)
+        const existing = findModelByPath(file)
+        let hash = existing?.hashSha256
+        if (opts?.hash && !hash) {
+          this.emit('progress', {
+            scanned,
+            total: files.length,
+            currentPath: file,
+            phase: 'hash'
+          } satisfies ModelScanProgress)
+          hash = await sha256File(file)
+        }
+
+        let metadata = existing?.metadata || {}
+        let architecture = existing?.architecture
+        let baseModel = existing?.baseModel
+        let trainedWords = existing?.trainedWords || []
+        if (extname(file).toLowerCase() === '.safetensors') {
+          this.emit('progress', {
+            scanned,
+            total: files.length,
+            currentPath: file,
+            phase: 'meta'
+          } satisfies ModelScanProgress)
+          const meta = readSafetensorsMeta(file)
+          if (meta) {
+            metadata = { ...metadata, ...meta }
+            const ss =
+              meta.ss_base_model ||
+              (meta.modelspec as Record<string, unknown> | undefined)?.architecture
+            if (typeof ss === 'string') {
+              baseModel = ss
+              architecture = architecture || inferArchitecture(ss)
+            }
+            if (typeof meta.ss_tag_frequency === 'string') {
+              try {
+                trainedWords = Object.keys(JSON.parse(meta.ss_tag_frequency)).slice(0, 20)
+              } catch {
+                /* ignore */
+              }
+            }
+          }
+        }
+
+        architecture = architecture || inferArchitecture(basename(file))
+        const rec: ModelRecord = {
+          id: existing?.id || id,
+          name: parse(file).name,
+          fileName: basename(file),
+          category,
+          path: file,
+          size: st.size,
+          hashSha256: hash,
+          modifiedAt: st.mtimeMs,
+          architecture,
+          source: existing?.source || detectSourceFromPath(file),
+          thumbnail: existing?.thumbnail,
+          tags: existing?.tags || [],
+          metadata,
+          baseModel,
+          trainedWords,
+          duplicateOf: existing?.duplicateOf,
+          pathRoot: allRoots.find((r) => file.startsWith(r)) || dirname(file)
+        }
+        upsertModel(rec)
+      } catch {
+        /* skip unreadable */
+      }
+    }
+
+    // mark duplicates
+    if (opts?.hash !== false) {
+      this.markDuplicates()
+    }
+
+    this.emit('progress', {
+      scanned: files.length,
+      total: files.length,
+      currentPath: '',
+      phase: 'done'
+    } satisfies ModelScanProgress)
+
+    return this.list()
+  }
+
+  private markDuplicates(): void {
+    const byHash = new Map<string, ModelRecord[]>()
+    for (const m of listModels()) {
+      if (!m.hashSha256) continue
+      const arr = byHash.get(m.hashSha256) || []
+      arr.push(m)
+      byHash.set(m.hashSha256, arr)
+    }
+    for (const arr of byHash.values()) {
+      if (arr.length < 2) {
+        for (const m of arr) {
+          if (m.duplicateOf) updateModel(m.id, { duplicateOf: '' })
+        }
+        continue
+      }
+      const primary = arr[0]
+      for (let i = 1; i < arr.length; i++) {
+        updateModel(arr[i].id, { duplicateOf: primary.path })
+      }
+    }
+  }
+
+  findDuplicates(): DuplicateGroup[] {
+    const byHash = new Map<string, string[]>()
+    let size = 0
+    for (const m of listModels()) {
+      if (!m.hashSha256) continue
+      const arr = byHash.get(m.hashSha256) || []
+      arr.push(m.path)
+      byHash.set(m.hashSha256, arr)
+      size = m.size
+    }
+    return [...byHash.entries()]
+      .filter(([, files]) => files.length > 1)
+      .map(([hash, files]) => ({ hash, size, files }))
+  }
+
+  async remove(id: string, deleteFile: boolean): Promise<boolean> {
+    const models = listModels()
+    const rec = models.find((m) => m.id === id)
+    if (!rec) return false
+    if (deleteFile && existsSync(rec.path)) unlinkSync(rec.path)
+    return dbDeleteModel(id)
+  }
+
+  async move(id: string, destDir: string): Promise<ModelRecord> {
+    const rec = listModels().find((m) => m.id === id)
+    if (!rec) throw new Error('Model not found')
+    mkdirSync(destDir, { recursive: true })
+    const destPath = join(destDir, rec.fileName)
+    renameSync(rec.path, destPath)
+    dbDeleteModel(id)
+    const next: ModelRecord = { ...rec, id: randomUUID(), path: destPath, pathRoot: destDir }
+    upsertModel(next)
+    return next
+  }
+
+  async symlink(id: string, destDir: string): Promise<ModelRecord> {
+    const rec = listModels().find((m) => m.id === id)
+    if (!rec) throw new Error('Model not found')
+    mkdirSync(destDir, { recursive: true })
+    const destPath = join(destDir, rec.fileName)
+    symlinkSync(rec.path, destPath, 'file')
+    const next: ModelRecord = {
+      ...rec,
+      id: randomUUID(),
+      path: destPath,
+      pathRoot: destDir,
+      source: 'imported'
+    }
+    upsertModel(next)
+    return next
+  }
+
+  async rename(id: string, newName: string): Promise<ModelRecord> {
+    const rec = listModels().find((m) => m.id === id)
+    if (!rec) throw new Error('Model not found')
+    updateModel(id, { name: newName })
+    return { ...rec, name: newName }
+  }
+
+  async tag(id: string, tags: string[]): Promise<ModelRecord> {
+    const rec = listModels().find((m) => m.id === id)
+    if (!rec) throw new Error('Model not found')
+    updateModel(id, { tags })
+    return { ...rec, tags }
+  }
+
+  listDownloads(): DownloadTask[] {
+    return this.downloads.size ? [...this.downloads.values()] : listDownloadTasks()
+  }
+
+  private detectDownloadSource(url: string): DownloadTask['source'] {
+    if (url.includes('civitai.com')) return 'civitai'
+    if (url.includes('huggingface.co') || url.includes('hf.co')) return 'huggingface'
+    return 'direct'
+  }
+
+  async download(opts: {
+    url: string
+    destDir?: string
+    fileName?: string
+  }): Promise<DownloadTask> {
+    const settings = loadSettings()
+    const destDir =
+      opts.destDir || settings.downloadDir || join(homedir(), 'Downloads', 'ComfyPilot')
+    mkdirSync(destDir, { recursive: true })
+    let url = opts.url
+
+    // Civitai download API redirect helper
+    if (url.includes('civitai.com') && !url.includes('/api/download')) {
+      const idMatch = url.match(/models\/(\d+)/)
+      const verMatch = url.match(/modelVersionId=(\d+)/)
+      if (idMatch) {
+        const ver = verMatch?.[1]
+        url = `https://civitai.com/api/download/models/${ver || idMatch[1]}`
+      }
+    }
+
+    const fileName = opts.fileName || basename(new URL(url).pathname) || `download-${Date.now()}`
+    const destPath = join(destDir, fileName)
+    const id = createHash('sha1').update(url + destPath).digest('hex').slice(0, 12)
+    const task: DownloadTask = {
+      id,
+      url,
+      destPath,
+      fileName,
+      totalBytes: 0,
+      receivedBytes: 0,
+      status: 'queued',
+      startedAt: Date.now(),
+      source: this.detectDownloadSource(url)
+    }
+    this.downloads.set(id, task)
+    upsertDownloadTask(task)
+    this.emit('download', { ...task })
+    void this.runDownload(task)
+    return task
+  }
+
+  private async runDownload(task: DownloadTask, resume = false): Promise<void> {
+    const controller = new AbortController()
+    this.abortControllers.set(task.id, controller)
+    try {
+      task.status = 'running'
+      this.emit('download', { ...task })
+
+      const headers: Record<string, string> = {}
+      let startByte = 0
+      if (resume && existsSync(task.destPath)) {
+        startByte = statSync(task.destPath).size
+        headers.Range = `bytes=${startByte}-`
+      }
+
+      const res = await fetch(task.url, { headers, signal: controller.signal })
+      if (!res.ok && res.status !== 206) throw new Error(`HTTP ${res.status}`)
+      const total = Number(res.headers.get('content-length') || 0) + (startByte || 0)
+      task.totalBytes = total || task.totalBytes
+      task.receivedBytes = startByte
+      task.resumedFrom = resume ? startByte : undefined
+
+      const mode = resume && startByte > 0 ? 'a' : 'w'
+      const file = createWriteStream(task.destPath, { flags: mode as 'w' | 'a' })
+      const reader = res.body?.getReader()
+      if (!reader) throw new Error('No response body')
+      let lastTick = Date.now()
+      let windowBytes = 0
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        file.write(Buffer.from(value))
+        task.receivedBytes += value.byteLength
+        windowBytes += value.byteLength
+        const now = Date.now()
+        if (now - lastTick > 500) {
+          task.speedBps = (windowBytes / (now - lastTick)) * 1000
+          windowBytes = 0
+          lastTick = now
+          upsertDownloadTask(task)
+          this.emit('download', { ...task })
+        }
+      }
+
+      await new Promise<void>((resolve, reject) => {
+        file.on('finish', () => resolve())
+        file.on('error', reject)
+        file.end()
+      })
+
+      task.status = 'done'
+      task.finishedAt = Date.now()
+      task.speedBps = 0
+      upsertDownloadTask(task)
+    } catch (err) {
+      if (task.status === 'paused') return
+      task.status = controller.signal.aborted ? 'paused' : 'error'
+      task.error = err instanceof Error ? err.message : String(err)
+      task.finishedAt = Date.now()
+      upsertDownloadTask(task)
+    } finally {
+      this.abortControllers.delete(task.id)
+    }
+    this.emit('download', { ...task })
+  }
+
+  pauseDownload(id: string): DownloadTask {
+    const task = this.downloads.get(id) || listDownloadTasks().find((t) => t.id === id)
+    if (!task) throw new Error('Download not found')
+    this.abortControllers.get(id)?.abort()
+    task.status = 'paused'
+    this.downloads.set(id, task)
+    upsertDownloadTask(task)
+    this.emit('download', { ...task })
+    return task
+  }
+
+  async resumeDownload(id: string): Promise<DownloadTask> {
+    const task = this.downloads.get(id) || listDownloadTasks().find((t) => t.id === id)
+    if (!task) throw new Error('Download not found')
+    task.status = 'queued'
+    this.downloads.set(id, task)
+    this.emit('download', { ...task })
+    await this.runDownload(task, true)
+    return task
+  }
+
+  cancelDownload(id: string): boolean {
+    this.abortControllers.get(id)?.abort()
+    const task = this.downloads.get(id)
+    if (task) {
+      task.status = 'error'
+      task.error = 'cancelled'
+      this.emit('download', { ...task })
+    }
+    this.downloads.delete(id)
+    this.abortControllers.delete(id)
+    return true
+  }
+
+  async fetchCivitaiMeta(modelIdOrUrl: string): Promise<Record<string, unknown> | null> {
+    try {
+      const settings = loadSettings()
+      const base = settings.civitaiEndpoint || 'https://civitai.com'
+      let id = modelIdOrUrl
+      const m = modelIdOrUrl.match(/models\/(\d+)/)
+      if (m) id = m[1]
+      const res = await fetch(`${base}/api/v1/models/${id}`, {
+        signal: AbortSignal.timeout(8000)
+      })
+      if (!res.ok) return null
+      return (await res.json()) as Record<string, unknown>
+    } catch {
+      return null
+    }
+  }
+
+  /** Storage analysis: bytes per top-level folder under model roots. */
+  storageAnalysis(): StorageStats[] {
+    return this.storageStats()
+  }
+}
+
+export const modelService = new ModelService()

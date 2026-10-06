@@ -1,0 +1,49 @@
+// Light modern design tokens — ComfyPilot
+// 整体：浅色、通透、有空气感，强调渐变与微光，避免深色/暗黑
+
+$color-bg: #f2f6fc;
+$color-bg-soft: #eef3fb;
+$color-bg-glass: rgba(255, 255, 255, 0.72);
+$color-surface: #ffffff;
+$color-surface-2: #f7f9fe;
+$color-border: rgba(148, 163, 184, 0.22);
+$color-border-strong: rgba(99, 102, 241, 0.28);
+
+$color-text: #0f172a;
+$color-text-secondary: #475569;
+$color-text-muted: #94a3b8;
+
+$color-primary: #4f6ef7;
+$color-primary-2: #7c5cfc;
+$color-accent: #06b6d4;
+$color-success: #10b981;
+$color-warning: #f59e0b;
+$color-danger: #ef4444;
+
+$gradient-primary: linear-gradient(135deg, #4f6ef7 0%, #7c5cfc 52%, #22d3ee 100%);
+$gradient-soft: linear-gradient(135deg, rgba(79, 110, 247, 0.12) 0%, rgba(124, 92, 252, 0.1) 50%, rgba(34, 211, 238, 0.12) 100%);
+$gradient-hero: linear-gradient(160deg, #f7faff 0%, #eef3ff 40%, #e8f7fc 100%);
+$gradient-card-hover: linear-gradient(145deg, #ffffff 0%, #f5f8ff 100%);
+
+$shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.06);
+$shadow-md: 0 8px 24px rgba(79, 110, 247, 0.1), 0 2px 8px rgba(15, 23, 42, 0.04);
+$shadow-lg: 0 20px 50px rgba(79, 110, 247, 0.14), 0 8px 20px rgba(15, 23, 42, 0.06);
+$shadow-glow: 0 0 0 1px rgba(79, 110, 247, 0.18), 0 12px 40px rgba(79, 110, 247, 0.18);
+
+$radius-sm: 10px;
+$radius-md: 14px;
+$radius-lg: 20px;
+$radius-xl: 28px;
+
+$nav-width: 240px;
+$header-height: 64px;
+
+$font-sans:
+  'Inter',
+  'Segoe UI',
+  'PingFang SC',
+  'HarmonyOS Sans SC',
+  'Microsoft YaHei',
+  system-ui,
+  sans-serif;
+$font-mono: 'JetBrains Mono', 'Cascadia Code', 'SF Mono', Consolas, monospace;
