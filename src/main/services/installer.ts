@@ -13,8 +13,9 @@ import type {
   InstallStepId,
   TorchChannel
 } from '@shared/types'
-import { loadInstanceConfigs, upsertInstanceConfig } from './db'
+import { loadInstanceConfigs, upsertInstanceConfig, loadSettings } from './db'
 import { hasParentHop, normalizePathEverySegment, isPathInside } from './security'
+import { proxyEnv } from './proxy'
 
 const EXEC_OPTS = {
   timeout: 30 * 60 * 1000,
@@ -111,7 +112,8 @@ export class InstallerService extends EventEmitter {
           cwd: opts?.cwd,
           timeout: opts?.timeout ?? EXEC_OPTS.timeout,
           windowsHide: true,
-          maxBuffer: EXEC_OPTS.maxBuffer
+          maxBuffer: EXEC_OPTS.maxBuffer,
+          env: proxyEnv(loadSettings().proxy)
         },
         (err, stdout, stderr) => {
           this.children.delete(child)

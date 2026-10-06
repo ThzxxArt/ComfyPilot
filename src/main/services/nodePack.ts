@@ -33,6 +33,7 @@ import {
   upsertNodePack
 } from './db'
 import { REGISTRY_API } from '@shared/constants'
+import { proxyEnv } from './proxy'
 
 const execFileAsync = promisify(execFile)
 
@@ -383,7 +384,10 @@ export class NodePackService {
       }
       const destName = sanitizeInstallName(url.split('/').pop()?.replace(/\.git$/, '') || `pack-${Date.now()}`)
       const dest = join(root, destName)
-      await execFileAsync('git', ['clone', '--depth', '1', url, dest], { timeout: 120000 })
+      await execFileAsync('git', ['clone', '--depth', '1', url, dest], {
+        timeout: 120000,
+        env: proxyEnv(loadSettings().proxy)
+      })
       return this.afterInstall(resolveNestedPackDir(dest))
     }
 

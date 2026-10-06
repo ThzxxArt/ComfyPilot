@@ -23,7 +23,16 @@ export const DEFAULT_SETTINGS: AppSettings = {
   aria2Path: '',
   useAria2: false,
   outputIndexRoot: '',
-  remoteInstances: []
+  remoteInstances: [],
+  proxy: {
+    enabled: false,
+    protocol: 'http',
+    host: '',
+    port: 7890,
+    username: '',
+    password: '',
+    bypass: 'localhost,127.0.0.1,::1'
+  }
 }
 
 export const MODEL_CATEGORY_LABELS: Record<string, string> = {

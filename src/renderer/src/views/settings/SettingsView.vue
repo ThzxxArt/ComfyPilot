@@ -25,6 +25,31 @@ const showRemote = ref(false)
 const remoteDraft = ref<RemoteInstanceConfig>({ id: '', name: '', baseUrl: '', label: '', enabled: true })
 const envProbe = ref<EnvProbe | null>(null)
 const pythons = ref<Array<{ path: string; version: string }>>([])
+const testingProxy = ref(false)
+const proxyTestResult = ref<{ ok: boolean; via: string; ms: number; error?: string } | null>(null)
+
+async function testProxy(): Promise<void> {
+  testingProxy.value = true
+  try {
+    // Save first so proxy.test sees latest values
+    await save()
+    proxyTestResult.value = await ipc('proxy.test', {})
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    testingProxy.value = false
+  }
+}
+
+async function applyProxy(): Promise<void> {
+  try {
+    await save()
+    const r = await ipc('proxy.apply')
+    message.success(r.enabled ? `已应用代理 ${r.url}` : '已切换为直连')
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
 
 watch(
   () => store.settings,
@@ -172,6 +197,59 @@ onMounted(async () => {
         </NForm>
       </NCard>
 
+      <NCard title="网络代理" class="card" size="small">
+        <NForm label-placement="top">
+          <NFormItem label="启用代理">
+            <NSwitch v-model:value="form.proxy.enabled" />
+          </NFormItem>
+          <div class="proxy-grid">
+            <NFormItem label="协议">
+              <NSelect
+                v-model:value="form.proxy.protocol"
+                :options="[
+                  { label: 'HTTP', value: 'http' },
+                  { label: 'HTTPS', value: 'https' },
+                  { label: 'SOCKS5', value: 'socks5' }
+                ]"
+              />
+            </NFormItem>
+            <NFormItem label="主机">
+              <NInput v-model:value="form.proxy.host" placeholder="127.0.0.1" :disabled="!form.proxy.enabled" />
+            </NFormItem>
+            <NFormItem label="端口">
+              <NInputNumber v-model:value="form.proxy.port" :min="1" :max="65535" :disabled="!form.proxy.enabled" />
+            </NFormItem>
+            <NFormItem label="用户名（可选）">
+              <NInput v-model:value="form.proxy.username" :disabled="!form.proxy.enabled" />
+            </NFormItem>
+            <NFormItem label="密码（可选）">
+              <NInput
+                v-model:value="form.proxy.password"
+                type="password"
+                show-password-on="click"
+                :disabled="!form.proxy.enabled"
+              />
+            </NFormItem>
+            <NFormItem label="绕过列表（逗号分隔）">
+              <NInput
+                v-model:value="form.proxy.bypass"
+                placeholder="localhost,127.0.0.1,::1"
+                :disabled="!form.proxy.enabled"
+              />
+            </NFormItem>
+          </div>
+          <NSpace>
+            <NButton secondary :loading="testingProxy" @click="testProxy">测试连接</NButton>
+            <NButton secondary @click="applyProxy">立即应用</NButton>
+          </NSpace>
+          <div v-if="proxyTestResult" class="meta" :style="{ color: proxyTestResult.ok ? '#059669' : '#b91c1c' }">
+            {{ proxyTestResult.ok ? '✓' : '✗' }} {{ proxyTestResult.via }} · {{ proxyTestResult.ms }}ms
+            <span v-if="proxyTestResult.error">{{ proxyTestResult.error }}</span>
+          </div>
+          <div class="meta">代理将作用于应用内下载、Registry、git/pip 子进程与内嵌页面。</div>
+        </NForm>
+      </NCard>
+
       <NCard title="应用行为" class="card" size="small">
         <NForm label-placement="top">
           <NFormItem label="启动时检查更新">
@@ -278,6 +356,11 @@ onMounted(async () => {
 <style lang="scss" scoped>
 @use '@/styles/variables.scss' as *;
 .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.proxy-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 12px;
+}
 .about-logo {
   font-size: 20px; font-weight: 800;
   background: $gradient-primary;

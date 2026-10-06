@@ -13,6 +13,7 @@ import { backupService } from '../services/backup'
 import { envService } from '../services/env'
 import { batchService, outputService, remoteService, marketService } from '../services/p1p2'
 import { installerService } from '../services/installer'
+import { testProxy, syncProxyFromSettings } from '../services/proxy'
 
 function ok<T>(data: T): IpcResult<T> {
   return { ok: true, data }
@@ -40,8 +41,15 @@ let embedView: WebContentsView | null = null
 export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void {
   // settings
   ipcMain.handle('settings.get', wrap(() => loadSettings()))
-  ipcMain.handle('settings.set', wrap((patch: Partial<AppSettings>) => saveSettings(patch)))
+  ipcMain.handle('settings.set', wrap((patch: Partial<AppSettings>) => {
+    const next = saveSettings(patch)
+    // Re-apply proxy whenever settings change
+    syncProxyFromSettings()
+    return next
+  }))
   ipcMain.handle('settings.launchTemplates', wrap(() => LAUNCH_TEMPLATES))
+  ipcMain.handle('proxy.apply', wrap(() => syncProxyFromSettings()))
+  ipcMain.handle('proxy.test', wrap((opts?: { url?: string }) => testProxy(opts)))
 
   // instances
   ipcMain.handle('instance.list', wrap(() => instanceService.list()))

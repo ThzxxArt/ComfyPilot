@@ -530,6 +530,20 @@ export class ModelService extends EventEmitter {
       task.status = 'running'
       this.emit('download', { ...task })
 
+      // Honour app proxy for raw fetch via undici/Node (env-based)
+      const { proxyEnv, shouldBypass, buildBypassList, buildProxyUrl } = await import('./proxy')
+      const psettings = loadSettings().proxy
+      const env = proxyEnv(psettings)
+      const useProxy =
+        psettings.enabled &&
+        buildProxyUrl(psettings) &&
+        !shouldBypass(task.url, buildBypassList(psettings))
+      // Node 18+ fetch: we can't pass proxy per-request easily; rely on env set globally
+      if (useProxy) {
+        process.env.HTTP_PROXY = env.HTTP_PROXY || process.env.HTTP_PROXY
+        process.env.HTTPS_PROXY = env.HTTPS_PROXY || process.env.HTTPS_PROXY
+      }
+
       const headers: Record<string, string> = {}
       let startByte = 0
       if (resume && existsSync(task.destPath)) {

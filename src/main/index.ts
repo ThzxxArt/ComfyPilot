@@ -8,6 +8,7 @@ import { modelService } from './services/model'
 import { monitorService } from './services/monitor'
 import { batchService } from './services/p1p2'
 import { installerService } from './services/installer'
+import { syncProxyFromSettings } from './services/proxy'
 import { IPC_EVENTS } from '@shared/types'
 import { APP_NAME } from '@shared/constants'
 import { getDb } from './services/db'
@@ -107,6 +108,8 @@ app.whenReady().then(() => {
   getDb()
   registerIpcHandlers(() => mainWindow)
   createWindow()
+  // Apply saved proxy to Electron session on startup
+  syncProxyFromSettings()
 
   if (app.isPackaged) {
     try {

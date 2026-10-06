@@ -4,6 +4,19 @@
 export type AppTheme = 'light' | 'system'
 export type AppLocale = 'zh-CN' | 'en-US'
 
+export type ProxyProtocol = 'http' | 'https' | 'socks5'
+
+export interface ProxySettings {
+  enabled: boolean
+  protocol: ProxyProtocol
+  host: string
+  port: number
+  username: string
+  password: string
+  /** Comma/space separated hosts that bypass proxy (localhost always bypassed) */
+  bypass: string
+}
+
 export interface AppSettings {
   theme: AppTheme
   locale: AppLocale
@@ -24,6 +37,7 @@ export interface AppSettings {
   useAria2: boolean
   outputIndexRoot: string
   remoteInstances: RemoteInstanceConfig[]
+  proxy: ProxySettings
 }
 
 // ---------- Instance ----------
@@ -503,6 +517,8 @@ export type IpcChannelMap = {
   'settings.get': { args: []; result: AppSettings }
   'settings.set': { args: [Partial<AppSettings>]; result: AppSettings }
   'settings.launchTemplates': { args: []; result: LaunchArgTemplate[] }
+  'proxy.apply': { args: []; result: { enabled: boolean; url: string; bypass: string } }
+  'proxy.test': { args: [{ url?: string }?]; result: { ok: boolean; via: string; ms: number; error?: string } }
 
   // instances
   'instance.list': { args: []; result: ComfyInstanceInfo[] }
