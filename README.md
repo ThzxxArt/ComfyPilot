@@ -47,6 +47,17 @@ npm run dev
 npm run typecheck
 ```
 
+### 测试
+
+```bash
+npm run test            # unit + integration
+npm run test:coverage   # 带覆盖率门槛
+npm run test:e2e        # Electron 冒烟（需已 build；无显示环境设 SKIP_E2E=1）
+npm run test:all        # typecheck + coverage + build + e2e
+```
+
+覆盖矩阵见 `tests/`：路径安全、zip-slip、UI→API 转换、装机门控、DB、safetensors。CI 见 `.github/workflows/ci.yml`。
+
 ### 打包
 
 ```bash

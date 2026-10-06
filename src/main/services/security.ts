@@ -15,12 +15,14 @@ export function sanitizeId(id: string, fallback = ''): string {
 
 /** Strict filename sanitizer for download/rename targets. */
 export function assertSafeRelativeFilename(name: string): string {
-  const cleaned = String(name || '')
+  const raw = String(name || '').trim()
+  if (!raw || /^[.]+$/.test(raw)) throw new Error('Empty filename')
+  const cleaned = raw
     .replace(/[\\/]/g, '_')
-    .replace(/\.\.+/g, '_')
+    .replace(/\.{2,}/g, '_')
     .replace(/[^\w.\- ]/g, '_')
     .trim()
-  if (!cleaned || cleaned === '.' || cleaned === '..') throw new Error('Empty filename')
+  if (!cleaned || cleaned === '.' || /^[_]+$/.test(cleaned)) throw new Error('Empty filename')
   return cleaned.slice(0, 180)
 }
 
@@ -51,27 +53,28 @@ export function normalizePathEverySegment(pathStr: string): string {
   }
   const sep = rest.includes('\\') && !rest.includes('/') ? '\\' : '/'
   const parts = rest.split(/[\\/]+/)
-  // Normalize each segment THEN reject empty/dot-only hops
   const cleaned: string[] = []
   for (const p of parts) {
     if (!p) continue
-    const n = normalizePathSegment(p)
-    if (!n) {
-      // Segment like `.. ` or `.` or `...` collapsed — treat as parent hop risk
-      // `.. ` → after strip becomes empty or `..`; reject by marking
-      if (/^[. ]+$/.test(p)) {
-        cleaned.push('..') // force parent-detection downstream
-      }
+    // Any segment containing `..` (incl. `.. `, `...`) is a parent hop
+    if (/\.{2,}/.test(p)) {
+      cleaned.push('..')
       continue
     }
-    if (n === '.') continue
+    const n = normalizePathSegment(p)
+    if (!n || n === '.') continue
     cleaned.push(n)
   }
   const joined = cleaned.join(sep)
-  if (raw.startsWith('/') || raw.startsWith('\\')) {
+  const hadRootSep = /^[\\/]/.test(rest)
+  if (prefix) {
+    // Windows drive: always keep separator after `C:`
     return prefix + sep + joined
   }
-  return prefix + joined
+  if (hadRootSep) {
+    return sep + joined
+  }
+  return joined
 }
 
 /** True if normalized path string still contains parent-directory hops. */

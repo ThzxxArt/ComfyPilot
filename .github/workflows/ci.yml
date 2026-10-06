@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck (node)
+        run: npx tsc --noEmit -p tsconfig.node.json
+
+      - name: Typecheck (web)
+        run: npx vue-tsc --noEmit -p tsconfig.web.json
+
+      - name: Unit & integration tests
+        run: npx vitest run --coverage
+
+      - name: Build
+        run: npx electron-vite build
+
+      - name: E2E smoke (skipped on headless without display)
+        env:
+          SKIP_E2E: "1"
+        run: npx vitest run tests/e2e/app-smoke.e2e.ts
