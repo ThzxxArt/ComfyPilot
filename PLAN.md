@@ -1,6 +1,6 @@
 # ComfyPilot — ComfyUI 全能管理器 · 产品与技术方案
 
-> 版本：v0.1 Draft  
+> 版本：v0.1.0  
 > 日期：2026-10-06  
 > 技术栈：TypeScript + Vue 3 + Electron（跨平台桌面）  
 > 定位：**不替代 ComfyUI 工作台，而是做它的「控制塔」**

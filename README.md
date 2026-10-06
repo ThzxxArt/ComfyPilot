@@ -1,7 +1,7 @@
 # ComfyPilot
 
 > **ComfyUI 全能管理器** — 本机 ComfyUI 生产线的控制塔。  
-> TypeScript · Vue 3 · Electron · Naive UI · MIT
+> TypeScript · Vue 3 · Electron · Naive UI · MIT · **v0.1.0**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-4f6ef7)](./LICENSE)
 

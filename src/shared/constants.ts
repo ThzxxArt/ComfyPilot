@@ -1,6 +1,7 @@
 import type { AppSettings, LaunchArgTemplate } from './types'
 
 export const APP_NAME = 'ComfyPilot'
+/** Single source of truth for app version — keep in sync with package.json */
 export const APP_VERSION = '0.1.0'
 
 export const DEFAULT_SETTINGS: AppSettings = {

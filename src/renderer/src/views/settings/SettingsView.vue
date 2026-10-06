@@ -8,6 +8,7 @@ import {
 import { useAppStore } from '@/stores/app'
 import { ipc } from '@/composables/useIpc'
 import type { AppSettings, RemoteInstanceConfig, EnvProbe } from '@shared/types'
+import { APP_VERSION } from '@shared/constants'
 
 const store = useAppStore()
 const message = useMessage()
@@ -245,7 +246,7 @@ onMounted(async () => {
       <NCard title="关于" class="card" size="small">
         <div class="about">
           <div class="about-logo">ComfyPilot</div>
-          <div class="about-line">v0.1.0 · MIT License</div>
+          <div class="about-line">v{{ APP_VERSION }} · MIT License</div>
           <div class="about-line">TypeScript · Vue 3 · Electron · Naive UI · SQLite</div>
           <NDivider style="margin: 12px 0" />
           <div class="about-line">控制塔，不是编辑器。旁路管理 ComfyUI 生产资产。</div>
