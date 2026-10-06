@@ -20,12 +20,12 @@ async function embed(): Promise<void> {
     await ipc('embed.open', { url: displayUrl.value, title: 'ComfyUI' })
     embedded.value = true
     showFallback.value = false
-    // Keep our chrome aligned; reposition under header
+    // Keep sidebar (240) + header (64) visible
     await ipc('embed.resize', {
-      x: 0,
-      y: 56,
-      width: window.innerWidth,
-      height: Math.max(200, window.innerHeight - 56)
+      x: 240,
+      y: 64,
+      width: Math.max(200, window.innerWidth - 240),
+      height: Math.max(200, window.innerHeight - 64)
     })
   } catch (err) {
     showFallback.value = true
@@ -47,10 +47,10 @@ async function closeEmbed(): Promise<void> {
 function onResize(): void {
   if (!embedded.value) return
   void ipc('embed.resize', {
-    x: 0,
-    y: 56,
-    width: window.innerWidth,
-    height: Math.max(200, window.innerHeight - 56)
+    x: 240,
+    y: 64,
+    width: Math.max(200, window.innerWidth - 240),
+    height: Math.max(200, window.innerHeight - 64)
   })
 }
 

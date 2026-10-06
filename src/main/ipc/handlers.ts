@@ -1,5 +1,6 @@
 import { ipcMain, dialog, shell, BrowserWindow, WebContentsView, clipboard } from 'electron'
 import type { IpcResult, ComfyInstanceConfig, RemoteInstanceConfig, NodePackRecord, BatchJob, EnvCreateRequest, WorkflowRecord, AppSettings } from '@shared/types'
+import { isSafeExternalUrl, isSafeEmbedUrl, sanitizeId } from '../services/security'
 import { loadSettings, saveSettings, loadInstanceConfigs, upsertInstanceConfig, deleteInstanceConfig } from '../services/db'
 import { LAUNCH_TEMPLATES } from '@shared/constants'
 import { instanceService } from '../services/instance'
@@ -44,19 +45,23 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   // instances
   ipcMain.handle('instance.list', wrap(() => instanceService.list()))
   ipcMain.handle('instance.discover', wrap((root?: string) => instanceService.discover(root)))
-  ipcMain.handle('instance.save', wrap((config: ComfyInstanceConfig) => instanceService.save(config)))
-  ipcMain.handle('instance.remove', wrap((id: string) => instanceService.remove(id)))
-  ipcMain.handle('instance.start', wrap((id: string) => instanceService.start(id)))
-  ipcMain.handle('instance.stop', wrap((id: string) => instanceService.stop(id)))
-  ipcMain.handle('instance.restart', wrap((id: string) => instanceService.restart(id)))
-  ipcMain.handle('instance.forceKill', wrap((id: string) => instanceService.forceKill(id)))
-  ipcMain.handle('instance.getLogs', wrap((id: string, limit?: number) => instanceService.getLogs(id, limit)))
-  ipcMain.handle('instance.clearLogs', wrap((id: string) => instanceService.clearLogs(id)))
+  ipcMain.handle('instance.save', wrap((config: ComfyInstanceConfig) => instanceService.save({ ...config, id: config.id ? sanitizeId(config.id) : '' })))
+  ipcMain.handle('instance.remove', wrap((id: string) => instanceService.remove(sanitizeId(id))))
+  ipcMain.handle('instance.start', wrap((id: string) => instanceService.start(sanitizeId(id))))
+  ipcMain.handle('instance.stop', wrap((id: string) => instanceService.stop(sanitizeId(id))))
+  ipcMain.handle('instance.restart', wrap((id: string) => instanceService.restart(sanitizeId(id))))
+  ipcMain.handle('instance.forceKill', wrap((id: string) => instanceService.forceKill(sanitizeId(id))))
+  ipcMain.handle('instance.getLogs', wrap((id: string, limit?: number) => instanceService.getLogs(sanitizeId(id), limit)))
+  ipcMain.handle('instance.clearLogs', wrap((id: string) => instanceService.clearLogs(sanitizeId(id))))
   ipcMain.handle('instance.checkPort', wrap((port: number) => instanceService.checkPort(port)))
   ipcMain.handle('instance.suggestPort', wrap(() => instanceService.suggestPort()))
-  ipcMain.handle('instance.probeEnv', wrap((id: string) => instanceService.probeEnv(id)))
-  ipcMain.handle('instance.exportDiagnostics', wrap((id: string) => instanceService.exportDiagnostics(id)))
-  ipcMain.handle('instance.copyDiagnostics', wrap((id: string) => instanceService.copyDiagnostics(id)))
+  ipcMain.handle('instance.probeEnv', wrap((id: string) => instanceService.probeEnv(sanitizeId(id))))
+  ipcMain.handle('instance.exportDiagnostics', wrap((id: string) => instanceService.exportDiagnostics(sanitizeId(id))))
+  ipcMain.handle('instance.copyDiagnostics', wrap(async (id: string) => {
+    const path = await instanceService.copyDiagnostics(sanitizeId(id))
+    clipboard.writeText(path)
+    return path
+  }))
 
   // models
   ipcMain.handle('model.list', wrap(() => modelService.list()))
@@ -105,9 +110,10 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   // workflows
   ipcMain.handle('workflow.list', wrap(() => workflowService.list()))
   ipcMain.handle('workflow.import', wrap((path: string) => workflowService.importFile(path)))
-  ipcMain.handle('workflow.launch', wrap((path: string, baseUrl?: string) => {
+  ipcMain.handle('workflow.launch', wrap(async (path: string, baseUrl?: string) => {
     if (baseUrl) {
-      void shell.openExternal(baseUrl)
+      if (!isSafeExternalUrl(baseUrl)) throw new Error('Blocked unsafe URL')
+      await shell.openExternal(baseUrl)
       return true
     }
     return shell.openPath(path).then((r) => !r)
@@ -175,8 +181,15 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   }))
 
   // shell
-  ipcMain.handle('shell.openExternal', wrap((url: string) => shell.openExternal(url)))
-  ipcMain.handle('shell.openPath', wrap((path: string) => shell.openPath(path).then((r) => !r)))
+  ipcMain.handle('shell.openExternal', wrap(async (url: string) => {
+    if (!isSafeExternalUrl(url)) throw new Error(`Blocked unsafe URL: ${url.slice(0, 40)}`)
+    await shell.openExternal(url)
+    return true
+  }))
+  ipcMain.handle('shell.openPath', wrap(async (path: string) => {
+    const result = await shell.openPath(path)
+    return result === ''
+  }))
   ipcMain.handle('shell.pickDirectory', wrap(async () => {
     const win = getWindow()
     const res = win
@@ -199,18 +212,34 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle('embed.open', wrap((opts: { url: string; title?: string }) => {
     const win = getWindow()
     if (!win) return false
+    if (!isSafeEmbedUrl(opts.url)) throw new Error('Blocked unsafe embed URL')
     if (embedView) {
       win.contentView.removeChildView(embedView)
       embedView.webContents.close()
       embedView = null
     }
     const view = new WebContentsView({
-      webPreferences: { sandbox: true, contextIsolation: true }
+      webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false }
     })
     embedView = view
     win.contentView.addChildView(view)
     const bounds = win.getBounds()
-    view.setBounds({ x: 0, y: 64, width: bounds.width, height: Math.max(200, bounds.height - 64) })
+    // Keep sidebar 240px + header 64px visible
+    view.setBounds({
+      x: 240,
+      y: 64,
+      width: Math.max(200, bounds.width - 240),
+      height: Math.max(200, bounds.height - 64)
+    })
+    view.webContents.setWindowOpenHandler(({ url: navUrl }) => {
+      if (isSafeExternalUrl(navUrl)) void shell.openExternal(navUrl)
+      return { action: 'deny' }
+    })
+    view.webContents.on('will-navigate', (event, navUrl) => {
+      if (!isSafeEmbedUrl(navUrl) && !navUrl.startsWith('http://127.0.0.1') && !navUrl.startsWith('http://localhost')) {
+        event.preventDefault()
+      }
+    })
     void view.webContents.loadURL(opts.url)
     return true
   }))

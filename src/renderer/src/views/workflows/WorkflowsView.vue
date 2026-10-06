@@ -37,8 +37,20 @@ async function importFile(): Promise<void> {
 }
 
 async function launch(row: WorkflowRecord): Promise<void> {
-  await ipc('workflow.launch', row.path)
-  message.success('已请求打开工作流')
+  try {
+    await ipc('workflow.launch', row.path)
+    message.success('已请求打开工作流')
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function openPath(path: string): Promise<void> {
+  try {
+    await ipc('shell.openPath', path)
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 async function doQueue(): Promise<void> {
@@ -106,7 +118,7 @@ onMounted(() => void refresh())
             <NButton size="small" secondary @click="queueTarget = wf; showQueue = true">
               <template #icon><NIcon :component="SendOutline" /></template>排队
             </NButton>
-            <NButton size="small" secondary @click="ipc('shell.openPath', wf.path)">
+            <NButton size="small" secondary @click="openPath(wf.path)">
               <template #icon><NIcon :component="OpenOutline" /></template>
             </NButton>
           </div>

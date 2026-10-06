@@ -10,11 +10,16 @@ import {
   loadInstanceConfigs,
   loadSettings,
   saveSettings,
-  upsertInstanceConfig
+  upsertInstanceConfig,
+  listRemotes,
+  upsertRemote,
+  listModels,
+  upsertModel,
+  listWorkflows,
+  upsertWorkflow,
+  listNodePacks,
+  upsertNodePack
 } from './db'
-import { listModels, upsertModel } from './db'
-import { listWorkflows, upsertWorkflow } from './db'
-import { listNodePacks, upsertNodePack } from './db'
 
 export class BackupService {
   list(): BackupManifest[] {
@@ -31,12 +36,19 @@ export class BackupService {
     const nodePacks = listNodePacks()
     const models = listModels()
     const workflows = listWorkflows()
+    const remotes = listRemotes()
 
-    writeFileSync(join(dir, 'settings.json'), JSON.stringify(settings, null, 2))
-    writeFileSync(join(dir, 'instances.json'), JSON.stringify(instances, null, 2))
-    writeFileSync(join(dir, 'node-packs.json'), JSON.stringify(nodePacks, null, 2))
-    writeFileSync(join(dir, 'model-manifest.json'), JSON.stringify(models, null, 2))
-    writeFileSync(join(dir, 'workflows.json'), JSON.stringify(workflows, null, 2))
+    const files: Record<string, unknown> = {
+      'settings.json': settings,
+      'instances.json': instances,
+      'node-packs.json': nodePacks,
+      'model-manifest.json': models,
+      'workflows.json': workflows,
+      'remote-instances.json': remotes
+    }
+    for (const [name, value] of Object.entries(files)) {
+      writeFileSync(join(dir, name), JSON.stringify(value, null, 2))
+    }
 
     const includes = {
       settings: true,
@@ -47,7 +59,7 @@ export class BackupService {
     }
 
     let size = 0
-    for (const f of ['settings.json', 'instances.json', 'node-packs.json', 'model-manifest.json', 'workflows.json']) {
+    for (const f of Object.keys(files)) {
       try {
         size += statSync(join(dir, f)).size
       } catch {
@@ -109,6 +121,14 @@ export class BackupService {
         typeof upsertWorkflow
       >[0][]
       for (const w of workflows) upsertWorkflow(w)
+    }
+
+    const remoteFile = join(dir, 'remote-instances.json')
+    if (existsSync(remoteFile)) {
+      const remotes = JSON.parse(readFileSync(remoteFile, 'utf-8')) as Parameters<
+        typeof upsertRemote
+      >[0][]
+      for (const r of remotes) upsertRemote(r)
     }
 
     return true

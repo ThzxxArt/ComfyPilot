@@ -137,7 +137,11 @@ export class EnvService {
       '--index-url',
       opts.index
     ])
-    return /Successfully|already satisfied|Requirement already/i.test(out) || out.length >= 0
+    const ok = /Successfully installed|already satisfied|Requirement already satisfied/i.test(out)
+    if (!ok) {
+      throw new Error(`pip install torch failed: ${out.slice(0, 300)}`)
+    }
+    return true
   }
 }
 

@@ -28,12 +28,40 @@ import {
   deleteSnapshot as dbDeleteSnapshot,
   getSnapshot,
   loadSettings,
+  loadInstanceConfigs,
   snapshotDir,
   upsertNodePack
 } from './db'
 import { REGISTRY_API } from '@shared/constants'
 
 const execFileAsync = promisify(execFile)
+
+function sanitizeInstallName(name: string): string {
+  return String(name)
+    .replace(/[^\w.-]/g, '_')
+    .replace(/\.\./g, '_')
+    .slice(0, 80)
+}
+
+/** Registry zips often nest a single top-level folder — descend if needed. */
+function resolveNestedPackDir(dest: string): string {
+  try {
+    const entries = readdirSync(dest).filter((n) => !n.startsWith('.') && n !== '__MACOSX')
+    if (entries.length === 1) {
+      const nested = join(dest, entries[0])
+      if (statSync(nested).isDirectory()) {
+        const hasMeta =
+          existsSync(join(nested, '__init__.py')) ||
+          existsSync(join(nested, 'pyproject.toml')) ||
+          existsSync(join(nested, 'requirements.txt'))
+        if (hasMeta) return nested
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return dest
+}
 
 function detectCustomNodesRoot(instancePath?: string): string {
   const settings = loadSettings()
@@ -176,7 +204,13 @@ export class NodePackService {
     if (!root || !existsSync(root)) return []
     const packs: NodePackRecord[] = []
     for (const name of readdirSync(root)) {
-      if (name.startsWith('.') || name.endsWith('.trash') || name.includes('.trash-')) continue
+      if (
+        name.startsWith('.') ||
+        name.endsWith('.trash') ||
+        name.includes('.trash-') ||
+        name.includes('.bak-')
+      )
+        continue
       const dir = join(root, name)
       try {
         if (!statSync(dir).isDirectory()) continue
@@ -300,35 +334,57 @@ export class NodePackService {
     }
   }
 
+  private assertInstallAllowed(source: 'registry' | 'git' | 'manager'): void {
+    const settings = loadSettings()
+    // Mirror Manager security semantics (PLAN)
+    if (settings.networkMode === 'offline') {
+      throw new Error('Offline mode forbids remote installs')
+    }
+    if (source === 'git') {
+      if (!settings.allowGitUrlInstall) {
+        throw new Error('Git URL install is disabled (allow_git_url_install=false)')
+      }
+      if (settings.securityLevel === 'strong') {
+        throw new Error('security_level=strong forbids git installs')
+      }
+    }
+    if (source === 'registry' || source === 'manager') {
+      if (settings.securityLevel === 'strong') {
+        throw new Error('security_level=strong forbids remote node installs')
+      }
+    }
+  }
+
   async install(opts: {
     id: string
     version?: string
     source: 'registry' | 'git' | 'manager'
     url?: string
   }): Promise<NodePackRecord> {
+    this.assertInstallAllowed(opts.source)
     // PLAN: 安装前自动快照
     try {
-      this.createSnapshot(`auto-pre-install-${opts.id}`)
+      this.createSnapshot(`auto-pre-install-${sanitizeInstallName(opts.id)}`)
     } catch {
       /* snapshot is best-effort */
     }
-    const settings = loadSettings()
     const root = detectCustomNodesRoot()
     if (!root) throw new Error('custom_nodes root not found — add a ComfyUI instance first')
     mkdirSync(root, { recursive: true })
 
     if (opts.source === 'git') {
-      if (!settings.allowGitUrlInstall && settings.securityLevel === 'strong') {
-        throw new Error('Git URL install is disabled by security settings')
-      }
       const url = opts.url || opts.id
-      const dest = join(root, url.split('/').pop()?.replace(/\.git$/, '') || `pack-${Date.now()}`)
+      if (!/^https?:\/\//i.test(url) && !/^git@/i.test(url)) {
+        throw new Error('Unsupported git URL')
+      }
+      const destName = sanitizeInstallName(url.split('/').pop()?.replace(/\.git$/, '') || `pack-${Date.now()}`)
+      const dest = join(root, destName)
       await execFileAsync('git', ['clone', '--depth', '1', url, dest], { timeout: 120000 })
-      return this.afterInstall(dest)
+      return this.afterInstall(resolveNestedPackDir(dest))
     }
 
     const versionPart = opts.version ? `/${opts.version}` : ''
-    const apiUrl = `${REGISTRY_API}/nodes/${opts.id}/install${versionPart}`
+    const apiUrl = `${REGISTRY_API}/nodes/${encodeURIComponent(opts.id)}/install${versionPart}`
     const res = await fetch(apiUrl, {
       headers: { 'User-Agent': 'ComfyPilot/0.1' },
       signal: AbortSignal.timeout(15000)
@@ -344,14 +400,14 @@ export class NodePackService {
     const buf = Buffer.from(await zipRes.arrayBuffer())
     const tmpZip = join(root, `._install_${Date.now()}.zip`)
     writeFileSync(tmpZip, buf)
-    const dest = join(root, opts.id.replace(/[^\w.-]/g, '_'))
+    const dest = join(root, sanitizeInstallName(opts.id))
     if (process.platform === 'win32') {
       await execFileAsync(
         'powershell',
         [
           '-NoProfile',
           '-Command',
-          `Expand-Archive -Path '${tmpZip}' -DestinationPath '${dest}' -Force`
+          `Expand-Archive -Path '${tmpZip.replace(/'/g, "''")}' -DestinationPath '${dest.replace(/'/g, "''")}' -Force`
         ],
         { timeout: 60000 }
       )
@@ -363,7 +419,7 @@ export class NodePackService {
     } catch {
       /* ignore */
     }
-    return this.afterInstall(dest)
+    return this.afterInstall(resolveNestedPackDir(dest))
   }
 
   private afterInstall(dir: string): NodePackRecord {
@@ -419,13 +475,27 @@ export class NodePackService {
         const trash = `${pack.path}.bak-${Date.now()}`
         renameSync(pack.path, trash)
         try {
-          return await this.install({
+          const next = await this.install({
             id: pack.registryId || pack.name,
             version,
             source: 'registry'
           })
+          // Clean backup only after successful reinstall
+          try {
+            rmSync(trash, { recursive: true, force: true })
+          } catch {
+            /* keep bak if cleanup fails */
+          }
+          deleteNodePack(pack.id)
+          return next
         } catch (e) {
-          renameSync(trash, pack.path)
+          // rollback
+          try {
+            if (existsSync(pack.path)) rmSync(pack.path, { recursive: true, force: true })
+            renameSync(trash, pack.path)
+          } catch {
+            /* ignore */
+          }
           throw e
         }
       }
@@ -484,10 +554,27 @@ export class NodePackService {
     const pack = this.list().find((p) => p.id === idOrName || p.name === idOrName)
     if (!pack?.path) return []
     const issues: NodePackIssue[] = []
+    const settings = loadSettings()
+    const configs = loadInstanceConfigs()
+    const inst = configs[0]
+    let python = settings.defaultInstancePath ? 'python' : 'python'
+    if (inst?.venvPath) {
+      const win = join(inst.venvPath, 'Scripts', 'python.exe')
+      const unix = join(inst.venvPath, 'bin', 'python')
+      if (existsSync(win)) python = win
+      else if (existsSync(unix)) python = unix
+    } else if (inst?.pythonPath) {
+      python = inst.pythonPath
+    }
     try {
+      // No string interpolation of path into -c source; pass via env-less argv list.
       await execFileAsync(
-        'python',
-        ['-c', `import sys; sys.path.insert(0, r'''${pack.path}'''); import importlib; importlib.import_module('__init__')`],
+        python,
+        [
+          '-c',
+          'import importlib.util,sys,os;p=sys.argv[1];f=os.path.join(p,"__init__.py");spec=importlib.util.spec_from_file_location("cp_pack",f) if os.path.isfile(f) else None;sys.exit(0 if spec else 2)',
+          pack.path
+        ],
         { timeout: 15000, cwd: pack.path }
       )
     } catch (e) {
@@ -533,12 +620,28 @@ export class NodePackService {
     const snap = getSnapshot(id)
     if (!snap) return false
     const current = this.list()
+    const currentNames = new Set(current.map((p) => p.name))
+    const snapNames = new Set(snap.packs.map((p) => p.name))
+
+    // Disable packs that were not in the snapshot
     for (const p of current) {
-      const inSnap = snap.packs.some((s) => s.name === p.name)
-      if (!inSnap) this.toggle(p.name, false)
+      if (!snapNames.has(p.name)) this.toggle(p.name, false)
     }
+    // Enable packs that should be present
     for (const s of snap.packs) {
-      if (current.some((p) => p.name === s.name)) this.toggle(s.name, true)
+      if (currentNames.has(s.name)) {
+        this.toggle(s.name, true)
+      } else if (s.path && existsSync(s.path)) {
+        // Pack directory still exists on disk (e.g. disabled/renamed) — re-enable marker
+        try {
+          const marker = join(s.path, '.disabled')
+          if (existsSync(marker)) unlinkSync(marker)
+        } catch {
+          /* ignore */
+        }
+      }
+      // Note: packs whose files were deleted cannot be re-downloaded without Registry id;
+      // we record the gap rather than pretending restore succeeded.
     }
     return true
   }

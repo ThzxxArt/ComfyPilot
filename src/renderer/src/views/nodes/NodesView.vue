@@ -101,9 +101,22 @@ async function restoreSnapshot(id: string): Promise<void> {
 }
 
 async function uninstall(pack: NodePackRecord): Promise<void> {
-  await ipc('node.uninstall', pack.name)
-  message.success('已卸载')
-  await refresh()
+  try {
+    await ipc('node.uninstall', pack.name)
+    message.success('已卸载')
+    await refresh()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function removeSnapshot(id: string): Promise<void> {
+  try {
+    await ipc('node.deleteSnapshot', id)
+    await refresh()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 onMounted(() => {
@@ -232,7 +245,7 @@ onMounted(() => {
             </div>
             <NSpace>
               <NButton size="small" secondary @click="restoreSnapshot(s.id)">恢复</NButton>
-              <NPopconfirm @positive-click="ipc('node.deleteSnapshot', s.id).then(refresh)">
+              <NPopconfirm @positive-click="removeSnapshot(s.id)">
                 <template #trigger>
                   <NButton size="small" type="error" secondary>删除</NButton>
                 </template>

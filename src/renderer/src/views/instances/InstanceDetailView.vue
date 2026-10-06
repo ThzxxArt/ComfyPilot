@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowBackOutline, PlayOutline, StopOutline, OpenOutline, PulseOutline } from '@vicons/ionicons5'
 import { NButton, NIcon, NTag, NSpace, NScrollbar, NSpin, NDescriptions, NDescriptionsItem, useMessage } from 'naive-ui'
@@ -24,13 +24,16 @@ async function refresh(): Promise<void> {
   loading.value = false
 }
 
+let off: (() => void) | null = null
+
 onMounted(() => {
   void refresh()
-  const off = onInstanceStatus(() => {
+  off = onInstanceStatus(() => {
     void refresh()
   })
-  window.addEventListener('beforeunload', off)
 })
+
+onUnmounted(() => off?.())
 
 async function start(): Promise<void> {
   await ipc('instance.start', id.value)

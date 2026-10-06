@@ -42,8 +42,29 @@ async function create(): Promise<void> {
 }
 
 async function restore(id: string): Promise<void> {
-  await ipc('backup.restore', id)
-  message.success('备份已恢复（配置/实例/节点清单/模型清单/工作流）')
+  try {
+    await ipc('backup.restore', id)
+    message.success('备份已恢复（配置/实例/节点清单/模型清单/工作流/远程）')
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function openFolder(id: string): Promise<void> {
+  try {
+    await ipc('backup.openFolder', id)
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function removeBackup(id: string): Promise<void> {
+  try {
+    await ipc('backup.delete', id)
+    await refresh()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 onMounted(() => void refresh())
@@ -79,8 +100,8 @@ onMounted(() => void refresh())
               <NButton size="small" type="primary" secondary @click="restore(b.id)">
                 <template #icon><NIcon :component="DownloadOutline" /></template>恢复
               </NButton>
-              <NButton size="small" secondary @click="ipc('backup.openFolder', b.id)">打开目录</NButton>
-              <NPopconfirm @positive-click="ipc('backup.delete', b.id).then(refresh)">
+              <NButton size="small" secondary @click="openFolder(b.id)">打开目录</NButton>
+              <NPopconfirm @positive-click="removeBackup(b.id)">
                 <template #trigger>
                   <NButton size="small" type="error" secondary>
                     <template #icon><NIcon :component="TrashOutline" /></template>

@@ -138,7 +138,7 @@ export interface DownloadTask {
   fileName: string
   totalBytes: number
   receivedBytes: number
-  status: 'queued' | 'running' | 'paused' | 'done' | 'error'
+  status: 'queued' | 'running' | 'paused' | 'done' | 'error' | 'cancelled'
   error?: string
   startedAt: number
   finishedAt?: number

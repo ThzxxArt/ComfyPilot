@@ -17,32 +17,34 @@ import {
   ImagesOutline,
   SaveOutline
 } from '@vicons/ionicons5'
-import { NIcon, NAvatar, NButton, NSpace, NTooltip } from 'naive-ui'
+import { NIcon, NAvatar, NButton, NSpace, NTooltip, NMessageProvider, NDialogProvider, NConfigProvider } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 import { ipc } from '@/composables/useIpc'
+import { useI18n } from 'vue-i18n'
 
 const router = useRouter()
 const route = useRoute()
 const store = useAppStore()
 const collapsed = ref(false)
+const { t, locale } = useI18n()
 
-const nav = [
-  { key: 'dashboard', label: '总览', icon: SpeedometerOutline, path: '/' },
-  { key: 'instances', label: '实例', icon: ServerOutline, path: '/instances' },
-  { key: 'models', label: '模型库', icon: FolderOpenOutline, path: '/models' },
-  { key: 'nodes', label: '节点', icon: ExtensionPuzzleOutline, path: '/nodes' },
-  { key: 'market', label: '市场', icon: StorefrontOutline, path: '/market' },
-  { key: 'workflows', label: '工作流', icon: GitBranchOutline, path: '/workflows' },
-  { key: 'batch', label: '批跑', icon: PlayForwardOutline, path: '/batch' },
-  { key: 'output', label: '产物', icon: ImagesOutline, path: '/output' },
-  { key: 'monitor', label: '监控', icon: PulseOutline, path: '/monitor' },
-  { key: 'doctor', label: '诊断', icon: MedkitOutline, path: '/doctor' },
-  { key: 'backup', label: '备份', icon: SaveOutline, path: '/backup' },
-  { key: 'settings', label: '设置', icon: SettingsOutline, path: '/settings' }
-]
+const nav = computed(() => [
+  { key: 'dashboard', label: t('nav.dashboard'), icon: SpeedometerOutline, path: '/' },
+  { key: 'instances', label: t('nav.instances'), icon: ServerOutline, path: '/instances' },
+  { key: 'models', label: t('nav.models'), icon: FolderOpenOutline, path: '/models' },
+  { key: 'nodes', label: t('nav.nodes'), icon: ExtensionPuzzleOutline, path: '/nodes' },
+  { key: 'market', label: t('nav.market'), icon: StorefrontOutline, path: '/market' },
+  { key: 'workflows', label: t('nav.workflows'), icon: GitBranchOutline, path: '/workflows' },
+  { key: 'batch', label: t('nav.batch'), icon: PlayForwardOutline, path: '/batch' },
+  { key: 'output', label: t('nav.output'), icon: ImagesOutline, path: '/output' },
+  { key: 'monitor', label: t('nav.monitor'), icon: PulseOutline, path: '/monitor' },
+  { key: 'doctor', label: t('nav.doctor'), icon: MedkitOutline, path: '/doctor' },
+  { key: 'backup', label: t('nav.backup'), icon: SaveOutline, path: '/backup' },
+  { key: 'settings', label: t('nav.settings'), icon: SettingsOutline, path: '/settings' }
+])
 
 const activeKey = computed(() => {
-  const hit = nav.find((n) => route.path === n.path || (n.path !== '/' && route.path.startsWith(n.path)))
+  const hit = nav.value.find((n) => route.path === n.path || (n.path !== '/' && route.path.startsWith(n.path)))
   return hit?.key ?? 'dashboard'
 })
 
@@ -52,6 +54,7 @@ let dispose: (() => void) | null = null
 
 onMounted(async () => {
   await store.bootstrap()
+  if (store.settings?.locale) locale.value = store.settings.locale
   dispose = store.bindLive()
 })
 
@@ -79,78 +82,86 @@ function openGithub(): void {
 </script>
 
 <template>
-  <div class="shell">
-    <aside class="sider glass" :class="{ collapsed }">
-      <div class="brand">
-        <div class="brand-mark">
-          <span class="brand-orb" />
-        </div>
-        <div class="brand-text">
-          <div class="brand-name">ComfyPilot</div>
-          <div class="brand-tag">Control Tower</div>
-        </div>
-      </div>
+  <NConfigProvider>
+    <NMessageProvider>
+      <NDialogProvider>
+        <div class="shell">
+          <aside class="sider glass" :class="{ collapsed }">
+            <div class="brand">
+              <div class="brand-mark">
+                <span class="brand-orb" />
+              </div>
+              <div class="brand-text">
+                <div class="brand-name">ComfyPilot</div>
+                <div class="brand-tag">Control Tower</div>
+              </div>
+            </div>
 
-      <nav class="nav">
-        <button
-          v-for="item in nav"
-          :key="item.key"
-          class="nav-item"
-          :class="{ active: activeKey === item.key }"
-          @click="go(item.path)"
-        >
-          <NIcon :size="18" :component="item.icon" />
-          <span class="nav-label">{{ item.label }}</span>
-          <span v-if="item.key === 'instances' && runningCount" class="nav-badge">{{ runningCount }}</span>
-        </button>
-      </nav>
+            <nav class="nav">
+              <button
+                v-for="item in nav"
+                :key="item.key"
+                class="nav-item"
+                :class="{ active: activeKey === item.key }"
+                @click="go(item.path)"
+              >
+                <NIcon :size="18" :component="item.icon" />
+                <span class="nav-label">{{ item.label }}</span>
+                <span v-if="item.key === 'instances' && runningCount" class="nav-badge">{{ runningCount }}</span>
+              </button>
+            </nav>
 
-      <div class="sider-footer">
-        <div class="status-pill">
-          <span class="pulse-dot" />
-          <span>系统就绪</span>
+            <div class="sider-footer">
+              <div class="status-pill">
+                <span class="pulse-dot" />
+                <span>{{ t('common.running') }}</span>
+              </div>
+              <NButton text class="github-btn" @click="openGithub">
+                <template #icon>
+                  <NIcon :component="LogoGithub" />
+                </template>
+                GitHub
+              </NButton>
+            </div>
+          </aside>
+
+          <section class="main">
+            <header class="header glass">
+              <div class="header-left">
+                <div class="header-title">{{ nav.find((n) => n.key === activeKey)?.label }}</div>
+                <div class="header-crumb">ComfyUI · MIT · ThzxxArt</div>
+              </div>
+              <NSpace align="center" :size="10">
+                <NTooltip trigger="hover">
+                  <template #trigger>
+                    <NButton secondary type="primary" :disabled="!store.activeInstance?.url" @click="openEmbed">
+                      内嵌 Frontend
+                    </NButton>
+                  </template>
+                  在应用内嵌入官方 ComfyUI Frontend
+                </NTooltip>
+                <NButton secondary :disabled="!store.activeInstance?.url" @click="openComfy">
+                  <template #icon>
+                    <NIcon :component="OpenOutline" />
+                  </template>
+                  外链打开
+                </NButton>
+                <NAvatar round size="small" class="avatar">C</NAvatar>
+              </NSpace>
+            </header>
+
+            <main class="content">
+              <router-view v-slot="{ Component }">
+                <transition name="page-fade" mode="out-in">
+                  <component :is="Component" />
+                </transition>
+              </router-view>
+            </main>
+          </section>
         </div>
-        <NButton text class="github-btn" @click="openGithub">
-          <template #icon>
-            <NIcon :component="LogoGithub" />
-          </template>
-          GitHub
-        </NButton>
-      </div>
-    </aside>
-
-    <section class="main">
-      <header class="header glass">
-        <div class="header-left">
-          <div class="header-title">{{ nav.find((n) => n.key === activeKey)?.label }}</div>
-          <div class="header-crumb">ComfyUI 全能管理器 · MIT</div>
-        </div>
-        <NSpace align="center" :size="10">
-          <NTooltip trigger="hover">
-            <template #trigger>
-              <NButton secondary type="primary" @click="openEmbed">内嵌 Frontend</NButton>
-            </template>
-            在应用内嵌入官方 ComfyUI Frontend
-          </NTooltip>
-          <NButton secondary @click="openComfy">
-            <template #icon>
-              <NIcon :component="OpenOutline" />
-            </template>
-            外链打开
-          </NButton>
-          <NAvatar round size="small" class="avatar">C</NAvatar>
-        </NSpace>
-      </header>
-
-      <main class="content">
-        <router-view v-slot="{ Component }">
-          <transition name="page-fade" mode="out-in">
-            <component :is="Component" />
-          </transition>
-        </router-view>
-      </main>
-    </section>
-  </div>
+      </NDialogProvider>
+    </NMessageProvider>
+  </NConfigProvider>
 </template>
 
 <style lang="scss" scoped>

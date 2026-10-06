@@ -68,6 +68,24 @@ async function start(id: string): Promise<void> {
   }
 }
 
+async function cancelJob(id: string): Promise<void> {
+  try {
+    await ipc('batch.cancel', id)
+    await refresh()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function removeJob(id: string): Promise<void> {
+  try {
+    await ipc('batch.remove', id)
+    await refresh()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
 onMounted(async () => {
   await store.bootstrap()
   await refresh()
@@ -116,10 +134,10 @@ onMounted(async () => {
             <NButton size="small" type="primary" secondary @click="start(job.id)">
               <template #icon><NIcon :component="PlayOutline" /></template>执行
             </NButton>
-            <NButton size="small" secondary @click="ipc('batch.cancel', job.id).then(refresh)">
+            <NButton size="small" secondary @click="cancelJob(job.id)">
               <template #icon><NIcon :component="CloseOutline" /></template>取消
             </NButton>
-            <NPopconfirm @positive-click="ipc('batch.remove', job.id).then(refresh)">
+            <NPopconfirm @positive-click="removeJob(job.id)">
               <template #trigger>
                 <NButton size="small" type="error" secondary>
                   <template #icon><NIcon :component="TrashOutline" /></template>

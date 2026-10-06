@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   AddOutline, PlayOutline, StopOutline, TrashOutline, FolderOpenOutline,
@@ -27,6 +27,11 @@ const draft = ref<ComfyInstanceConfig>({
   id: '', name: 'My ComfyUI', path: '', pythonPath: '', venvPath: '',
   port: 8188, listen: '127.0.0.1', extraArgs: [], argTemplateId: 'default',
   enabled: true, notes: '', autoStart: false, frontendVersion: ''
+})
+const extraArgsText = ref('')
+
+watch(extraArgsText, (v) => {
+  draft.value.extraArgs = v.split(/\s+/).filter(Boolean)
 })
 
 onMounted(async () => {
@@ -69,6 +74,7 @@ async function createInstance(): Promise<void> {
   }
   saving.value = true
   try {
+    draft.value.extraArgs = extraArgsText.value.split(/\s+/).filter(Boolean)
     const info = await ipc('instance.save', { ...draft.value })
     await store.refreshInstances()
     showCreate.value = false
@@ -91,27 +97,43 @@ async function start(info: ComfyInstanceInfo): Promise<void> {
 }
 
 async function stop(info: ComfyInstanceInfo): Promise<void> {
-  await ipc('instance.stop', info.id)
-  await store.refreshInstances()
-  message.success(`已停止 ${info.name}`)
+  try {
+    await ipc('instance.stop', info.id)
+    await store.refreshInstances()
+    message.success(`已停止 ${info.name}`)
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 async function restart(info: ComfyInstanceInfo): Promise<void> {
-  await ipc('instance.restart', info.id)
-  await store.refreshInstances()
-  message.success(`已重启 ${info.name}`)
+  try {
+    await ipc('instance.restart', info.id)
+    await store.refreshInstances()
+    message.success(`已重启 ${info.name}`)
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 async function forceKill(info: ComfyInstanceInfo): Promise<void> {
-  await ipc('instance.forceKill', info.id)
-  await store.refreshInstances()
-  message.warning(`已强杀 ${info.name}`)
+  try {
+    await ipc('instance.forceKill', info.id)
+    await store.refreshInstances()
+    message.warning(`已强杀 ${info.name}`)
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 async function removeInstance(info: ComfyInstanceInfo): Promise<void> {
-  await ipc('instance.remove', info.id)
-  await store.refreshInstances()
-  message.success('实例已移除（文件未删除）')
+  try {
+    await ipc('instance.remove', info.id)
+    await store.refreshInstances()
+    message.success('实例已移除（文件未删除）')
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 async function probeEnv(info: ComfyInstanceInfo): Promise<void> {
@@ -266,7 +288,11 @@ function statusClass(s: string): string {
           </NFormItem>
         </div>
         <NFormItem label="额外参数（空格分隔）">
-          <NInput v-model:value="(draft.extraArgs as any)" placeholder="例如 --preview-method taesd" />
+          <NInput
+            :value="extraArgsText"
+            placeholder="例如 --preview-method taesd"
+            @update:value="(v: string) => (extraArgsText = v)"
+          />
         </NFormItem>
         <NFormItem label="备注">
           <NInput v-model:value="draft.notes" type="textarea" :rows="2" />

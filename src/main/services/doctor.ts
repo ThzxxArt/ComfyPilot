@@ -60,7 +60,11 @@ export class DoctorService {
 
     // 2. Python
     const python = config?.venvPath
-      ? join(config.venvPath, 'Scripts', 'python.exe')
+      ? existsSync(join(config.venvPath, 'Scripts', 'python.exe'))
+        ? join(config.venvPath, 'Scripts', 'python.exe')
+        : existsSync(join(config.venvPath, 'bin', 'python'))
+          ? join(config.venvPath, 'bin', 'python')
+          : config?.pythonPath || 'python'
       : config?.pythonPath || 'python'
     const pyOut = await safeExec(python, ['--version'])
     const pyOk = /python\s+3\.(1[0-9])/i.test(pyOut)
@@ -124,7 +128,7 @@ export class DoctorService {
     const hasEmp = emp && existsSync(emp)
     let empPaths: string[] = []
     if (hasEmp) {
-      empPaths = parseExtraModelPaths(emp)
+      empPaths = parseExtraModelPaths(emp, true)
       const broken = empPaths.filter((p) => !existsSync(p))
       checks.push({
         id: 'extra-paths',
@@ -132,7 +136,7 @@ export class DoctorService {
         title: 'extra_model_paths.yaml',
         severity: broken.length ? 'warn' : 'pass',
         detail: broken.length
-          ? `Broken paths: ${broken.join(', ')}`
+          ? `Broken paths (${broken.length}): ${broken.slice(0, 3).join(', ')}${broken.length > 3 ? '…' : ''}`
           : `OK, ${empPaths.length} extra roots`,
         suggestion: broken.length ? 'Remove or fix missing paths in extra_model_paths.yaml.' : undefined,
         fixable: false
@@ -145,7 +149,8 @@ export class DoctorService {
         severity: 'info',
         detail: 'Not present (optional)',
         suggestion: 'Add shared model paths if you use A1111/Forge folders.',
-        fixable: false
+        fixable: Boolean(installPath),
+        fixId: 'write-extra-model-paths'
       })
     }
 
@@ -162,21 +167,64 @@ export class DoctorService {
       fixable: false
     })
 
-    // 8. custom_nodes import smoke (list only + one sample)
+    // 8. custom_nodes import smoke (dir count + entry sanity)
     if (hasCN && customNodes) {
       try {
         const { readdirSync } = await import('fs')
         const packs = readdirSync(customNodes).filter((n) => !n.startsWith('.'))
+        const broken: string[] = []
+        for (const name of packs.slice(0, 30)) {
+          const dir = join(customNodes, name)
+          const hasEntry =
+            existsSync(join(dir, '__init__.py')) ||
+            existsSync(join(dir, 'pyproject.toml')) ||
+            existsSync(join(dir, 'requirements.txt'))
+          if (!hasEntry) broken.push(name)
+        }
         checks.push({
           id: 'cn-count',
           group: 'Extensions',
           title: 'Custom node packs',
-          severity: 'pass',
-          detail: `${packs.length} packs found`,
+          severity: broken.length ? 'warn' : 'pass',
+          detail: broken.length
+            ? `${packs.length} packs, ${broken.length} missing entry: ${broken.slice(0, 3).join(', ')}`
+            : `${packs.length} packs found`,
+          suggestion: broken.length ? 'Remove or repair packs without __init__.py/pyproject.toml.' : undefined,
           fixable: false
         })
       } catch {
         /* ignore */
+      }
+    }
+
+    // 8b. disk space for models / output
+    if (installPath) {
+      try {
+        const { statfsSync } = await import('fs')
+        const modelsDir = join(installPath, 'models')
+        const outputDir = join(installPath, 'output')
+        for (const [label, dir] of [
+          ['models', modelsDir],
+          ['output', outputDir]
+        ] as const) {
+          if (!existsSync(dir)) continue
+          const st = statfsSync(dir)
+          const free = Number(st.bsize) * Number(st.bavail)
+          const total = Number(st.bsize) * Number(st.blocks)
+          const freeGb = (free / 1024 ** 3).toFixed(1)
+          const low = free < 5 * 1024 ** 3
+          checks.push({
+            id: `disk-${label}`,
+            group: 'Storage',
+            title: `Disk free (${label})`,
+            severity: low ? 'warn' : 'pass',
+            detail: `${freeGb} GB free of ${(total / 1024 ** 3).toFixed(1)} GB`,
+            suggestion: low ? 'Low disk space — free up space before large model downloads.' : undefined,
+            fixable: false
+          })
+        }
+      } catch {
+        /* statfs may be unavailable */
       }
     }
 
@@ -286,8 +334,29 @@ export class DoctorService {
         return { ok: true, message: `Created ${dir}` }
       }
       case 'unpin-torch': {
-        // fix applied at pack level; here create a global note
-        return { ok: true, message: 'Open the node pack and edit requirements.txt to relax torch pin.' }
+        // Real fix: rewrite requirements.txt to relax exact torch pins
+        try {
+          const { readdirSync } = await import('fs')
+          const customNodes = join(installPath, 'custom_nodes')
+          if (!existsSync(customNodes)) return { ok: false, message: 'custom_nodes missing' }
+          let fixed = 0
+          for (const name of readdirSync(customNodes)) {
+            const req = join(customNodes, name, 'requirements.txt')
+            if (!existsSync(req)) continue
+            const text = readFileSync(req, 'utf-8')
+            const next = text.replace(/torch\s*==\s*[^\s;]+/gi, 'torch>=2.0')
+            if (next !== text) {
+              writeFileSync(req, next)
+              fixed += 1
+            }
+          }
+          return {
+            ok: true,
+            message: fixed ? `Relaxed torch pins in ${fixed} requirements.txt` : 'No exact torch pins found'
+          }
+        } catch (e) {
+          return { ok: false, message: e instanceof Error ? e.message : String(e) }
+        }
       }
       case 'write-extra-model-paths': {
         const file = join(installPath, 'extra_model_paths.yaml')

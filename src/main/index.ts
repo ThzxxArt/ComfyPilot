@@ -1,5 +1,5 @@
-import { app, BrowserWindow, shell, protocol } from 'electron'
-import { join } from 'path'
+import { app, BrowserWindow, shell, protocol, net } from 'electron'
+import { join, resolve } from 'path'
 import { autoUpdater } from 'electron-updater'
 import { registerIpcHandlers, broadcast } from './ipc/handlers'
 import { instanceService } from './services/instance'
@@ -9,6 +9,7 @@ import { batchService } from './services/p1p2'
 import { IPC_EVENTS } from '@shared/types'
 import { APP_NAME } from '@shared/constants'
 import { getDb } from './services/db'
+import { isSafeExternalUrl, safeResolveUnder } from './services/security'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -24,17 +25,30 @@ function createWindow(): void {
     autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false,
+      sandbox: true,
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      webviewTag: false
     }
   })
 
   mainWindow.on('ready-to-show', () => mainWindow?.show())
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url)
+    if (isSafeExternalUrl(url)) void shell.openExternal(url)
     return { action: 'deny' }
+  })
+
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const allowed =
+      url.startsWith('http://localhost') ||
+      url.startsWith('http://127.0.0.1') ||
+      url.startsWith('file:') ||
+      Boolean(process.env.ELECTRON_RENDERER_URL && url.startsWith(process.env.ELECTRON_RENDERER_URL))
+    if (!allowed) {
+      event.preventDefault()
+      if (isSafeExternalUrl(url)) void shell.openExternal(url)
+    }
   })
 
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -45,16 +59,21 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
-  protocol.registerFileProtocol('comfy-pilot', (request, callback) => {
-    const url = request.url.replace('comfy-pilot://', '')
-    callback({ path: join(app.getAppPath(), decodeURIComponent(url)) })
+  // Custom protocol with strict path containment (no traversal outside app root)
+  protocol.handle('comfy-pilot', (request) => {
+    const appRoot = app.getAppPath()
+    const raw = request.url.replace(/^comfy-pilot:/, '')
+    const safePath = safeResolveUnder(appRoot, raw)
+    if (!safePath) {
+      return new Response('Forbidden', { status: 403 })
+    }
+    return net.fetch('file://' + resolve(safePath).replace(/\\/g, '/'))
   })
 
   getDb()
   registerIpcHandlers(() => mainWindow)
   createWindow()
 
-  // PLAN: electron-updater 应用自身自动更新（打包后生效）
   if (app.isPackaged) {
     try {
       autoUpdater.checkForUpdatesAndNotify()

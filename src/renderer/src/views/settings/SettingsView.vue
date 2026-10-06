@@ -65,14 +65,15 @@ async function saveRemote(): Promise<void> {
 
 async function probeEnv(): Promise<void> {
   envProbe.value = await ipc('env.probe', {
-    pythonPath: form.value.defaultInstancePath ? 'python' : 'python'
+    pythonPath: 'python',
+    venvPath: form.value.defaultInstancePath || undefined
   })
   pythons.value = await ipc('env.listPythons')
   message.success('环境探测完成')
 }
 
 onMounted(async () => {
-  await store.bootstrap()
+  await store.bootstrap({ keepSelection: true })
   await loadRemotes()
 })
 </script>

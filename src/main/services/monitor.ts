@@ -12,6 +12,9 @@ import { ComfyApiClient } from './comfyApi'
 export class MonitorService extends EventEmitter {
   private last: SystemSnapshot | null = null
   private ws: WebSocket | null = null
+  private wsBaseUrl = ''
+  private reconnectTimer: NodeJS.Timeout | null = null
+  private reconnectAttempts = 0
 
   async systemSnapshot(): Promise<SystemSnapshot> {
     const [cpu, mem, fsSize, graphics] = await Promise.all([
@@ -65,15 +68,14 @@ export class MonitorService extends EventEmitter {
       }
       const history = await client.history(10)
       return {
-        running: (data.queue_running || []).map(([id]) => ({
-          promptId: String(id),
-          status: 'running' as const,
-          progress: 0
-        })),
-        pending: (data.queue_pending || []).map(([id]) => ({
-          promptId: String(id),
-          status: 'pending' as const
-        })),
+        running: (data.queue_running || []).map((item) => {
+          const promptId = Array.isArray(item) ? String(item[1] ?? item[0]) : String(item)
+          return { promptId, status: 'running' as const, progress: 0 }
+        }),
+        pending: (data.queue_pending || []).map((item) => {
+          const promptId = Array.isArray(item) ? String(item[1] ?? item[0]) : String(item)
+          return { promptId, status: 'pending' as const }
+        }),
         doneCount: history.length,
         history: history.map((h) => ({
           promptId: h.promptId,
@@ -92,11 +94,20 @@ export class MonitorService extends EventEmitter {
 
   connectWs(baseUrl: string): boolean {
     this.disconnectWs()
+    this.reconnectAttempts = 0
+    this.wsBaseUrl = baseUrl
+    return this.openWs(baseUrl)
+  }
+
+  private openWs(baseUrl: string): boolean {
     const wsUrl = baseUrl.replace(/^http/, 'ws').replace(/\/$/, '') + '/ws?clientId=comfy-pilot'
     try {
       const ws = new WebSocket(wsUrl)
       this.ws = ws
-      ws.on('open', () => this.emit('ws', { type: 'status', text: 'connected' } as ExecProgressEvent))
+      ws.on('open', () => {
+        this.reconnectAttempts = 0
+        this.emit('ws', { type: 'status', text: 'connected' } as ExecProgressEvent)
+      })
       ws.on('message', (raw) => {
         try {
           const buf = Buffer.isBuffer(raw) ? raw : Buffer.from(raw as ArrayBuffer)
@@ -118,17 +129,42 @@ export class MonitorService extends EventEmitter {
           /* ignore malformed */
         }
       })
-      ws.on('close', () => this.emit('ws', { type: 'status', text: 'disconnected' } as ExecProgressEvent))
-      ws.on('error', () => this.emit('ws', { type: 'status', text: 'error' } as ExecProgressEvent))
+      ws.on('close', () => {
+        this.emit('ws', { type: 'status', text: 'disconnected' } as ExecProgressEvent)
+        this.scheduleReconnect()
+      })
+      ws.on('error', () => {
+        this.emit('ws', { type: 'status', text: 'error' } as ExecProgressEvent)
+        this.scheduleReconnect()
+      })
       return true
     } catch {
+      this.scheduleReconnect()
       return false
     }
   }
 
+  private scheduleReconnect(): void {
+    if (!this.wsBaseUrl || this.reconnectAttempts >= 8) return
+    if (this.reconnectTimer) return
+    const delay = Math.min(15000, 500 * 2 ** this.reconnectAttempts)
+    this.reconnectAttempts += 1
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null
+      if (this.wsBaseUrl) this.openWs(this.wsBaseUrl)
+    }, delay)
+  }
+
   disconnectWs(): void {
+    this.wsBaseUrl = ''
+    this.reconnectAttempts = 0
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
     if (this.ws) {
       try {
+        this.ws.removeAllListeners()
         this.ws.close()
       } catch {
         /* ignore */

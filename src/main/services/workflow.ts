@@ -207,34 +207,40 @@ export class WorkflowService {
     const inst = instances.find((i) => i.id === opts.instanceId) || instances[0]
     if (!inst) throw new Error('No instance configured')
     const url = `http://${inst.listen === '0.0.0.0' ? '127.0.0.1' : inst.listen}:${inst.port}`
-    const raw = readFileSync(opts.workflowPath, 'utf-8')
-    let prompt: Record<string, unknown> | null = parseWorkflowJson(raw)
 
-    // PNG embed → extract prompt graph (API format)
-    if (extname(opts.workflowPath).toLowerCase() === '.png') {
-      const buf = readFileSync(opts.workflowPath)
-      const meta = extractPngTextMeta(buf)
+    let rawJson: unknown = null
+    const ext = extname(opts.workflowPath).toLowerCase()
+    if (ext === '.png') {
+      const meta = extractPngTextMeta(readFileSync(opts.workflowPath))
       if (meta.prompt) {
         try {
-          prompt = JSON.parse(String(meta.prompt))
+          rawJson = JSON.parse(String(meta.prompt))
         } catch {
-          prompt = null
+          rawJson = null
         }
       }
+      if (!rawJson && meta.workflow) {
+        try {
+          rawJson = JSON.parse(String(meta.workflow))
+        } catch {
+          rawJson = null
+        }
+      }
+    } else {
+      rawJson = parseWorkflowJson(readFileSync(opts.workflowPath, 'utf-8'))
     }
-    if (!prompt) throw new Error('Cannot parse workflow prompt')
+    if (!rawJson) throw new Error('Cannot parse workflow prompt')
 
-    if (opts.seed != null) {
-      for (const node of Object.values(prompt)) {
-        const n = node as { class_type?: string; inputs?: Record<string, unknown> }
-        if (n?.inputs && typeof n.inputs.seed === 'number') {
-          n.inputs.seed = opts.seed
-        }
-      }
-    }
+    const { toApiPrompt, applySeedToPrompt } = await import('./workflowConvert')
+    let prompt = toApiPrompt(rawJson)
+    if (opts.seed != null) prompt = applySeedToPrompt(prompt, opts.seed)
 
     const client = new ComfyApiClient(url)
-    return client.queuePrompt(prompt, `comfy-pilot-${Date.now()}`)
+    const promptId = await client.queuePrompt(prompt, `comfy-pilot-${Date.now()}`)
+    if (!promptId) {
+      throw new Error('ComfyUI rejected prompt (check instance is running and workflow is valid)')
+    }
+    return promptId
   }
 
   async parsePngMeta(path: string): Promise<Record<string, unknown> | null> {

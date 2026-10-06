@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcChannel, IpcChannelMap, IpcResult } from '@shared/types'
 import { IPC_EVENTS } from '@shared/types'
 
+const ALLOWED_EVENTS = new Set<string>(Object.values(IPC_EVENTS))
+
 async function invoke<C extends IpcChannel>(
   channel: C,
   ...args: IpcChannelMap[C]['args']
@@ -10,6 +12,10 @@ async function invoke<C extends IpcChannel>(
 }
 
 function on(event: string, listener: (...args: unknown[]) => void): () => void {
+  if (!ALLOWED_EVENTS.has(event)) {
+    console.warn('[ComfyPilot] blocked subscription to unknown event', event)
+    return () => undefined
+  }
   const handler = (_e: Electron.IpcRendererEvent, ...args: unknown[]): void => listener(...args)
   ipcRenderer.on(event, handler)
   return () => ipcRenderer.removeListener(event, handler)
@@ -24,3 +30,4 @@ const api = {
 export type ComfyPilotApi = typeof api
 
 contextBridge.exposeInMainWorld('comfyPilot', api)
+

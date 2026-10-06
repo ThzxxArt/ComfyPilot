@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, onMounted, ref } from 'vue'
+import { computed, h, onMounted, onUnmounted, ref } from 'vue'
 import {
   CloudDownloadOutline, SearchOutline, RefreshOutline,
   DuplicateOutline, PauseOutline, PlayOutline
@@ -184,16 +184,24 @@ async function startDownload(): Promise<void> {
   }
 }
 
+let offScan: (() => void) | null = null
+let offDl: (() => void) | null = null
+
 onMounted(async () => {
   await refresh()
   downloads.value = await ipc('model.downloads')
-  onModelScanProgress((p) => {
+  offScan = onModelScanProgress((p) => {
     const prog = p as { scanned: number; total: number; phase: string }
     scanProgress.value = `${prog.phase} ${prog.scanned}/${prog.total}`
   })
-  onDownloadProgress(() => {
+  offDl = onDownloadProgress(() => {
     void ipc('model.downloads').then((list) => (downloads.value = list))
   })
+})
+
+onUnmounted(() => {
+  offScan?.()
+  offDl?.()
 })
 </script>
 

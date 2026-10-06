@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events'
-import { createHash, randomUUID } from 'crypto'
+import { createHash } from 'crypto'
 import {
   existsSync,
   readdirSync,
@@ -82,8 +82,8 @@ function detectSourceFromPath(path: string): ModelRecord['source'] {
   return 'local'
 }
 
-/** Parse extra_model_paths.yaml and return additional model roots. */
-export function parseExtraModelPaths(filePath?: string): string[] {
+/** Parse extra_model_paths.yaml and return all configured roots (including missing). */
+export function parseExtraModelPaths(filePath?: string, includeMissing = true): string[] {
   const settings = loadSettings()
   const candidates = [filePath, settings.extraModelPathsFile].filter(Boolean) as string[]
   const roots: string[] = []
@@ -96,11 +96,24 @@ export function parseExtraModelPaths(filePath?: string): string[] {
         if (!section || typeof section !== 'object') continue
         for (const [key, val] of Object.entries(section)) {
           if (key === 'base_path' && typeof val === 'string') roots.push(val)
-          if (['checkpoints', 'loras', 'vae', 'clip', 'controlnet', 'upscale_models', 'embeddings', 'unet', 'diffusion_models', 'text_encoders'].includes(key) && typeof val === 'string') {
-            // relative to base_path or absolute
+          if (
+            [
+              'checkpoints',
+              'loras',
+              'vae',
+              'clip',
+              'controlnet',
+              'upscale_models',
+              'embeddings',
+              'unet',
+              'diffusion_models',
+              'text_encoders'
+            ].includes(key) &&
+            typeof val === 'string'
+          ) {
             const base = typeof section.base_path === 'string' ? section.base_path : ''
             const full = val.match(/^[a-zA-Z]:[\\/]|^\//) ? val : join(base || dirname(file), val)
-            if (existsSync(full)) roots.push(full)
+            if (includeMissing || existsSync(full)) roots.push(full)
           }
         }
       }
@@ -108,7 +121,7 @@ export function parseExtraModelPaths(filePath?: string): string[] {
       /* ignore malformed yaml */
     }
   }
-  return [...new Set(roots.map((r) => r.replace(/\\/g, '/'))) ]
+  return [...new Set(roots.map((r) => r.replace(/\\/g, '/')))]
 }
 
 function readFileSyncSafe(file: string): string {
@@ -192,7 +205,7 @@ export class ModelService extends EventEmitter {
 
   async scan(opts?: { roots?: string[]; hash?: boolean }): Promise<ModelRecord[]> {
     const settings = loadSettings()
-    const extraRoots = parseExtraModelPaths()
+    const extraRoots = parseExtraModelPaths(undefined, false).filter((p) => existsSync(p))
     const scanRoots = (
       opts?.roots?.length ? opts.roots : [...settings.modelScanRoots, ...extraRoots]
     ).filter(Boolean)
@@ -332,18 +345,17 @@ export class ModelService extends EventEmitter {
   }
 
   findDuplicates(): DuplicateGroup[] {
-    const byHash = new Map<string, string[]>()
-    let size = 0
+    const byHash = new Map<string, { files: string[]; size: number }>()
     for (const m of listModels()) {
       if (!m.hashSha256) continue
-      const arr = byHash.get(m.hashSha256) || []
-      arr.push(m.path)
-      byHash.set(m.hashSha256, arr)
-      size = m.size
+      const entry = byHash.get(m.hashSha256) || { files: [], size: m.size }
+      entry.files.push(m.path)
+      entry.size = m.size
+      byHash.set(m.hashSha256, entry)
     }
     return [...byHash.entries()]
-      .filter(([, files]) => files.length > 1)
-      .map(([hash, files]) => ({ hash, size, files }))
+      .filter(([, v]) => v.files.length > 1)
+      .map(([hash, v]) => ({ hash, size: v.size, files: v.files }))
   }
 
   async remove(id: string, deleteFile: boolean): Promise<boolean> {
@@ -359,9 +371,30 @@ export class ModelService extends EventEmitter {
     if (!rec) throw new Error('Model not found')
     mkdirSync(destDir, { recursive: true })
     const destPath = join(destDir, rec.fileName)
-    renameSync(rec.path, destPath)
+    if (existsSync(destPath) && destPath !== rec.path) {
+      throw new Error(`Target already exists: ${destPath}`)
+    }
+    if (destPath === rec.path) return rec
+    try {
+      renameSync(rec.path, destPath)
+    } catch (err) {
+      // Cross-device: copy + unlink
+      const code = (err as NodeJS.ErrnoException).code
+      if (code === 'EXDEV') {
+        const { copyFileSync, unlinkSync: ul } = await import('fs')
+        copyFileSync(rec.path, destPath)
+        ul(rec.path)
+      } else {
+        throw err
+      }
+    }
     dbDeleteModel(id)
-    const next: ModelRecord = { ...rec, id: randomUUID(), path: destPath, pathRoot: destDir }
+    const next: ModelRecord = {
+      ...rec,
+      id: createHash('sha1').update(destPath).digest('hex').slice(0, 16),
+      path: destPath,
+      pathRoot: destDir
+    }
     upsertModel(next)
     return next
   }
@@ -371,10 +404,11 @@ export class ModelService extends EventEmitter {
     if (!rec) throw new Error('Model not found')
     mkdirSync(destDir, { recursive: true })
     const destPath = join(destDir, rec.fileName)
+    if (existsSync(destPath)) throw new Error(`Target already exists: ${destPath}`)
     symlinkSync(rec.path, destPath, 'file')
     const next: ModelRecord = {
       ...rec,
-      id: randomUUID(),
+      id: createHash('sha1').update(destPath).digest('hex').slice(0, 16),
       path: destPath,
       pathRoot: destDir,
       source: 'imported'
@@ -485,17 +519,25 @@ export class ModelService extends EventEmitter {
       let startByte = 0
       if (resume && existsSync(task.destPath)) {
         startByte = statSync(task.destPath).size
-        headers.Range = `bytes=${startByte}-`
+        if (startByte > 0) headers.Range = `bytes=${startByte}-`
       }
 
       const res = await fetch(task.url, { headers, signal: controller.signal })
-      if (!res.ok && res.status !== 206) throw new Error(`HTTP ${res.status}`)
-      const total = Number(res.headers.get('content-length') || 0) + (startByte || 0)
-      task.totalBytes = total || task.totalBytes
-      task.receivedBytes = startByte
-      task.resumedFrom = resume ? startByte : undefined
+      const isPartial = res.status === 206
+      if (!res.ok && !isPartial) throw new Error(`HTTP ${res.status}`)
 
-      const mode = resume && startByte > 0 ? 'a' : 'w'
+      // If server ignored Range and returned 200, we must NOT append — rewrite from 0.
+      const appendMode = resume && startByte > 0 && isPartial
+      if (resume && startByte > 0 && !isPartial) {
+        startByte = 0
+      }
+
+      const contentLength = Number(res.headers.get('content-length') || 0)
+      task.totalBytes = isPartial ? startByte + contentLength : contentLength || task.totalBytes
+      task.receivedBytes = appendMode ? startByte : 0
+      task.resumedFrom = appendMode ? startByte : undefined
+
+      const mode = appendMode ? 'a' : 'w'
       const file = createWriteStream(task.destPath, { flags: mode as 'w' | 'a' })
       const reader = res.body?.getReader()
       if (!reader) throw new Error('No response body')
@@ -529,11 +571,17 @@ export class ModelService extends EventEmitter {
       task.speedBps = 0
       upsertDownloadTask(task)
     } catch (err) {
-      if (task.status === 'paused') return
-      task.status = controller.signal.aborted ? 'paused' : 'error'
-      task.error = err instanceof Error ? err.message : String(err)
-      task.finishedAt = Date.now()
-      upsertDownloadTask(task)
+      const current = this.downloads.get(task.id)?.status ?? task.status
+      if (current !== 'cancelled') {
+        if (controller.signal.aborted) {
+          task.status = 'paused'
+        } else {
+          task.status = 'error'
+          task.error = err instanceof Error ? err.message : String(err)
+        }
+        task.finishedAt = Date.now()
+        upsertDownloadTask(task)
+      }
     } finally {
       this.abortControllers.delete(task.id)
     }
@@ -562,11 +610,14 @@ export class ModelService extends EventEmitter {
   }
 
   cancelDownload(id: string): boolean {
-    this.abortControllers.get(id)?.abort()
     const task = this.downloads.get(id)
     if (task) {
-      task.status = 'error'
+      task.status = 'cancelled'
       task.error = 'cancelled'
+    }
+    this.abortControllers.get(id)?.abort()
+    if (task) {
+      upsertDownloadTask(task)
       this.emit('download', { ...task })
     }
     this.downloads.delete(id)

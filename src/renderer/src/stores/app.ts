@@ -16,11 +16,13 @@ export const useAppStore = defineStore('app', () => {
     () => instances.value.find((i) => i.id === activeInstanceId.value) || instances.value[0] || null
   )
 
-  async function bootstrap(): Promise<void> {
+  async function bootstrap(opts?: { keepSelection?: boolean }): Promise<void> {
     try {
       settings.value = await ipc('settings.get')
       instances.value = await ipc('instance.list')
-      activeInstanceId.value = instances.value[0]?.id ?? null
+      if (!opts?.keepSelection || !activeInstanceId.value) {
+        activeInstanceId.value = instances.value[0]?.id ?? null
+      }
       system.value = await ipc('monitor.system')
     } catch (err) {
       console.error('bootstrap failed', err)

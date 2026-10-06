@@ -34,6 +34,9 @@ interface RuntimeEntry {
   startedAt?: number
   lastError?: string
   logs: ComfyLogLine[]
+  /** Incremented on each start/stop so stale child handlers can be ignored. */
+  generation: number
+  intentionalStop: boolean
 }
 
 const LOG_CAP = 5000
@@ -44,7 +47,7 @@ export class InstanceService extends EventEmitter {
   private ensureRuntime(config: ComfyInstanceConfig): RuntimeEntry {
     let rt = this.runtimes.get(config.id)
     if (!rt) {
-      rt = { config, status: 'stopped', logs: [] }
+      rt = { config, status: 'stopped', logs: [], generation: 0, intentionalStop: false }
       this.runtimes.set(config.id, rt)
     } else {
       rt.config = config
@@ -76,19 +79,24 @@ export class InstanceService extends EventEmitter {
     this.emit('status', this.toInfo(rt))
   }
 
+  private versionCache = new Map<string, string | undefined>()
+
   private probeVersion(installPath: string): string | undefined {
+    if (this.versionCache.has(installPath)) return this.versionCache.get(installPath)
+    let version: string | undefined
     try {
       const pyproject = join(installPath, 'pyproject.toml')
       if (existsSync(pyproject)) {
         const text = readFileSync(pyproject, 'utf-8')
         const m = text.match(/version\s*=\s*["']([^"']+)["']/)
-        if (m) return m[1]
+        if (m) version = m[1]
       }
-      if (existsSync(join(installPath, 'requirements.txt'))) return 'detected'
+      if (!version && existsSync(join(installPath, 'requirements.txt'))) version = 'detected'
     } catch {
       /* ignore */
     }
-    return undefined
+    this.versionCache.set(installPath, version)
+    return version
   }
 
   private toInfo(rt: RuntimeEntry): ComfyInstanceInfo {
@@ -409,7 +417,12 @@ export class InstanceService extends EventEmitter {
     ]
     const template = LAUNCH_TEMPLATES.find((t) => t.id === config.argTemplateId)
     if (template) args.push(...template.args)
-    if (config.extraArgs?.length) args.push(...config.extraArgs)
+    const extra = Array.isArray(config.extraArgs)
+      ? config.extraArgs
+      : String(config.extraArgs || '')
+          .split(/\s+/)
+          .filter(Boolean)
+    if (extra.length) args.push(...extra)
     return args
   }
 
@@ -417,7 +430,7 @@ export class InstanceService extends EventEmitter {
     const config = loadInstanceConfigs().find((c) => c.id === id)
     if (!config) throw new Error(`Instance not found: ${id}`)
     const rt = this.ensureRuntime(config)
-    if (rt.process) return this.toInfo(rt)
+    if (rt.process && rt.process.exitCode === null) return this.toInfo(rt)
 
     const portCheck = await this.checkPort(config.port || 8188)
     if (!portCheck.available) {
@@ -427,6 +440,9 @@ export class InstanceService extends EventEmitter {
       throw new Error(rt.lastError)
     }
 
+    rt.generation += 1
+    const gen = rt.generation
+    rt.intentionalStop = false
     rt.status = 'starting'
     rt.lastError = undefined
     this.emitStatus(rt)
@@ -445,6 +461,7 @@ export class InstanceService extends EventEmitter {
       rt.startedAt = Date.now()
 
       child.stdout.on('data', (buf: Buffer) => {
+        if (rt.generation !== gen) return
         buf
           .toString('utf-8')
           .split(/\r?\n/)
@@ -459,6 +476,7 @@ export class InstanceService extends EventEmitter {
           })
       })
       child.stderr.on('data', (buf: Buffer) => {
+        if (rt.generation !== gen) return
         buf
           .toString('utf-8')
           .split(/\r?\n/)
@@ -468,21 +486,30 @@ export class InstanceService extends EventEmitter {
           )
       })
       child.on('error', (err) => {
+        if (rt.generation !== gen) return
         rt.lastError = err.message
         rt.status = 'error'
-        rt.process = undefined
+        if (rt.process === child) {
+          rt.process = undefined
+          rt.pid = undefined
+        }
         this.pushLog(rt, 'error', err.message)
       })
       child.on('exit', (code, signal) => {
-        rt.process = undefined
-        rt.pid = undefined
-        rt.status = code === 0 || signal === 'SIGTERM' ? 'stopped' : 'error'
-        if (code !== 0 && signal !== 'SIGTERM') rt.lastError = `Exited with code ${code}`
-        this.pushLog(rt, code === 0 ? 'info' : 'error', `Process exited code=${code} signal=${signal}`)
+        // Stale handler from a previous generation must not clobber a newer process.
+        if (rt.generation !== gen) return
+        if (rt.process === child) {
+          rt.process = undefined
+          rt.pid = undefined
+        }
+        const intentional = rt.intentionalStop || signal === 'SIGTERM' || signal === 'SIGKILL'
+        rt.status = intentional ? 'stopped' : code === 0 ? 'stopped' : 'error'
+        if (!intentional && code !== 0) rt.lastError = `Exited with code ${code}`
+        this.pushLog(rt, code === 0 || intentional ? 'info' : 'error', `Process exited code=${code} signal=${signal}`)
       })
 
       setTimeout(() => {
-        if (rt.process && rt.status === 'starting') {
+        if (rt.generation === gen && rt.process && rt.status === 'starting') {
           rt.status = 'running'
           this.pushLog(rt, 'info', `ComfyUI listening at ${this.toInfo(rt).url}`)
         }
@@ -500,51 +527,67 @@ export class InstanceService extends EventEmitter {
   async stop(id: string): Promise<ComfyInstanceInfo> {
     const rt = this.runtimes.get(id)
     if (!rt) throw new Error(`Instance not found: ${id}`)
-    if (rt.process) {
-      rt.process.kill('SIGTERM')
-      // grace then force
-      const proc = rt.process
+    rt.intentionalStop = true
+    rt.generation += 1
+    const child = rt.process
+    rt.process = undefined
+    rt.pid = undefined
+    rt.status = 'stopped'
+    if (child) {
+      try {
+        child.kill('SIGTERM')
+      } catch {
+        /* already dead */
+      }
       setTimeout(() => {
         try {
-          if (!proc.killed) proc.kill('SIGKILL')
+          if (child.exitCode === null && !child.killed) child.kill('SIGKILL')
         } catch {
           /* ignore */
         }
       }, 3000)
-      rt.process = undefined
     }
-    rt.status = 'stopped'
-    rt.pid = undefined
     this.emitStatus(rt)
     return this.toInfo(rt)
   }
 
   async restart(id: string): Promise<ComfyInstanceInfo> {
     await this.stop(id)
-    await new Promise((r) => setTimeout(r, 500))
+    // Wait until port is free (or timeout) so start() does not race a dying process.
+    const config = loadInstanceConfigs().find((c) => c.id === id)
+    const port = config?.port || 8188
+    for (let i = 0; i < 20; i++) {
+      const check = await this.checkPort(port)
+      if (check.available) break
+      await new Promise((r) => setTimeout(r, 150))
+    }
     return this.start(id)
   }
 
   async forceKill(id: string): Promise<ComfyInstanceInfo> {
     const rt = this.runtimes.get(id)
     if (!rt) throw new Error(`Instance not found: ${id}`)
-    if (rt.process) {
+    rt.intentionalStop = true
+    rt.generation += 1
+    const child = rt.process
+    const pid = rt.pid
+    rt.process = undefined
+    rt.pid = undefined
+    if (child) {
       try {
-        rt.process.kill('SIGKILL')
+        child.kill('SIGKILL')
       } catch {
         /* ignore */
       }
-      rt.process = undefined
-    }
-    if (rt.pid) {
+    } else if (pid) {
+      // Only kill PID if we no longer own a live child handle (avoid PID reuse races).
       try {
-        process.kill(rt.pid, 'SIGKILL')
+        process.kill(pid, 'SIGKILL')
       } catch {
         /* ignore */
       }
     }
     rt.status = 'stopped'
-    rt.pid = undefined
     this.pushLog(rt, 'warn', 'Force killed')
     this.emitStatus(rt)
     return this.toInfo(rt)
@@ -553,6 +596,8 @@ export class InstanceService extends EventEmitter {
   stopAll(): void {
     for (const rt of this.runtimes.values()) {
       if (rt.process) {
+        rt.intentionalStop = true
+        rt.generation += 1
         try {
           rt.process.kill()
         } catch {

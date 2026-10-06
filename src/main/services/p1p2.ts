@@ -74,11 +74,21 @@ export class BatchService extends EventEmitter {
       upsertBatchJob(job)
       throw new Error('Cannot parse workflow')
     }
+    try {
+      const { toApiPrompt, applySeedToPrompt } = await import('./workflowConvert')
+      prompt = applySeedToPrompt(toApiPrompt(prompt), Date.now() % 2 ** 32)
+    } catch (e) {
+      job.status = 'error'
+      job.finishedAt = Date.now()
+      upsertBatchJob(job)
+      throw e
+    }
 
     for (let i = 0; i < job.count; i++) {
       const current = listBatchJobs().find((j) => j.id === id)
       if (current?.status === 'cancelled') {
         job.status = 'cancelled'
+        job.finishedAt = Date.now()
         upsertBatchJob(job)
         this.emit('progress', job)
         return job
@@ -98,6 +108,11 @@ export class BatchService extends EventEmitter {
       this.emit('progress', job)
     }
 
+    // Do not overwrite a cancel that landed after the last iteration check
+    const latest = listBatchJobs().find((j) => j.id === id)
+    if (latest?.status === 'cancelled') {
+      return latest
+    }
     job.status = job.failed > 0 && job.completed === 0 ? 'error' : 'done'
     job.finishedAt = Date.now()
     upsertBatchJob(job)
@@ -169,20 +184,30 @@ export class OutputService {
         if (type === 'image' && ext === '.png') {
           try {
             const meta = extractPngTextMeta(readFileSync(full))
-            if (meta.seed) seed = Number(meta.seed)
-            if (meta.prompt_id) promptId = String(meta.prompt_id)
-            params = {
-              ...meta,
-              workflow: undefined,
-              prompt: undefined
-            }
+            // ComfyUI stores seed / prompt_id inside the embedded prompt JSON
             if (meta.prompt) {
               try {
-                const prompt = JSON.parse(String(meta.prompt))
+                const prompt = JSON.parse(String(meta.prompt)) as Record<
+                  string,
+                  { inputs?: Record<string, unknown>; class_type?: string }
+                >
                 params.nodeCount = Object.keys(prompt).length
+                for (const node of Object.values(prompt)) {
+                  if (node?.inputs && typeof node.inputs.seed === 'number' && seed == null) {
+                    seed = node.inputs.seed as number
+                  }
+                }
               } catch {
                 /* ignore */
               }
+            }
+            if (meta.seed && seed == null) seed = Number(meta.seed)
+            if (meta.prompt_id) promptId = String(meta.prompt_id)
+            params = {
+              ...params,
+              pngKeys: Object.keys(meta),
+              workflow: undefined,
+              prompt: undefined
             }
           } catch {
             /* ignore */

@@ -37,9 +37,10 @@ async function refreshQueue(): Promise<void> {
 }
 
 let off: (() => void) | null = null
+let queueTimer: ReturnType<typeof setInterval> | null = null
 
 onMounted(async () => {
-  await store.bootstrap()
+  await store.bootstrap({ keepSelection: true })
   const snap = await ipc('monitor.system')
   store.system = snap
   history.value.push(snap.cpuUsage)
@@ -50,11 +51,12 @@ onMounted(async () => {
     if (history.value.length > 60) history.value.shift()
   })
   await refreshQueue()
-  const timer = setInterval(() => void refreshQueue(), 3000)
-  onUnmounted(() => {
-    off?.()
-    clearInterval(timer)
-  })
+  queueTimer = setInterval(() => void refreshQueue(), 3000)
+})
+
+onUnmounted(() => {
+  off?.()
+  if (queueTimer) clearInterval(queueTimer)
 })
 </script>
 

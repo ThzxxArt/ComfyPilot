@@ -34,10 +34,11 @@ export class ThumbnailService {
 
     // 1) sidecar: foo.preview.png / foo.png next to model
     const base = rec.path.replace(/\.[^.]+$/, '')
-    for (const cand of [`${base}.preview.png`, `${base}.png`, `${base}.jpg`]) {
+    for (const cand of [`${base}.preview.png`, `${base}.png`, `${base}.jpg`, `${base}.jpeg`]) {
       if (existsSync(cand)) {
         try {
           const buf = readFileSync(cand)
+          // Preserve real image bytes; only the cache filename is hashed by id.
           writeFileSync(out, buf)
           this.mark(rec, out)
           return out
