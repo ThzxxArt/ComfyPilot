@@ -35,12 +35,11 @@ jobs:
         run: npx electron-vite build
 
       - name: E2E smoke
-        # Only run when a display is available (Linux); Windows runners can spawn electron
         if: runner.os == 'Windows'
-        run: npx vitest run tests/e2e/app-smoke.e2e.ts
+        run: npx vitest run --config vitest.e2e.config.ts
 
       - name: E2E smoke (Linux needs xvfb)
         if: runner.os == 'Linux'
         env:
           SKIP_E2E: "1"
-        run: npx vitest run tests/e2e/app-smoke.e2e.ts
+        run: npx vitest run --config vitest.e2e.config.ts

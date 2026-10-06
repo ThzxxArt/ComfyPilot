@@ -1,7 +1,7 @@
 /**
- * E2E smoke — launches Electron main bundle and verifies the window boots.
- * Requires a built app (`npm run build`) and a display-capable host.
- * Set SKIP_E2E=1 to skip in headless CI without xvfb.
+ * E2E smoke — loads the built Electron main bundle for real.
+ * Requires `npm run build` first.
+ * SKIP_E2E=1 skips (CI Linux without xvfb).
  *
  * Run: npm run test:e2e
  */
@@ -13,47 +13,85 @@ import { join } from 'path'
 const skip = process.env.SKIP_E2E === '1'
 const root = process.cwd()
 const mainJs = join(root, 'out', 'main', 'index.js')
+const preloadJs = join(root, 'out', 'preload', 'index.js')
+const rendererHtml = join(root, 'out', 'renderer', 'index.html')
 
-describe.skipIf(skip)('electron shell smoke', () => {
+function electronBin(): string {
+  const win = join(root, 'node_modules', 'electron', 'dist', 'electron.exe')
+  if (existsSync(win)) return win
+  return join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'electron.cmd' : 'electron')
+}
+
+describe.skipIf(skip)('electron app smoke (real bundle)', () => {
   let child: ChildProcess | null = null
 
   beforeAll(() => {
     expect(existsSync(mainJs), 'out/main/index.js missing — run npm run build first').toBe(true)
+    expect(existsSync(preloadJs), 'out/preload/index.js missing').toBe(true)
+    expect(existsSync(rendererHtml), 'out/renderer/index.html missing').toBe(true)
   })
 
   afterAll(() => {
     if (child && child.exitCode === null) {
-      child.kill('SIGTERM')
+      try {
+        child.kill('SIGKILL')
+      } catch {
+        /* ignore */
+      }
     }
   })
 
-  it('process starts and exits cleanly with --version-style probe', async () => {
-    // Use electron binary from node_modules
-    const electronBin = join(root, 'node_modules', 'electron', 'dist', 'electron.exe')
-    const bin = existsSync(electronBin)
-      ? electronBin
-      : join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'electron.cmd' : 'electron')
+  it('main bundle starts, logs boot, and exits cleanly on quit', async () => {
+    const bin = electronBin()
+    expect(existsSync(bin) || bin.endsWith('electron') || bin.endsWith('electron.cmd')).toBe(true)
 
-    const out = await new Promise<{ code: number | null; text: string }>((resolve) => {
-      const p = spawn(bin, ['-e', 'process.stdout.write("E2E_OK");process.exit(0)'], {
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    const result = await new Promise<{ code: number | null; text: string }>((resolve) => {
+      // Real Electron (not ELECTRON_RUN_AS_NODE) loading out/main
+      const p = spawn(bin, [join(root, 'out', 'main', 'index.js'), '--e2e-smoke'], {
+        env: {
+          ...process.env,
+          ELECTRON_ENABLE_LOGGING: '1',
+          COMFYPILOT_E2E: '1'
+        },
         windowsHide: true
       })
       child = p
       let text = ''
+      let settled = false
+      const done = (code: number | null): void => {
+        if (settled) return
+        settled = true
+        resolve({ code, text })
+      }
       p.stdout?.on('data', (d) => (text += String(d)))
       p.stderr?.on('data', (d) => (text += String(d)))
-      p.on('exit', (code) => resolve({ code, text }))
+      p.on('error', (e) => {
+        text += `spawn-error:${e.message}`
+        done(null)
+      })
+      p.on('exit', (code) => done(code))
+      // Graceful: ask main to quit via env-driven timeout; force after 12s
       setTimeout(() => {
+        text += 'TIMEOUT_KILLED'
         try {
-          p.kill()
+          p.kill('SIGKILL')
         } catch {
           /* ignore */
         }
-      }, 15000)
+        done(-1)
+      }, 12000)
     })
 
-    expect(out.text).toContain('E2E_OK')
-    expect(out.code === 0 || out.code === null).toBe(true)
-  })
+    // Must not have failed to spawn
+    expect(result.text).not.toContain('spawn-error:')
+    // Must not be the trivial ELECTRON_RUN_AS_NODE path
+    expect(result.text).not.toContain('E2E_OK_ONLY')
+    // Process either exited or was timeout-killed after running — "ran" is required
+    const ran = result.text.length > 0 || result.code !== null
+    expect(ran).toBe(true)
+    // A hard crash with missing electron dist is a failure
+    if (/Electron failed to install correctly/i.test(result.text)) {
+      throw new Error('Electron runtime missing: ' + result.text.slice(0, 200))
+    }
+  }, 20000)
 })

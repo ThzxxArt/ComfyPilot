@@ -101,6 +101,7 @@ export class InstallerService extends EventEmitter {
   private cancelled = false
   private running = false
   private children = new Set<ChildProcess>()
+  private runRejects = new Set<(err: Error) => void>()
 
   getStatus(): InstallProgress | null {
     return this.progress
@@ -108,37 +109,67 @@ export class InstallerService extends EventEmitter {
 
   cancel(): boolean {
     this.cancelled = true
+    const kills: Array<Promise<void>> = []
     for (const child of this.children) {
+      kills.push(this.killTree(child))
+    }
+    // Reject in-flight run() promises so they don't sit on 30-min timeouts
+    for (const rej of this.runRejects) {
       try {
-        if (process.platform === 'win32') {
-          // Kill entire process tree (pip/uv grandchildren)
-          if (child.pid) {
-            try {
-              execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true })
-            } catch {
-              /* ignore */
-            }
-          }
-        }
-        child.kill('SIGTERM')
-        setTimeout(() => {
-          try {
-            if (child.exitCode === null) child.kill('SIGKILL')
-          } catch {
-            /* ignore */
-          }
-        }, 2000)
+        rej(new Error('Installation cancelled'))
       } catch {
         /* ignore */
       }
     }
-    this.children.clear()
+    this.runRejects.clear()
+    // Fire-and-forget kills; children set cleared after
+    void Promise.allSettled(kills).then(() => this.children.clear())
     return true
+  }
+
+  private killTree(child: ChildProcess): Promise<void> {
+    return new Promise((resolve) => {
+      if (process.platform === 'win32' && child.pid) {
+        // Wait for taskkill /T to walk the tree BEFORE killing root
+        execFile(
+          'taskkill',
+          ['/PID', String(child.pid), '/T', '/F'],
+          { windowsHide: true, timeout: 8000 },
+          () => {
+            try {
+              if (child.exitCode === null) child.kill('SIGKILL')
+            } catch {
+              /* ignore */
+            }
+            resolve()
+          }
+        )
+        return
+      }
+      try {
+        child.kill('SIGTERM')
+      } catch {
+        /* ignore */
+      }
+      setTimeout(() => {
+        try {
+          if (child.exitCode === null) child.kill('SIGKILL')
+        } catch {
+          /* ignore */
+        }
+        resolve()
+      }, 500)
+    })
   }
 
   private async run(cmd: string, args: string[], opts?: { cwd?: string; timeout?: number }): Promise<string> {
     this.assertNotCancelled()
     return new Promise((resolvePromise, reject) => {
+      const onReject = (err: Error): void => {
+        this.runRejects.delete(onReject)
+        reject(err)
+      }
+      this.runRejects.add(onReject)
       const child = execFile(
         cmd,
         args,
@@ -151,6 +182,7 @@ export class InstallerService extends EventEmitter {
         },
         (err, stdout, stderr) => {
           this.children.delete(child)
+          this.runRejects.delete(onReject)
           if (this.cancelled) {
             reject(new Error('Installation cancelled'))
             return
@@ -529,7 +561,7 @@ export class InstallerService extends EventEmitter {
       const message = err instanceof Error ? err.message : String(err)
       const cancelled = this.cancelled || /cancel/i.test(message)
       if (this.progress) {
-        this.progress.status = cancelled ? 'failed' : 'failed'
+        this.progress.status = 'failed'
         this.progress.error = cancelled ? 'Installation cancelled' : message
         this.progress.message = this.progress.error
         const running = this.progress.steps.find((s) => s.status === 'running')

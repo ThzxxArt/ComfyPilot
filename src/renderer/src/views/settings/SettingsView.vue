@@ -18,7 +18,25 @@ function setLocale(loc: 'zh-CN' | 'en-US'): void {
   form.value.locale = loc
   locale.value = loc
 }
-const form = ref<AppSettings>(JSON.parse(JSON.stringify((store.settings as AppSettings) || {})))
+const defaultProxy = {
+  enabled: false,
+  protocol: 'http' as const,
+  host: '',
+  port: 7890,
+  username: '',
+  password: '',
+  bypass: 'localhost,127.0.0.1,::1'
+}
+
+function cloneSettings(s: Partial<AppSettings> | null | undefined): AppSettings {
+  const base = (s && typeof s === 'object' ? JSON.parse(JSON.stringify(s)) : {}) as Partial<AppSettings>
+  return {
+    ...(base as AppSettings),
+    proxy: { ...defaultProxy, ...(base.proxy || {}) }
+  } as AppSettings
+}
+
+const form = ref<AppSettings>(cloneSettings(store.settings))
 const saving = ref(false)
 const remotes = ref<RemoteInstanceConfig[]>([])
 const showRemote = ref(false)
@@ -32,20 +50,17 @@ watch(
   () => store.settings,
   (s) => {
     if (!s) return
-    // Deep clone so form.proxy is not aliased to the store
-    const clone = JSON.parse(JSON.stringify(s)) as AppSettings
-    if (!clone.proxy) {
-      clone.proxy = {
-        enabled: false,
-        protocol: 'http',
-        host: '',
-        port: 7890,
-        username: '',
-        password: '',
-        bypass: 'localhost,127.0.0.1,::1'
+    // Merge into existing form (not wholesale replace) so in-flight edits survive
+    const incoming = cloneSettings(s)
+    for (const key of Object.keys(incoming) as Array<keyof AppSettings>) {
+      if (key === 'proxy') {
+        form.value.proxy = { ...form.value.proxy, ...incoming.proxy }
+      } else {
+        // @ts-expect-error index write
+        form.value[key] = incoming[key]
       }
     }
-    form.value = clone
+    proxyTestResult.value = null
   },
   { deep: true }
 )
@@ -107,20 +122,46 @@ async function loadRemotes(): Promise<void> {
 }
 
 async function saveRemote(): Promise<void> {
-  if (!remoteDraft.value.id) remoteDraft.value.id = `remote-${Date.now()}`
-  await ipc('remote.save', remoteDraft.value)
-  showRemote.value = false
-  message.success('远程实例已保存')
-  await loadRemotes()
+  try {
+    if (!remoteDraft.value.id) remoteDraft.value.id = `remote-${Date.now()}`
+    await ipc('remote.save', remoteDraft.value)
+    showRemote.value = false
+    message.success('远程实例已保存')
+    await loadRemotes()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 async function probeEnv(): Promise<void> {
-  envProbe.value = await ipc('env.probe', {
-    pythonPath: 'python',
-    venvPath: form.value.defaultInstancePath || undefined
-  })
-  pythons.value = await ipc('env.listPythons')
-  message.success('环境探测完成')
+  try {
+    envProbe.value = await ipc('env.probe', {
+      pythonPath: 'python',
+      venvPath: form.value.defaultInstancePath || undefined
+    })
+    pythons.value = await ipc('env.listPythons')
+    message.success('环境探测完成')
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function testRemote(id: string): Promise<void> {
+  try {
+    const s = await ipc('remote.test', id)
+    message.info(`online=${s.online}`)
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function removeRemote(id: string): Promise<void> {
+  try {
+    await ipc('remote.remove', id)
+    await loadRemotes()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 onMounted(async () => {
@@ -315,10 +356,8 @@ onMounted(async () => {
                 <div class="meta mono">{{ r.baseUrl }}</div>
               </div>
               <NSpace>
-                <NButton size="tiny" secondary @click="ipc('remote.test', r.id).then((s) => message.info(`online=${s.online}`))">
-                  测试
-                </NButton>
-                <NPopconfirm @positive-click="ipc('remote.remove', r.id).then(loadRemotes)">
+                <NButton size="tiny" secondary @click="testRemote(r.id)">测试</NButton>
+                <NPopconfirm @positive-click="removeRemote(r.id)">
                   <template #trigger>
                     <NButton size="tiny" type="error" secondary>删除</NButton>
                   </template>

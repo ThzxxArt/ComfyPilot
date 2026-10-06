@@ -446,6 +446,11 @@ export class ModelService extends EventEmitter {
     destDir?: string
     fileName?: string
   }): Promise<DownloadTask> {
+    // Protocol allowlist — blocks file:// ftp:// magnet: etc (aria2 supports those)
+    const { isSafeExternalUrl } = await import('./security')
+    if (!isSafeExternalUrl(opts.url)) {
+      throw new Error(`Blocked download URL scheme: ${opts.url.slice(0, 40)}`)
+    }
     const settings = loadSettings()
     const defaultDir = settings.downloadDir || join(homedir(), 'Downloads', 'ComfyPilot')
     let destDir = opts.destDir || defaultDir

@@ -16,7 +16,8 @@ async function safeExec(cmd: string, args: string[], cwd?: string): Promise<stri
     const { stdout } = await execFileAsync(cmd, args, {
       cwd,
       timeout: 10000,
-      windowsHide: true
+      windowsHide: true,
+      maxBuffer: 20 * 1024 * 1024
     })
     return stdout.trim()
   } catch (err) {

@@ -513,7 +513,11 @@ export class NodePackService {
       }
     }
     if (pack.path && existsSync(join(pack.path, '.git'))) {
-      await execFileAsync('git', ['-C', pack.path, 'pull', '--ff-only'], { timeout: 60000 })
+      await execFileAsync('git', ['-C', pack.path, 'pull', '--ff-only'], {
+        timeout: 60000,
+        maxBuffer: 20 * 1024 * 1024,
+        env: proxyEnv(loadSettings().proxy)
+      })
       return this.afterInstall(pack.path)
     }
     throw new Error('Pack is not updatable via Registry or git')
@@ -599,7 +603,7 @@ export class NodePackService {
           'import importlib.util,sys,os;p=sys.argv[1];f=os.path.join(p,"__init__.py");spec=importlib.util.spec_from_file_location("cp_pack",f) if os.path.isfile(f) else None;sys.exit(0 if spec else 2)',
           pack.path
         ],
-        { timeout: 15000, cwd: pack.path }
+        { timeout: 15000, cwd: pack.path, maxBuffer: 20 * 1024 * 1024 }
       )
     } catch (e) {
       issues.push({

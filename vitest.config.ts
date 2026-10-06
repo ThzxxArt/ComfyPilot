@@ -23,8 +23,8 @@ export default defineConfig({
         'src/main/services/workflowConvert.ts',
         'src/main/services/proxy.ts',
         'src/main/services/installer.ts',
-        'src/shared/constants.ts',
-        'src/shared/types.ts'
+        'src/main/services/media.ts',
+        'src/shared/constants.ts'
       ],
       thresholds: {
         // Per-file floors so one hot module cannot mask another
@@ -42,8 +42,9 @@ export default defineConfig({
           functions: 50
         },
         'src/main/services/installer.ts': {
-          lines: 30,
-          functions: 30
+          // runPlan is integration-gated; unit locks validators + argv order
+          lines: 33,
+          functions: 35
         },
         lines: 55,
         functions: 55,

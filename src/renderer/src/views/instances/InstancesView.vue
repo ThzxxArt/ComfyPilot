@@ -36,14 +36,23 @@ watch(extraArgsText, (v) => {
 
 onMounted(async () => {
   loading.value = true
-  await store.refreshInstances()
-  templates.value = await ipc('settings.launchTemplates')
-  loading.value = false
+  try {
+    await store.refreshInstances()
+    templates.value = await ipc('settings.launchTemplates')
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    loading.value = false
+  }
 })
 
 async function pickPath(field: 'path' | 'pythonPath' | 'venvPath'): Promise<void> {
-  const p = await ipc('shell.pickDirectory')
-  if (p) draft.value[field] = p
+  try {
+    const p = await ipc('shell.pickDirectory')
+    if (p) draft.value[field] = p
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 async function discover(): Promise<void> {

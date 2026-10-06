@@ -166,6 +166,13 @@ export function syncProxyFromSettings(): { enabled: boolean; url: string; bypass
   try {
     return applyProxyToElectron(loadSettings().proxy)
   } catch {
+    // On invalid config, explicitly fall back to direct so we never
+    // claim "direct" while a stale proxy remains active.
+    try {
+      void session.defaultSession.setProxy({ mode: 'direct' })
+    } catch {
+      /* ignore */
+    }
     return { enabled: false, url: '', bypass: '' }
   }
 }

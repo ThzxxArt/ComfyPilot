@@ -113,8 +113,12 @@ async function startInstall(): Promise<void> {
 }
 
 async function cancelInstall(): Promise<void> {
-  await ipc('installer.cancel')
-  message.warning('已请求取消安装')
+  try {
+    await ipc('installer.cancel')
+    message.warning('已请求取消安装')
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 function onProgress(p: unknown): void {

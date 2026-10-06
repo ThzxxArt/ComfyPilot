@@ -36,7 +36,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "test:e2e": "vitest run tests/e2e/app-smoke.e2e.ts",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "test:all": "npm run typecheck && npm run test:coverage && npm run build && npm run test:e2e"
   },
   "publish": {

@@ -193,6 +193,10 @@ export class Aria2Service {
   }
 
   async download(url: string, destPath: string): Promise<{ ok: boolean; log: string }> {
+    const { isSafeExternalUrl } = await import('./security')
+    if (!isSafeExternalUrl(url)) {
+      return { ok: false, log: `Blocked URL scheme: ${url.slice(0, 40)}` }
+    }
     const settings = loadSettings()
     const bin = settings.aria2Path || 'aria2c'
     const { proxyEnv } = await import('./proxy')
