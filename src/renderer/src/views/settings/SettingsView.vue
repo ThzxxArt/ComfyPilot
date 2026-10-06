@@ -2,7 +2,7 @@
 import { onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  NButton, NCard, NForm, NFormItem, NInput, NSwitch, NSpace, useMessage,
+  NButton, NCard, NForm, NFormItem, NInput, NInputNumber, NSwitch, NSpace, useMessage,
   NDivider, NSelect, NList, NListItem, NPopconfirm, NTag, NModal
 } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
@@ -18,7 +18,7 @@ function setLocale(loc: 'zh-CN' | 'en-US'): void {
   form.value.locale = loc
   locale.value = loc
 }
-const form = ref<AppSettings>({ ...(store.settings as AppSettings) })
+const form = ref<AppSettings>(JSON.parse(JSON.stringify((store.settings as AppSettings) || {})))
 const saving = ref(false)
 const remotes = ref<RemoteInstanceConfig[]>([])
 const showRemote = ref(false)
@@ -28,11 +28,48 @@ const pythons = ref<Array<{ path: string; version: string }>>([])
 const testingProxy = ref(false)
 const proxyTestResult = ref<{ ok: boolean; via: string; ms: number; error?: string } | null>(null)
 
+watch(
+  () => store.settings,
+  (s) => {
+    if (!s) return
+    // Deep clone so form.proxy is not aliased to the store
+    const clone = JSON.parse(JSON.stringify(s)) as AppSettings
+    if (!clone.proxy) {
+      clone.proxy = {
+        enabled: false,
+        protocol: 'http',
+        host: '',
+        port: 7890,
+        username: '',
+        password: '',
+        bypass: 'localhost,127.0.0.1,::1'
+      }
+    }
+    form.value = clone
+  },
+  { deep: true }
+)
+
+async function save(opts?: { silent?: boolean }): Promise<boolean> {
+  saving.value = true
+  try {
+    const next = await ipc('settings.set', form.value)
+    store.settings = next
+    if (!opts?.silent) message.success('设置已保存')
+    return true
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+    return false
+  } finally {
+    saving.value = false
+  }
+}
+
 async function testProxy(): Promise<void> {
   testingProxy.value = true
   try {
-    // Save first so proxy.test sees latest values
-    await save()
+    const saved = await save({ silent: true })
+    if (!saved) return
     proxyTestResult.value = await ipc('proxy.test', {})
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
@@ -43,7 +80,8 @@ async function testProxy(): Promise<void> {
 
 async function applyProxy(): Promise<void> {
   try {
-    await save()
+    const saved = await save({ silent: true })
+    if (!saved) return
     const r = await ipc('proxy.apply')
     message.success(r.enabled ? `已应用代理 ${r.url}` : '已切换为直连')
   } catch (err) {
@@ -51,34 +89,21 @@ async function applyProxy(): Promise<void> {
   }
 }
 
-watch(
-  () => store.settings,
-  (s) => {
-    if (s) form.value = { ...s }
-  },
-  { deep: true }
-)
-
 async function pickDir(target: 'downloadDir' | 'defaultInstancePath' | 'outputIndexRoot' | 'extraModelPathsFile'): Promise<void> {
-  const p = await ipc('shell.pickDirectory')
-  if (p) form.value[target] = p
-}
-
-async function save(): Promise<void> {
-  saving.value = true
   try {
-    const next = await ipc('settings.set', form.value)
-    store.settings = next
-    message.success('设置已保存')
+    const p = await ipc('shell.pickDirectory')
+    if (p) form.value[target] = p
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
-  } finally {
-    saving.value = false
   }
 }
 
 async function loadRemotes(): Promise<void> {
-  remotes.value = await ipc('remote.list')
+  try {
+    remotes.value = await ipc('remote.list')
+  } catch (err) {
+    console.error(err)
+  }
 }
 
 async function saveRemote(): Promise<void> {
@@ -111,7 +136,7 @@ onMounted(async () => {
         <h1 class="page-title">设置</h1>
         <p class="page-subtitle">路径、网络、安全策略、远程实例与环境。</p>
       </div>
-      <NButton type="primary" :loading="saving" @click="save">保存设置</NButton>
+      <NButton type="primary" :loading="saving" @click="save()">保存设置</NButton>
     </div>
 
     <div class="grid settings-grid">

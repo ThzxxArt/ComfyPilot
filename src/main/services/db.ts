@@ -229,20 +229,31 @@ export function loadSettings(): AppSettings {
     key: string
     value: string
   }>
-  const map = Object.fromEntries(rows.map((r) => [r.key, JSON.parse(r.value)]))
-  return { ...DEFAULT_SETTINGS, ...(map as Partial<AppSettings>) }
+  const map = Object.fromEntries(rows.map((r) => [r.key, JSON.parse(r.value)])) as Partial<AppSettings>
+  // Deep-merge nested proxy so partial stored objects don't wipe defaults
+  return {
+    ...DEFAULT_SETTINGS,
+    ...map,
+    proxy: { ...DEFAULT_SETTINGS.proxy, ...(map.proxy || {}) }
+  }
 }
 
 export function saveSettings(patch: Partial<AppSettings>): AppSettings {
   const d = getDb()
-  const next = { ...loadSettings(), ...patch }
+  const current = loadSettings()
+  const next: AppSettings = {
+    ...current,
+    ...patch,
+    proxy: { ...current.proxy, ...(patch.proxy || {}) }
+  }
   const upsert = d.prepare(
     'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
   )
   const tx = d.transaction((entries: Array<[string, unknown]>) => {
     for (const [k, v] of entries) upsert.run(k, JSON.stringify(v))
   })
-  tx(Object.entries(patch))
+  // Persist each top-level key including nested proxy as one blob
+  tx(Object.entries(next).map(([k, v]) => [k, v] as [string, unknown]))
   return next
 }
 

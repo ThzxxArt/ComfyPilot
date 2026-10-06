@@ -378,14 +378,13 @@ export class NodePackService {
     mkdirSync(root, { recursive: true })
 
     if (opts.source === 'git') {
-      const url = opts.url || opts.id
-      if (!/^https?:\/\//i.test(url) && !/^git@/i.test(url)) {
-        throw new Error('Unsupported git URL')
-      }
+      const { assertSafeGitUrl } = await import('./installer')
+      const url = assertSafeGitUrl(opts.url || opts.id)
       const destName = sanitizeInstallName(url.split('/').pop()?.replace(/\.git$/, '') || `pack-${Date.now()}`)
       const dest = join(root, destName)
       await execFileAsync('git', ['clone', '--depth', '1', url, dest], {
         timeout: 120000,
+        maxBuffer: 20 * 1024 * 1024,
         env: proxyEnv(loadSettings().proxy)
       })
       return this.afterInstall(resolveNestedPackDir(dest))

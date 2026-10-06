@@ -195,11 +195,16 @@ export class Aria2Service {
   async download(url: string, destPath: string): Promise<{ ok: boolean; log: string }> {
     const settings = loadSettings()
     const bin = settings.aria2Path || 'aria2c'
+    const { proxyEnv } = await import('./proxy')
     try {
       const { stdout, stderr } = await execFileAsync(
         bin,
         ['-x', '8', '-s', '8', '-c', '-d', dirname(destPath), '-o', basename(destPath), url],
-        { timeout: 30 * 60 * 1000 }
+        {
+          timeout: 30 * 60 * 1000,
+          maxBuffer: 20 * 1024 * 1024,
+          env: proxyEnv(settings.proxy)
+        }
       )
       return { ok: true, log: (stdout || '') + (stderr || '') }
     } catch (e) {

@@ -7,7 +7,10 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -31,7 +34,13 @@ jobs:
       - name: Build
         run: npx electron-vite build
 
-      - name: E2E smoke (skipped on headless without display)
+      - name: E2E smoke
+        # Only run when a display is available (Linux); Windows runners can spawn electron
+        if: runner.os == 'Windows'
+        run: npx vitest run tests/e2e/app-smoke.e2e.ts
+
+      - name: E2E smoke (Linux needs xvfb)
+        if: runner.os == 'Linux'
         env:
           SKIP_E2E: "1"
         run: npx vitest run tests/e2e/app-smoke.e2e.ts

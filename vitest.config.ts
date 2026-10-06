@@ -21,13 +21,30 @@ export default defineConfig({
         'src/main/services/security.ts',
         'src/main/services/zipSafe.ts',
         'src/main/services/workflowConvert.ts',
+        'src/main/services/proxy.ts',
         'src/main/services/installer.ts',
         'src/shared/constants.ts',
         'src/shared/types.ts'
       ],
-      // Hot security paths must stay high; installer runPlan is covered by
-      // integration gates + manual install smoke (touched lines tracked here).
       thresholds: {
+        // Per-file floors so one hot module cannot mask another
+        'src/main/services/security.ts': {
+          lines: 75,
+          functions: 75,
+          branches: 65
+        },
+        'src/main/services/workflowConvert.ts': {
+          lines: 80,
+          functions: 85
+        },
+        'src/main/services/proxy.ts': {
+          lines: 50,
+          functions: 50
+        },
+        'src/main/services/installer.ts': {
+          lines: 30,
+          functions: 30
+        },
         lines: 55,
         functions: 55,
         branches: 65,

@@ -1,18 +1,25 @@
-import { session, app } from 'electron'
+import { session } from 'electron'
 import type { ProxySettings } from '@shared/types'
 import { loadSettings } from './db'
+import { isSafeExternalUrl } from './security'
 
-/** Build a proxy URL for fetch / undici / curl-style tools. */
-export function buildProxyUrl(p: ProxySettings): string {
+/** Build a proxy URL for child-process env (may include credentials). */
+export function buildProxyUrl(p: ProxySettings, opts?: { withAuth?: boolean }): string {
   if (!p.enabled || !p.host || !p.port) return ''
+  const withAuth = opts?.withAuth !== false
   const auth =
-    p.username && p.password
-      ? `${encodeURIComponent(p.username)}:${encodeURIComponent(p.password)}@`
-      : p.username
-        ? `${encodeURIComponent(p.username)}@`
-        : ''
+    withAuth && p.username
+      ? `${encodeURIComponent(p.username)}${
+          p.password ? ':' + encodeURIComponent(p.password) : ''
+        }@`
+      : ''
   const proto = p.protocol === 'socks5' ? 'socks5' : p.protocol === 'https' ? 'https' : 'http'
   return `${proto}://${auth}${p.host}:${p.port}`
+}
+
+/** Redacted URL safe for UI / logs / IPC results. */
+export function redactProxyUrl(p: ProxySettings): string {
+  return buildProxyUrl(p, { withAuth: false })
 }
 
 export function buildBypassList(p: ProxySettings): string {
@@ -20,18 +27,29 @@ export function buildBypassList(p: ProxySettings): string {
     .split(/[\s,;]+/)
     .map((s) => s.trim())
     .filter(Boolean)
-  return [...new Set(['localhost', '127.0.0.1', '::1', ...extra])].join(';')
+  return [...new Set(['localhost', '127.0.0.1', '[::1]', '::1', ...extra])].join(';')
+}
+
+function normalizeHost(host: string): string {
+  return String(host || '')
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '')
 }
 
 export function shouldBypass(url: string, bypassList: string): boolean {
   try {
     const u = new URL(url)
-    const host = u.hostname.toLowerCase()
+    const host = normalizeHost(u.hostname)
     const list = bypassList
       .split(/[;\s,]+/)
-      .map((s) => s.trim().toLowerCase().replace(/^\./, ''))
+      .map((s) => normalizeHost(s.trim().replace(/^\./, '')))
       .filter(Boolean)
-    return list.some((b) => host === b || host.endsWith('.' + b))
+    return list.some((b) => {
+      if (host === b) return true
+      // suffix match only for multi-label bypass entries (avoid `com` matching evil.com)
+      if (!b.includes('.')) return false
+      return host.endsWith('.' + b)
+    })
   } catch {
     return false
   }
@@ -39,19 +57,19 @@ export function shouldBypass(url: string, bypassList: string): boolean {
 
 /**
  * Build env vars for child processes (git / pip / uv / aria2).
- * Includes standard HTTP(S)_PROXY plus ALL_PROXY for socks.
+ * Never mutates process.env.
  */
 export function proxyEnv(p: ProxySettings): NodeJS.ProcessEnv {
   const base = { ...process.env }
-  if (!p.enabled) {
-    delete base.HTTP_PROXY
-    delete base.HTTPS_PROXY
-    delete base.ALL_PROXY
-    delete base.http_proxy
-    delete base.https_proxy
-    delete base.all_proxy
-    return base
-  }
+  delete base.HTTP_PROXY
+  delete base.HTTPS_PROXY
+  delete base.ALL_PROXY
+  delete base.http_proxy
+  delete base.https_proxy
+  delete base.all_proxy
+  delete base.NO_PROXY
+  delete base.no_proxy
+  if (!p.enabled) return base
   const url = buildProxyUrl(p)
   if (!url) return base
   base.HTTP_PROXY = url
@@ -68,54 +86,82 @@ export function proxyEnv(p: ProxySettings): NodeJS.ProcessEnv {
   return base
 }
 
-/** Apply proxy to Electron default session (renderer / webRequest). */
-export function applyProxyToElectron(p: ProxySettings): { enabled: boolean; url: string; bypass: string } {
-  const url = buildProxyUrl(p)
+/** Validate proxy host so it cannot inject proxyRules separators. */
+export function assertSafeProxyHost(host: string): string {
+  const h = String(host || '').trim()
+  if (!h) throw new Error('Proxy host is empty')
+  if (/[;@\s\\/]/.test(h)) throw new Error('Proxy host contains illegal characters')
+  return h
+}
+
+export function assertSafeProxyPort(port: number): number {
+  const n = Number(port)
+  if (!Number.isInteger(n) || n < 1 || n > 65535) throw new Error('Invalid proxy port')
+  return n
+}
+
+/** Apply proxy to Electron default session. URL is redacted in the return value. */
+export function applyProxyToElectron(p: ProxySettings): {
+  enabled: boolean
+  url: string
+  bypass: string
+} {
   const bypass = buildBypassList(p)
   const ses = session.defaultSession
-  if (!p.enabled || !url) {
+  if (!p.enabled || !p.host || !p.port) {
     void ses.setProxy({ mode: 'direct' })
     return { enabled: false, url: '', bypass }
   }
+  assertSafeProxyHost(p.host)
+  assertSafeProxyPort(p.port)
+  // Chromium proxyRules: no credentials; use socks: for socks5
+  const rules = `${p.protocol === 'socks5' ? 'socks' : p.protocol}://${p.host}:${p.port}`
   void ses.setProxy({
     mode: 'fixed_servers',
-    proxyRules: url.replace(/^socks5:/, 'socks:'),
+    proxyRules: rules,
     proxyBypassRules: bypass
   })
-  return { enabled: true, url, bypass }
+  return { enabled: true, url: redactProxyUrl(p), bypass }
 }
 
-export async function testProxy(
-  opts?: { url?: string }
-): Promise<{ ok: boolean; via: string; ms: number; error?: string }> {
+/** Fetch via Electron session (honours session proxy). Does not leak proxy secrets. */
+export async function fetchThroughProxy(
+  url: string,
+  opts?: { method?: string }
+): Promise<Response> {
+  if (!isSafeExternalUrl(url)) throw new Error('Blocked unsafe URL for proxy test')
+  return session.defaultSession.fetch(url, {
+    method: opts?.method || 'GET',
+    signal: AbortSignal.timeout(10000)
+  }) as unknown as Promise<Response>
+}
+
+export async function testProxy(opts?: {
+  url?: string
+}): Promise<{ ok: boolean; via: string; ms: number; error?: string }> {
   const settings = loadSettings()
   const p = settings.proxy
   const target = opts?.url || 'https://www.gstatic.com/generate_204'
   const started = Date.now()
+  const via = p.enabled ? redactProxyUrl(p) : 'direct'
   try {
-    // Node fetch uses NO_PROXY/HTTP_PROXY from env in undici? Electron main
-    // process net.fetch honors session proxy; use session fetch after apply.
     applyProxyToElectron(p)
-    const res = await session.defaultSession.fetch(target, {
-      method: 'GET',
-      signal: AbortSignal.timeout(8000)
-    })
+    const res = await fetchThroughProxy(target)
     return {
       ok: res.ok || res.status === 204 || res.status === 302,
-      via: p.enabled ? buildProxyUrl(p) : 'direct',
+      via,
       ms: Date.now() - started
     }
   } catch (e) {
     return {
       ok: false,
-      via: p.enabled ? buildProxyUrl(p) : 'direct',
+      via,
       ms: Date.now() - started,
       error: e instanceof Error ? e.message : String(e)
     }
   }
 }
 
-/** Load + apply on app ready / settings save. */
 export function syncProxyFromSettings(): { enabled: boolean; url: string; bypass: string } {
   try {
     return applyProxyToElectron(loadSettings().proxy)
@@ -123,5 +169,3 @@ export function syncProxyFromSettings(): { enabled: boolean; url: string; bypass
     return { enabled: false, url: '', bypass: '' }
   }
 }
-
-void app

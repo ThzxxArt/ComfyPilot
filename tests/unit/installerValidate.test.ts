@@ -27,6 +27,25 @@ describe('assertSafeGitUrl', () => {
   })
 })
 
+describe('buildGitCloneArgs', () => {
+  it('orders options before repo (regression: --branch after --depth broke installs)', async () => {
+    const { buildGitCloneArgs } = await import('../../src/main/services/installer')
+    const args = buildGitCloneArgs('https://github.com/a/b.git', '/dest/x', 'master')
+    expect(args).toEqual(['clone', '--depth', '1', '--branch', 'master', 'https://github.com/a/b.git', '/dest/x'])
+    const noBranch = buildGitCloneArgs('https://github.com/a/b.git', '/dest/x')
+    expect(noBranch).toEqual(['clone', '--depth', '1', 'https://github.com/a/b.git', '/dest/x'])
+  })
+})
+
+describe('assertSafeGitUrl host injection', () => {
+  it('rejects dash-leading ssh/git hosts', async () => {
+    const { assertSafeGitUrl } = await import('../../src/main/services/installer')
+    expect(() => assertSafeGitUrl('git@-oProxyCommand=touch:x.git')).toThrow()
+    expect(() => assertSafeGitUrl('ssh://-oProxyCommand=evil@host/x')).toThrow()
+    expect(() => assertSafeGitUrl('ssh://git@-evil/x')).toThrow()
+  })
+})
+
 describe('assertSafeBranch', () => {
   it('allows normal branch names', async () => {
     const { assertSafeBranch } = await import('../../src/main/services/installer')

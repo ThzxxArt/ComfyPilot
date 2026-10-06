@@ -60,6 +60,20 @@ export function assertSafeGitUrl(url: string): string {
   if (!/^(https?:\/\/|git@|ssh:\/\/)/i.test(u)) {
     throw new Error('Git URL must be https://, ssh:// or git@host:…')
   }
+  // Authority may be [user@]host — no component may start with `-`
+  let authority = ''
+  const schemeMatch = u.match(/^(?:https?|ssh):\/\/([^/]+)/i)
+  if (schemeMatch) authority = schemeMatch[1]
+  else {
+    const gitAt = u.match(/^git@([^:]+)/i)
+    if (gitAt) authority = gitAt[1]
+  }
+  const parts = authority.split('@')
+  for (const part of parts) {
+    if (!part || part.startsWith('-') || /\s/.test(part)) {
+      throw new Error('Invalid git host/user')
+    }
+  }
   return u
 }
 
@@ -70,6 +84,16 @@ export function assertSafeBranch(branch: string): string {
     throw new Error('Invalid git branch name')
   }
   return b
+}
+
+/** Build git clone argv — exported for regression tests (arg order bugs). */
+export function buildGitCloneArgs(repo: string, dest: string, branch?: string): string[] {
+  const safeRepo = assertSafeGitUrl(repo)
+  const safeBranch = assertSafeBranch(branch || '')
+  const args = ['clone', '--depth', '1']
+  if (safeBranch) args.push('--branch', safeBranch)
+  args.push(safeRepo, dest)
+  return args
 }
 
 export class InstallerService extends EventEmitter {
@@ -86,6 +110,16 @@ export class InstallerService extends EventEmitter {
     this.cancelled = true
     for (const child of this.children) {
       try {
+        if (process.platform === 'win32') {
+          // Kill entire process tree (pip/uv grandchildren)
+          if (child.pid) {
+            try {
+              execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true })
+            } catch {
+              /* ignore */
+            }
+          }
+        }
         child.kill('SIGTERM')
         setTimeout(() => {
           try {
@@ -382,12 +416,9 @@ export class InstallerService extends EventEmitter {
         this.log('comfyui', '已存在 ComfyUI，跳过克隆')
         this.setStep('comfyui', 'done', '复用已有 ComfyUI')
       } else {
-        const repo = assertSafeGitUrl(plan.comfyRepo || COMFY_REPO)
-        const branch = assertSafeBranch(plan.comfyBranch || '')
-        // Correct arg order: clone [options] repo dir
-        const args = ['clone', '--depth', '1']
-        if (branch) args.push('--branch', branch)
-        args.push(repo, comfyDir)
+        const repo = plan.comfyRepo || COMFY_REPO
+        const branch = plan.comfyBranch || ''
+        const args = buildGitCloneArgs(repo, comfyDir, branch)
         await this.run('git', args, { timeout: 300000 })
         if (!existsSync(join(comfyDir, 'main.py'))) throw new Error('ComfyUI 克隆后未找到 main.py')
         this.setStep('comfyui', 'done', `已克隆 ${repo}`)
