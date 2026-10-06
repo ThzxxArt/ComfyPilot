@@ -18,7 +18,7 @@ win:
   target:
     - target: nsis
       arch: [x64]
-  icon: resources/icon.ico
+  icon: resources/ComfyPilot.ico
   artifactName: ${productName}-${version}-win-${arch}.${ext}
 nsis:
   oneClick: false
@@ -26,19 +26,22 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   shortcutName: ComfyPilot
+  installerIcon: resources/ComfyPilot.ico
+  uninstallerIcon: resources/ComfyPilot.ico
 mac:
   target:
     - target: dmg
       arch: [x64, arm64]
-  icon: resources/icon.icns
+  icon: resources/ComfyPilot.icns
   category: public.app-category.productivity
   artifactName: ${productName}-${version}-mac-${arch}.${ext}
+  darkModeSupport: true
 linux:
   target:
     - target: AppImage
       arch: [x64]
     - target: deb
       arch: [x64]
-  icon: resources/icon.png
+  icon: resources/comfypilot-appstore-512.png
   category: Utility
   artifactName: ${productName}-${version}-linux-${arch}.${ext}

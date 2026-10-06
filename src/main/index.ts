@@ -1,5 +1,6 @@
-import { app, BrowserWindow, shell, protocol, net } from 'electron'
+import { app, BrowserWindow, shell, protocol, net, nativeImage } from 'electron'
 import { join, resolve } from 'path'
+import { existsSync } from 'fs'
 import { autoUpdater } from 'electron-updater'
 import { registerIpcHandlers, broadcast } from './ipc/handlers'
 import { instanceService } from './services/instance'
@@ -13,7 +14,39 @@ import { isSafeExternalUrl, safeResolveUnder, isLocalhostUrl } from './services/
 
 let mainWindow: BrowserWindow | null = null
 
+function resolveAppIcon(): string {
+  // Prefer .ico on Windows, fallback to PNG elsewhere / in dev
+  const candidates =
+    process.platform === 'win32'
+      ? ['ComfyPilot.ico', 'comfypilot-windows-256.png', 'comfypilot-windows-1024.png']
+      : process.platform === 'darwin'
+        ? ['ComfyPilot.icns', 'comfypilot-macos-512.png', 'comfypilot-macos-1024.png']
+        : ['comfypilot-appstore-512.png', 'comfypilot-appstore-1024.png', 'ComfyPilot.ico']
+  const bases = [join(process.resourcesPath || '', 'resources'), join(app.getAppPath(), 'resources'), join(__dirname, '../../resources')]
+  for (const base of bases) {
+    for (const name of candidates) {
+      const p = join(base, name)
+      try {
+        if (existsSync(p)) return p
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  return candidates[0]
+}
+
 function createWindow(): void {
+  const iconPath = resolveAppIcon()
+  let windowIcon: Electron.NativeImage | undefined
+  try {
+    if (iconPath && existsSync(iconPath)) {
+      windowIcon = nativeImage.createFromPath(iconPath)
+      if (windowIcon.isEmpty()) windowIcon = undefined
+    }
+  } catch {
+    windowIcon = undefined
+  }
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 920,
@@ -23,6 +56,7 @@ function createWindow(): void {
     title: APP_NAME,
     backgroundColor: '#F2F6FC',
     autoHideMenuBar: true,
+    icon: process.platform === 'darwin' ? undefined : windowIcon || iconPath,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: true,
