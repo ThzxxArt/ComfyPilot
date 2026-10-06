@@ -1,11 +1,11 @@
 import { EventEmitter } from 'events'
 import { existsSync, mkdirSync, writeFileSync, rmSync } from 'fs'
-import { join, dirname } from 'path'
-import { execFile, spawn } from 'child_process'
-import { promisify } from 'util'
+import { join, dirname, resolve, basename } from 'path'
+import { execFile, spawn, type ChildProcess } from 'child_process'
 import { randomUUID } from 'crypto'
 import si from 'systeminformation'
 import type {
+  ComfyInstanceConfig,
   GpuCapability,
   InstallPlan,
   InstallProgress,
@@ -14,9 +14,13 @@ import type {
   TorchChannel
 } from '@shared/types'
 import { loadInstanceConfigs, upsertInstanceConfig } from './db'
-import type { ComfyInstanceConfig } from '@shared/types'
+import { hasParentHop, normalizePathEverySegment, isPathInside } from './security'
 
-const execFileAsync = promisify(execFile)
+const EXEC_OPTS = {
+  timeout: 30 * 60 * 1000,
+  windowsHide: true,
+  maxBuffer: 20 * 1024 * 1024
+} as const
 
 const TORCH_INDEX: Record<TorchChannel, string> = {
   cu130: 'https://download.pytorch.org/whl/cu130',
@@ -47,10 +51,31 @@ function defaultSteps(): InstallStep[] {
   ]
 }
 
+/** Validate git remote: only https/http/ssh+git@ — blocks ext:: and dash-option injection. */
+export function assertSafeGitUrl(url: string): string {
+  const u = String(url || '').trim()
+  if (!u || u.startsWith('-')) throw new Error('Invalid git URL')
+  if (/ext::/i.test(u)) throw new Error('Blocked git transport ext::')
+  if (!/^(https?:\/\/|git@|ssh:\/\/)/i.test(u)) {
+    throw new Error('Git URL must be https://, ssh:// or git@host:…')
+  }
+  return u
+}
+
+export function assertSafeBranch(branch: string): string {
+  const b = String(branch || '').trim()
+  if (!b) return ''
+  if (!/^[A-Za-z0-9._/-]+$/.test(b) || b.startsWith('-') || b.includes('..')) {
+    throw new Error('Invalid git branch name')
+  }
+  return b
+}
+
 export class InstallerService extends EventEmitter {
   private progress: InstallProgress | null = null
   private cancelled = false
   private running = false
+  private children = new Set<ChildProcess>()
 
   getStatus(): InstallProgress | null {
     return this.progress
@@ -58,7 +83,51 @@ export class InstallerService extends EventEmitter {
 
   cancel(): boolean {
     this.cancelled = true
+    for (const child of this.children) {
+      try {
+        child.kill('SIGTERM')
+        setTimeout(() => {
+          try {
+            if (child.exitCode === null) child.kill('SIGKILL')
+          } catch {
+            /* ignore */
+          }
+        }, 2000)
+      } catch {
+        /* ignore */
+      }
+    }
+    this.children.clear()
     return true
+  }
+
+  private async run(cmd: string, args: string[], opts?: { cwd?: string; timeout?: number }): Promise<string> {
+    this.assertNotCancelled()
+    return new Promise((resolvePromise, reject) => {
+      const child = execFile(
+        cmd,
+        args,
+        {
+          cwd: opts?.cwd,
+          timeout: opts?.timeout ?? EXEC_OPTS.timeout,
+          windowsHide: true,
+          maxBuffer: EXEC_OPTS.maxBuffer
+        },
+        (err, stdout, stderr) => {
+          this.children.delete(child)
+          if (this.cancelled) {
+            reject(new Error('Installation cancelled'))
+            return
+          }
+          if (err) {
+            reject(new Error(stderr || stdout || err.message))
+            return
+          }
+          resolvePromise(stdout)
+        }
+      )
+      this.children.add(child)
+    })
   }
 
   private emitProgress(message = ''): void {
@@ -88,6 +157,10 @@ export class InstallerService extends EventEmitter {
     this.emitProgress(line)
   }
 
+  private assertNotCancelled(): void {
+    if (this.cancelled) throw new Error('Installation cancelled')
+  }
+
   async detectGpu(): Promise<GpuCapability[]> {
     try {
       const graphics = await si.graphics()
@@ -98,8 +171,13 @@ export class InstallerService extends EventEmitter {
         let recommendedTorch: TorchChannel = 'cpu'
         let notes = ''
         if (vendor.includes('nvidia') || /geforce|rtx|gtx|quadro|tesla/i.test(model)) {
-          recommendedTorch = 'cu130'
-          notes = 'NVIDIA CUDA — 推荐 cu130（20 系及以上）'
+          // Prefer cu126 for unknown-era NVIDIA (safer than cu130 for older cards)
+          recommendedTorch = 'cu126'
+          notes = 'NVIDIA — 默认 cu126（10 系/老卡）；20 系以上可改 cu130'
+          if (/\b(20|30|40|50)\d{2}\b|rtx/i.test(model)) {
+            recommendedTorch = 'cu130'
+            notes = 'NVIDIA RTX 20 系及以上 — 推荐 cu130'
+          }
         } else if (vendor.includes('amd') || /radeon/i.test(model)) {
           recommendedTorch = process.platform === 'linux' ? 'rocm' : 'cpu'
           notes =
@@ -136,16 +214,25 @@ export class InstallerService extends EventEmitter {
     }
   }
 
-  async preflight(opts: { installRoot: string; useUv: boolean }): Promise<{
+  async preflight(opts: { installRoot: string; useUv: boolean; pythonPath?: string }): Promise<{
     ok: boolean
     checks: Array<{ id: string; ok: boolean; detail: string }>
   }> {
     const checks: Array<{ id: string; ok: boolean; detail: string }> = []
 
-    // disk space on target
+    // install root safety
+    const root = opts.installRoot
+    const rootOk = Boolean(root) && !hasParentHop(root)
+    checks.push({
+      id: 'root',
+      ok: rootOk,
+      detail: rootOk ? `安装目录 ${root}` : '安装目录非法（含 .. 或为空）'
+    })
+
+    // disk
     try {
       const { statfsSync } = await import('fs')
-      const probeDir = existsSync(opts.installRoot) ? opts.installRoot : dirname(opts.installRoot)
+      const probeDir = existsSync(root) ? root : dirname(root)
       if (existsSync(probeDir)) {
         const st = statfsSync(probeDir)
         const freeGb = (Number(st.bsize) * Number(st.bavail)) / 1024 ** 3
@@ -163,8 +250,8 @@ export class InstallerService extends EventEmitter {
 
     // git
     try {
-      const { stdout } = await execFileAsync('git', ['--version'], { timeout: 5000 })
-      checks.push({ id: 'git', ok: true, detail: stdout.trim() })
+      const out = await this.run('git', ['--version'], { timeout: 5000 })
+      checks.push({ id: 'git', ok: true, detail: out.trim() })
     } catch {
       checks.push({
         id: 'git',
@@ -173,24 +260,28 @@ export class InstallerService extends EventEmitter {
       })
     }
 
-    // python
+    // python — use the SAME interpreter the install will use
+    const python = opts.pythonPath && opts.pythonPath.trim() ? opts.pythonPath.trim() : 'python'
     try {
-      const { stdout } = await execFileAsync('python', ['--version'], { timeout: 5000 })
-      const ok = /3\.(1[0-9])/.test(stdout)
-      checks.push({ id: 'python', ok, detail: stdout.trim() || 'python' })
+      const out = await this.run(python, ['--version'], { timeout: 8000 })
+      const m = out.match(/Python\s+(3)\.(\d+)/i)
+      const major = m ? Number(m[1]) : 0
+      const minor = m ? Number(m[2]) : -1
+      const ok = major === 3 && minor >= 10
+      checks.push({ id: 'python', ok, detail: out.trim() || python })
     } catch {
       checks.push({
         id: 'python',
         ok: false,
-        detail: '未找到 python 3.10+（可安装 Python 3.12/3.13）'
+        detail: `未找到解释器：${python}（请安装 Python 3.10+ 或改路径）`
       })
     }
 
     // uv optional
     if (opts.useUv) {
       try {
-        const { stdout } = await execFileAsync('uv', ['--version'], { timeout: 5000 })
-        checks.push({ id: 'uv', ok: true, detail: stdout.trim() })
+        const out = await this.run('uv', ['--version'], { timeout: 5000 })
+        checks.push({ id: 'uv', ok: true, detail: out.trim() })
       } catch {
         checks.push({
           id: 'uv',
@@ -200,12 +291,18 @@ export class InstallerService extends EventEmitter {
       }
     }
 
-    const ok = checks.every((c) => c.ok)
-    return { ok, checks }
+    return { ok: checks.every((c) => c.ok), checks }
   }
 
   async start(plan: InstallPlan): Promise<{ runId: string }> {
     if (this.running) throw new Error('Installer already running')
+    // Validate plan up-front
+    if (!plan.installRoot || hasParentHop(plan.installRoot)) {
+      throw new Error('Invalid install root')
+    }
+    assertSafeGitUrl(plan.comfyRepo || COMFY_REPO)
+    assertSafeBranch(plan.comfyBranch || '')
+
     this.running = true
     this.cancelled = false
     const runId = randomUUID()
@@ -218,21 +315,14 @@ export class InstallerService extends EventEmitter {
       percent: 0
     }
     this.emitProgress('开始安装')
-
-    // Run async — progress via events
     void this.runPlan(plan).finally(() => {
       this.running = false
     })
-
     return { runId }
   }
 
-  private assertNotCancelled(): void {
-    if (this.cancelled) throw new Error('Installation cancelled')
-  }
-
   private resolvePython(plan: InstallPlan): string {
-    if (plan.pythonPath && existsSync(plan.pythonPath)) return plan.pythonPath
+    if (plan.pythonPath && plan.pythonPath.trim()) return plan.pythonPath.trim()
     return 'python'
   }
 
@@ -244,11 +334,19 @@ export class InstallerService extends EventEmitter {
 
   private async runPlan(plan: InstallPlan): Promise<void> {
     try {
+      const installRoot = resolve(normalizePathEverySegment(plan.installRoot))
+      if (hasParentHop(plan.installRoot)) throw new Error('Invalid install root')
+
       // 1. preflight
       this.setStep('preflight', 'running', '检查本机环境…')
-      const pre = await this.preflight({ installRoot: plan.installRoot, useUv: plan.useUv })
+      const pythonForPlan = this.resolvePython(plan)
+      const pre = await this.preflight({
+        installRoot: plan.installRoot,
+        useUv: plan.useUv,
+        pythonPath: pythonForPlan
+      })
       for (const c of pre.checks) this.log('preflight', `${c.ok ? '✓' : '✗'} ${c.id}: ${c.detail}`)
-      if (!pre.checks.every((c) => c.ok)) {
+      if (!pre.ok) {
         throw new Error('预检未通过：' + pre.checks.filter((c) => !c.ok).map((c) => c.detail).join('; '))
       }
       this.setStep('preflight', 'done', '预检通过')
@@ -256,23 +354,19 @@ export class InstallerService extends EventEmitter {
 
       // 2. python
       this.setStep('python', 'running', '定位 Python…')
-      const python = this.resolvePython(plan)
-      const pyVer = await execFileAsync(python, ['--version'], { timeout: 8000 })
-      this.setStep('python', 'done', pyVer.stdout.trim() || python)
+      const python = pythonForPlan
+      const pyVer = await this.run(python, ['--version'], { timeout: 8000 })
+      this.setStep('python', 'done', pyVer.trim() || python)
       this.assertNotCancelled()
 
       // 3. venv isolated
-      const installRoot = plan.installRoot
       mkdirSync(installRoot, { recursive: true })
       const venvPath = join(installRoot, '.venv')
       this.setStep('venv', 'running', plan.useUv ? 'uv 创建虚拟环境…' : 'python -m venv …')
       if (plan.useUv) {
-        await execFileAsync('uv', ['venv', venvPath, '--python', python], {
-          timeout: 120000,
-          windowsHide: true
-        })
+        await this.run('uv', ['venv', venvPath, '--python', python], { timeout: 120000 })
       } else {
-        await execFileAsync(python, ['-m', 'venv', venvPath], { timeout: 120000, windowsHide: true })
+        await this.run(python, ['-m', 'venv', venvPath], { timeout: 120000 })
       }
       const vpy = this.venvPython(venvPath)
       if (!existsSync(vpy)) throw new Error(`虚拟环境创建失败，找不到 ${vpy}`)
@@ -286,10 +380,13 @@ export class InstallerService extends EventEmitter {
         this.log('comfyui', '已存在 ComfyUI，跳过克隆')
         this.setStep('comfyui', 'done', '复用已有 ComfyUI')
       } else {
-        const repo = plan.comfyRepo || COMFY_REPO
-        const args = ['clone', '--depth', '1', repo, comfyDir]
-        if (plan.comfyBranch) args.splice(2, 0, '--branch', plan.comfyBranch)
-        await execFileAsync('git', args, { timeout: 300000, windowsHide: true })
+        const repo = assertSafeGitUrl(plan.comfyRepo || COMFY_REPO)
+        const branch = assertSafeBranch(plan.comfyBranch || '')
+        // Correct arg order: clone [options] repo dir
+        const args = ['clone', '--depth', '1']
+        if (branch) args.push('--branch', branch)
+        args.push(repo, comfyDir)
+        await this.run('git', args, { timeout: 300000 })
         if (!existsSync(join(comfyDir, 'main.py'))) throw new Error('ComfyUI 克隆后未找到 main.py')
         this.setStep('comfyui', 'done', `已克隆 ${repo}`)
       }
@@ -298,20 +395,19 @@ export class InstallerService extends EventEmitter {
       // 5. torch
       this.setStep('torch', 'running', `安装 PyTorch (${plan.torchChannel})…`)
       const index = TORCH_INDEX[plan.torchChannel] || TORCH_INDEX.cpu
-      const pipArgs = plan.useUv
-        ? ['pip', 'install', '--python', vpy, 'torch', 'torchvision', 'torchaudio', '--index-url', index]
-        : [vpy, '-m', 'pip', 'install', '--upgrade', 'pip']
       if (plan.useUv) {
-        await execFileAsync('uv', pipArgs, { timeout: 30 * 60 * 1000, windowsHide: true })
+        await this.run(
+          'uv',
+          ['pip', 'install', '--python', vpy, 'torch', 'torchvision', 'torchaudio', '--index-url', index],
+          { timeout: 30 * 60 * 1000 }
+        )
       } else {
-        await execFileAsync(python === vpy ? vpy : vpy, ['-m', 'pip', 'install', '--upgrade', 'pip'], {
-          timeout: 120000,
-          windowsHide: true
-        })
-        await execFileAsync(vpy, ['-m', 'pip', 'install', 'torch', 'torchvision', 'torchaudio', '--index-url', index], {
-          timeout: 30 * 60 * 1000,
-          windowsHide: true
-        })
+        await this.run(vpy, ['-m', 'pip', 'install', '--upgrade', 'pip'], { timeout: 120000 })
+        await this.run(
+          vpy,
+          ['-m', 'pip', 'install', 'torch', 'torchvision', 'torchaudio', '--index-url', index],
+          { timeout: 30 * 60 * 1000 }
+        )
       }
       this.log('torch', `torch index: ${index}`)
       this.setStep('torch', 'done', plan.torchChannel)
@@ -322,14 +418,12 @@ export class InstallerService extends EventEmitter {
       const reqFile = join(comfyDir, 'requirements.txt')
       if (existsSync(reqFile)) {
         if (plan.useUv) {
-          await execFileAsync('uv', ['pip', 'install', '--python', vpy, '-r', reqFile], {
-            timeout: 30 * 60 * 1000,
-            windowsHide: true
+          await this.run('uv', ['pip', 'install', '--python', vpy, '-r', reqFile], {
+            timeout: 30 * 60 * 1000
           })
         } else {
-          await execFileAsync(vpy, ['-m', 'pip', 'install', '-r', reqFile], {
-            timeout: 30 * 60 * 1000,
-            windowsHide: true
+          await this.run(vpy, ['-m', 'pip', 'install', '-r', reqFile], {
+            timeout: 30 * 60 * 1000
           })
         }
         this.setStep('requirements', 'done', 'requirements 已安装到隔离环境')
@@ -340,13 +434,17 @@ export class InstallerService extends EventEmitter {
 
       // 7. register instance
       this.setStep('register', 'running', '写入实例配置…')
+      const existing = loadInstanceConfigs()
+      const samePath = existing.find(
+        (c) => resolve(normalizePathEverySegment(c.path)) === resolve(comfyDir)
+      )
       const config: ComfyInstanceConfig = {
-        id: randomUUID(),
+        id: samePath?.id || randomUUID(),
         name: plan.instanceName || 'ComfyUI',
         path: comfyDir,
         pythonPath: '',
         venvPath,
-        port: await this.pickPort(),
+        port: samePath?.port || (await this.pickPort()),
         listen: '127.0.0.1',
         extraArgs: [],
         argTemplateId: 'default',
@@ -355,16 +453,8 @@ export class InstallerService extends EventEmitter {
         autoStart: Boolean(plan.autoStart),
         frontendVersion: ''
       }
-      const existing = loadInstanceConfigs()
-      if (existing.some((c) => c.path === comfyDir)) {
-        // update instead of duplicate
-        const prev = existing.find((c) => c.path === comfyDir)!
-        upsertInstanceConfig({ ...config, id: prev.id })
-      } else {
-        upsertInstanceConfig(config)
-      }
+      upsertInstanceConfig(config)
 
-      // write isolation marker
       writeFileSync(
         join(installRoot, '.comfypilot-env.json'),
         JSON.stringify(
@@ -381,8 +471,21 @@ export class InstallerService extends EventEmitter {
       )
       this.setStep('register', 'done', config.name)
 
-      // 8. done
-      this.setStep('done', 'done', '安装完成，可一键启动')
+      // 8. done + optional auto-start
+      if (plan.autoStart) {
+        try {
+          this.log('done', '自动启动实例…')
+          const { instanceService } = await import('./instance')
+          await instanceService.start(config.id)
+          this.setStep('done', 'done', '安装完成并已启动')
+        } catch (e) {
+          this.log('done', `自动启动失败：${e instanceof Error ? e.message : String(e)}`)
+          this.setStep('done', 'done', '安装完成（自动启动失败，可手动启动）')
+        }
+      } else {
+        this.setStep('done', 'done', '安装完成，可一键启动')
+      }
+
       if (this.progress) {
         this.progress.status = 'done'
         this.progress.percent = 100
@@ -391,31 +494,31 @@ export class InstallerService extends EventEmitter {
       this.emitProgress('安装完成')
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
+      const cancelled = this.cancelled || /cancel/i.test(message)
       if (this.progress) {
-        this.progress.status = this.cancelled ? 'failed' : 'failed'
-        this.progress.error = message
-        this.progress.message = message
-      }
-      // mark current running step failed
-      if (this.progress) {
+        this.progress.status = cancelled ? 'failed' : 'failed'
+        this.progress.error = cancelled ? 'Installation cancelled' : message
+        this.progress.message = this.progress.error
         const running = this.progress.steps.find((s) => s.status === 'running')
         if (running) {
           running.status = 'failed'
-          running.detail = message
-          running.log.push('✗ ' + message)
+          running.detail = this.progress.error
+          running.log.push('✗ ' + this.progress.error)
         }
       }
       this.emitProgress(message)
+    } finally {
+      this.children.clear()
     }
   }
 
   private async pickPort(): Promise<number> {
     const net = await import('net')
     const tryPort = (port: number) =>
-      new Promise<boolean>((resolve) => {
+      new Promise<boolean>((resolvePort) => {
         const server = net.createServer()
-        server.once('error', () => resolve(false))
-        server.once('listening', () => server.close(() => resolve(true)))
+        server.once('error', () => resolvePort(false))
+        server.once('listening', () => server.close(() => resolvePort(true)))
         server.listen(port, '127.0.0.1')
       })
     for (const p of [8188, 8189, 8190, 8191, 8288]) {
@@ -429,6 +532,7 @@ export const installerService = new InstallerService()
 
 export { TORCH_INDEX, COMFY_REPO }
 
-// silence unused
 void spawn
 void rmSync
+void basename
+void isPathInside

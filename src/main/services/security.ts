@@ -42,7 +42,6 @@ export function normalizePathSegment(segment: string): string {
  */
 export function normalizePathEverySegment(pathStr: string): string {
   const raw = String(pathStr || '')
-  // Preserve drive prefix like `C:` on Windows
   let prefix = ''
   let rest = raw
   const drive = raw.match(/^([a-zA-Z]:)(.*)$/)
@@ -51,14 +50,33 @@ export function normalizePathEverySegment(pathStr: string): string {
     rest = drive[2]
   }
   const sep = rest.includes('\\') && !rest.includes('/') ? '\\' : '/'
-  const parts = rest.split(/[\\/]+/).filter((p) => p.length > 0)
-  const cleaned = parts.map((p) => normalizePathSegment(p)).filter((p) => p.length > 0)
-  // If any segment collapsed to empty after normalize, reject later via ..
+  const parts = rest.split(/[\\/]+/)
+  // Normalize each segment THEN reject empty/dot-only hops
+  const cleaned: string[] = []
+  for (const p of parts) {
+    if (!p) continue
+    const n = normalizePathSegment(p)
+    if (!n) {
+      // Segment like `.. ` or `.` or `...` collapsed — treat as parent hop risk
+      // `.. ` → after strip becomes empty or `..`; reject by marking
+      if (/^[. ]+$/.test(p)) {
+        cleaned.push('..') // force parent-detection downstream
+      }
+      continue
+    }
+    if (n === '.') continue
+    cleaned.push(n)
+  }
   const joined = cleaned.join(sep)
   if (raw.startsWith('/') || raw.startsWith('\\')) {
     return prefix + sep + joined
   }
   return prefix + joined
+}
+
+/** True if normalized path string still contains parent-directory hops. */
+export function hasParentHop(pathStr: string): boolean {
+  return normalizePathEverySegment(pathStr).split(/[\\/]+/).some((s) => s === '..')
 }
 
 export function isPathInside(child: string, parent: string): boolean {
@@ -69,6 +87,9 @@ export function isPathInside(child: string, parent: string): boolean {
 }
 
 export function safeJoin(root: string, ...parts: string[]): string {
+  for (const p of parts) {
+    if (hasParentHop(p)) throw new Error(`Path escapes root: ${p}`)
+  }
   const cleaned = parts.map((p) => normalizePathEverySegment(String(p)))
   const target = normalize(resolve(root, ...cleaned))
   if (!isPathInside(target, root) && resolve(root) !== target) {
@@ -79,24 +100,39 @@ export function safeJoin(root: string, ...parts: string[]): string {
 
 export function safeResolveUnder(appRoot: string, relative: string): string | null {
   try {
-    // Decode repeatedly to defeat double-encoding; reject any remaining %
     let decoded = String(relative || '')
     for (let i = 0; i < 4 && decoded.includes('%'); i++) {
       decoded = decodeURIComponent(decoded)
     }
     decoded = decoded.replace(/^[/\\]+/, '')
     if (decoded.includes('\0') || decoded.includes('%')) return null
-    if (/^[a-zA-Z]:/.test(decoded)) return null // absolute drive not allowed as relative
-    // Per-segment normalize THEN resolve — blocks `.. ` Win32 trailing-space hops
+    if (/^[a-zA-Z]:/.test(decoded)) return null
+    if (hasParentHop(decoded)) return null
     const normalized = normalizePathEverySegment(decoded)
     if (!normalized) return null
-    // After per-segment clean, no empty or `.` `..` may remain as meaningful hops
-    const segs = normalized.split(/[\\/]+/).filter(Boolean)
-    for (const s of segs) {
-      if (s === '..') return null
-    }
     const target = resolve(appRoot, normalized)
     return isPathInside(target, appRoot) ? target : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Resolve a user-supplied directory and require it to stay under one of the
+ * allowed roots. Normalizes per-segment first (blocks `.. ` hops).
+ */
+export function resolveInsideAnyRoot(candidate: string, roots: string[]): string | null {
+  if (!candidate) return null
+  if (hasParentHop(candidate)) return null
+  try {
+    const normalized = normalizePathEverySegment(candidate)
+    const target = resolve(normalized)
+    for (const root of roots) {
+      if (!root) continue
+      const r = resolve(root)
+      if (target === r || isPathInside(target, r)) return target
+    }
+    return null
   } catch {
     return null
   }
@@ -145,9 +181,11 @@ const BLOCKED_OPEN_EXTENSIONS = new Set([
 
 export function isSafeOpenPath(path: string): boolean {
   if (!path) return false
-  const ext = extname(path).toLowerCase()
-  if (BLOCKED_OPEN_EXTENSIONS.has(ext)) return false
   if (path.includes('\0')) return false
+  // Normalize segment so `evil.exe ` / `evil.EXE` are caught
+  const seg = normalizePathSegment(basename(path))
+  const ext = extname(seg).toLowerCase()
+  if (BLOCKED_OPEN_EXTENSIONS.has(ext)) return false
   return true
 }
 

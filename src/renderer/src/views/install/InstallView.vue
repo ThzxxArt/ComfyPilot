@@ -121,6 +121,7 @@ function onProgress(p: unknown): void {
   progress.value = p as InstallProgress
   if (progress.value?.status === 'done') {
     installing.value = false
+    step.value = 3
     message.success('ComfyPilot 隔离环境安装完成！')
   }
   if (progress.value?.error) {
@@ -135,7 +136,10 @@ onMounted(async () => {
   off = onIpc(IPC_EVENTS.installProgress, onProgress)
   try {
     const existing = await ipc('installer.status')
-    if (existing) progress.value = existing
+    if (existing) {
+      progress.value = existing
+      installing.value = existing.status === 'running' && !existing.error
+    }
   } catch {
     /* ignore */
   }

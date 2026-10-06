@@ -260,7 +260,7 @@ function statusClass(s: string): string {
           </div>
         </article>
       </div>
-      <div v-else class="empty-state">
+      <div v-else class="empty">
         <NEmpty description="还没有 ComfyUI 实例">
           <template #extra>
             <NSpace>

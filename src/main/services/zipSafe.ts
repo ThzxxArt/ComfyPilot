@@ -41,12 +41,11 @@ export function findZipSlipEntry(entries: string[]): string | null {
     if (entry.includes('\0')) return entry
     if (isAbsolute(entry)) return entry
     if (/^[a-zA-Z]:/.test(entry)) return entry
-    // Normalize every segment the same way as the FS will at write time
+    // Raw parent hops including `.. ` / `..` / `../`
+    if (/(^|[\\/])\.\.[\\/]*/.test(entry)) return entry
+    // After per-segment normalize any remaining `..` is a hop
     const normalized = normalizePathEverySegment(entry)
-    const segs = normalized.split(/[\\/]+/).filter(Boolean)
-    if (segs.some((s) => s === '..')) return entry
-    // Also reject raw `..` before normalize (e.g. `foo/../../etc`)
-    if (/(^|[\\/])\.\.([\\/]|$)/.test(entry)) return entry
+    if (normalized.split(/[\\/]+/).some((s) => s === '..')) return entry
   }
   return null
 }
