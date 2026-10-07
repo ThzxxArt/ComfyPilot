@@ -161,8 +161,11 @@ describe('findZipSlipEntry residual branches', () => {
 
   it('treats trailing directory separators as empty and safe', () => {
     expect(findZipSlipEntry(['dir/', 'dir//', 'ok/nested/'])).toBeNull()
-    // leading-dot segments are normalized (and therefore rejected) as Win32 would
-    expect(findZipSlipEntry(['.hidden'])).toBeTruthy()
+    // Leading-dot segments are LEGITIMATE (.ci / .github / .hidden) — Win32 only
+    // strips trailing dots/spaces. Rejecting them broke ComfyUI-master/.ci/.
+    expect(findZipSlipEntry(['.hidden'])).toBeNull()
+    expect(findZipSlipEntry(['ComfyUI-master/.ci/'])).toBeNull()
+    expect(findZipSlipEntry(['ComfyUI-master/.github/workflows/ci.yml'])).toBeNull()
     expect(findZipSlipEntry(['././ok.txt'])).toBeNull()
   })
 })

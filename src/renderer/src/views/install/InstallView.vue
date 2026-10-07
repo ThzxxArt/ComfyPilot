@@ -951,12 +951,28 @@ onUnmounted(() => {
 }
 
 .field {
-  label {
+  // Only the form's own field label — NOT Naive NRadio's inner <label>
+  > label {
     display: block;
     font-size: 12.5px;
     font-weight: 600;
     color: $color-text-secondary;
     margin-bottom: 6px;
+  }
+
+  :deep(.n-radio-group) {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 8px 18px;
+    align-items: center;
+  }
+
+  :deep(.n-radio) {
+    display: inline-flex;
+    align-items: center;
+    margin-right: 0;
+    height: auto;
   }
 }
 

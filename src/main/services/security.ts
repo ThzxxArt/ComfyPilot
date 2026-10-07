@@ -36,13 +36,14 @@ export function assertSafeRelativeFilename(name: string): string {
 
 /**
  * Normalize a single path segment (not the whole path):
- * strip control chars, trailing/leading spaces & dots (Win32 does this at FS layer).
+ * Win32 strips **trailing** spaces & dots at the FS layer.
+ * Leading dots MUST be preserved — `.ci` / `.github` are legitimate directory names.
  */
 export function normalizePathSegment(segment: string): string {
   return String(segment || '')
     .replace(/[\x00-\x1f]/g, '')
     .replace(/[. ]+$/g, '')
-    .replace(/^[. ]+/, '')
+    .replace(/^ +/, '')
 }
 
 /**
