@@ -545,7 +545,8 @@ export class InstallerService extends EventEmitter {
         enabled: true,
         notes: 'Created by ComfyPilot one-click installer (isolated venv)',
         autoStart: Boolean(plan.autoStart),
-        frontendVersion: ''
+        frontendVersion: '',
+        pinned: false
       }
       upsertInstanceConfig(config)
 
@@ -564,6 +565,22 @@ export class InstallerService extends EventEmitter {
         )
       )
       this.setStep('register', 'done', config.name)
+
+      // Desktop shortcut — real implementation via desktop.ts
+      if (plan.createDesktopShortcut) {
+        try {
+          const { createDesktopShortcut, appExecutablePath, appIconPath } = await import('./desktop')
+          const shortcutPath = await createDesktopShortcut({
+            targetPath: appExecutablePath(),
+            name: plan.instanceName || 'ComfyPilot',
+            cwd: installRoot,
+            iconPath: appIconPath()
+          })
+          this.log('register', `Desktop shortcut: ${shortcutPath}`)
+        } catch (e) {
+          this.log('register', `Desktop shortcut failed: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
 
       // 8. done + optional auto-start
       if (plan.autoStart) {

@@ -31,6 +31,7 @@ import {
   listModels,
   deleteModel as dbDeleteModel,
   loadSettings,
+  loadInstanceConfigs as loadInstanceConfigsSafe,
   upsertModel,
   updateModel,
   upsertDownloadTask,
@@ -181,10 +182,14 @@ export class ModelService extends EventEmitter {
   /** Allowed roots for user-supplied destDir (move/symlink/download). */
   private allowedDestRoots(): string[] {
     const settings = loadSettings()
+    const instanceModels = loadInstanceConfigsSafe()
+      .map((c) => c.path && join(c.path, 'models'))
+      .filter(Boolean) as string[]
     return [
       settings.downloadDir,
       join(homedir(), 'Downloads'),
       ...settings.modelScanRoots,
+      ...instanceModels,
       settings.defaultInstancePath && join(settings.defaultInstancePath, 'models')
     ].filter(Boolean) as string[]
   }
@@ -241,10 +246,13 @@ export class ModelService extends EventEmitter {
       opts?.roots?.length ? opts.roots : [...settings.modelScanRoots, ...extraRoots]
     ).filter(Boolean)
 
-    // Also auto-derive models/ under known instances
-    const instanceModels = settings.defaultInstancePath
-      ? [join(settings.defaultInstancePath, 'models')]
-      : []
+    // Derive models/ under EVERY configured instance — not just the default path.
+    const instanceModels = loadInstanceConfigsSafe()
+      .map((c) => c.path && join(c.path, 'models'))
+      .filter(Boolean) as string[]
+    if (settings.defaultInstancePath) {
+      instanceModels.push(join(settings.defaultInstancePath, 'models'))
+    }
     const allRoots = [...new Set([...scanRoots, ...instanceModels])]
 
     const files: string[] = []

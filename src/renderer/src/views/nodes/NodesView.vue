@@ -9,10 +9,12 @@ import {
   NCollapse, NCollapseItem, NInput, NModal, NPopconfirm, NTabs, NTabPane, NList, NListItem
 } from 'naive-ui'
 import { ipc } from '@/composables/useIpc'
+import { useAppStore } from '@/stores/app'
 import type {
   NodeNameConflict, NodePackRecord, NodeSnapshot, RegistryNodePack, RegistryPageResult
 } from '@shared/types'
 
+const store = useAppStore()
 const message = useMessage()
 const loading = ref(false)
 const packs = ref<NodePackRecord[]>([])
@@ -55,8 +57,9 @@ function registryHint(): string {
 async function refresh(): Promise<void> {
   loading.value = true
   try {
-    packs.value = await ipc('node.refresh')
-    conflicts.value = await ipc('node.conflicts')
+    const instId = store.activeInstanceId || undefined
+    packs.value = await ipc('node.refresh', instId)
+    conflicts.value = await ipc('node.conflicts', instId)
     snapshots.value = await ipc('node.snapshots')
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
@@ -104,7 +107,11 @@ async function loadMoreRegistry(): Promise<void> {
 
 async function installRegistry(p: RegistryNodePack): Promise<void> {
   try {
-    await ipc('node.install', { id: p.id, source: 'registry' })
+    await ipc('node.install', {
+      id: p.id,
+      source: 'registry',
+      instanceId: store.activeInstanceId || undefined
+    })
     message.success(`已安装 ${p.name}`)
     await refresh()
   } catch (err) {
@@ -115,7 +122,12 @@ async function installRegistry(p: RegistryNodePack): Promise<void> {
 async function installGit(): Promise<void> {
   if (!installUrl.value.trim()) return
   try {
-    await ipc('node.install', { id: installUrl.value.trim(), source: 'git', url: installUrl.value.trim() })
+    await ipc('node.install', {
+      id: installUrl.value.trim(),
+      source: 'git',
+      url: installUrl.value.trim(),
+      instanceId: store.activeInstanceId || undefined
+    })
     showInstall.value = false
     message.success('Git 安装完成')
     await refresh()
@@ -126,7 +138,7 @@ async function installGit(): Promise<void> {
 
 async function toggle(pack: NodePackRecord, enabled: boolean): Promise<void> {
   try {
-    await ipc('node.toggle', pack.name, enabled)
+    await ipc('node.toggle', pack.name, enabled, store.activeInstanceId || undefined)
     await refresh()
     message.success(enabled ? '已启用' : '已禁用')
   } catch (err) {
@@ -141,7 +153,7 @@ async function lockPack(pack: NodePackRecord, locked: boolean): Promise<void> {
 }
 
 async function smoke(pack: NodePackRecord): Promise<void> {
-  const issues = await ipc('node.smokeTest', pack.name)
+  const issues = await ipc('node.smokeTest', pack.name, store.activeInstanceId || undefined)
   message[issues.some((i) => i.severity === 'error') ? 'error' : 'success'](
     issues.length ? issues[0].message : '冒烟测试通过'
   )
@@ -161,7 +173,7 @@ async function restoreSnapshot(id: string): Promise<void> {
 
 async function uninstall(pack: NodePackRecord): Promise<void> {
   try {
-    await ipc('node.uninstall', pack.name)
+    await ipc('node.uninstall', pack.name, store.activeInstanceId || undefined)
     message.success('已卸载')
     await refresh()
   } catch (err) {

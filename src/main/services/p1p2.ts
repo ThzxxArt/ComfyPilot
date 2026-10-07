@@ -345,7 +345,14 @@ export class RemoteService {
 export const remoteService = new RemoteService()
 
 export class MarketService {
-  async list(opts?: { query?: string; category?: string; limit?: number; page?: number; scanPages?: number }) {
+  async list(opts?: {
+    query?: string
+    category?: string
+    limit?: number
+    page?: number
+    scanPages?: number
+    instanceId?: string
+  }) {
     const settings = loadSettings()
     try {
       const { searchRegistry, toPageResult, mapMarketItem } = await import('./registry')
@@ -355,7 +362,13 @@ export class MarketService {
         page: opts?.page,
         scanPages: opts?.scanPages
       })
-      const installed = new Set(readdirSafe(settings.defaultInstancePath))
+      // Installed detection must target the selected instance's custom_nodes
+      let instancePath = settings.defaultInstancePath
+      if (opts?.instanceId) {
+        const inst = loadInstanceConfigs().find((c) => c.id === opts.instanceId)
+        if (inst?.path) instancePath = inst.path
+      }
+      const installed = new Set(readdirSafe(instancePath))
       return toPageResult(result, (n) => mapMarketItem(n, installed, opts?.category || 'tools'))
     } catch (err) {
       if (settings.networkMode === 'offline') {

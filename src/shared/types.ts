@@ -36,6 +36,12 @@ export interface AppSettings {
   aria2Path: string
   useAria2: boolean
   outputIndexRoot: string
+  /** Start ComfyPilot at OS login */
+  launchOnBoot: boolean
+  /** Closing the window hides to tray instead of quitting */
+  minimizeToTray: boolean
+  /** On app ready, start every instance whose autoStart is true */
+  autoStartInstancesOnLaunch: boolean
   proxy: ProxySettings
 }
 
@@ -63,6 +69,8 @@ export interface ComfyInstanceConfig {
   notes: string
   autoStart: boolean
   frontendVersion: string
+  /** Pinned instances sort first in lists */
+  pinned: boolean
 }
 
 export interface ComfyInstanceInfo extends ComfyInstanceConfig {
@@ -84,12 +92,36 @@ export interface InstanceDiscoveryCandidate {
   hasRequirements: boolean
   hasVenv: boolean
   estimatedVersion?: string
+  /** Already registered as a configured instance */
+  registered?: boolean
 }
 
 export interface PortCheckResult {
   port: number
   available: boolean
   owner?: string
+}
+
+/** Resolved spawn command for an instance — used by the UI preview + copy. */
+export interface LaunchCommandPreview {
+  python: string
+  args: string[]
+  cwd: string
+  commandLine: string
+}
+
+export interface LaunchOptions {
+  /** After the instance is ready, where to take the user. Default 'none'. */
+  open?: 'embed' | 'browser' | 'none'
+  /** When the configured port is busy, pick a free port, persist it, then start. */
+  relocatePort?: boolean
+}
+
+export interface WaitReadyResult {
+  ready: boolean
+  info: ComfyInstanceInfo
+  error?: string
+  elapsedMs: number
 }
 
 export interface DiagnosticPackage {
@@ -519,6 +551,10 @@ export interface IpcResult<T = unknown> {
   ok: boolean
   data?: T
   error?: string
+  /** Machine-readable error code (e.g. PORT_IN_USE) */
+  code?: string
+  /** When code is PORT_IN_USE, a free port the UI may offer */
+  suggestedPort?: number
 }
 
 export type IpcChannelMap = {
@@ -535,10 +571,15 @@ export type IpcChannelMap = {
   'instance.discover': { args: [string?]; result: InstanceDiscoveryCandidate[] }
   'instance.save': { args: [ComfyInstanceConfig]; result: ComfyInstanceInfo }
   'instance.remove': { args: [string]; result: boolean }
-  'instance.start': { args: [string]; result: ComfyInstanceInfo }
+  'instance.start': { args: [string, LaunchOptions?]; result: ComfyInstanceInfo }
+  'instance.launch': { args: [string, LaunchOptions?]; result: ComfyInstanceInfo }
+  'instance.waitReady': { args: [string, number?]; result: WaitReadyResult }
+  'instance.previewLaunch': { args: [string]; result: LaunchCommandPreview }
   'instance.stop': { args: [string]; result: ComfyInstanceInfo }
-  'instance.restart': { args: [string]; result: ComfyInstanceInfo }
+  'instance.restart': { args: [string, LaunchOptions?]; result: ComfyInstanceInfo }
   'instance.forceKill': { args: [string]; result: ComfyInstanceInfo }
+  'instance.startAll': { args: []; result: ComfyInstanceInfo[] }
+  'instance.stopAll': { args: []; result: ComfyInstanceInfo[] }
   'instance.getLogs': { args: [string, number?]; result: ComfyLogLine[] }
   'instance.clearLogs': { args: [string]; result: boolean }
   'instance.checkPort': { args: [number]; result: PortCheckResult }
@@ -568,8 +609,8 @@ export type IpcChannelMap = {
   'model.batchRename': { args: [{ ids: string[]; pattern: string; dryRun?: boolean }]; result: Array<{ from: string; to: string; ok: boolean; error?: string }> }
 
   // node packs
-  'node.list': { args: []; result: NodePackRecord[] }
-  'node.refresh': { args: []; result: NodePackRecord[] }
+  'node.list': { args: [string?]; result: NodePackRecord[] }
+  'node.refresh': { args: [string?]; result: NodePackRecord[] }
   'node.registrySearch': {
     args: [{ query?: string; limit?: number; page?: number; scanPages?: number }?]
     result: RegistryPageResult<RegistryNodePack>
@@ -587,14 +628,17 @@ export type IpcChannelMap = {
     result: { ready: boolean; updatedAt: number; total: number; pages: number; count: number }
   }
   'node.managerChannel': { args: []; result: RegistryNodePack[] }
-  'node.install': { args: [{ id: string; version?: string; source: 'registry' | 'git' | 'manager'; url?: string }]; result: NodePackRecord }
-  'node.uninstall': { args: [string]; result: boolean }
-  'node.update': { args: [string, string?]; result: NodePackRecord }
-  'node.toggle': { args: [string, boolean]; result: NodePackRecord }
+  'node.install': {
+    args: [{ id: string; version?: string; source: 'registry' | 'git' | 'manager'; url?: string; instanceId?: string }]
+    result: NodePackRecord
+  }
+  'node.uninstall': { args: [string, string?]; result: boolean }
+  'node.update': { args: [string, string?, string?]; result: NodePackRecord }
+  'node.toggle': { args: [string, boolean, string?]; result: NodePackRecord }
   'node.lock': { args: [string, boolean]; result: NodePackRecord }
-  'node.checkIssues': { args: [string]; result: NodePackIssue[] }
-  'node.conflicts': { args: []; result: NodeNameConflict[] }
-  'node.smokeTest': { args: [string]; result: NodePackIssue[] }
+  'node.checkIssues': { args: [string, string?]; result: NodePackIssue[] }
+  'node.conflicts': { args: [string?]; result: NodeNameConflict[] }
+  'node.smokeTest': { args: [string, string?]; result: NodePackIssue[] }
   'node.snapshots': { args: []; result: NodeSnapshot[] }
   'node.createSnapshot': { args: [string?]; result: NodeSnapshot }
   'node.restoreSnapshot': { args: [string]; result: boolean }
@@ -660,10 +704,10 @@ export type IpcChannelMap = {
 
   // market
   'market.list': {
-    args: [{ query?: string; category?: string; limit?: number; page?: number; scanPages?: number }?]
+    args: [{ query?: string; category?: string; limit?: number; page?: number; scanPages?: number; instanceId?: string }?]
     result: RegistryPageResult<MarketItem>
   }
-  'market.install': { args: [string]; result: NodePackRecord }
+  'market.install': { args: [string, string?]; result: NodePackRecord }
 
   // shell
   'shell.openExternal': { args: [string]; result: boolean }

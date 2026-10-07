@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   SpeedometerOutline,
@@ -16,18 +16,31 @@ import {
   PlayForwardOutline,
   ImagesOutline,
   SaveOutline,
-  RocketOutline
+  RocketOutline,
+  PlayOutline,
+  StopOutline
 } from '@vicons/ionicons5'
-import { NIcon, NAvatar, NButton, NSpace, NTooltip, NMessageProvider, NDialogProvider, NConfigProvider } from 'naive-ui'
+import {
+  NIcon, NAvatar, NButton, NSpace, NTooltip, NMessageProvider, NDialogProvider,
+  NConfigProvider, NSelect, NTag
+} from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 import { ipc } from '@/composables/useIpc'
+import { useLaunch } from '@/composables/useLaunch'
 import { useI18n } from 'vue-i18n'
+import { APP_VERSION } from '@shared/constants'
+import type { ComfyInstanceInfo } from '@shared/types'
 
 const router = useRouter()
 const route = useRoute()
 const store = useAppStore()
 const collapsed = ref(false)
 const { t, locale } = useI18n()
+const { launch, stop, busy } = useLaunch()
+
+// Sidebar width used by embed.resize — keep in sync with $nav-width / collapsed state
+const SIDEBAR_W = 240
+const SIDEBAR_W_COLLAPSED = 72
 
 const nav = computed(() => [
   { key: 'dashboard', label: t('nav.dashboard'), icon: SpeedometerOutline, path: '/' },
@@ -52,15 +65,90 @@ const activeKey = computed(() => {
 
 const runningCount = computed(() => store.instances.filter((i) => i.status === 'running').length)
 
+const instanceOptions = computed(() =>
+  store.instances.map((i: ComfyInstanceInfo) => ({
+    label: `${i.name} · ${i.port} · ${i.status}`,
+    value: i.id
+  }))
+)
+
+const selectedInstanceId = computed({
+  get: () => store.activeInstanceId || store.instances[0]?.id || null,
+  set: (v: string | null) => {
+    store.activeInstanceId = v
+  }
+})
+
+const activeStatus = computed(() => store.activeInstance?.status || 'unknown')
+
+const sidebarWidth = computed(() => (collapsed.value ? SIDEBAR_W_COLLAPSED : SIDEBAR_W))
+
+function notifyEmbedLayout(): void {
+  // Publish sidebar metrics so EmbedView can size the WebContentsView correctly
+  window.dispatchEvent(
+    new CustomEvent('comfypilot:layout', {
+      detail: {
+        sidebarWidth: sidebarWidth.value,
+        headerHeight: 64
+      }
+    })
+  )
+}
+
+function onLayoutRequest(): void {
+  notifyEmbedLayout()
+}
+
+watch([collapsed, sidebarWidth], () => notifyEmbedLayout())
+
 let dispose: (() => void) | null = null
 
 onMounted(async () => {
   await store.bootstrap()
   if (store.settings?.locale) locale.value = store.settings.locale
   dispose = store.bindLive()
+  notifyEmbedLayout()
+  window.addEventListener('keydown', onKeydown)
+  window.addEventListener('comfypilot:layout-request', onLayoutRequest)
 })
 
-onUnmounted(() => dispose?.())
+onUnmounted(() => {
+  dispose?.()
+  window.removeEventListener('keydown', onKeydown)
+  window.removeEventListener('comfypilot:layout-request', onLayoutRequest)
+})
+
+function onKeydown(e: KeyboardEvent): void {
+  const mod = e.ctrlKey || e.metaKey
+  if (!mod) return
+  // Ctrl+, → settings
+  if (e.key === ',') {
+    e.preventDefault()
+    void router.push('/settings')
+    return
+  }
+  // Ctrl+1..9 → nav pages
+  if (e.key >= '1' && e.key <= '9') {
+    const idx = Number(e.key) - 1
+    const item = nav.value[idx]
+    if (item) {
+      e.preventDefault()
+      void router.push(item.path)
+    }
+    return
+  }
+  // Ctrl+Enter → launch active instance and open embed
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    void launchActive()
+  }
+}
+
+async function launchActive(): Promise<void> {
+  const inst = store.activeInstance
+  if (!inst) return
+  await launch(inst, { open: 'embed' })
+}
 
 function go(path: string): void {
   void router.push(path)
@@ -81,21 +169,35 @@ function openEmbed(): void {
 function openGithub(): void {
   void ipc('shell.openExternal', 'https://github.com/ThzxxArt/ComfyPilot')
 }
+
+function toggleCollapse(): void {
+  collapsed.value = !collapsed.value
+}
+
+async function toggleInstanceRun(): Promise<void> {
+  const inst = store.activeInstance
+  if (!inst) return
+  if (inst.status === 'running' || inst.status === 'starting') {
+    await stop(inst)
+  } else {
+    await launch(inst, { open: 'none' })
+  }
+}
 </script>
 
 <template>
   <NConfigProvider>
     <NMessageProvider>
       <NDialogProvider>
-        <div class="shell">
-          <aside class="sider glass" :class="{ collapsed }">
+        <div class="shell" :class="{ collapsed }">
+          <aside class="sider glass">
             <div class="brand">
-              <div class="brand-mark">
+              <div class="brand-mark" @click="toggleCollapse" title="折叠/展开侧栏">
                 <span class="brand-orb" />
               </div>
-              <div class="brand-text">
+              <div v-if="!collapsed" class="brand-text">
                 <div class="brand-name">ComfyPilot</div>
-                <div class="brand-tag">Control Tower</div>
+                <div class="brand-tag">Control Tower · v{{ APP_VERSION }}</div>
               </div>
             </div>
 
@@ -105,24 +207,25 @@ function openGithub(): void {
                 :key="item.key"
                 class="nav-item"
                 :class="{ active: activeKey === item.key }"
+                :title="collapsed ? item.label : undefined"
                 @click="go(item.path)"
               >
                 <NIcon :size="18" :component="item.icon" />
-                <span class="nav-label">{{ item.label }}</span>
-                <span v-if="item.key === 'instances' && runningCount" class="nav-badge">{{ runningCount }}</span>
+                <span v-if="!collapsed" class="nav-label">{{ item.label }}</span>
+                <span v-if="!collapsed && item.key === 'instances' && runningCount" class="nav-badge">{{ runningCount }}</span>
               </button>
             </nav>
 
             <div class="sider-footer">
               <div class="status-pill">
                 <span class="pulse-dot" />
-                <span>{{ t('common.running') }}</span>
+                <span v-if="!collapsed">{{ t('common.running') }}</span>
               </div>
               <NButton text class="github-btn" @click="openGithub">
                 <template #icon>
                   <NIcon :component="LogoGithub" />
                 </template>
-                GitHub
+                <span v-if="!collapsed">GitHub</span>
               </NButton>
             </div>
           </aside>
@@ -134,6 +237,35 @@ function openGithub(): void {
                 <div class="header-crumb">{{ t('header.crumb') }}</div>
               </div>
               <NSpace align="center" :size="10">
+                <!-- Active instance context — used by nodes/models/batch/monitor -->
+                <div class="instance-pick">
+                  <NSelect
+                    v-model:value="selectedInstanceId"
+                    :options="instanceOptions"
+                    size="small"
+                    style="width: 220px"
+                    :placeholder="t('header.instancePlaceholder')"
+                  />
+                  <NTag
+                    size="small"
+                    round
+                    :type="activeStatus === 'running' ? 'success' : activeStatus === 'error' ? 'error' : 'default'"
+                  >
+                    {{ activeStatus }}
+                  </NTag>
+                  <NButton
+                    size="small"
+                    secondary
+                    :type="activeStatus === 'running' ? 'warning' : 'primary'"
+                    :disabled="!store.activeInstance"
+                    :loading="store.activeInstance ? busy[store.activeInstance.id] : false"
+                    @click="toggleInstanceRun"
+                  >
+                    <template #icon>
+                      <NIcon :component="activeStatus === 'running' ? StopOutline : PlayOutline" />
+                    </template>
+                  </NButton>
+                </div>
                 <NTooltip trigger="hover">
                   <template #trigger>
                     <NButton secondary type="primary" :disabled="!store.activeInstance?.url" @click="openEmbed">
@@ -176,6 +308,40 @@ function openGithub(): void {
   min-height: 0;
   height: 100%;
   width: 100%;
+  transition: grid-template-columns 0.2s ease;
+
+  &.collapsed {
+    grid-template-columns: 72px 1fr;
+
+    .brand-text,
+    .nav-label,
+    .nav-badge {
+      display: none;
+    }
+
+    .nav-item {
+      justify-content: center;
+      padding: 11px 8px;
+    }
+
+    .status-pill {
+      justify-content: center;
+    }
+
+    .github-btn {
+      justify-content: center;
+    }
+  }
+}
+
+.instance-pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(148, 163, 184, 0.18);
 }
 
 .sider {

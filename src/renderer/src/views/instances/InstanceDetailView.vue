@@ -1,40 +1,41 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowBackOutline, PlayOutline, StopOutline, OpenOutline, PulseOutline } from '@vicons/ionicons5'
-import { NButton, NIcon, NTag, NSpace, NScrollbar, NSpin, NDescriptions, NDescriptionsItem, useMessage } from 'naive-ui'
+import {
+  ArrowBackOutline, PlayOutline, StopOutline, OpenOutline, PulseOutline,
+  TerminalOutline, CreateOutline, RefreshOutline
+} from '@vicons/ionicons5'
+import {
+  NButton, NIcon, NTag, NSpace, NScrollbar, NSpin, NDescriptions, NDescriptionsItem,
+  NCollapse, NCollapseItem, useMessage
+} from 'naive-ui'
 import { useAppStore } from '@/stores/app'
-import { ipc, onInstanceStatus } from '@/composables/useIpc'
-import type { ComfyInstanceInfo, ComfyLogLine } from '@shared/types'
+import { ipc, onInstanceStatus, onIpc, IPC_EVENTS } from '@/composables/useIpc'
+import { useLaunch } from '@/composables/useLaunch'
+import type { ComfyInstanceInfo, ComfyLogLine, LaunchCommandPreview } from '@shared/types'
 
 const route = useRoute()
 const router = useRouter()
 const store = useAppStore()
 const message = useMessage()
+const { launch, stop, busy } = useLaunch()
 const loading = ref(true)
 const logs = ref<ComfyLogLine[]>([])
 const instance = ref<ComfyInstanceInfo | null>(null)
+const preview = ref<LaunchCommandPreview | null>(null)
 
 const id = computed(() => String(route.params.id || ''))
 
-async function start(): Promise<void> {
-  try {
-    await ipc('instance.start', id.value)
-    await refresh()
-    message.success('启动中…')
-  } catch (err) {
-    message.error(err instanceof Error ? err.message : String(err))
-  }
+async function doLaunch(open: 'embed' | 'browser' | 'none' = 'none'): Promise<void> {
+  if (!instance.value) return
+  await launch(instance.value, { open })
+  await refresh()
 }
 
-async function stop(): Promise<void> {
-  try {
-    await ipc('instance.stop', id.value)
-    await refresh()
-    message.success('已停止')
-  } catch (err) {
-    message.error(err instanceof Error ? err.message : String(err))
-  }
+async function doStop(): Promise<void> {
+  if (!instance.value) return
+  await stop(instance.value)
+  await refresh()
 }
 
 async function refresh(): Promise<void> {
@@ -42,6 +43,13 @@ async function refresh(): Promise<void> {
     await store.refreshInstances()
     instance.value = store.instances.find((i) => i.id === id.value) || null
     logs.value = await ipc('instance.getLogs', id.value, 400)
+    if (!preview.value) {
+      try {
+        preview.value = await ipc('instance.previewLaunch', id.value)
+      } catch {
+        /* instance may be missing */
+      }
+    }
   } catch (err) {
     console.error(err)
   } finally {
@@ -49,16 +57,33 @@ async function refresh(): Promise<void> {
   }
 }
 
+async function copyCommand(): Promise<void> {
+  if (!preview.value) return
+  await ipc('shell.writeClipboard', preview.value.commandLine)
+  message.success('启动命令已复制')
+}
+
 let off: (() => void) | null = null
+let offLog: (() => void) | null = null
 
 onMounted(() => {
   void refresh()
   off = onInstanceStatus(() => {
     void refresh()
   })
+  // Live log tail — append without full refresh
+  offLog = onIpc(IPC_EVENTS.instanceLog, (payload) => {
+    const p = payload as { id: string; line: ComfyLogLine }
+    if (p?.id === id.value && p.line) {
+      logs.value = [...logs.value.slice(-499), p.line]
+    }
+  })
 })
 
-onUnmounted(() => off?.())
+onUnmounted(() => {
+  off?.()
+  offLog?.()
+})
 </script>
 
 <template>
@@ -75,17 +100,28 @@ onUnmounted(() => off?.())
         <p class="page-subtitle mono">{{ instance?.path }}</p>
       </div>
       <NSpace>
-        <NButton v-if="instance?.status !== 'running'" type="primary" @click="start">
+        <NButton
+          v-if="instance?.status !== 'running'"
+          type="primary"
+          :loading="busy[id]"
+          @click="doLaunch('embed')"
+        >
           <template #icon>
             <NIcon :component="PlayOutline" />
           </template>
-          启动
+          启动并打开
         </NButton>
-        <NButton v-else type="warning" secondary @click="stop">
+        <NButton v-else type="warning" secondary @click="doStop">
           <template #icon>
             <NIcon :component="StopOutline" />
           </template>
           停止
+        </NButton>
+        <NButton secondary @click="doLaunch('none')">
+          <template #icon>
+            <NIcon :component="PlayOutline" />
+          </template>
+          仅启动
         </NButton>
         <NButton secondary :disabled="!instance?.url" @click="instance?.url && ipc('shell.openExternal', instance.url)">
           <template #icon>
@@ -103,6 +139,12 @@ onUnmounted(() => off?.())
             <NIcon :component="PulseOutline" />
           </template>
           内嵌 Frontend
+        </NButton>
+        <NButton secondary @click="router.push('/instances')">
+          <template #icon>
+            <NIcon :component="CreateOutline" />
+          </template>
+          编辑
         </NButton>
       </NSpace>
     </div>
@@ -122,16 +164,33 @@ onUnmounted(() => off?.())
             <NDescriptionsItem label="监听">{{ instance?.listen }}:{{ instance?.port }}</NDescriptionsItem>
             <NDescriptionsItem label="版本">{{ instance?.version || '—' }}</NDescriptionsItem>
             <NDescriptionsItem label="Python">{{ instance?.pythonPath || 'system' }}</NDescriptionsItem>
+            <NDescriptionsItem label="autoStart">{{ instance?.autoStart ? '是' : '否' }}</NDescriptionsItem>
             <NDescriptionsItem label="URL" :span="2">
               <span class="mono">{{ instance?.url }}</span>
             </NDescriptionsItem>
           </NDescriptions>
+
+          <NCollapse v-if="preview" class="cmd-collapse">
+            <NCollapseItem title="启动命令（可复制）" name="cmd">
+              <div class="cmd-box">
+                <div class="mono cmd-cwd">cwd: {{ preview.cwd }}</div>
+                <pre class="mono cmd-line">{{ preview.commandLine }}</pre>
+                <NButton size="tiny" secondary @click="copyCommand">
+                  <template #icon><NIcon :component="TerminalOutline" /></template>
+                  复制命令
+                </NButton>
+              </div>
+            </NCollapseItem>
+          </NCollapse>
         </section>
 
         <section class="card panel logs">
           <div class="panel-head">
             <div class="panel-title">实时日志</div>
-            <NButton size="tiny" secondary @click="refresh">刷新</NButton>
+            <NButton size="tiny" secondary @click="refresh">
+              <template #icon><NIcon :component="RefreshOutline" /></template>
+              刷新
+            </NButton>
           </div>
           <NScrollbar class="log-scroll">
             <div v-if="!logs.length" class="log-empty">启动实例后，日志会实时出现在这里。</div>
@@ -173,6 +232,30 @@ onUnmounted(() => off?.())
 
 .desc {
   --n-td-color: transparent;
+}
+
+.cmd-collapse {
+  margin-top: 14px;
+}
+
+.cmd-box {
+  background: $color-surface-2;
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.cmd-cwd {
+  font-size: 11px;
+  color: $color-text-muted;
+  margin-bottom: 6px;
+}
+
+.cmd-line {
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0 0 10px;
+  line-height: 1.55;
 }
 
 .log-scroll {

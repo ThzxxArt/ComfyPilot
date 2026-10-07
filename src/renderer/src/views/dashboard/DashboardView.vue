@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   ServerOutline,
@@ -8,21 +8,27 @@ import {
   PulseOutline,
   MedkitOutline,
   FlashOutline,
-  TrendingUpOutline
+  TrendingUpOutline,
+  RocketOutline,
+  StopOutline,
+  PlayOutline
 } from '@vicons/ionicons5'
 import { NButton, NIcon, NSpace, NTag, NProgress, NSpin } from 'naive-ui'
 import StatCard from '@/components/StatCard.vue'
 import { useAppStore } from '@/stores/app'
 import { ipc } from '@/composables/useIpc'
+import { useLaunch } from '@/composables/useLaunch'
 import { clampPercent, formatBytes, formatPercent } from '@/utils/format'
-import type { NodePackRecord, ModelRecord, DoctorReport } from '@shared/types'
+import type { NodePackRecord, ModelRecord, DoctorReport, QueueSnapshot } from '@shared/types'
 
 const router = useRouter()
 const store = useAppStore()
+const { launch, stop, busy } = useLaunch()
 const loading = ref(true)
 const nodePacks = ref<NodePackRecord[]>([])
 const models = ref<ModelRecord[]>([])
 const report = ref<DoctorReport | null>(null)
+const queue = ref<QueueSnapshot | null>(null)
 
 const stats = computed(() => {
   const sys = store.system
@@ -44,15 +50,43 @@ function vramPercent(gpu: { vramUsed: number; vramTotal: number; utilization?: n
   return clampPercent(gpu.utilization || 0)
 }
 
+async function refreshQueue(): Promise<void> {
+  try {
+    const inst = store.activeInstance
+    if (!inst?.url || inst.status !== 'running') {
+      queue.value = null
+      return
+    }
+    queue.value = await ipc('monitor.queue', inst.url)
+  } catch {
+    queue.value = null
+  }
+}
+
+/** Launcher hero: one click to ready + frontend. */
+async function launchActive(): Promise<void> {
+  const inst = store.activeInstance
+  if (!inst) return
+  await launch(inst, { open: 'embed' })
+}
+
+let queueTimer: ReturnType<typeof setInterval> | null = null
+
 onMounted(async () => {
   try {
-    nodePacks.value = await ipc('node.list')
+    nodePacks.value = await ipc('node.list', store.activeInstanceId || undefined)
     models.value = await ipc('model.list')
   } catch {
     /* optional in empty state */
   } finally {
     loading.value = false
   }
+  await refreshQueue()
+  queueTimer = setInterval(() => void refreshQueue(), 5000)
+})
+
+onUnmounted(() => {
+  if (queueTimer) clearInterval(queueTimer)
 })
 
 async function runDoctor(): Promise<void> {
@@ -87,6 +121,70 @@ async function runDoctor(): Promise<void> {
 
     <div class="page-body">
     <NSpin :show="loading">
+      <!-- Launcher hero -->
+      <section class="card hero">
+        <div class="hero-left">
+          <div class="hero-kicker">当前实例</div>
+          <div class="hero-name">{{ store.activeInstance?.name || '尚未添加实例' }}</div>
+          <div class="hero-meta">
+            <NTag
+              size="small"
+              round
+              :type="store.activeInstance?.status === 'running' ? 'success' : store.activeInstance?.status === 'error' ? 'error' : 'default'"
+            >
+              {{ store.activeInstance?.status || '—' }}
+            </NTag>
+            <span v-if="store.activeInstance" class="mono hero-url">{{ store.activeInstance.url }}</span>
+            <span v-if="store.activeInstance" class="hero-port">端口 {{ store.activeInstance.port }}</span>
+          </div>
+          <div v-if="queue" class="hero-queue">
+            运行中 {{ queue.running.length }} · 等待 {{ queue.pending.length }}
+          </div>
+        </div>
+        <div class="hero-actions">
+          <NButton
+            v-if="!store.activeInstance"
+            type="primary"
+            size="large"
+            @click="router.push('/install')"
+          >
+            <template #icon><NIcon :component="RocketOutline" /></template>
+            一键装机
+          </NButton>
+          <template v-else>
+            <NButton
+              v-if="store.activeInstance.status !== 'running'"
+              type="primary"
+              size="large"
+              :loading="busy[store.activeInstance.id]"
+              @click="launchActive"
+            >
+              <template #icon><NIcon :component="RocketOutline" /></template>
+              启动并打开 Frontend
+            </NButton>
+            <NButton
+              v-else
+              type="primary"
+              size="large"
+              @click="store.activeInstance.url && router.push({ path: '/embed', query: { url: store.activeInstance.url } })"
+            >
+              <template #icon><NIcon :component="PlayOutline" /></template>
+              打开 Frontend
+            </NButton>
+            <NButton
+              v-if="store.activeInstance.status === 'running'"
+              secondary
+              size="large"
+              @click="stop(store.activeInstance)"
+            >
+              <template #icon><NIcon :component="StopOutline" /></template>
+              停止
+            </NButton>
+            <NButton secondary size="large" @click="router.push('/instances')">切换实例</NButton>
+          </template>
+        </div>
+      </section>
+
       <div class="grid stats">
         <StatCard
           label="运行中实例"
@@ -96,7 +194,7 @@ async function runDoctor(): Promise<void> {
           hint="ComfyUI 进程状态"
         />
         <StatCard label="模型资产" :value="stats.models" :icon="FolderOpenOutline" :hint="formatBytes(storageBytes)" />
-        <StatCard label="自定义节点包" :value="stats.nodes" :icon="ExtensionPuzzleOutline" hint="本地 custom_nodes" />
+        <StatCard label="自定义节点包" :value="stats.nodes" :icon="ExtensionPuzzleOutline" hint="当前实例 custom_nodes" />
         <StatCard label="系统负载" :value="formatPercent(stats.cpu)" :icon="PulseOutline" tone="warning" :hint="`内存占用 ${formatPercent(stats.ram)}`" />
       </div>
 
@@ -180,6 +278,61 @@ async function runDoctor(): Promise<void> {
 
 <style lang="scss" scoped>
 @use '@/styles/variables.scss' as *;
+
+.hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 22px 24px;
+  margin-bottom: 16px;
+  background: $gradient-soft;
+  border: 1px solid rgba(79, 110, 247, 0.22);
+}
+
+.hero-kicker {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: $color-primary;
+}
+
+.hero-name {
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin-top: 4px;
+}
+
+.hero-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  font-size: 12.5px;
+  color: $color-text-secondary;
+  flex-wrap: wrap;
+}
+
+.hero-url {
+  color: $color-text-muted;
+  font-size: 12px;
+}
+
+.hero-queue {
+  margin-top: 8px;
+  font-size: 12px;
+  color: $color-text-secondary;
+}
+
+.hero-actions {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
 
 .stats {
   grid-template-columns: repeat(4, minmax(0, 1fr));

@@ -240,6 +240,13 @@ onUnmounted(() => off?.())
           </NSpace>
         </div>
 
+        <div class="field">
+          <NSpace>
+            <NSwitch v-model:value="plan.createDesktopShortcut" />
+            <span class="hint">创建桌面快捷方式（一键启动 ComfyPilot）</span>
+          </NSpace>
+        </div>
+
         <NSpace class="actions">
           <NButton secondary :loading="preflighting" @click="runPreflight">
             <template #icon><NIcon :component="FlashOutline" /></template>

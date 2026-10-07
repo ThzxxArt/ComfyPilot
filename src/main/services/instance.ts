@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'crypto'
 import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'child_process'
 import { promisify } from 'util'
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, mkdirSync, rmSync } from 'fs'
-import { join, dirname } from 'path'
+import { join, dirname, resolve } from 'path'
 import { homedir } from 'os'
 import net from 'net'
 import type {
@@ -14,7 +14,10 @@ import type {
   EnvProbe,
   InstanceDiscoveryCandidate,
   InstanceStatus,
-  PortCheckResult
+  LaunchCommandPreview,
+  LaunchOptions,
+  PortCheckResult,
+  WaitReadyResult
 } from '@shared/types'
 import {
   deleteInstanceConfig,
@@ -40,9 +43,21 @@ interface RuntimeEntry {
   /** Incremented on each start/stop so stale child handlers can be ignored. */
   generation: number
   intentionalStop: boolean
+  /** True once /system_stats has answered for the current generation. */
+  ready: boolean
+  /** True when WE spawned the process (false when adopting an external ComfyUI). */
+  managed: boolean
+  readyWaiters: Array<{
+    resolve: (r: WaitReadyResult) => void
+    timer?: NodeJS.Timeout
+  }>
+  /** Interval that polls /system_stats until ready. */
+  readyPollTimer?: NodeJS.Timeout
 }
 
 const LOG_CAP = 5000
+const READY_POLL_MS = 500
+const READY_TIMEOUT_MS = 45_000
 
 export class InstanceService extends EventEmitter {
   private runtimes = new Map<string, RuntimeEntry>()
@@ -51,7 +66,16 @@ export class InstanceService extends EventEmitter {
   private ensureRuntime(config: ComfyInstanceConfig): RuntimeEntry {
     let rt = this.runtimes.get(config.id)
     if (!rt) {
-      rt = { config, status: 'stopped', logs: [], generation: 0, intentionalStop: false }
+      rt = {
+        config,
+        status: 'stopped',
+        logs: [],
+        generation: 0,
+        intentionalStop: false,
+        ready: false,
+        managed: false,
+        readyWaiters: []
+      }
       this.runtimes.set(config.id, rt)
     } else {
       rt.config = config
@@ -108,6 +132,10 @@ export class InstanceService extends EventEmitter {
     const listen = rt.config.listen || '127.0.0.1'
     return {
       ...rt.config,
+      // Normalize fields older JSONC records may omit
+      pinned: Boolean(rt.config.pinned),
+      autoStart: Boolean(rt.config.autoStart),
+      extraArgs: Array.isArray(rt.config.extraArgs) ? rt.config.extraArgs : [],
       status: rt.status,
       pid: rt.pid,
       url: `http://${listen === '0.0.0.0' ? '127.0.0.1' : listen}:${port}`,
@@ -119,13 +147,56 @@ export class InstanceService extends EventEmitter {
     }
   }
 
+  /** Public URL used for readiness probes and opening the frontend. */
+  private baseUrlOf(config: ComfyInstanceConfig): string {
+    const port = config.port || 8188
+    const listen = config.listen || '127.0.0.1'
+    const host = listen === '0.0.0.0' || listen === '::' || listen === '[::]' ? '127.0.0.1' : listen
+    return `http://${host}:${port}`
+  }
+
+  previewLaunch(id: string): LaunchCommandPreview {
+    const config = loadInstanceConfigs().find((c) => c.id === id)
+    if (!config) throw new Error(`Instance not found: ${id}`)
+    const python = this.resolvePython(config)
+    const args = this.buildArgs(config)
+    const quote = (s: string): string => (/[\s"&|<>^%]/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s)
+    const commandLine = [python, ...args].map(quote).join(' ')
+    return { python, args, cwd: config.path, commandLine }
+  }
+
   list(): ComfyInstanceInfo[] {
-    return loadInstanceConfigs().map((c) => this.toInfo(this.ensureRuntime(c)))
+    return loadInstanceConfigs()
+      .map((c) => this.toInfo(this.ensureRuntime(c)))
+      .sort((a, b) => {
+        // Pinned first, then running, then name
+        if (a.pinned !== b.pinned) return a.pinned ? -1 : 1
+        const aRun = a.status === 'running' ? 0 : 1
+        const bRun = b.status === 'running' ? 0 : 1
+        if (aRun !== bRun) return aRun - bRun
+        return a.name.localeCompare(b.name)
+      })
   }
 
   save(config: ComfyInstanceConfig): ComfyInstanceInfo {
     const id = config.id || randomUUID()
-    const next: ComfyInstanceConfig = { ...config, id }
+    // Persist ONLY config fields — never runtime status/pid/url/uptime.
+    const next: ComfyInstanceConfig = {
+      id,
+      name: config.name,
+      path: config.path,
+      pythonPath: config.pythonPath || '',
+      venvPath: config.venvPath || '',
+      port: config.port || 8188,
+      listen: config.listen || '127.0.0.1',
+      extraArgs: Array.isArray(config.extraArgs) ? config.extraArgs : [],
+      argTemplateId: config.argTemplateId || 'default',
+      enabled: config.enabled !== false,
+      notes: config.notes || '',
+      autoStart: Boolean(config.autoStart),
+      frontendVersion: config.frontendVersion || '',
+      pinned: Boolean(config.pinned)
+    }
     upsertInstanceConfig(next)
     return this.toInfo(this.ensureRuntime(next))
   }
@@ -135,6 +206,7 @@ export class InstanceService extends EventEmitter {
     if (rt?.process) {
       rt.intentionalStop = true
       rt.generation += 1
+      this.clearReadyProbe(rt)
       try {
         rt.process.kill()
       } catch {
@@ -169,6 +241,15 @@ export class InstanceService extends EventEmitter {
 
   discover(root?: string): InstanceDiscoveryCandidate[] {
     const found: InstanceDiscoveryCandidate[] = []
+    const registered = new Set(
+      loadInstanceConfigs().map((c) => {
+        try {
+          return resolve(c.path).toLowerCase()
+        } catch {
+          return c.path.toLowerCase()
+        }
+      })
+    )
     // Renderer-supplied root must resolve inside an allow-listed tree; ignore otherwise.
     const safeRoot = root ? resolveInsideAnyRoot(root, this.commonRoots()) : null
     for (const p of this.commonRoots(safeRoot ?? undefined)) {
@@ -180,12 +261,12 @@ export class InstanceService extends EventEmitter {
         continue
       }
       // root itself may be a ComfyUI install
-      this.scoreCandidate(p, found)
+      this.scoreCandidate(p, found, registered)
       // or contain sub-installs
       for (const name of entries.slice(0, 40)) {
         const child = join(p, name)
         try {
-          if (statSync(child).isDirectory()) this.scoreCandidate(child, found)
+          if (statSync(child).isDirectory()) this.scoreCandidate(child, found, registered)
         } catch {
           /* skip */
         }
@@ -194,7 +275,11 @@ export class InstanceService extends EventEmitter {
     return found.sort((a, b) => b.score - a.score).slice(0, 20)
   }
 
-  private scoreCandidate(path: string, out: InstanceDiscoveryCandidate[]): void {
+  private scoreCandidate(
+    path: string,
+    out: InstanceDiscoveryCandidate[],
+    registered?: Set<string>
+  ): void {
     const hasMainPy = existsSync(join(path, 'main.py'))
     const hasRequirements = existsSync(join(path, 'requirements.txt'))
     const hasVenv =
@@ -204,14 +289,25 @@ export class InstanceService extends EventEmitter {
       existsSync(join(path, 'python_embedded'))
     if (!hasMainPy && !hasRequirements) return
     if (out.some((c) => c.path === path)) return
+    let isRegistered = false
+    try {
+      isRegistered = Boolean(registered?.has(resolve(path).toLowerCase()))
+    } catch {
+      isRegistered = Boolean(registered?.has(path.toLowerCase()))
+    }
     out.push({
       path,
-      score: (hasMainPy ? 50 : 0) + (hasRequirements ? 20 : 0) + (hasVenv ? 30 : 0),
-      reason: hasMainPy ? 'Found main.py' : 'Found requirements.txt',
+      score: (hasMainPy ? 50 : 0) + (hasRequirements ? 20 : 0) + (hasVenv ? 30 : 0) - (isRegistered ? 100 : 0),
+      reason: isRegistered
+        ? 'Already registered'
+        : hasMainPy
+          ? 'Found main.py'
+          : 'Found requirements.txt',
       hasMainPy,
       hasRequirements,
       hasVenv,
-      estimatedVersion: this.probeVersion(path)
+      estimatedVersion: this.probeVersion(path),
+      registered: isRegistered
     })
   }
 
@@ -447,45 +543,246 @@ export class InstanceService extends EventEmitter {
     return args
   }
 
-  async start(id: string): Promise<ComfyInstanceInfo> {
+  async start(id: string, opts?: LaunchOptions): Promise<ComfyInstanceInfo> {
     if (this.startingIds.has(id)) {
       throw new Error('Instance start already in progress')
     }
     this.startingIds.add(id)
     try {
-      return await this.startInner(id)
+      return await this.startInner(id, opts)
     } finally {
       this.startingIds.delete(id)
     }
   }
 
-  private async startInner(id: string): Promise<ComfyInstanceInfo> {
+  /**
+   * Start and block until HTTP is ready (or throw).
+   * Opening embed/browser is done by the IPC layer so this service stays
+   * free of Electron shell/window dependencies.
+   */
+  async launch(id: string, opts?: LaunchOptions): Promise<ComfyInstanceInfo> {
+    const info = await this.start(id, opts)
+    const rt = this.runtimes.get(id)
+    if (rt?.ready && rt.status === 'running') return info
+    const waited = await this.waitReady(id)
+    if (!waited.ready) {
+      throw new Error(waited.error || 'Instance did not become ready')
+    }
+    return waited.info
+  }
+
+  async waitReady(id: string, timeoutMs = READY_TIMEOUT_MS + 5_000): Promise<WaitReadyResult> {
+    const rt = this.runtimes.get(id)
+    const started = Date.now()
+    if (!rt) {
+      const configs = loadInstanceConfigs()
+      const config = configs.find((c) => c.id === id)
+      if (!config) throw new Error(`Instance not found: ${id}`)
+      return {
+        ready: false,
+        info: this.toInfo(this.ensureRuntime(config)),
+        error: 'Instance is not running',
+        elapsedMs: 0
+      }
+    }
+    if (rt.ready && rt.status === 'running') {
+      return { ready: true, info: this.toInfo(rt), elapsedMs: 0 }
+    }
+    if (rt.status === 'error') {
+      return {
+        ready: false,
+        info: this.toInfo(rt),
+        error: rt.lastError || 'Instance is in error state',
+        elapsedMs: Date.now() - started
+      }
+    }
+    return new Promise<WaitReadyResult>((resolveWait) => {
+      const waiter: RuntimeEntry['readyWaiters'][number] = {
+        resolve: () => undefined
+      }
+      const finish = (result: WaitReadyResult): void => {
+        if (waiter.timer) {
+          clearTimeout(waiter.timer)
+          waiter.timer = undefined
+        }
+        rt.readyWaiters = rt.readyWaiters.filter((w) => w !== waiter)
+        resolveWait(result)
+      }
+      waiter.resolve = finish
+      waiter.timer = setTimeout(() => {
+        finish({
+          ready: false,
+          info: this.toInfo(rt),
+          error: `Instance did not become ready within ${Math.round(timeoutMs / 1000)}s`,
+          elapsedMs: Date.now() - started
+        })
+      }, timeoutMs)
+      rt.readyWaiters.push(waiter)
+    })
+  }
+
+  private settleReadyWaiters(rt: RuntimeEntry, error?: string): void {
+    const waiters = rt.readyWaiters
+    rt.readyWaiters = []
+    for (const w of waiters) {
+      if (w.timer) {
+        clearTimeout(w.timer)
+        w.timer = undefined
+      }
+      w.resolve({
+        ready: rt.ready && rt.status === 'running',
+        info: this.toInfo(rt),
+        error,
+        elapsedMs: 0
+      })
+    }
+  }
+
+  /** Poll /system_stats until ComfyUI answers or the process dies. */
+  private beginReadyProbe(rt: RuntimeEntry, gen: number): void {
+    if (rt.readyPollTimer) {
+      clearInterval(rt.readyPollTimer)
+      rt.readyPollTimer = undefined
+    }
+    const started = Date.now()
+    const base = this.baseUrlOf(rt.config)
+    const tick = async (): Promise<void> => {
+      if (rt.generation !== gen) {
+        if (rt.readyPollTimer) {
+          clearInterval(rt.readyPollTimer)
+          rt.readyPollTimer = undefined
+        }
+        return
+      }
+      if (!rt.process || rt.process.exitCode !== null) {
+        // Process vanished without going through exit() — stop polling.
+        if (rt.readyPollTimer) {
+          clearInterval(rt.readyPollTimer)
+          rt.readyPollTimer = undefined
+        }
+        return
+      }
+      try {
+        const res = await fetch(`${base}/system_stats`, { signal: AbortSignal.timeout(1200) })
+        if (res.ok) {
+          const data = (await res.json().catch(() => null)) as { system?: unknown; devices?: unknown } | null
+          if (data && typeof data === 'object' && ('system' in data || 'devices' in data)) {
+            if (rt.generation !== gen) return
+            rt.ready = true
+            rt.status = 'running'
+            if (rt.readyPollTimer) {
+              clearInterval(rt.readyPollTimer)
+              rt.readyPollTimer = undefined
+            }
+            this.pushLog(rt, 'info', `ComfyUI ready at ${base} (${Date.now() - started}ms)`)
+            this.settleReadyWaiters(rt)
+            return
+          }
+        }
+      } catch {
+        /* not up yet */
+      }
+      if (Date.now() - started > READY_TIMEOUT_MS) {
+        if (rt.generation !== gen) return
+        rt.status = 'error'
+        rt.lastError = `ComfyUI did not answer on ${base} within ${Math.round(READY_TIMEOUT_MS / 1000)}s`
+        if (rt.readyPollTimer) {
+          clearInterval(rt.readyPollTimer)
+          rt.readyPollTimer = undefined
+        }
+        this.pushLog(rt, 'error', rt.lastError)
+        this.settleReadyWaiters(rt, rt.lastError)
+      }
+    }
+    rt.readyPollTimer = setInterval(() => {
+      void tick()
+    }, READY_POLL_MS)
+    void tick()
+  }
+
+  private clearReadyProbe(rt: RuntimeEntry, error?: string): void {
+    if (rt.readyPollTimer) {
+      clearInterval(rt.readyPollTimer)
+      rt.readyPollTimer = undefined
+    }
+    rt.ready = false
+    this.settleReadyWaiters(rt, error ?? (rt.intentionalStop ? 'Stopped' : rt.lastError))
+  }
+
+  private async startInner(id: string, opts?: LaunchOptions): Promise<ComfyInstanceInfo> {
     const config = loadInstanceConfigs().find((c) => c.id === id)
     if (!config) throw new Error(`Instance not found: ${id}`)
     const rt = this.ensureRuntime(config)
-    if (rt.process && rt.process.exitCode === null) return this.toInfo(rt)
+    if (rt.process && rt.process.exitCode === null) {
+      if (rt.ready) return this.toInfo(rt)
+      // Process is up but not ready yet — wait for the existing probe.
+      const waited = await this.waitReady(id)
+      if (!waited.ready) throw new Error(waited.error || 'Instance did not become ready')
+      return waited.info
+    }
 
-    const portCheck = await this.checkPort(config.port || 8188)
+    let effectivePort = config.port || 8188
+    const portCheck = await this.checkPort(effectivePort)
     if (!portCheck.available) {
-      rt.lastError = `Port ${config.port} is already in use`
-      rt.status = 'error'
-      this.pushLog(rt, 'error', rt.lastError)
-      throw new Error(rt.lastError)
+      // Port may be occupied by a ComfyUI we can adopt (already running).
+      const base = this.baseUrlOf({ ...config, port: effectivePort })
+      try {
+        const res = await fetch(`${base}/system_stats`, { signal: AbortSignal.timeout(1500) })
+        if (res.ok) {
+          rt.status = 'running'
+          rt.ready = true
+          rt.managed = false
+          rt.startedAt = rt.startedAt ?? Date.now()
+          this.pushLog(
+            rt,
+            'info',
+            `Adopted already-running ComfyUI at ${base} (external process — stop will not kill it)`
+          )
+          this.emitStatus(rt)
+          return this.toInfo(rt)
+        }
+      } catch {
+        /* not ComfyUI — real conflict */
+      }
+      if (opts?.relocatePort) {
+        const next = await this.suggestPort()
+        this.pushLog(
+          rt,
+          'warn',
+          `Port ${effectivePort} is in use — relocating to ${next} (persisted to instance config)`
+        )
+        effectivePort = next
+        const nextConfig: ComfyInstanceConfig = { ...config, port: next }
+        upsertInstanceConfig(nextConfig)
+        rt.config = nextConfig
+      } else {
+        rt.lastError = `Port ${effectivePort} is already in use`
+        rt.status = 'error'
+        this.pushLog(rt, 'error', rt.lastError)
+        this.emitStatus(rt)
+        const err = new Error(rt.lastError) as Error & { code?: string; suggestedPort?: number }
+        err.code = 'PORT_IN_USE'
+        err.suggestedPort = await this.suggestPort()
+        throw err
+      }
     }
 
     rt.generation += 1
     const gen = rt.generation
     rt.intentionalStop = false
     rt.status = 'starting'
+    rt.ready = false
+    rt.managed = true
     rt.lastError = undefined
+    rt.startedAt = undefined
     this.emitStatus(rt)
 
-    const python = this.resolvePython(config)
-    const args = this.buildArgs(config)
+    const python = this.resolvePython(rt.config)
+    const args = this.buildArgs(rt.config)
 
     try {
       const child = spawn(python, args, {
-        cwd: config.path,
+        cwd: rt.config.path,
         windowsHide: true,
         env: { ...process.env }
       })
@@ -526,6 +823,7 @@ export class InstanceService extends EventEmitter {
           rt.process = undefined
           rt.pid = undefined
         }
+        this.clearReadyProbe(rt)
         this.pushLog(rt, 'error', err.message)
       })
       child.on('exit', (code, signal) => {
@@ -538,23 +836,55 @@ export class InstanceService extends EventEmitter {
         const intentional = rt.intentionalStop || signal === 'SIGTERM' || signal === 'SIGKILL'
         rt.status = intentional ? 'stopped' : code === 0 ? 'stopped' : 'error'
         if (!intentional && code !== 0) rt.lastError = `Exited with code ${code}`
+        this.clearReadyProbe(rt)
         this.pushLog(rt, code === 0 || intentional ? 'info' : 'error', `Process exited code=${code} signal=${signal}`)
       })
 
-      setTimeout(() => {
-        if (rt.generation === gen && rt.process && rt.status === 'starting') {
-          rt.status = 'running'
-          this.pushLog(rt, 'info', `ComfyUI listening at ${this.toInfo(rt).url}`)
-        }
-      }, 1500)
+      this.beginReadyProbe(rt, gen)
     } catch (err) {
       rt.status = 'error'
       rt.lastError = err instanceof Error ? err.message : String(err)
+      this.clearReadyProbe(rt)
       this.emitStatus(rt)
       throw err
     }
 
+    // Surface errors fast: if the process dies in the first moments, rethrow.
+    await new Promise((r) => setTimeout(r, 200))
+    const lateStatus = rt.status as InstanceStatus
+    if (rt.generation === gen && lateStatus === 'error' && rt.lastError) {
+      throw new Error(rt.lastError)
+    }
+
     return this.toInfo(rt)
+  }
+
+  async startAll(): Promise<ComfyInstanceInfo[]> {
+    const configs = loadInstanceConfigs().filter((c) => c.enabled !== false)
+    const out: ComfyInstanceInfo[] = []
+    for (const c of configs) {
+      try {
+        out.push(await this.start(c.id))
+      } catch (err) {
+        this.pushLog(
+          this.ensureRuntime(c),
+          'error',
+          `startAll: ${err instanceof Error ? err.message : String(err)}`
+        )
+        out.push(this.toInfo(this.ensureRuntime(c)))
+      }
+    }
+    return out
+  }
+
+  async stopAll(): Promise<ComfyInstanceInfo[]> {
+    const out: ComfyInstanceInfo[] = []
+    for (const rt of this.runtimes.values()) {
+      if (rt.process) {
+        out.push(await this.stop(rt.config.id))
+      }
+    }
+    return out
   }
 
   async stop(id: string): Promise<ComfyInstanceInfo> {
@@ -563,9 +893,11 @@ export class InstanceService extends EventEmitter {
     rt.intentionalStop = true
     rt.generation += 1
     const child = rt.process
+    const wasManaged = rt.managed
     rt.process = undefined
     rt.pid = undefined
     rt.status = 'stopped'
+    this.clearReadyProbe(rt, wasManaged ? 'Stopped' : 'External process left running')
     if (child) {
       try {
         child.kill('SIGTERM')
@@ -579,12 +911,16 @@ export class InstanceService extends EventEmitter {
           /* ignore */
         }
       }, 3000)
+    } else if (!wasManaged && rt.ready) {
+      // We only adopted an external ComfyUI — be honest instead of pretending we killed it.
+      this.pushLog(rt, 'warn', 'Stop requested for an adopted external process — it is still running outside ComfyPilot')
     }
+    rt.managed = false
     this.emitStatus(rt)
     return this.toInfo(rt)
   }
 
-  async restart(id: string): Promise<ComfyInstanceInfo> {
+  async restart(id: string, opts?: LaunchOptions): Promise<ComfyInstanceInfo> {
     await this.stop(id)
     // Wait until port is free (or timeout) so start() does not race a dying process.
     const config = loadInstanceConfigs().find((c) => c.id === id)
@@ -594,7 +930,8 @@ export class InstanceService extends EventEmitter {
       if (check.available) break
       await new Promise((r) => setTimeout(r, 150))
     }
-    return this.start(id)
+    // Restart must not return until the new process is actually ready.
+    return this.launch(id, opts)
   }
 
   async forceKill(id: string): Promise<ComfyInstanceInfo> {
@@ -604,33 +941,40 @@ export class InstanceService extends EventEmitter {
     rt.generation += 1
     const child = rt.process
     const pid = rt.pid
+    const wasManaged = rt.managed
     rt.process = undefined
     rt.pid = undefined
+    this.clearReadyProbe(rt, 'Force killed')
     if (child) {
       try {
         child.kill('SIGKILL')
       } catch {
         /* ignore */
       }
-    } else if (pid) {
-      // Only kill PID if we no longer own a live child handle (avoid PID reuse races).
+    } else if (pid && wasManaged) {
+      // Only kill PID if we spawned it and no longer own a live child handle (avoid PID reuse races).
       try {
         process.kill(pid, 'SIGKILL')
       } catch {
         /* ignore */
       }
+    } else if (!wasManaged) {
+      this.pushLog(rt, 'warn', 'Force-kill requested for an adopted external process — refusing to kill an unowned PID')
     }
     rt.status = 'stopped'
+    rt.managed = false
     this.pushLog(rt, 'warn', 'Force killed')
     this.emitStatus(rt)
     return this.toInfo(rt)
   }
 
-  stopAll(): void {
+  /** Synchronous best-effort kill used on app quit. */
+  killAllNow(): void {
     for (const rt of this.runtimes.values()) {
       if (rt.process) {
         rt.intentionalStop = true
         rt.generation += 1
+        this.clearReadyProbe(rt)
         try {
           rt.process.kill()
         } catch {

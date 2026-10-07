@@ -1,7 +1,7 @@
 # ComfyPilot
 
 > **ComfyUI 全能管理器** — 本机 ComfyUI 生产线的控制塔  
-> TypeScript · Vue 3 · Electron · Naive UI · MIT · v0.1.0
+> TypeScript · Vue 3 · Electron · Naive UI · MIT · v0.1.1
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-4f6ef7)](./LICENSE)
 
@@ -33,9 +33,9 @@ ComfyPilot **不替代** ComfyUI 节点工作台，而是管理它的整套生�
 
 | 模块 | 能力 |
 |------|------|
-| **总览 Dashboard** | 实例 / 模型 / 节点 / CPU·内存·显存一屏掌握，快捷入口 |
-| **一键装机 Install** | 独立 venv/uv、按 GPU 推荐 torch 通道、克隆 ComfyUI、安装依赖、注册实例 |
-| **实例 Instances** | 发现、启停、重启、强杀、端口检测与建议、启动参数模板、环境探测、诊断包导出 |
+| **总览 Dashboard** | 启动器大卡（一键启动并打开 Frontend）、实例 / 模型 / 节点 / CPU·内存·显存一屏掌握 |
+| **一键装机 Install** | 独立 venv/uv、按 GPU 推荐 torch 通道、克隆 ComfyUI、安装依赖、注册实例、桌面快捷方式 |
+| **实例 Instances** | 发现候选列表、一键启动并打开、就绪探测、端口冲突自愈、启动命令预览、热编辑、置顶/搜索、启停重启强杀、环境探测、诊断包 |
 | **模型库 Models** | 多根扫描、safetensors 元数据、SHA256 去重、断点下载、移动/软链/改名、存储分析、缩略图 |
 | **节点 Node Packs** | Registry / Manager / Git 安装、更新、启用禁用、锁定、冲突检测、冒烟导入、快照回滚 |
 | **市场 Market** | Comfy Registry 精选浏览与一键安装 |
@@ -201,6 +201,8 @@ npm run test:all        # typecheck + coverage + build + e2e
 | 下载 | aria2 路径、启用 aria2 | 大文件可选加速与断点 |
 | 代理 | 协议 / 主机 / 端口 / 账号 / 绕过列表 | 应用内下载、Registry、git/pip、内嵌页共用 |
 | 行为 | 启动检查更新、优先内嵌 Frontend、语言 | |
+| 行为 | 开机启动 ComfyPilot / 关窗最小化到托盘 / 启动 App 后自动拉起 autoStart 实例 | 启动器体验 |
+| 实例 | autoStart / pinned | App 启动自动拉起；列表置顶排序 |
 
 数据目录可在设置页一键打开（`userData/data/*.jsonc`）。
 
@@ -396,6 +398,8 @@ ComfyUI 本身采用 GPL-3.0；本项目独立发布，采用 **MIT**。
 - [x] 一键装机（隔离 venv + torch 通道）
 - [x] 网络代理与镜像端点
 - [x] JSONC 存储、完整测试矩阵、Windows 安装包
+- [x] **0.1.1 启动器**：就绪探测、启动并打开、端口自愈、托盘、开机自启、桌面快捷方式、autoStart 生效
+- [x] **0.1.1 多实例上下文**：节点/市场/模型绑定当前实例
 - [ ] 自动更新通道（GitHub Releases）
 - [ ] 工作流版本对照与打包分享
 - [ ] 更细的 GPU 多卡 / 共享显存展示

@@ -9,11 +9,16 @@ import { monitorService } from './services/monitor'
 import { batchService } from './services/p1p2'
 import { installerService } from './services/installer'
 import { syncProxyFromSettings } from './services/proxy'
+import { createTray, destroyTray, refreshTray, hasTray } from './services/tray'
+import { setLaunchOnBoot } from './services/desktop'
+import { loadSettings, loadInstanceConfigs } from './services/db'
 import { IPC_EVENTS } from '@shared/types'
 import { APP_NAME } from '@shared/constants'
 import { isSafeExternalUrl, safeResolveUnder } from './services/security'
 
 let mainWindow: BrowserWindow | null = null
+/** Set when the user actually quit — close then destroys instead of hiding. */
+let forceQuit = false
 
 function crashLog(msg: string): void {
   try {
@@ -89,6 +94,7 @@ function isOwnRendererEntry(url: string): boolean {
 function revealWindow(): void {
   try {
     mainWindow?.show()
+    mainWindow?.focus()
   } catch {
     /* ignore */
   }
@@ -142,6 +148,27 @@ function createWindow(): void {
     crashLog('ready-to-show')
     mainWindow?.show()
   })
+
+  // Close button hides to tray when minimizeToTray is on (launcher-friendly).
+  app.on('before-quit', () => {
+    forceQuit = true
+  })
+  mainWindow.on('close', (e) => {
+    if (forceQuit) return
+    let minimizeToTray = true
+    try {
+      minimizeToTray = loadSettings().minimizeToTray !== false
+    } catch {
+      minimizeToTray = true
+    }
+    // Only hide when a tray icon can bring the window back — otherwise close for real.
+    if (minimizeToTray && hasTray() && mainWindow) {
+      e.preventDefault()
+      mainWindow.hide()
+      void refreshTray()
+    }
+  })
+
   mainWindow.webContents.on('did-fail-load', (_e, code, desc) => {
     crashLog('did-fail-load ' + code + ' ' + desc)
     revealWindow()
@@ -282,8 +309,13 @@ app.whenReady().then(async () => {
 
   if (app.isPackaged) {
     try {
-      const { loadSettings } = await import('./services/db')
-      const settings = await loadSettings()
+      const settings = loadSettings()
+      // Sync OS login item with the persisted preference
+      try {
+        setLaunchOnBoot(Boolean(settings.launchOnBoot))
+      } catch (e) {
+        crashLog('launchOnBoot sync: ' + String(e))
+      }
       if (settings.enableAutoCheckUpdates) {
         const updater = await import('electron-updater')
         const autoUpdater = updater.autoUpdater || (updater as { default?: { autoUpdater?: unknown } }).default?.autoUpdater
@@ -310,9 +342,52 @@ app.whenReady().then(async () => {
     } catch (err) {
       crashLog('updater skipped: ' + String(err))
     }
+  } else {
+    // Dev: still honour the login-item preference so the feature is testable
+    try {
+      const settings = loadSettings()
+      if (settings.launchOnBoot) setLaunchOnBoot(true)
+    } catch {
+      /* ignore */
+    }
   }
 
-  instanceService.on('status', (info) => broadcast(IPC_EVENTS.instanceStatus, info))
+  // System tray (launcher shell)
+  try {
+    createTray({ onShowWindow: revealWindow })
+    crashLog('tray ok')
+  } catch (err) {
+    crashLog('tray fail: ' + String(err))
+  }
+
+  // Auto-start instances flagged with autoStart (consumes the previously dead field)
+  try {
+    const settings = loadSettings()
+    if (settings.autoStartInstancesOnLaunch !== false) {
+      const auto = loadInstanceConfigs().filter((c) => c.autoStart && c.enabled !== false)
+      if (auto.length) {
+        crashLog(`autoStart: ${auto.length} instance(s)`)
+        void (async () => {
+          for (const c of auto) {
+            try {
+              await instanceService.start(c.id)
+              crashLog(`autoStart ok: ${c.name}`)
+            } catch (e) {
+              crashLog(`autoStart fail ${c.name}: ${e instanceof Error ? e.message : String(e)}`)
+            }
+          }
+          void refreshTray()
+        })()
+      }
+    }
+  } catch (err) {
+    crashLog('autoStart skipped: ' + String(err))
+  }
+
+  instanceService.on('status', (info) => {
+    broadcast(IPC_EVENTS.instanceStatus, info)
+    void refreshTray()
+  })
   instanceService.on('log', (id, line) => broadcast(IPC_EVENTS.instanceLog, { id, line }))
   modelService.on('progress', (p) => broadcast(IPC_EVENTS.modelScanProgress, p))
   modelService.on('download', (t) => broadcast(IPC_EVENTS.downloadProgress, t))
@@ -334,12 +409,22 @@ app.whenReady().then(async () => {
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    else revealWindow()
   })
 
   app.on('before-quit', () => {
     clearInterval(timer)
     monitorService.disconnectWs()
-    instanceService.stopAll()
+    try {
+      instanceService.killAllNow()
+    } catch {
+      /* ignore */
+    }
+    try {
+      destroyTray()
+    } catch {
+      /* ignore */
+    }
   })
 })
 

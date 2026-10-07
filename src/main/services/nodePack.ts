@@ -66,9 +66,9 @@ function resolveNestedPackDir(dest: string): string {
   return dest
 }
 
-/** Best-effort python for the first configured instance (venv preferred). */
-function resolveInstancePython(): string {
-  const inst = loadInstanceConfigs()[0]
+/** Best-effort python for the targeted instance (venv preferred). */
+function resolveInstancePython(instanceId?: string): string {
+  const inst = resolveInstanceConfig(instanceId)
   if (inst?.venvPath) {
     const win = join(inst.venvPath, 'Scripts', 'python.exe')
     const unix = join(inst.venvPath, 'bin', 'python')
@@ -78,8 +78,31 @@ function resolveInstancePython(): string {
   return inst?.pythonPath || 'python'
 }
 
-function detectCustomNodesRoot(instancePath?: string): string {
+/**
+ * Resolve the instance that node-pack operations should target.
+ * - no id → first enabled instance
+ * - id found → that instance
+ * - id provided but NOT found → undefined (never silently fall back to another instance)
+ */
+export function resolveInstanceConfig(instanceId?: string): import('@shared/types').ComfyInstanceConfig | undefined {
+  const configs = loadInstanceConfigs()
+  if (instanceId) {
+    return configs.find((c) => c.id === instanceId)
+  }
+  return configs.find((c) => c.enabled !== false) || configs[0]
+}
+
+function detectCustomNodesRoot(instanceIdOrPath?: string): string {
   const settings = loadSettings()
+  let instancePath: string | undefined
+  if (instanceIdOrPath) {
+    // Path form takes precedence — never resolve a filesystem path as an instance id.
+    if (instanceIdOrPath.includes('/') || instanceIdOrPath.includes('\\')) {
+      instancePath = instanceIdOrPath
+    } else {
+      instancePath = resolveInstanceConfig(instanceIdOrPath)?.path
+    }
+  }
   const candidates = [
     instancePath && join(instancePath, 'custom_nodes'),
     settings.defaultInstancePath && join(settings.defaultInstancePath, 'custom_nodes'),
@@ -214,8 +237,8 @@ function collectIssues(dir: string, meta: Partial<NodePackRecord>): NodePackIssu
 }
 
 export class NodePackService {
-  list(instancePath?: string): NodePackRecord[] {
-    const root = detectCustomNodesRoot(instancePath)
+  list(instancePathOrId?: string): NodePackRecord[] {
+    const root = detectCustomNodesRoot(instancePathOrId)
     if (!root || !existsSync(root)) return []
     const known = new Map(listNodePacks().map((p) => [p.name, p]))
     const packs: NodePackRecord[] = []
@@ -268,8 +291,8 @@ export class NodePackService {
     return packs
   }
 
-  async refresh(): Promise<NodePackRecord[]> {
-    const packs = this.list()
+  async refresh(instancePathOrId?: string): Promise<NodePackRecord[]> {
+    const packs = this.list(instancePathOrId)
     const known = new Map(listNodePacks().map((p) => [p.id, p]))
     for (const p of packs) {
       const prev = known.get(p.id)
@@ -368,6 +391,7 @@ export class NodePackService {
     version?: string
     source: 'registry' | 'git' | 'manager'
     url?: string
+    instanceId?: string
   }): Promise<NodePackRecord> {
     this.assertInstallAllowed(opts.source)
     // PLAN: 安装前自动快照
@@ -376,7 +400,7 @@ export class NodePackService {
     } catch {
       /* snapshot is best-effort */
     }
-    const root = detectCustomNodesRoot()
+    const root = detectCustomNodesRoot(opts.instanceId)
     if (!root) throw new Error('custom_nodes root not found — add a ComfyUI instance first')
     mkdirSync(root, { recursive: true })
 
@@ -399,7 +423,7 @@ export class NodePackService {
         maxBuffer: 20 * 1024 * 1024,
         env: proxyEnv(loadSettings().proxy)
       })
-      return this.afterInstall(resolveNestedPackDir(dest), opts.source)
+      return this.afterInstall(resolveNestedPackDir(dest), opts.source, opts.id, opts.instanceId)
     }
 
     const versionPart = opts.version ? `/${encodeURIComponent(opts.version)}` : ''
@@ -447,13 +471,14 @@ export class NodePackService {
     } catch {
       /* ignore */
     }
-    return this.afterInstall(resolveNestedPackDir(dest), 'registry', opts.id)
+    return this.afterInstall(resolveNestedPackDir(dest), 'registry', opts.id, opts.instanceId)
   }
 
   private afterInstall(
     dir: string,
     source: 'registry' | 'git' | 'manager' | 'local' = 'local',
-    registryId?: string
+    registryId?: string,
+    instanceId?: string
   ): NodePackRecord {
     const meta = readPackMeta(dir)
     const issues = collectIssues(dir, meta)
@@ -471,7 +496,7 @@ export class NodePackService {
         })
       } else {
         try {
-          const vpy = resolveInstancePython()
+          const vpy = resolveInstancePython(instanceId)
           if (vpy) {
             execFile(vpy, ['-m', 'pip', 'install', '-r', reqFile], {
               timeout: 10 * 60 * 1000,
@@ -516,8 +541,8 @@ export class NodePackService {
     return rec
   }
 
-  async uninstall(idOrName: string): Promise<boolean> {
-    const packs = this.list()
+  async uninstall(idOrName: string, instanceId?: string): Promise<boolean> {
+    const packs = this.list(instanceId)
     const pack = packs.find((p) => p.id === idOrName || p.name === idOrName)
     if (!pack?.path) return false
     if (pack.locked) throw new Error('Pack is locked — unlock before uninstall')
@@ -532,8 +557,8 @@ export class NodePackService {
     return true
   }
 
-  async update(idOrName: string, version?: string): Promise<NodePackRecord> {
-    const packs = this.list()
+  async update(idOrName: string, version?: string, instanceId?: string): Promise<NodePackRecord> {
+    const packs = this.list(instanceId)
     const pack = packs.find((p) => p.id === idOrName || p.name === idOrName)
     if (!pack) throw new Error('Pack not found')
     if (pack.locked) throw new Error('Pack is locked')
@@ -545,7 +570,12 @@ export class NodePackService {
         maxBuffer: 20 * 1024 * 1024,
         env: proxyEnv(loadSettings().proxy)
       })
-      return this.afterInstall(pack.path, pack.installSource === 'registry' ? 'git' : pack.installSource)
+      return this.afterInstall(
+        pack.path,
+        pack.installSource === 'registry' ? 'git' : pack.installSource,
+        pack.registryId,
+        instanceId
+      )
     }
     if (pack.installSource === 'registry' && pack.registryId && pack.path) {
       const trash = `${pack.path}.bak-${Date.now()}`
@@ -554,7 +584,8 @@ export class NodePackService {
         const next = await this.install({
           id: pack.registryId,
           version,
-          source: 'registry'
+          source: 'registry',
+          instanceId
         })
         // Clean backup only after successful reinstall
         try {
@@ -578,8 +609,8 @@ export class NodePackService {
     throw new Error('Pack is not updatable via Registry or git')
   }
 
-  toggle(idOrName: string, enabled: boolean): NodePackRecord | undefined {
-    const packs = this.list()
+  toggle(idOrName: string, enabled: boolean, instanceId?: string): NodePackRecord | undefined {
+    const packs = this.list(instanceId)
     const pack = packs.find((p) => p.id === idOrName || p.name === idOrName)
     if (!pack?.path) return undefined
     // Also handle `name.disabled` folder convention
@@ -615,13 +646,13 @@ export class NodePackService {
     return pack
   }
 
-  checkIssues(idOrName: string): NodePackIssue[] {
-    return this.list().find((p) => p.id === idOrName || p.name === idOrName)?.issues || []
+  checkIssues(idOrName: string, instanceId?: string): NodePackIssue[] {
+    return this.list(instanceId).find((p) => p.id === idOrName || p.name === idOrName)?.issues || []
   }
 
-  conflicts(): NodeNameConflict[] {
+  conflicts(instanceId?: string): NodeNameConflict[] {
     const map = new Map<string, string[]>()
-    for (const pack of this.list()) {
+    for (const pack of this.list(instanceId)) {
       for (const node of pack.nodeList || []) {
         const arr = map.get(node) || []
         arr.push(pack.name)
@@ -633,11 +664,11 @@ export class NodePackService {
       .map(([nodeName, packs]) => ({ nodeName, packs: [...new Set(packs)] }))
   }
 
-  async smokeTest(idOrName: string): Promise<NodePackIssue[]> {
-    const pack = this.list().find((p) => p.id === idOrName || p.name === idOrName)
+  async smokeTest(idOrName: string, instanceId?: string): Promise<NodePackIssue[]> {
+    const pack = this.list(instanceId).find((p) => p.id === idOrName || p.name === idOrName)
     if (!pack?.path) return []
     const issues: NodePackIssue[] = []
-    const python = resolveInstancePython()
+    const python = resolveInstancePython(instanceId)
     // Import for real (exec_module) so syntax/import errors surface; path arrives via argv.
     const py = [
       'import importlib.util,sys,os,traceback',

@@ -1,7 +1,7 @@
 import { ipcMain, dialog, shell, BrowserWindow, WebContentsView, clipboard } from 'electron'
 import { existsSync } from 'fs'
 import { basename, extname } from 'path'
-import type { IpcResult, ComfyInstanceConfig, RemoteInstanceConfig, NodePackRecord, BatchJob, EnvCreateRequest, WorkflowRecord, AppSettings, InstallPlan } from '@shared/types'
+import type { IpcResult, ComfyInstanceConfig, RemoteInstanceConfig, NodePackRecord, BatchJob, EnvCreateRequest, WorkflowRecord, AppSettings, InstallPlan, LaunchOptions } from '@shared/types'
 import { isSafeExternalUrl, isSafeEmbedUrl, sanitizeId, isSafeOpenPath, isLocalhostUrl } from '../services/security'
 import { loadSettings, saveSettings, loadInstanceConfigs, upsertInstanceConfig, deleteInstanceConfig } from '../services/db'
 import { LAUNCH_TEMPLATES } from '@shared/constants'
@@ -22,7 +22,16 @@ function ok<T>(data: T): IpcResult<T> {
 }
 
 function fail(error: unknown): IpcResult<never> {
-  return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  if (error && typeof error === 'object') {
+    const e = error as Error & { code?: string; suggestedPort?: number }
+    return {
+      ok: false,
+      error: e.message || String(error),
+      code: e.code,
+      suggestedPort: e.suggestedPort
+    }
+  }
+  return { ok: false, error: String(error) }
 }
 
 function wrap<A extends unknown[], R>(
@@ -90,13 +99,69 @@ function isSafeReadPath(path: string): boolean {
 
 let embedView: WebContentsView | null = null
 
+/** Open (or replace) the embedded ComfyUI Frontend. Bounds come from renderer via embed.resize. */
+async function openEmbedInternal(url: string, title?: string): Promise<boolean> {
+  const win = getWindowRef()
+  if (!win) return false
+  if (!isAllowedEmbedUrl(url)) throw new Error('Blocked unsafe embed URL')
+  if (embedView) {
+    win.contentView.removeChildView(embedView)
+    embedView.webContents.close()
+    embedView = null
+  }
+  const view = new WebContentsView({
+    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false }
+  })
+  embedView = view
+  win.contentView.addChildView(view)
+  // Temporary bounds until renderer sends embed.resize with the real layout.
+  const bounds = win.getBounds()
+  view.setBounds({
+    x: 240,
+    y: 64,
+    width: Math.max(200, bounds.width - 240),
+    height: Math.max(200, bounds.height - 64)
+  })
+  if (title) {
+    try {
+      view.webContents.once('page-title-updated', (e) => e.preventDefault())
+    } catch {
+      /* ignore */
+    }
+  }
+  view.webContents.setWindowOpenHandler(({ url: navUrl }) => {
+    if (isSafeExternalUrl(navUrl)) void shell.openExternal(navUrl)
+    return { action: 'deny' }
+  })
+  view.webContents.on('will-navigate', (event, navUrl) => {
+    if (!isAllowedEmbedUrl(navUrl)) {
+      event.preventDefault()
+    }
+  })
+  void view.webContents.loadURL(url)
+  return true
+}
+
+/** Late-bound window getter so openEmbedInternal can run before registerIpcHandlers. */
+let getWindowRef: () => BrowserWindow | null = () => null
+
 export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void {
+  getWindowRef = getWindow
   // settings
   ipcMain.handle('settings.get', wrap(() => loadSettings()))
-  ipcMain.handle('settings.set', wrap((patch: Partial<AppSettings>) => {
+  ipcMain.handle('settings.set', wrap(async (patch: Partial<AppSettings>) => {
     const next = saveSettings(patch)
     // Re-apply proxy whenever settings change
     syncProxyFromSettings()
+    // Keep OS login item in sync with the persisted preference
+    if (patch.launchOnBoot !== undefined) {
+      try {
+        const { setLaunchOnBoot } = await import('../services/desktop')
+        setLaunchOnBoot(Boolean(next.launchOnBoot))
+      } catch {
+        /* ignore */
+      }
+    }
     return next
   }))
   ipcMain.handle('settings.launchTemplates', wrap(() => LAUNCH_TEMPLATES))
@@ -112,10 +177,29 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle('instance.discover', wrap((root?: string) => instanceService.discover(root)))
   ipcMain.handle('instance.save', wrap((config: ComfyInstanceConfig) => instanceService.save({ ...config, id: config.id ? sanitizeId(config.id) : '' })))
   ipcMain.handle('instance.remove', wrap((id: string) => instanceService.remove(sanitizeId(id))))
-  ipcMain.handle('instance.start', wrap((id: string) => instanceService.start(sanitizeId(id))))
+  ipcMain.handle('instance.start', wrap((id: string, opts?: LaunchOptions) => instanceService.start(sanitizeId(id), opts)))
+  ipcMain.handle('instance.launch', wrap(async (id: string, opts?: LaunchOptions) => {
+    const safeId = sanitizeId(id)
+    const info = await instanceService.launch(safeId, opts)
+    const open = opts?.open ?? 'none'
+    if (open === 'embed' || open === 'browser') {
+      if (!info.url) throw new Error('Instance has no URL')
+      if (open === 'browser') {
+        if (!isSafeExternalUrl(info.url)) throw new Error('Blocked unsafe URL')
+        await shell.openExternal(info.url)
+      } else {
+        await openEmbedInternal(info.url, info.name)
+      }
+    }
+    return info
+  }))
+  ipcMain.handle('instance.waitReady', wrap((id: string, timeoutMs?: number) => instanceService.waitReady(sanitizeId(id), timeoutMs)))
+  ipcMain.handle('instance.previewLaunch', wrap((id: string) => instanceService.previewLaunch(sanitizeId(id))))
   ipcMain.handle('instance.stop', wrap((id: string) => instanceService.stop(sanitizeId(id))))
-  ipcMain.handle('instance.restart', wrap((id: string) => instanceService.restart(sanitizeId(id))))
+  ipcMain.handle('instance.restart', wrap((id: string, opts?: LaunchOptions) => instanceService.restart(sanitizeId(id), opts)))
   ipcMain.handle('instance.forceKill', wrap((id: string) => instanceService.forceKill(sanitizeId(id))))
+  ipcMain.handle('instance.startAll', wrap(() => instanceService.startAll()))
+  ipcMain.handle('instance.stopAll', wrap(() => instanceService.stopAll()))
   ipcMain.handle('instance.getLogs', wrap((id: string, limit?: number) => instanceService.getLogs(sanitizeId(id), limit)))
   ipcMain.handle('instance.clearLogs', wrap((id: string) => instanceService.clearLogs(sanitizeId(id))))
   ipcMain.handle('instance.checkPort', wrap((port: number) => instanceService.checkPort(port)))
@@ -155,8 +239,8 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   }))
 
   // node packs
-  ipcMain.handle('node.list', wrap(() => nodePackService.list()))
-  ipcMain.handle('node.refresh', wrap(() => nodePackService.refresh()))
+  ipcMain.handle('node.list', wrap((instanceId?: string) => nodePackService.list(instanceId)))
+  ipcMain.handle('node.refresh', wrap((instanceId?: string) => nodePackService.refresh(instanceId)))
   ipcMain.handle('node.registrySearch', wrap((opts?: { query?: string; limit?: number; page?: number; scanPages?: number }) => nodePackService.registrySearch(opts)))
   ipcMain.handle('registry.indexStatus', wrap(async () => {
     const { registryIndex } = await import('../services/registryIndex')
@@ -171,14 +255,14 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     return registryIndex.ensure()
   }))
   ipcMain.handle('node.managerChannel', wrap(() => nodePackService.managerChannelList()))
-  ipcMain.handle('node.install', wrap((opts: { id: string; version?: string; source: 'registry' | 'git' | 'manager'; url?: string }) => nodePackService.install(opts)))
-  ipcMain.handle('node.uninstall', wrap((id: string) => nodePackService.uninstall(id)))
-  ipcMain.handle('node.update', wrap((id: string, version?: string) => nodePackService.update(id, version)))
-  ipcMain.handle('node.toggle', wrap((id: string, enabled: boolean) => nodePackService.toggle(id, enabled)))
+  ipcMain.handle('node.install', wrap((opts: { id: string; version?: string; source: 'registry' | 'git' | 'manager'; url?: string; instanceId?: string }) => nodePackService.install(opts)))
+  ipcMain.handle('node.uninstall', wrap((id: string, instanceId?: string) => nodePackService.uninstall(id, instanceId)))
+  ipcMain.handle('node.update', wrap((id: string, version?: string, instanceId?: string) => nodePackService.update(id, version, instanceId)))
+  ipcMain.handle('node.toggle', wrap((id: string, enabled: boolean, instanceId?: string) => nodePackService.toggle(id, enabled, instanceId)))
   ipcMain.handle('node.lock', wrap((id: string, locked: boolean) => nodePackService.lock(id, locked)))
-  ipcMain.handle('node.checkIssues', wrap((id: string) => nodePackService.checkIssues(id)))
-  ipcMain.handle('node.conflicts', wrap(() => nodePackService.conflicts()))
-  ipcMain.handle('node.smokeTest', wrap((id: string) => nodePackService.smokeTest(id)))
+  ipcMain.handle('node.checkIssues', wrap((id: string, instanceId?: string) => nodePackService.checkIssues(id, instanceId)))
+  ipcMain.handle('node.conflicts', wrap((instanceId?: string) => nodePackService.conflicts(instanceId)))
+  ipcMain.handle('node.smokeTest', wrap((id: string, instanceId?: string) => nodePackService.smokeTest(id, instanceId)))
   ipcMain.handle('node.snapshots', wrap(() => nodePackService.snapshots()))
   ipcMain.handle('node.createSnapshot', wrap((name?: string) => nodePackService.createSnapshot(name)))
   ipcMain.handle('node.deleteSnapshot', wrap((id: string) => nodePackService.deleteSnapshot(sanitizeId(id))))
@@ -282,9 +366,9 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle('remote.listStatus', wrap(() => remoteService.listStatus()))
 
   // market
-  ipcMain.handle('market.list', wrap((opts?: { query?: string; category?: string; limit?: number; page?: number; scanPages?: number }) => marketService.list(opts)))
-  ipcMain.handle('market.install', wrap(async (id: string): Promise<NodePackRecord> => {
-    return nodePackService.install({ id, source: 'registry' })
+  ipcMain.handle('market.list', wrap((opts?: { query?: string; category?: string; limit?: number; page?: number; scanPages?: number; instanceId?: string }) => marketService.list(opts)))
+  ipcMain.handle('market.install', wrap(async (id: string, instanceId?: string): Promise<NodePackRecord> => {
+    return nodePackService.install({ id, source: 'registry', instanceId })
   }))
 
   // shell
@@ -317,40 +401,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   }))
 
   // embed
-  ipcMain.handle('embed.open', wrap((opts: { url: string; title?: string }) => {
-    const win = getWindow()
-    if (!win) return false
-    if (!isAllowedEmbedUrl(opts.url)) throw new Error('Blocked unsafe embed URL')
-    if (embedView) {
-      win.contentView.removeChildView(embedView)
-      embedView.webContents.close()
-      embedView = null
-    }
-    const view = new WebContentsView({
-      webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false }
-    })
-    embedView = view
-    win.contentView.addChildView(view)
-    const bounds = win.getBounds()
-    // Keep sidebar 240px + header 64px visible
-    view.setBounds({
-      x: 240,
-      y: 64,
-      width: Math.max(200, bounds.width - 240),
-      height: Math.max(200, bounds.height - 64)
-    })
-    view.webContents.setWindowOpenHandler(({ url: navUrl }) => {
-      if (isSafeExternalUrl(navUrl)) void shell.openExternal(navUrl)
-      return { action: 'deny' }
-    })
-    view.webContents.on('will-navigate', (event, navUrl) => {
-      if (!isAllowedEmbedUrl(navUrl)) {
-        event.preventDefault()
-      }
-    })
-    void view.webContents.loadURL(opts.url)
-    return true
-  }))
+  ipcMain.handle('embed.open', wrap((opts: { url: string; title?: string }) => openEmbedInternal(opts.url, opts.title)))
 
   ipcMain.handle('embed.resize', wrap((rect: { x: number; y: number; width: number; height: number }) => {
     if (!embedView) return false

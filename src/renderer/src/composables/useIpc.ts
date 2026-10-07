@@ -7,6 +7,18 @@ import { IPC_EVENTS } from '@shared/types'
 
 const hasBridge = typeof window !== 'undefined' && Boolean(window.comfyPilot)
 
+/** Error with machine-readable code + optional suggested port (PORT_IN_USE). */
+export class ComfyPilotIpcError extends Error {
+  code?: string
+  suggestedPort?: number
+  constructor(message: string, code?: string, suggestedPort?: number) {
+    super(message)
+    this.name = 'ComfyPilotIpcError'
+    this.code = code
+    this.suggestedPort = suggestedPort
+  }
+}
+
 export async function ipc<C extends IpcChannel>(
   channel: C,
   ...args: IpcChannelMap[C]['args']
@@ -17,7 +29,9 @@ export async function ipc<C extends IpcChannel>(
   const res = (await window.comfyPilot.invoke(channel, ...args)) as IpcResult<
     IpcChannelMap[C]['result']
   >
-  if (!res.ok) throw new Error(res.error || 'IPC failed')
+  if (!res.ok) {
+    throw new ComfyPilotIpcError(res.error || 'IPC failed', res.code, res.suggestedPort)
+  }
   return res.data as IpcChannelMap[C]['result']
 }
 

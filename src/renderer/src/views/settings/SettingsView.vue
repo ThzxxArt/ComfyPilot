@@ -380,6 +380,15 @@ onMounted(async () => {
           <NFormItem label="优先内嵌 ComfyUI Frontend">
             <NSwitch v-model:value="form.embedFrontend" />
           </NFormItem>
+          <NFormItem :label="t('settingsNew.launchOnBoot')">
+            <NSwitch v-model:value="form.launchOnBoot" @update:value="() => save({ silent: true })" />
+          </NFormItem>
+          <NFormItem :label="t('settingsNew.minimizeToTray')">
+            <NSwitch v-model:value="form.minimizeToTray" />
+          </NFormItem>
+          <NFormItem :label="t('settingsNew.autoStartInstances')">
+            <NSwitch v-model:value="form.autoStartInstancesOnLaunch" />
+          </NFormItem>
           <NFormItem :label="t('settings.language')">
             <NSpace>
               <NButton :type="form.locale === 'zh-CN' ? 'primary' : 'default'" secondary @click="setLocale('zh-CN')">

@@ -1,10 +1,17 @@
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import vue from '@vitejs/plugin-vue'
 import { resolve } from 'path'
+import { readFileSync } from 'fs'
+
+const pkg = JSON.parse(readFileSync(resolve('package.json'), 'utf-8')) as { version: string }
+const appVersion = pkg.version
 
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
+    define: {
+      __APP_VERSION__: JSON.stringify(appVersion)
+    },
     resolve: {
       alias: {
         '@main': resolve('src/main'),
@@ -21,6 +28,9 @@ export default defineConfig({
   },
   preload: {
     plugins: [externalizeDepsPlugin()],
+    define: {
+      __APP_VERSION__: JSON.stringify(appVersion)
+    },
     resolve: {
       alias: {
         '@shared': resolve('src/shared')
@@ -35,6 +45,9 @@ export default defineConfig({
     }
   },
   renderer: {
+    define: {
+      __APP_VERSION__: JSON.stringify(appVersion)
+    },
     resolve: {
       alias: {
         '@': resolve('src/renderer/src'),

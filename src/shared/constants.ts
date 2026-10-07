@@ -1,8 +1,13 @@
 import type { AppSettings, LaunchArgTemplate } from './types'
 
 export const APP_NAME = 'ComfyPilot'
-/** Single source of truth for app version — keep in sync with package.json */
-export const APP_VERSION = '0.1.0'
+/**
+ * Single source of truth for app version.
+ * Build injects __APP_VERSION__ from package.json; dev falls back to the literal.
+ */
+declare const __APP_VERSION__: string | undefined
+export const APP_VERSION =
+  (typeof __APP_VERSION__ !== 'undefined' && __APP_VERSION__) || '0.1.1'
 
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'light',
@@ -23,6 +28,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   aria2Path: '',
   useAria2: false,
   outputIndexRoot: '',
+  launchOnBoot: false,
+  minimizeToTray: true,
+  autoStartInstancesOnLaunch: true,
   proxy: {
     enabled: false,
     protocol: 'http',

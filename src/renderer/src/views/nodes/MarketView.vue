@@ -3,8 +3,10 @@ import { onMounted, onUnmounted, ref } from 'vue'
 import { SearchOutline, DownloadOutline, StarOutline, RefreshOutline } from '@vicons/ionicons5'
 import { NButton, NIcon, NInput, NList, NListItem, NSpace, NSpin, NTag, NEmpty, NProgress, useMessage } from 'naive-ui'
 import { ipc, onIpc, IPC_EVENTS } from '@/composables/useIpc'
+import { useAppStore } from '@/stores/app'
 import type { MarketItem, RegistryPageResult } from '@shared/types'
 
+const store = useAppStore()
 const message = useMessage()
 const loading = ref(false)
 const loadingMore = ref(false)
@@ -71,7 +73,8 @@ async function load(reset = true): Promise<void> {
     const res: RegistryPageResult<MarketItem> = await ipc('market.list', {
       query: activeQuery.value || undefined,
       page: reset ? 1 : page.value + 1,
-      limit: pageSize
+      limit: pageSize,
+      instanceId: store.activeInstanceId || undefined
     })
     if (reset) items.value = res.items
     else items.value = [...items.value, ...res.items]
@@ -98,7 +101,7 @@ async function loadMore(): Promise<void> {
 
 async function install(item: MarketItem): Promise<void> {
   try {
-    await ipc('market.install', item.id)
+    await ipc('market.install', item.id, store.activeInstanceId || undefined)
     message.success(`已安装 ${item.name}`)
     await load(true)
   } catch (err) {

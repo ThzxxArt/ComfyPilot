@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NButton, NSpace, NIcon, NInput, useMessage } from 'naive-ui'
 import { OpenOutline, CloseOutline, ArrowBackOutline, RefreshOutline } from '@vicons/ionicons5'
@@ -14,10 +14,36 @@ const url = ref(String(route.query.url || ''))
 const embedded = ref(false)
 const showFallback = ref(false)
 
+// Layout metrics published by App.vue (sidebar collapse-aware)
+const sidebarWidth = ref(240)
+const headerHeight = ref(64)
+const TOOLBAR_H = 56
+
 const displayUrl = computed(() => url.value || 'http://127.0.0.1:8188')
 
 function embedEnabled(): boolean {
   return store.settings?.embedFrontend !== false
+}
+
+function currentRect(): { x: number; y: number; width: number; height: number } {
+  return {
+    x: sidebarWidth.value,
+    y: headerHeight.value + TOOLBAR_H,
+    width: Math.max(200, window.innerWidth - sidebarWidth.value),
+    height: Math.max(160, window.innerHeight - headerHeight.value - TOOLBAR_H)
+  }
+}
+
+function applyResize(): void {
+  if (!embedded.value) return
+  void ipc('embed.resize', currentRect())
+}
+
+function onLayout(e: Event): void {
+  const detail = (e as CustomEvent<{ sidebarWidth?: number; headerHeight?: number }>).detail
+  if (detail?.sidebarWidth != null) sidebarWidth.value = detail.sidebarWidth
+  if (detail?.headerHeight != null) headerHeight.value = detail.headerHeight
+  applyResize()
 }
 
 async function embed(): Promise<void> {
@@ -32,13 +58,7 @@ async function embed(): Promise<void> {
     await ipc('embed.open', { url: displayUrl.value, title: 'ComfyUI' })
     embedded.value = true
     showFallback.value = false
-    // Sidebar 240 + header 64 + local toolbar 56
-    await ipc('embed.resize', {
-      x: 240,
-      y: 64 + 56,
-      width: Math.max(200, window.innerWidth - 240),
-      height: Math.max(160, window.innerHeight - 64 - 56)
-    })
+    await ipc('embed.resize', currentRect())
   } catch (err) {
     showFallback.value = true
     message.warning('内嵌视图不可用，已切换为外链模式')
@@ -57,24 +77,34 @@ async function closeEmbed(): Promise<void> {
 }
 
 function onResize(): void {
-  if (!embedded.value) return
-  void ipc('embed.resize', {
-    x: 240,
-    y: 64 + 56,
-    width: Math.max(200, window.innerWidth - 240),
-    height: Math.max(160, window.innerHeight - 64 - 56)
-  })
+  applyResize()
 }
 
 onMounted(() => {
   window.addEventListener('resize', onResize)
+  window.addEventListener('comfypilot:layout', onLayout as EventListener)
+  // Pull current layout metrics if App already published them
+  window.dispatchEvent(new Event('comfypilot:layout-request'))
   if (url.value) void embed()
 })
 
 onUnmounted(() => {
   window.removeEventListener('resize', onResize)
+  window.removeEventListener('comfypilot:layout', onLayout as EventListener)
   void ipc('embed.close').catch(() => undefined)
 })
+
+// Keep URL in sync when navigating to /embed with a new query
+watch(
+  () => route.query.url,
+  (v) => {
+    const next = String(v || '')
+    if (next && next !== url.value) {
+      url.value = next
+      void embed()
+    }
+  }
+)
 </script>
 
 <template>
@@ -140,6 +170,7 @@ onUnmounted(() => {
   padding: 0 16px;
   border-bottom: 1px solid rgba(148, 163, 184, 0.18);
   z-index: 2;
+  flex-shrink: 0;
 }
 
 .fallback {
