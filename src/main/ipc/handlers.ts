@@ -177,6 +177,15 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
         /* ignore */
       }
     }
+    // Language switch must re-render the native tray menu.
+    if (patch.locale !== undefined) {
+      try {
+        const { refreshTray } = await import('../services/tray')
+        void refreshTray()
+      } catch {
+        /* ignore */
+      }
+    }
     return next
   }))
   ipcMain.handle('settings.launchTemplates', wrap(() => LAUNCH_TEMPLATES))

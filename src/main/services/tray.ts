@@ -5,9 +5,55 @@ import { APP_NAME } from '@shared/constants'
 import type { ComfyInstanceInfo } from '@shared/types'
 import { instanceService } from './instance'
 import { isSafeExternalUrl } from './security'
+import { loadSettings } from './db'
 
 let tray: Tray | null = null
 let onShowWindow: (() => void) | null = null
+
+type TrayStrings = {
+  stop: string
+  launch: string
+  openFrontend: string
+  showWindow: string
+  startAll: string
+  stopAll: string
+  noInstances: string
+  quit: string
+  header: (r: number, t: number) => string
+  tip: (r: number, t: number) => string
+}
+
+const TRAY_STRINGS: Record<'zh-CN' | 'en-US', TrayStrings> = {
+  'zh-CN': {
+    stop: '停止',
+    launch: '启动并打开',
+    openFrontend: '打开 Frontend',
+    showWindow: '显示主窗口',
+    startAll: '启动全部实例',
+    stopAll: '停止全部实例',
+    noInstances: '（暂无实例）',
+    quit: '退出',
+    header: (r: number, t: number) => `${APP_NAME} · ${r} 运行中 / ${t} 实例`,
+    tip: (r: number, t: number) => `${APP_NAME} — ${r}/${t} 实例运行中`
+  },
+  'en-US': {
+    stop: 'Stop',
+    launch: 'Launch & open',
+    openFrontend: 'Open Frontend',
+    showWindow: 'Show window',
+    startAll: 'Start all instances',
+    stopAll: 'Stop all instances',
+    noInstances: '(no instances)',
+    quit: 'Quit',
+    header: (r: number, t: number) => `${APP_NAME} · ${r} running / ${t} total`,
+    tip: (r: number, t: number) => `${APP_NAME} — ${r}/${t} running`
+  }
+}
+
+function trayT(): TrayStrings {
+  const locale = loadSettings().locale
+  return locale === 'en-US' ? TRAY_STRINGS['en-US'] : TRAY_STRINGS['zh-CN']
+}
 
 function resolveTrayIcon(): Electron.NativeImage {
   const bases = [
@@ -33,6 +79,7 @@ function resolveTrayIcon(): Electron.NativeImage {
 }
 
 async function buildMenu(): Promise<Menu> {
+  const s = trayT()
   let instances: ComfyInstanceInfo[] = []
   try {
     instances = instanceService.list()
@@ -46,7 +93,7 @@ async function buildMenu(): Promise<Menu> {
     label: `${inst.status === 'running' ? '●' : '○'} ${inst.name} :${inst.port}`,
     submenu: [
       {
-        label: inst.status === 'running' ? 'Stop' : 'Launch & open',
+        label: inst.status === 'running' ? s.stop : s.launch,
         click: () => {
           void (async () => {
             try {
@@ -60,14 +107,14 @@ async function buildMenu(): Promise<Menu> {
         }
       },
       {
-        label: 'Open Frontend',
+        label: s.openFrontend,
         enabled: Boolean(inst.url),
         click: () => {
           if (inst.url && isSafeExternalUrl(inst.url)) void shell.openExternal(inst.url)
         }
       },
       {
-        label: 'Show window',
+        label: s.showWindow,
         click: () => onShowWindow?.()
       }
     ]
@@ -75,23 +122,23 @@ async function buildMenu(): Promise<Menu> {
 
   return Menu.buildFromTemplate([
     {
-      label: `${APP_NAME} · ${running.length} running / ${instances.length} total`,
+      label: s.header(running.length, instances.length),
       enabled: false
     },
     { type: 'separator' },
     {
-      label: 'Show window',
+      label: s.showWindow,
       click: () => onShowWindow?.()
     },
     {
-      label: 'Start all instances',
+      label: s.startAll,
       enabled: stopped.length > 0,
       click: () => {
         void instanceService.startAll().then(refreshTray)
       }
     },
     {
-      label: 'Stop all instances',
+      label: s.stopAll,
       enabled: running.length > 0,
       click: () => {
         void instanceService.stopAll().then(refreshTray)
@@ -100,10 +147,10 @@ async function buildMenu(): Promise<Menu> {
     { type: 'separator' },
     ...(instanceItems.length
       ? (instanceItems as Electron.MenuItemConstructorOptions[])
-      : [{ label: '(no instances)', enabled: false } as Electron.MenuItemConstructorOptions]),
+      : [{ label: s.noInstances, enabled: false } as Electron.MenuItemConstructorOptions]),
     { type: 'separator' },
     {
-      label: 'Quit',
+      label: s.quit,
       click: () => {
         try {
           instanceService.killAllNow()
@@ -119,11 +166,12 @@ async function buildMenu(): Promise<Menu> {
 export async function refreshTray(): Promise<void> {
   if (!tray) return
   try {
+    const s = trayT()
     const menu = await buildMenu()
     tray.setContextMenu(menu)
     const list = instanceService.list()
     const running = list.filter((i) => i.status === 'running').length
-    tray.setToolTip(`${APP_NAME} — ${running}/${list.length} running`)
+    tray.setToolTip(s.tip(running, list.length))
   } catch {
     /* ignore */
   }
