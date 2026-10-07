@@ -262,8 +262,14 @@ export class NodePackService extends EventEmitter {
     const known = new Map(listNodePacks().map((p) => [p.name, p]))
     const packs: NodePackRecord[] = []
     for (const name of readdirSync(root)) {
+      // Junk / cache dirs that live beside real packs — never list as node packs.
       if (
         name.startsWith('.') ||
+        name === '__pycache__' ||
+        name === '__MACOSX' ||
+        name === 'node_modules' ||
+        name.endsWith('.egg-info') ||
+        name.endsWith('.dist-info') ||
         name.endsWith('.trash') ||
         name.includes('.trash-') ||
         name.includes('.bak-')
