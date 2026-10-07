@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync, writeFileSync, readFileSync, renameSync } from 'fs'
-import { join, basename, dirname, extname } from 'path'
+import { join, basename, dirname, extname, resolve } from 'path'
 import { createHash } from 'crypto'
 import { execFile } from 'child_process'
-import { cacheDir, loadSettings, listModels, upsertModel, deleteModel as dbDeleteModel } from './db'
-import { assertSafeRelativeFilename, isSafeExternalUrl } from './security'
+import { cacheDir, loadSettings, listModels, upsertModel, loadInstanceConfigs, deleteModel as dbDeleteModel } from './db'
+import { assertSafeRelativeFilename, isSafeExternalUrl, isPathInside } from './security'
 import type { ModelRecord } from '@shared/types'
 
 /**
@@ -116,6 +116,96 @@ export class ThumbnailService {
 }
 
 export const thumbnailService = new ThumbnailService()
+
+// ---------- Controlled local media URLs (for <img> in the renderer) ----------
+// The renderer cannot load arbitrary file:// paths (and must not). Thumbs and
+// output previews are served through `comfy-pilot-media:` with an explicit
+// allow-list of roots.
+
+const MEDIA_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg'])
+
+function mediaThumbsRoot(): string {
+  return join(cacheDir(), 'thumbs')
+}
+
+function mediaOutputRoots(): string[] {
+  const roots: string[] = []
+  try {
+    const s = loadSettings()
+    if (s.outputIndexRoot) roots.push(s.outputIndexRoot)
+    for (const c of loadInstanceConfigs()) {
+      if (c.path) roots.push(join(c.path, 'output'))
+    }
+  } catch {
+    /* ignore */
+  }
+  return roots
+}
+
+/** Convert an absolute local media path into a safe `comfy-pilot-media:` URL. */
+export function toMediaUrl(absPath: string): string | null {
+  try {
+    if (!absPath || !MEDIA_EXT.has(extname(absPath).toLowerCase())) return null
+    // Normalize first — lexical slice on a path containing `.`/`..` breaks rel.
+    const resolved = resolve(absPath)
+    const thumbs = mediaThumbsRoot()
+    if (isPathInside(resolved, thumbs)) {
+      return `comfy-pilot-media:thumbs/${encodeURIComponent(basename(resolved))}`
+    }
+    for (const root of mediaOutputRoots()) {
+      if (root && isPathInside(resolved, root)) {
+        const rel = resolved.slice(resolve(root).length).replace(/^[\\/]+/, '')
+        return `comfy-pilot-media:output/${rel.split(/[\\/]/).map(encodeURIComponent).join('/')}`
+      }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+/** Inverse of toMediaUrl — returns an absolute path only for allow-listed roots. */
+export function resolveMediaUrlToPath(url: string): string | null {
+  try {
+    const raw = String(url || '').replace(/^comfy-pilot-media:/, '')
+    const clean = raw.replace(/^\/+/, '')
+    if (clean.startsWith('thumbs/')) {
+      const name = decodeURIComponent(clean.slice('thumbs/'.length))
+      if (!name || name.includes('/') || name.includes('\\') || name.includes('..')) return null
+      if (!MEDIA_EXT.has(extname(name).toLowerCase())) return null
+      const full = join(mediaThumbsRoot(), name)
+      if (!existsSync(full) || !isPathInside(full, mediaThumbsRoot())) return null
+      return full
+    }
+    if (clean.startsWith('output/')) {
+      const relRaw = clean.slice('output/'.length)
+      const segments = relRaw
+        .split('/')
+        .map((p) => decodeURIComponent(p))
+        .filter((p) => p && p !== '..' && p !== '.')
+      if (!segments.length) return null
+      // join() with path segments — never hardcode '\\' (breaks POSIX nested paths)
+      const rel = join(...segments)
+      if (rel.includes('..')) return null
+      if (!MEDIA_EXT.has(extname(rel).toLowerCase())) return null
+      for (const root of mediaOutputRoots()) {
+        const full = join(root, rel)
+        if (existsSync(full) && isPathInside(full, root)) return full
+      }
+      return null
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+/** Map a record's thumbnail field (fs path or already a media URL) to a display URL. */
+export function thumbnailDisplayUrl(thumb?: string): string | null {
+  if (!thumb) return null
+  if (thumb.startsWith('comfy-pilot-media:')) return thumb
+  return toMediaUrl(thumb)
+}
 
 /** Batch rename models (PLAN: 批量改名). */
 export class RenameService {

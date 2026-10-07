@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, h, onMounted, onUnmounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   CloudDownloadOutline, SearchOutline, RefreshOutline,
   DuplicateOutline
@@ -11,9 +12,10 @@ import {
 import { useAppStore } from '@/stores/app'
 import { ipc, onDownloadProgress, onModelScanProgress } from '@/composables/useIpc'
 import { formatBytes } from '@/utils/format'
-import { MODEL_CATEGORY_LABELS } from '@shared/constants'
-import type { DownloadTask, ModelRecord, StorageStats, DuplicateGroup } from '@shared/types'
+import { MODEL_CATEGORY_LABELS, STARTER_MODELS } from '@shared/constants'
+import type { DownloadTask, ModelRecord, StorageStats, DuplicateGroup, StarterModel } from '@shared/types'
 
+const { t } = useI18n()
 const store = useAppStore()
 const message = useMessage()
 const loading = ref(false)
@@ -30,6 +32,21 @@ const downloads = ref<DownloadTask[]>([])
 const storage = ref<StorageStats[]>([])
 const duplicates = ref<DuplicateGroup[]>([])
 const tab = ref('all')
+const starterModels = ref<StarterModel[]>(STARTER_MODELS)
+const starterBusy = ref<string | null>(null)
+
+async function downloadStarter(s: StarterModel): Promise<void> {
+  starterBusy.value = s.id
+  try {
+    await ipc('installer.installStarter', { id: s.id, instanceId: store.activeInstanceId || undefined })
+    message.success(t('models.downloadStartedNamed', { name: s.name }))
+    showDownload.value = false
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    starterBusy.value = null
+  }
+}
 
 const filtered = computed(() => {
   const k = keyword.value.trim().toLowerCase()
@@ -51,24 +68,42 @@ function hTag(text: string, type: 'info' | 'success' | 'warning' = 'info') {
 }
 
 const columns = computed<DataTableColumns<ModelRecord>>(() => [
-  { title: '名称', key: 'name', ellipsis: { tooltip: true } },
-  { title: '类别', key: 'category', width: 130, render: (row) => hTag(MODEL_CATEGORY_LABELS[row.category] || row.category) },
   {
-    title: '架构',
+    title: t('models.colName'),
+    key: 'name',
+    ellipsis: { tooltip: true },
+    render: (row) =>
+      h('div', { style: 'display:flex;align-items:center;gap:8px;min-width:0' }, [
+        row.thumbnail
+          ? h('img', {
+              src: row.thumbnail,
+              alt: '',
+              style: 'width:36px;height:36px;border-radius:8px;object-fit:cover;flex:none'
+            })
+          : h('span', {
+              style:
+                'width:36px;height:36px;border-radius:8px;background:rgba(79,110,247,0.12);flex:none'
+            }),
+        h('span', { style: 'overflow:hidden;text-overflow:ellipsis' }, row.name)
+      ])
+  },
+  { title: t('models.colCategory'), key: 'category', width: 130, render: (row) => hTag(MODEL_CATEGORY_LABELS[row.category] || row.category) },
+  {
+    title: t('models.colArchitecture'),
     key: 'architecture',
     width: 90,
     render: (row) => (row.architecture ? hTag(row.architecture, 'success') : hTag('—', 'info'))
   },
-  { title: '大小', key: 'size', width: 100, render: (row) => formatBytes(row.size) },
+  { title: t('models.colSize'), key: 'size', width: 100, render: (row) => formatBytes(row.size) },
   {
-    title: '去重',
+    title: t('models.colDuplicate'),
     key: 'duplicateOf',
     width: 80,
-    render: (row) => (row.duplicateOf ? hTag('重复', 'warning') : hTag('唯一', 'success'))
+    render: (row) => (row.duplicateOf ? hTag(t('models.tagDuplicate'), 'warning') : hTag(t('models.tagUnique'), 'success'))
   },
-  { title: '路径', key: 'path', ellipsis: { tooltip: true }, className: 'mono' },
+  { title: t('models.colPath'), key: 'path', ellipsis: { tooltip: true }, className: 'mono' },
   {
-    title: '操作',
+    title: t('models.colActions'),
     key: 'actions',
     width: 180,
     render: (row) =>
@@ -80,7 +115,7 @@ const columns = computed<DataTableColumns<ModelRecord>>(() => [
               try {
                 await ipc('model.delete', row.id, true)
                 await refresh()
-                message.success('已删除')
+                message.success(t('models.deleted'))
               } catch (err) {
                 message.error(err instanceof Error ? err.message : String(err))
               }
@@ -88,8 +123,8 @@ const columns = computed<DataTableColumns<ModelRecord>>(() => [
           },
           {
             trigger: () =>
-              h(NButton, { size: 'tiny', type: 'error', secondary: true }, { default: () => '删除' }),
-            default: () => '同时删除磁盘文件？'
+              h(NButton, { size: 'tiny', type: 'error', secondary: true }, { default: () => t('models.deleteAction') }),
+            default: () => t('models.deleteConfirm')
           }
         ),
         h(
@@ -103,14 +138,14 @@ const columns = computed<DataTableColumns<ModelRecord>>(() => [
                 if (dir) {
                   await ipc('model.move', row.id, dir)
                   await refresh()
-                  message.success('已移动')
+                  message.success(t('models.moved'))
                 }
               } catch (err) {
                 message.error(err instanceof Error ? err.message : String(err))
               }
             }
           },
-          { default: () => '移动' }
+          { default: () => t('models.moveAction') }
         )
       ])
   }
@@ -121,6 +156,8 @@ async function refresh(): Promise<void> {
   try {
     models.value = await ipc('model.list')
     storage.value = await ipc('model.storageStats')
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
   } finally {
     loading.value = false
   }
@@ -137,7 +174,7 @@ async function scan(hash = false): Promise<void> {
     models.value = await ipc('model.scan', { roots, hash })
     storage.value = await ipc('model.storageStats')
     if (hash) duplicates.value = await ipc('model.findDuplicates')
-    message.success(`扫描完成，共 ${models.value.length} 个模型`)
+    message.success(t('models.scanDone', { n: models.value.length }))
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   } finally {
@@ -149,7 +186,7 @@ async function scan(hash = false): Promise<void> {
 async function findDuplicates(): Promise<void> {
   try {
     duplicates.value = await ipc('model.findDuplicates')
-    message.success(`发现 ${duplicates.value.length} 组重复`)
+    message.success(t('models.dupGroupsFound', { n: duplicates.value.length }))
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   }
@@ -158,7 +195,7 @@ async function findDuplicates(): Promise<void> {
 async function ensureThumbs(): Promise<void> {
   try {
     const n = await ipc('model.ensureThumbs')
-    message.success(`已生成/复用 ${n} 个缩略图`)
+    message.success(t('models.thumbsDone', { n }))
     await refresh()
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
@@ -176,7 +213,7 @@ async function batchRename(dryRun = true): Promise<void> {
     if (!dryRun) {
       showRename.value = false
       await refresh()
-      message.success('批量改名完成')
+      message.success(t('models.renameDone'))
     }
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
@@ -208,7 +245,7 @@ async function startDownload(): Promise<void> {
     showDownload.value = false
     downloadUrl.value = ''
     downloads.value = await ipc('model.downloads')
-    message.success('下载任务已加入队列')
+    message.success(t('models.downloadQueued'))
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   }
@@ -239,23 +276,23 @@ onUnmounted(() => {
   <div class="page">
     <div class="page-header">
       <div>
-        <h1 class="page-title">模型库</h1>
-        <p class="page-subtitle">扫描索引、safetensors 元数据、SHA256 去重、断点下载与存储分析。</p>
+        <h1 class="page-title">{{ $t('models.title') }}</h1>
+        <p class="page-subtitle">{{ $t('models.subtitle') }}</p>
       </div>
       <NSpace>
-        <NInput v-model:value="keyword" clearable placeholder="搜索名称 / 架构 / 标签" style="width: 220px">
+        <NInput v-model:value="keyword" clearable :placeholder="$t('models.searchPlaceholder')" style="width: 220px">
           <template #prefix><NIcon :component="SearchOutline" /></template>
         </NInput>
         <NButton secondary :loading="scanning" @click="scan(false)">
-          <template #icon><NIcon :component="RefreshOutline" /></template>扫描
+          <template #icon><NIcon :component="RefreshOutline" /></template>{{ $t('models.scan') }}
         </NButton>
         <NButton secondary :loading="scanning" @click="scan(true)">
-          <template #icon><NIcon :component="DuplicateOutline" /></template>扫描+哈希
+          <template #icon><NIcon :component="DuplicateOutline" /></template>{{ $t('models.scanHash') }}
         </NButton>
-        <NButton secondary @click="ensureThumbs">生成缩略图</NButton>
-        <NButton secondary @click="showRename = true">批量改名</NButton>
+        <NButton secondary @click="ensureThumbs">{{ $t('models.genThumbs') }}</NButton>
+        <NButton secondary @click="showRename = true">{{ $t('models.batchRename') }}</NButton>
         <NButton type="primary" @click="showDownload = true">
-          <template #icon><NIcon :component="CloudDownloadOutline" /></template>下载
+          <template #icon><NIcon :component="CloudDownloadOutline" /></template>{{ $t('models.download') }}
         </NButton>
       </NSpace>
     </div>
@@ -278,14 +315,14 @@ onUnmounted(() => {
         <span class="chip" :class="d.status === 'done' ? 'chip-success' : d.status === 'error' ? 'chip-danger' : 'chip-warning'">{{ d.status }}</span>
         <span class="mono">{{ formatBytes(d.receivedBytes) }} / {{ formatBytes(d.totalBytes) }}</span>
         <span v-if="d.speedBps" class="mono">{{ formatBytes(d.speedBps) }}/s</span>
-        <NButton v-if="d.status === 'running'" size="tiny" secondary @click="pauseDl(d.id)">暂停</NButton>
-        <NButton v-if="d.status === 'paused'" size="tiny" secondary @click="resumeDl(d.id)">继续</NButton>
+        <NButton v-if="d.status === 'running'" size="tiny" secondary @click="pauseDl(d.id)">{{ $t('models.pause') }}</NButton>
+        <NButton v-if="d.status === 'paused'" size="tiny" secondary @click="resumeDl(d.id)">{{ $t('models.resume') }}</NButton>
       </div>
     </div>
 
     <div class="card table-card">
       <NTabs v-model:value="tab" type="segment" class="tabs">
-        <NTabPane name="all" tab="全部" />
+        <NTabPane name="all" :tab="$t('models.tabAll')" />
         <NTabPane name="checkpoints" tab="Checkpoint" />
         <NTabPane name="loras" tab="LoRA" />
         <NTabPane name="diffusion_models" tab="Diffusion" />
@@ -300,10 +337,10 @@ onUnmounted(() => {
     <div class="card dup-card">
       <div class="dup-head">
         <div>
-          <div class="panel-title">重复模型</div>
-          <div class="panel-sub">基于 SHA256 哈希识别</div>
+          <div class="panel-title">{{ $t('models.dupTitle') }}</div>
+          <div class="panel-sub">{{ $t('models.dupHint') }}</div>
         </div>
-        <NButton secondary @click="findDuplicates">分析重复</NButton>
+        <NButton secondary @click="findDuplicates">{{ $t('models.analyzeDup') }}</NButton>
       </div>
       <div v-if="duplicates.length">
         <div v-for="g in duplicates" :key="g.hash" class="dup-group">
@@ -311,35 +348,59 @@ onUnmounted(() => {
           <div v-for="f in g.files" :key="f" class="mono dup-file">{{ f }}</div>
         </div>
       </div>
-      <div v-else class="panel-sub">点击「分析重复」按哈希查找重复文件。</div>
+      <div v-else class="panel-sub">{{ $t('models.dupEmpty') }}</div>
     </div>
 
-    <NModal v-model:show="showRename" preset="card" title="批量改名" style="width: 560px; border-radius: 20px">
+    <NModal v-model:show="showRename" preset="card" :title="$t('models.renameTitle')" style="width: 560px; border-radius: 20px">
       <NSpace vertical>
-        <NInput v-model:value="renamePattern" placeholder="命名模板，如 {category}_{index}_{name}" />
-        <div class="meta">占位符：{name} {category} {index} {arch}　·　默认对当前筛选结果前 50 条生效</div>
+        <NInput v-model:value="renamePattern" :placeholder="$t('models.renamePatternPlaceholder', { example: '{category}_{index}_{name}' })" />
+        <div class="meta">{{ $t('models.renamePatternMeta', { list: '{name} {category} {index} {arch}' }) }}</div>
         <div v-if="renameResult.length" class="rename-preview">
           <div v-for="(r, i) in renameResult" :key="i" class="mono">
-            <span :style="{ color: r.ok ? '#059669' : '#b91c1c' }">{{ r.ok ? 'OK' : 'ERR' }}</span>
+            <span :class="r.ok ? 'pass-ink' : 'fail-ink'">{{ r.ok ? 'OK' : 'ERR' }}</span>
             {{ r.from }} → {{ r.to }}<span v-if="r.error"> ({{ r.error }})</span>
           </div>
         </div>
       </NSpace>
       <template #footer>
         <NSpace justify="end">
-          <NButton @click="showRename = false">取消</NButton>
-          <NButton secondary @click="batchRename(true)">预览</NButton>
-          <NButton type="primary" @click="batchRename(false)">执行改名</NButton>
+          <NButton @click="showRename = false">{{ $t('models.cancel') }}</NButton>
+          <NButton secondary @click="batchRename(true)">{{ $t('models.preview') }}</NButton>
+          <NButton type="primary" @click="batchRename(false)">{{ $t('models.renameExec') }}</NButton>
         </NSpace>
       </template>
     </NModal>
 
-    <NModal v-model:show="showDownload" preset="card" title="下载模型" style="width: 520px; border-radius: 20px">
-      <NInput v-model:value="downloadUrl" placeholder="粘贴 HuggingFace / Civitai / 直链 URL" />
+    <NModal v-model:show="showDownload" preset="card" :title="$t('models.downloadTitle')" style="width: 560px; border-radius: 20px">
+      <NSpace vertical>
+        <NInput v-model:value="downloadUrl" :placeholder="$t('models.downloadUrlPlaceholder')" />
+        <div class="meta">{{ $t('models.starterHint') }}</div>
+        <div class="starter-list">
+          <div v-for="s in starterModels" :key="s.id" class="starter-row">
+            <div class="starter-info">
+              <div class="starter-name">
+                {{ s.name }}
+                <NTag v-if="s.recommended" size="tiny" type="primary" round>{{ $t('models.recommended') }}</NTag>
+                <NTag size="tiny" round>{{ s.family }}</NTag>
+              </div>
+              <div class="starter-desc">{{ $t(s.description) }}</div>
+            </div>
+            <NButton
+              size="small"
+              type="primary"
+              secondary
+              :loading="starterBusy === s.id"
+              @click="downloadStarter(s)"
+            >
+              {{ $t('models.downloadStarter') }}
+            </NButton>
+          </div>
+        </div>
+      </NSpace>
       <template #footer>
         <NSpace justify="end">
-          <NButton @click="showDownload = false">取消</NButton>
-          <NButton type="primary" @click="startDownload">开始下载</NButton>
+          <NButton @click="showDownload = false">{{ $t('models.cancel') }}</NButton>
+          <NButton type="primary" @click="startDownload">{{ $t('models.startDownload') }}</NButton>
         </NSpace>
       </template>
     </NModal>
@@ -350,7 +411,7 @@ onUnmounted(() => {
 @use '@/styles/variables.scss' as *;
 .stats { margin-bottom: 14px; }
 .stat-mini { padding: 12px 14px; }
-.stat-mini-val { font-size: 22px; font-weight: 750; }
+.stat-mini-val { font-size: 22px; font-weight: 700; }
 .stat-mini-label { font-size: 11px; color: $color-text-muted; margin-top: 2px; }
 .stat-mini-sub { font-size: 11px; color: $color-text-secondary; }
 .table-card { padding: 4px 8px 12px; margin-bottom: 14px; }
@@ -374,4 +435,35 @@ onUnmounted(() => {
   font-size: 11.5px;
 }
 .meta { font-size: 12px; color: $color-text-muted; }
+.pass-ink { color: $color-success; }
+.fail-ink { color: $color-danger; }
+.starter-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 240px;
+  overflow: auto;
+}
+.starter-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid $color-border;
+  border-radius: 12px;
+  background: $color-surface-2;
+}
+.starter-info { flex: 1; min-width: 0; }
+.starter-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.starter-desc {
+  font-size: 12px;
+  color: $color-text-muted;
+  margin-top: 4px;
+}
 </style>

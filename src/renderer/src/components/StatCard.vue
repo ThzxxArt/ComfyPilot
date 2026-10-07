@@ -66,19 +66,19 @@ const toneClass = computed(() => `tone-${props.tone || 'primary'}`)
 
 .tone-success .icon-wrap {
   background: rgba(16, 185, 129, 0.14);
-  color: #059669;
+  color: $color-success;
 }
 .tone-warning .icon-wrap {
   background: rgba(245, 158, 11, 0.16);
-  color: #b45309;
+  color: $color-warning;
 }
 .tone-danger .icon-wrap {
   background: rgba(239, 68, 68, 0.12);
-  color: #b91c1c;
+  color: $color-danger;
 }
 .tone-muted .icon-wrap {
   background: rgba(148, 163, 184, 0.16);
-  color: #64748b;
+  color: $color-text-muted;
 }
 
 .stat-hint {

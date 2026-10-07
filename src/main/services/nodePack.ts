@@ -13,6 +13,7 @@ import { join } from 'path'
 import { createHash, randomUUID } from 'crypto'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
+import { EventEmitter } from 'events'
 import type {
   NodeNameConflict,
   NodePackIssue,
@@ -36,6 +37,7 @@ import { REGISTRY_API } from '@shared/constants'
 import { proxyEnv } from './proxy'
 import { sanitizeId, isPathInside, normalizePathEverySegment } from './security'
 import { assertSafeGitUrl, applyGithubMirror } from './installer'
+import { resolveRuntimesPythonSync } from './instance'
 
 const execFileAsync = promisify(execFile)
 
@@ -66,7 +68,7 @@ function resolveNestedPackDir(dest: string): string {
   return dest
 }
 
-/** Best-effort python for the targeted instance (venv preferred). */
+/** Best-effort python for the targeted instance (venv preferred, then runtimes). */
 function resolveInstancePython(instanceId?: string): string {
   const inst = resolveInstanceConfig(instanceId)
   if (inst?.venvPath) {
@@ -75,7 +77,15 @@ function resolveInstancePython(instanceId?: string): string {
     if (existsSync(win)) return win
     if (existsSync(unix)) return unix
   }
-  return inst?.pythonPath || 'python'
+  if (inst?.pythonPath) return inst.pythonPath
+  // Zero-prereq: portable Python downloaded by bootstrap
+  try {
+    const runtimePy = resolveRuntimesPythonSync()
+    if (runtimePy) return runtimePy
+  } catch {
+    /* ignore */
+  }
+  return 'python'
 }
 
 /**
@@ -236,7 +246,16 @@ function collectIssues(dir: string, meta: Partial<NodePackRecord>): NodePackIssu
   return issues
 }
 
-export class NodePackService {
+export class NodePackService extends EventEmitter {
+  /** Emit node install lifecycle for UI progress (IPC_EVENTS.nodeInstallProgress). */
+  private emitInstallProgress(payload: {
+    phase: 'start' | 'download' | 'unzip' | 'pip' | 'done' | 'error'
+    packName: string
+    message?: string
+  }): void {
+    this.emit('install-progress', { ...payload, ts: Date.now() })
+  }
+
   list(instancePathOrId?: string): NodePackRecord[] {
     const root = detectCustomNodesRoot(instancePathOrId)
     if (!root || !existsSync(root)) return []
@@ -394,6 +413,7 @@ export class NodePackService {
     instanceId?: string
   }): Promise<NodePackRecord> {
     this.assertInstallAllowed(opts.source)
+    this.emitInstallProgress({ phase: 'start', packName: opts.id, message: `Installing ${opts.id}…` })
     // PLAN: 安装前自动快照
     try {
       this.createSnapshot(`auto-pre-install-${sanitizeInstallName(opts.id)}`)
@@ -423,7 +443,7 @@ export class NodePackService {
         maxBuffer: 20 * 1024 * 1024,
         env: proxyEnv(loadSettings().proxy)
       })
-      return this.afterInstall(resolveNestedPackDir(dest), opts.source, opts.id, opts.instanceId)
+      return await this.afterInstall(resolveNestedPackDir(dest), opts.source, opts.id, opts.instanceId)
     }
 
     const versionPart = opts.version ? `/${encodeURIComponent(opts.version)}` : ''
@@ -471,15 +491,15 @@ export class NodePackService {
     } catch {
       /* ignore */
     }
-    return this.afterInstall(resolveNestedPackDir(dest), 'registry', opts.id, opts.instanceId)
+    return await this.afterInstall(resolveNestedPackDir(dest), 'registry', opts.id, opts.instanceId)
   }
 
-  private afterInstall(
+  private async afterInstall(
     dir: string,
     source: 'registry' | 'git' | 'manager' | 'local' = 'local',
     registryId?: string,
     instanceId?: string
-  ): NodePackRecord {
+  ): Promise<NodePackRecord> {
     const meta = readPackMeta(dir)
     const issues = collectIssues(dir, meta)
     // Optional pip deps — only when Settings.allowPipInstall is on (Manager semantics)
@@ -495,21 +515,48 @@ export class NodePackService {
           fixable: false
         })
       } else {
+        // Must AWAIT: fire-and-forget meant "install done" while pip was still running,
+        // and the catch below never saw async failures (dead pip-failed path).
         try {
           const vpy = resolveInstancePython(instanceId)
           if (vpy) {
-            execFile(vpy, ['-m', 'pip', 'install', '-r', reqFile], {
+            this.emitInstallProgress({
+              phase: 'pip',
+              packName: meta.name || dir,
+              message: 'Installing Python dependencies…'
+            })
+            const pipArgs = ['-m', 'pip', 'install', '-r', reqFile]
+            const pipIndex = String(settings.pipIndex || '').trim()
+            if (pipIndex) {
+              pipArgs.push('-i', pipIndex)
+              try {
+                pipArgs.push('--trusted-host', new URL(pipIndex).hostname)
+              } catch {
+                // Scheme-less mirror — still pass -i, skip trusted-host
+              }
+            }
+            const { stdout, stderr } = await execFileAsync(vpy, pipArgs, {
               timeout: 10 * 60 * 1000,
               maxBuffer: 10 * 1024 * 1024,
               windowsHide: true,
               env: proxyEnv(loadSettings().proxy)
             })
+            const pipOut = `${stdout || ''}\n${stderr || ''}`
+            if (/ERROR:|error: failed/i.test(pipOut) && !/Successfully installed|Requirement already satisfied/i.test(pipOut)) {
+              issues.push({
+                code: 'pip-failed',
+                severity: 'error',
+                message: 'pip install of pack requirements reported errors',
+                suggestion: 'Install requirements.txt manually in the instance environment.',
+                fixable: false
+              })
+            }
           }
-        } catch {
+        } catch (err) {
           issues.push({
             code: 'pip-failed',
-            severity: 'warning',
-            message: 'pip install of pack requirements did not complete',
+            severity: 'error',
+            message: `pip install of pack requirements failed: ${err instanceof Error ? err.message : String(err)}`,
             suggestion: 'Install requirements.txt manually in the instance environment.',
             fixable: false
           })
@@ -570,7 +617,7 @@ export class NodePackService {
         maxBuffer: 20 * 1024 * 1024,
         env: proxyEnv(loadSettings().proxy)
       })
-      return this.afterInstall(
+      return await this.afterInstall(
         pack.path,
         pack.installSource === 'registry' ? 'git' : pack.installSource,
         pack.registryId,
@@ -745,6 +792,11 @@ export class NodePackService {
     return snapshot
   }
 
+  /**
+   * Align enable/disable state with a snapshot.
+   * NOTE: this does NOT reinstall missing packs or roll back versions — it only
+   * toggles `.disabled` markers to match the snapshot. UI must say so.
+   */
   restoreSnapshot(id: string): boolean {
     const snap = getSnapshot(id)
     if (!snap) return false

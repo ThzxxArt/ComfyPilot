@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { SearchOutline, DownloadOutline, StarOutline, RefreshOutline } from '@vicons/ionicons5'
 import { NButton, NIcon, NInput, NList, NListItem, NSpace, NSpin, NTag, NEmpty, NProgress, useMessage } from 'naive-ui'
 import { ipc, onIpc, IPC_EVENTS } from '@/composables/useIpc'
 import { useAppStore } from '@/stores/app'
 import type { MarketItem, RegistryPageResult } from '@shared/types'
 
+const { t } = useI18n()
 const store = useAppStore()
 const message = useMessage()
 const loading = ref(false)
@@ -25,12 +27,32 @@ const pageSize = 40
 
 function hint(): string {
   if (activeQuery.value) {
-    return `「${activeQuery.value}」在全库 ${scanned.value || indexCount.value} 条中匹配 ${total.value} 条`
+    return t('market.hintMatch', {
+      query: activeQuery.value,
+      scanned: scanned.value || indexCount.value,
+      total: total.value
+    })
   }
   const idx = indexCount.value
-    ? `全库索引 ${indexCount.value} 条${indexUpdatedAt.value ? ' · ' + new Date(indexUpdatedAt.value).toLocaleString() : ''}`
+    ? indexUpdatedAt.value
+      ? t('market.hintIndexTime', {
+          n: indexCount.value,
+          time: new Date(indexUpdatedAt.value).toLocaleString()
+        })
+      : t('market.hintIndex', { n: indexCount.value })
     : ''
-  return `Registry 共 ${total.value} 个插件 · 第 ${page.value}/${Math.max(1, totalPages.value)} 页${idx ? ' · ' + idx : ''}`
+  return idx
+    ? t('market.hintPagingWithIndex', {
+        total: total.value,
+        page: page.value,
+        pages: Math.max(1, totalPages.value),
+        idx
+      })
+    : t('market.hintPaging', {
+        total: total.value,
+        page: page.value,
+        pages: Math.max(1, totalPages.value)
+      })
 }
 
 async function loadIndexStatus(): Promise<void> {
@@ -50,7 +72,7 @@ async function refreshIndex(): Promise<void> {
     const s = await ipc('registry.refreshIndex')
     indexCount.value = s.count
     indexUpdatedAt.value = s.updatedAt
-    message.success(`全库索引已更新：${s.count} 条`)
+    message.success(t('market.indexUpdated', { n: s.count }))
     if (activeQuery.value) await load(true)
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
@@ -83,7 +105,7 @@ async function load(reset = true): Promise<void> {
     scanned.value = res.scanned
     page.value = res.page
     if (reset && !res.items.length) {
-      message.info(activeQuery.value ? '全库中没有匹配的插件' : 'Registry 暂无数据')
+      message.info(activeQuery.value ? t('market.noMatches') : t('market.registryEmpty'))
     }
     void loadIndexStatus()
   } catch (err) {
@@ -102,7 +124,7 @@ async function loadMore(): Promise<void> {
 async function install(item: MarketItem): Promise<void> {
   try {
     await ipc('market.install', item.id, store.activeInstanceId || undefined)
-    message.success(`已安装 ${item.name}`)
+    message.success(t('market.installedItem', { name: item.name }))
     await load(true)
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
@@ -138,13 +160,13 @@ onUnmounted(() => offProgress?.())
   <div class="page">
     <div class="page-header">
       <div>
-        <h1 class="page-title">插件市场</h1>
-        <p class="page-subtitle">Comfy Registry 插件库（真实分页 + 本地检索）。{{ hint() }}</p>
+        <h1 class="page-title">{{ $t('market.title') }}</h1>
+        <p class="page-subtitle">{{ $t('market.subtitle') }} {{ hint() }}</p>
       </div>
       <NSpace>
         <NInput
           v-model:value="query"
-          placeholder="搜索名称 / 描述 / 作者 / 标签"
+          :placeholder="$t('market.searchPlaceholder')"
           clearable
           style="width: 280px"
           @keyup.enter="load(true)"
@@ -152,10 +174,10 @@ onUnmounted(() => offProgress?.())
         >
           <template #prefix><NIcon :component="SearchOutline" /></template>
         </NInput>
-        <NButton type="primary" @click="load(true)">搜索</NButton>
+        <NButton type="primary" @click="load(true)">{{ $t('market.search') }}</NButton>
         <NButton secondary :loading="indexing" @click="refreshIndex">
           <template #icon><NIcon :component="RefreshOutline" /></template>
-          更新全库索引
+          {{ $t('market.refreshIndex') }}
         </NButton>
       </NSpace>
     </div>
@@ -168,7 +190,7 @@ onUnmounted(() => offProgress?.())
           :height="8"
           processing
         />
-        <div class="meta">正在建立全库索引 {{ indexProgress.done }}/{{ indexProgress.total }} 页 · 已收 {{ indexProgress.count }} 条</div>
+        <div class="meta">{{ $t('market.indexing', { done: indexProgress.done, total: indexProgress.total, count: indexProgress.count }) }}</div>
       </div>
 
       <NSpin :show="loading">
@@ -187,22 +209,22 @@ onUnmounted(() => offProgress?.())
                     {{ item.stars }}
                   </NTag>
                   <NTag size="tiny" round>{{ item.downloads }} DL</NTag>
-                  <NTag v-if="item.installed" size="tiny" round type="success">已安装</NTag>
+                  <NTag v-if="item.installed" size="tiny" round type="success">{{ $t('market.installedTag') }}</NTag>
                 </div>
               </div>
               <NButton type="primary" secondary :disabled="item.installed" @click="install(item)">
                 <template #icon><NIcon :component="DownloadOutline" /></template>
-                {{ item.installed ? '已安装' : '安装' }}
+                {{ item.installed ? $t('market.installedTag') : $t('market.install') }}
               </NButton>
             </div>
           </NListItem>
         </NList>
-        <NEmpty v-else-if="!loading" description="暂无数据" style="padding: 48px 0" />
+        <NEmpty v-else-if="!loading" :description="$t('market.empty')" style="padding: 48px 0" />
       </NSpin>
 
       <div v-if="items.length" class="more-row">
         <NButton secondary :loading="loadingMore" :disabled="page >= totalPages" @click="loadMore">
-          {{ page < totalPages ? '加载下一页' : '已到末页' }}
+          {{ page < totalPages ? $t('market.loadMore') : $t('market.lastPage') }}
         </NButton>
       </div>
     </div>
@@ -212,7 +234,7 @@ onUnmounted(() => offProgress?.())
 <style lang="scss" scoped>
 @use '@/styles/variables.scss' as *;
 .row { display: flex; justify-content: space-between; gap: 16px; align-items: center; width: 100%; }
-.name { font-size: 15px; font-weight: 720; }
+.name { font-size: 15px; font-weight: 700; }
 .desc { font-size: 13px; color: $color-text-secondary; margin: 4px 0 8px; }
 .tags { display: flex; flex-wrap: wrap; gap: 6px; }
 .more-row { display: flex; justify-content: center; padding: 16px 0 8px; }

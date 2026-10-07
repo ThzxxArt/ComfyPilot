@@ -1,40 +1,31 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   ExtensionPuzzleOutline, RefreshOutline, WarningOutline, CheckmarkCircleOutline,
-  DownloadOutline, LockClosedOutline, LockOpenOutline, GitBranchOutline, SearchOutline
+  LockClosedOutline, LockOpenOutline, GitBranchOutline, SearchOutline
 } from '@vicons/ionicons5'
 import {
   NButton, NIcon, NSpace, NSpin, NTag, NSwitch, NEmpty, useMessage,
-  NCollapse, NCollapseItem, NInput, NModal, NPopconfirm, NTabs, NTabPane, NList, NListItem
+  NCollapse, NCollapseItem, NInput, NModal, NPopconfirm, NTabs, NTabPane
 } from 'naive-ui'
 import { ipc } from '@/composables/useIpc'
 import { useAppStore } from '@/stores/app'
 import type {
-  NodeNameConflict, NodePackRecord, NodeSnapshot, RegistryNodePack, RegistryPageResult
+  NodeNameConflict, NodePackRecord, NodeSnapshot
 } from '@shared/types'
 
+const { t } = useI18n()
 const store = useAppStore()
 const message = useMessage()
 const loading = ref(false)
 const packs = ref<NodePackRecord[]>([])
 const conflicts = ref<NodeNameConflict[]>([])
 const snapshots = ref<NodeSnapshot[]>([])
-const registry = ref<RegistryNodePack[]>([])
-const registryQuery = ref('')
-const activeRegistryQuery = ref('')
 const installedQuery = ref('')
 const showInstall = ref(false)
 const installUrl = ref('')
 const tab = ref('installed')
-
-const registryPage = ref(1)
-const registryTotal = ref(0)
-const registryTotalPages = ref(1)
-const registryScanned = ref(0)
-const registryLoading = ref(false)
-const registryMore = ref(false)
-const registryPageSize = 40
 
 const filteredPacks = computed(() => {
   const q = installedQuery.value.trim().toLowerCase()
@@ -46,13 +37,6 @@ const filteredPacks = computed(() => {
       .includes(q)
   )
 })
-
-function registryHint(): string {
-  if (activeRegistryQuery.value) {
-    return `「${activeRegistryQuery.value}」在全库 ${registryScanned.value || registryTotal.value} 条中匹配 ${registryTotal.value} 条`
-  }
-  return `Registry 共 ${registryTotal.value} 个节点包 · 第 ${registryPage.value}/${Math.max(1, registryTotalPages.value)} 页`
-}
 
 async function refresh(): Promise<void> {
   loading.value = true
@@ -68,57 +52,6 @@ async function refresh(): Promise<void> {
   }
 }
 
-async function searchRegistry(reset = true): Promise<void> {
-  if (reset) {
-    registryLoading.value = true
-    registryPage.value = 1
-    registry.value = []
-    activeRegistryQuery.value = registryQuery.value.trim()
-  } else {
-    registryMore.value = true
-  }
-  try {
-    const res: RegistryPageResult<RegistryNodePack> = await ipc('node.registrySearch', {
-      query: activeRegistryQuery.value || undefined,
-      limit: registryPageSize,
-      page: reset ? 1 : registryPage.value + 1
-    })
-    if (reset) registry.value = res.items
-    else registry.value = [...registry.value, ...res.items]
-    registryTotal.value = res.total
-    registryTotalPages.value = res.totalPages
-    registryScanned.value = res.scanned
-    registryPage.value = res.page
-    if (reset && !res.items.length) {
-      message.info(activeRegistryQuery.value ? '全库中没有匹配的节点包' : 'Registry 暂无数据')
-    }
-  } catch (err) {
-    message.error(err instanceof Error ? err.message : String(err))
-  } finally {
-    registryLoading.value = false
-    registryMore.value = false
-  }
-}
-
-async function loadMoreRegistry(): Promise<void> {
-  if (registryPage.value >= registryTotalPages.value) return
-  await searchRegistry(false)
-}
-
-async function installRegistry(p: RegistryNodePack): Promise<void> {
-  try {
-    await ipc('node.install', {
-      id: p.id,
-      source: 'registry',
-      instanceId: store.activeInstanceId || undefined
-    })
-    message.success(`已安装 ${p.name}`)
-    await refresh()
-  } catch (err) {
-    message.error(err instanceof Error ? err.message : String(err))
-  }
-}
-
 async function installGit(): Promise<void> {
   if (!installUrl.value.trim()) return
   try {
@@ -129,7 +62,7 @@ async function installGit(): Promise<void> {
       instanceId: store.activeInstanceId || undefined
     })
     showInstall.value = false
-    message.success('Git 安装完成')
+    message.success(t('nodes.gitInstallDone'))
     await refresh()
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
@@ -140,41 +73,57 @@ async function toggle(pack: NodePackRecord, enabled: boolean): Promise<void> {
   try {
     await ipc('node.toggle', pack.name, enabled, store.activeInstanceId || undefined)
     await refresh()
-    message.success(enabled ? '已启用' : '已禁用')
+    message.success(enabled ? t('nodes.enabled') : t('nodes.disabled'))
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   }
 }
 
 async function lockPack(pack: NodePackRecord, locked: boolean): Promise<void> {
-  await ipc('node.lock', pack.name, locked)
-  await refresh()
-  message.success(locked ? '已锁定' : '已解锁')
+  try {
+    await ipc('node.lock', pack.name, locked)
+    await refresh()
+    message.success(locked ? t('nodes.locked') : t('nodes.unlocked'))
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 async function smoke(pack: NodePackRecord): Promise<void> {
-  const issues = await ipc('node.smokeTest', pack.name, store.activeInstanceId || undefined)
-  message[issues.some((i) => i.severity === 'error') ? 'error' : 'success'](
-    issues.length ? issues[0].message : '冒烟测试通过'
-  )
+  try {
+    const issues = await ipc('node.smokeTest', pack.name, store.activeInstanceId || undefined)
+    message[issues.some((i) => i.severity === 'error') ? 'error' : 'success'](
+      issues.length ? issues[0].message : t('nodes.smokePassed')
+    )
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 async function createSnapshot(): Promise<void> {
-  const s = await ipc('node.createSnapshot')
-  message.success(`快照：${s.name}`)
-  await refresh()
+  try {
+    const s = await ipc('node.createSnapshot')
+    message.success(t('nodes.snapshotCreated', { name: s.name }))
+    await refresh()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 async function restoreSnapshot(id: string): Promise<void> {
-  await ipc('node.restoreSnapshot', id)
-  message.success('快照已恢复（启用/禁用语义）')
-  await refresh()
+  try {
+    await ipc('node.restoreSnapshot', id)
+    message.success(t('nodes.snapshotRestored'))
+    await refresh()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 async function uninstall(pack: NodePackRecord): Promise<void> {
   try {
     await ipc('node.uninstall', pack.name, store.activeInstanceId || undefined)
-    message.success('已卸载')
+    message.success(t('nodes.uninstalled'))
     await refresh()
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
@@ -192,7 +141,6 @@ async function removeSnapshot(id: string): Promise<void> {
 
 onMounted(() => {
   void refresh()
-  void searchRegistry()
 })
 </script>
 
@@ -200,24 +148,24 @@ onMounted(() => {
   <div class="page">
     <div class="page-header">
       <div>
-        <h1 class="page-title">节点管理</h1>
-        <p class="page-subtitle">本地扫描、Registry 浏览安装、冲突检测、快照回滚。</p>
+        <h1 class="page-title">{{ $t('nodes.title') }}</h1>
+        <p class="page-subtitle">{{ $t('nodes.subtitle') }}</p>
       </div>
       <NSpace>
         <NButton secondary @click="refresh">
-          <template #icon><NIcon :component="RefreshOutline" /></template>刷新
+          <template #icon><NIcon :component="RefreshOutline" /></template>{{ $t('nodes.refresh') }}
         </NButton>
-        <NButton secondary @click="createSnapshot">创建快照</NButton>
-        <NButton type="primary" @click="showInstall = true">Git 安装</NButton>
+        <NButton secondary @click="createSnapshot">{{ $t('nodes.createSnapshot') }}</NButton>
+        <NButton type="primary" @click="showInstall = true">{{ $t('nodes.gitInstall') }}</NButton>
       </NSpace>
     </div>
 
     <NTabs v-model:value="tab" type="line">
-      <NTabPane name="installed" :tab="`已安装 (${packs.length})`">
+      <NTabPane name="installed" :tab="$t('nodes.tabInstalled', { n: packs.length })">
         <NSpace style="margin-bottom: 12px" justify="space-between">
           <NInput
             v-model:value="installedQuery"
-            placeholder="搜索已安装节点（名称 / 描述 / 标签）"
+            :placeholder="$t('nodes.searchPlaceholder')"
             clearable
             style="width: 320px"
           >
@@ -236,9 +184,9 @@ onMounted(() => {
                 </div>
                 <NPopconfirm v-if="!pack.locked" @positive-click="uninstall(pack)">
                   <template #trigger>
-                    <NButton size="tiny" type="error" secondary>卸载</NButton>
+                    <NButton size="tiny" type="error" secondary>{{ $t('nodes.uninstall') }}</NButton>
                   </template>
-                  确认卸载 {{ pack.name }}？目录将被删除。
+                  {{ $t('nodes.confirmUninstall', { name: pack.name }) }}
                 </NPopconfirm>
                 <NButton size="tiny" quaternary @click="lockPack(pack, !pack.locked)">
                   <template #icon>
@@ -247,7 +195,7 @@ onMounted(() => {
                 </NButton>
                 <NSwitch :value="pack.status !== 'disabled'" :disabled="pack.locked" @update:value="(v: boolean) => toggle(pack, v)" />
               </div>
-              <p class="pack-desc">{{ pack.description || '暂无描述' }}</p>
+              <p class="pack-desc">{{ pack.description || $t('nodes.noDescription') }}</p>
               <div class="pack-tags">
                 <NTag size="tiny" round :type="pack.status === 'disabled' ? 'default' : pack.status === 'error' ? 'error' : 'success'">
                   {{ pack.status }}
@@ -256,15 +204,15 @@ onMounted(() => {
                 <NTag v-if="pack.locked" size="tiny" round type="warning">locked</NTag>
               </div>
               <div class="pack-actions">
-                <NButton size="tiny" secondary @click="smoke(pack)">冒烟测试</NButton>
+                <NButton size="tiny" secondary @click="smoke(pack)">{{ $t('nodes.smokeTest') }}</NButton>
               </div>
               <NCollapse v-if="pack.issues?.length" class="issues" :arrow="false">
-                <NCollapseItem :title="`健康提示（${pack.issues.length}）`" name="1">
+                <NCollapseItem :title="$t('nodes.healthIssues', { n: pack.issues.length })" name="1">
                   <div v-for="(issue, idx) in pack.issues" :key="idx" class="issue">
                     <NIcon
                       :size="16"
                       :component="issue.severity === 'error' || issue.severity === 'warning' ? WarningOutline : CheckmarkCircleOutline"
-                      :style="{ color: issue.severity === 'error' ? '#ef4444' : issue.severity === 'warning' ? '#f59e0b' : '#10b981' }"
+                      :class="issue.severity === 'error' ? 'fail-ink' : issue.severity === 'warning' ? 'warn-ink' : 'pass-ink'"
                     />
                     <div>
                       <div class="issue-msg">{{ issue.message }}</div>
@@ -275,58 +223,11 @@ onMounted(() => {
               </NCollapse>
             </article>
           </div>
-          <NEmpty v-else description="未发现匹配的 custom_nodes 节点包" class="empty" />
+          <NEmpty v-else :description="$t('nodes.emptyInstalled')" class="empty" />
         </NSpin>
       </NTabPane>
 
-      <NTabPane name="registry" tab="Registry 市场">
-        <NSpace style="margin-bottom: 12px" justify="space-between">
-          <NSpace>
-            <NInput
-              v-model:value="registryQuery"
-              placeholder="搜索 Registry（名称 / 描述 / 作者 / 标签）"
-              clearable
-              style="width: 320px"
-              @keyup.enter="searchRegistry(true)"
-              @clear="searchRegistry(true)"
-            >
-              <template #prefix><NIcon :component="SearchOutline" /></template>
-            </NInput>
-            <NButton type="primary" secondary @click="searchRegistry(true)">搜索</NButton>
-          </NSpace>
-          <span class="meta">{{ registryHint() }}</span>
-        </NSpace>
-        <NSpin :show="registryLoading">
-          <NList v-if="registry.length" bordered>
-            <NListItem v-for="r in registry" :key="r.id">
-              <div class="reg-row">
-                <div>
-                  <div class="pack-name">{{ r.displayName }}</div>
-                  <div class="pack-desc">{{ r.description }}</div>
-                  <div class="pack-tags">
-                    <NTag size="tiny" round>{{ r.author }}</NTag>
-                    <NTag size="tiny" round>{{ r.latestVersion }}</NTag>
-                    <NTag size="tiny" round>{{ r.downloads }} downloads</NTag>
-                    <NTag v-if="r.status === 'flagged'" size="tiny" round type="warning">flagged</NTag>
-                  </div>
-                </div>
-                <NButton type="primary" secondary :disabled="r.status === 'banned'" @click="installRegistry(r)">
-                  <template #icon><NIcon :component="DownloadOutline" /></template>
-                  安装
-                </NButton>
-              </div>
-            </NListItem>
-          </NList>
-          <NEmpty v-else-if="!registryLoading" description="暂无数据" class="empty" />
-        </NSpin>
-        <div v-if="registry.length" class="more-row">
-          <NButton secondary :loading="registryMore" :disabled="registryPage >= registryTotalPages" @click="loadMoreRegistry">
-            {{ registryPage < registryTotalPages ? '加载下一页' : '已到末页' }}
-          </NButton>
-        </div>
-      </NTabPane>
-
-      <NTabPane name="conflicts" :tab="`冲突 (${conflicts.length})`">
+      <NTabPane name="conflicts" :tab="$t('nodes.tabConflicts', { n: conflicts.length })">
         <div v-if="conflicts.length" class="card">
           <div v-for="c in conflicts" :key="c.nodeName" class="conflict-row">
             <div class="mono">{{ c.nodeName }}</div>
@@ -335,10 +236,10 @@ onMounted(() => {
             </div>
           </div>
         </div>
-        <NEmpty v-else description="未发现节点名冲突" />
+        <NEmpty v-else :description="$t('nodes.emptyConflicts')" />
       </NTabPane>
 
-      <NTabPane name="snapshots" :tab="`快照 (${snapshots.length})`">
+      <NTabPane name="snapshots" :tab="$t('nodes.tabSnapshots', { n: snapshots.length })">
         <div v-if="snapshots.length" class="card">
           <div v-for="s in snapshots" :key="s.id" class="snap-row">
             <div>
@@ -346,28 +247,28 @@ onMounted(() => {
               <div class="pack-meta">{{ new Date(s.createdAt).toLocaleString() }} · {{ s.packs.length }} packs</div>
             </div>
             <NSpace>
-              <NButton size="small" secondary @click="restoreSnapshot(s.id)">恢复</NButton>
+              <NButton size="small" secondary @click="restoreSnapshot(s.id)">{{ $t('nodes.restore') }}</NButton>
               <NPopconfirm @positive-click="removeSnapshot(s.id)">
                 <template #trigger>
-                  <NButton size="small" type="error" secondary>删除</NButton>
+                  <NButton size="small" type="error" secondary>{{ $t('nodes.delete') }}</NButton>
                 </template>
-                删除快照？
+                {{ $t('nodes.deleteSnapshot') }}
               </NPopconfirm>
             </NSpace>
           </div>
         </div>
-        <NEmpty v-else description="尚无快照，安装节点前建议先创建" />
+        <NEmpty v-else :description="$t('nodes.emptySnapshots')" />
       </NTabPane>
     </NTabs>
 
-    <NModal v-model:show="showInstall" preset="card" title="Git URL 安装" style="width: 520px; border-radius: 20px">
+    <NModal v-model:show="showInstall" preset="card" :title="$t('nodes.gitInstallTitle')" style="width: 520px; border-radius: 20px">
       <NInput v-model:value="installUrl" placeholder="https://github.com/user/repo.git">
         <template #prefix><NIcon :component="GitBranchOutline" /></template>
       </NInput>
       <template #footer>
         <NSpace justify="end">
-          <NButton @click="showInstall = false">取消</NButton>
-          <NButton type="primary" @click="installGit">安装</NButton>
+          <NButton @click="showInstall = false">{{ $t('nodes.cancel') }}</NButton>
+          <NButton type="primary" @click="installGit">{{ $t('nodes.install') }}</NButton>
         </NSpace>
       </template>
     </NModal>
@@ -380,7 +281,7 @@ onMounted(() => {
 .pack { padding: 18px; }
 .pack-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .pack-icon { width: 42px; height: 42px; border-radius: 14px; display: grid; place-items: center; background: $gradient-soft; color: $color-primary; }
-.pack-name { font-size: 15.5px; font-weight: 720; }
+.pack-name { font-size: 15.5px; font-weight: 700; }
 .pack-meta { font-size: 12px; color: $color-text-muted; margin-top: 2px; }
 .pack-desc { font-size: 13px; color: $color-text-secondary; line-height: 1.55; min-height: 36px; margin: 0 0 10px; }
 .pack-tags { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -394,4 +295,7 @@ onMounted(() => {
 .empty { padding: 48px 0; }
 .meta { font-size: 12px; color: $color-text-muted; align-self: center; }
 .more-row { display: flex; justify-content: center; padding: 14px 0 6px; }
+.pass-ink { color: $color-success; }
+.warn-ink { color: $color-warning; }
+.fail-ink { color: $color-danger; }
 </style>

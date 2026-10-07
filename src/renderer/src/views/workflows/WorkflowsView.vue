@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { DocumentTextOutline, PlayOutline, OpenOutline, RefreshOutline, SendOutline } from '@vicons/ionicons5'
 import { NButton, NIcon, NInput, NSpace, NSpin, NTag, NEmpty, useMessage, NModal, NSelect, NInputNumber } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 import { ipc } from '@/composables/useIpc'
 import type { WorkflowRecord } from '@shared/types'
 
+const { t } = useI18n()
 const store = useAppStore()
 const message = useMessage()
 const loading = ref(false)
@@ -33,7 +35,7 @@ async function importFile(): Promise<void> {
     })
     if (!path) return
     const rec = await ipc('workflow.import', path)
-    message.success(`已导入 ${rec.name}`)
+    message.success(t('workflows.imported', { name: rec.name }))
     await refresh()
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
@@ -43,7 +45,7 @@ async function importFile(): Promise<void> {
 async function launch(row: WorkflowRecord): Promise<void> {
   try {
     await ipc('workflow.launch', row.path)
-    message.success('已请求打开工作流')
+    message.success(t('workflows.openRequested'))
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   }
@@ -65,7 +67,7 @@ async function doQueue(): Promise<void> {
       instanceId: store.activeInstanceId || '',
       seed: seed.value ?? undefined
     })
-    message.success(promptId ? `已入队 ${promptId}` : '入队失败')
+    message.success(promptId ? t('workflows.queued', { id: promptId }) : t('workflows.queueFailed'))
     showQueue.value = false
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
@@ -85,15 +87,15 @@ onMounted(() => void refresh())
   <div class="page">
     <div class="page-header">
       <div>
-        <h1 class="page-title">工作流库</h1>
-        <p class="page-subtitle">JSON/PNG 解析、标签、参数还原、一键排队到 ComfyUI。</p>
+        <h1 class="page-title">{{ $t('workflows.title') }}</h1>
+        <p class="page-subtitle">{{ $t('workflows.subtitle') }}</p>
       </div>
       <NSpace>
-        <NInput v-model:value="keyword" clearable placeholder="搜索工作流" style="width: 200px" />
+        <NInput v-model:value="keyword" clearable :placeholder="$t('workflows.searchPlaceholder')" style="width: 200px" />
         <NButton secondary :loading="loading" @click="refresh">
-          <template #icon><NIcon :component="RefreshOutline" /></template>刷新
+          <template #icon><NIcon :component="RefreshOutline" /></template>{{ $t('workflows.refresh') }}
         </NButton>
-        <NButton type="primary" @click="importFile">导入工作流</NButton>
+        <NButton type="primary" @click="importFile">{{ $t('workflows.import') }}</NButton>
       </NSpace>
     </div>
 
@@ -113,15 +115,15 @@ onMounted(() => void refresh())
             <NTag v-for="t in wf.tags" :key="t" size="tiny" round>{{ t }}</NTag>
             <NTag v-if="wf.seed != null" size="tiny" round type="info">seed {{ wf.seed }}</NTag>
             <NTag v-if="wf.missingNodes.length" size="tiny" round type="warning">
-              缺 {{ wf.missingNodes.length }} 节点
+              {{ $t('workflows.missingNodes', { n: wf.missingNodes.length }) }}
             </NTag>
           </div>
           <div class="wf-actions">
             <NButton size="small" type="primary" secondary @click="launch(wf)">
-              <template #icon><NIcon :component="PlayOutline" /></template>打开
+              <template #icon><NIcon :component="PlayOutline" /></template>{{ $t('workflows.open') }}
             </NButton>
             <NButton size="small" secondary @click="queueTarget = wf; showQueue = true">
-              <template #icon><NIcon :component="SendOutline" /></template>排队
+              <template #icon><NIcon :component="SendOutline" /></template>{{ $t('workflows.queue') }}
             </NButton>
             <NButton size="small" secondary @click="openPath(wf.path)">
               <template #icon><NIcon :component="OpenOutline" /></template>
@@ -129,25 +131,25 @@ onMounted(() => void refresh())
           </div>
         </article>
       </div>
-      <NEmpty v-else description="暂无工作流，可导入 JSON/PNG" class="empty" />
+      <NEmpty v-else :description="$t('workflows.empty')" class="empty" />
     </NSpin>
     </div>
 
-    <NModal v-model:show="showQueue" preset="card" title="排队执行工作流" style="width: 480px; border-radius: 20px">
+    <NModal v-model:show="showQueue" preset="card" :title="$t('workflows.queueTitle')" style="width: 480px; border-radius: 20px">
       <NSpace vertical>
         <div>{{ queueTarget?.name }}</div>
         <NSelect
           :options="store.instances.map((i) => ({ label: i.name, value: i.id }))"
           :value="store.activeInstanceId"
-          placeholder="选择实例"
+          :placeholder="$t('workflows.instancePlaceholder')"
           @update:value="(v: string) => (store.activeInstanceId = v)"
         />
-        <NInputNumber v-model:value="seed" placeholder="Seed（可选）" />
+        <NInputNumber v-model:value="seed" :placeholder="$t('workflows.seedPlaceholder')" />
       </NSpace>
       <template #footer>
         <NSpace justify="end">
-          <NButton @click="showQueue = false">取消</NButton>
-          <NButton type="primary" @click="doQueue">入队</NButton>
+          <NButton @click="showQueue = false">{{ $t('workflows.cancel') }}</NButton>
+          <NButton type="primary" @click="doQueue">{{ $t('workflows.enqueue') }}</NButton>
         </NSpace>
       </template>
     </NModal>
@@ -160,7 +162,7 @@ onMounted(() => void refresh())
 .wf { padding: 18px; }
 .wf-top { display: flex; gap: 12px; align-items: center; }
 .wf-icon { width: 42px; height: 42px; border-radius: 14px; display: grid; place-items: center; background: $gradient-soft; color: $color-primary; }
-.wf-name { font-size: 15px; font-weight: 720; }
+.wf-name { font-size: 15px; font-weight: 700; }
 .wf-meta { font-size: 12px; color: $color-text-muted; margin-top: 2px; }
 .wf-path { margin: 12px 0; font-size: 11.5px; color: $color-text-muted; word-break: break-all; }
 .wf-tags { display: flex; flex-wrap: wrap; gap: 6px; min-height: 24px; }

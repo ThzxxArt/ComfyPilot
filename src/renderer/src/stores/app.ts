@@ -1,6 +1,12 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { AppSettings, ComfyInstanceInfo, SystemSnapshot, ExecProgressEvent } from '@shared/types'
+import type {
+  AppSettings,
+  ComfyInstanceInfo,
+  SystemSnapshot,
+  ExecProgressEvent,
+  DoctorReport
+} from '@shared/types'
 import { ipc, onInstanceStatus, onMonitorTick, onIpc, IPC_EVENTS } from '@/composables/useIpc'
 
 export const useAppStore = defineStore('app', () => {
@@ -11,6 +17,8 @@ export const useAppStore = defineStore('app', () => {
   const system = ref<SystemSnapshot | null>(null)
   const wsEvents = ref<ExecProgressEvent[]>([])
   const lastWsProgress = ref<{ value: number; max: number } | null>(null)
+  /** Last doctor report — survives navigation from Dashboard "one-click check" into DoctorView. */
+  const doctorReport = ref<DoctorReport | null>(null)
 
   const activeInstance = computed(
     () => instances.value.find((i) => i.id === activeInstanceId.value) || instances.value[0] || null
@@ -69,6 +77,7 @@ export const useAppStore = defineStore('app', () => {
     system,
     wsEvents,
     lastWsProgress,
+    doctorReport,
     activeInstance,
     bootstrap,
     refreshInstances,

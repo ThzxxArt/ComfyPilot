@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   MedkitOutline, CheckmarkCircleOutline, WarningOutline, CloseCircleOutline,
   FlashOutline, ConstructOutline
@@ -11,9 +12,11 @@ import type { DoctorCheck, DoctorReport } from '@shared/types'
 
 const store = useAppStore()
 const message = useMessage()
+const { t } = useI18n()
 const running = ref(false)
 const fixing = ref(false)
-const report = ref<DoctorReport | null>(null)
+// Persisted in the app store so Dashboard "one-click doctor" survives the route change.
+const report = ref<DoctorReport | null>(store.doctorReport)
 
 function iconFor(s: DoctorCheck['severity']) {
   if (s === 'pass') return CheckmarkCircleOutline
@@ -32,8 +35,13 @@ async function run(): Promise<void> {
   try {
     const id = store.activeInstanceId || 'default'
     report.value = await ipc('doctor.run', id)
+    store.doctorReport = report.value
     message.success(
-      `体检完成：通过 ${report.value.summary.pass} · 警告 ${report.value.summary.warn} · 失败 ${report.value.summary.fail}`
+      t('doctor.runComplete', {
+        pass: report.value.summary.pass,
+        warn: report.value.summary.warn,
+        fail: report.value.summary.fail
+      })
     )
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
@@ -61,13 +69,13 @@ async function fix(check: DoctorCheck): Promise<void> {
   <div class="page">
     <div class="page-header">
       <div>
-        <h1 class="page-title">健康诊断</h1>
-        <p class="page-subtitle">Python / Torch / 路径 / 端口 / Registry 全项体检，可一键修复。</p>
+        <h1 class="page-title">{{ t('doctor.title') }}</h1>
+        <p class="page-subtitle">{{ t('doctor.subtitle') }}</p>
       </div>
       <NSpace>
         <NButton type="primary" :loading="running" @click="run">
           <template #icon><NIcon :component="FlashOutline" /></template>
-          开始体检
+          {{ t('doctor.run') }}
         </NButton>
       </NSpace>
     </div>
@@ -77,20 +85,20 @@ async function fix(check: DoctorCheck): Promise<void> {
       <template v-if="report">
         <div class="summary card">
           <div class="sum-item">
-            <div class="sum-num" style="color: #059669">{{ report.summary.pass }}</div>
-            <div class="sum-label">通过</div>
+            <div class="sum-num pass-ink">{{ report.summary.pass }}</div>
+            <div class="sum-label">{{ t('doctor.pass') }}</div>
           </div>
           <div class="sum-item">
-            <div class="sum-num" style="color: #b45309">{{ report.summary.warn }}</div>
-            <div class="sum-label">警告</div>
+            <div class="sum-num warn-ink">{{ report.summary.warn }}</div>
+            <div class="sum-label">{{ t('doctor.warn') }}</div>
           </div>
           <div class="sum-item">
-            <div class="sum-num" style="color: #b91c1c">{{ report.summary.fail }}</div>
-            <div class="sum-label">失败</div>
+            <div class="sum-num fail-ink">{{ report.summary.fail }}</div>
+            <div class="sum-label">{{ t('doctor.fail') }}</div>
           </div>
           <div class="sum-item">
             <div class="sum-num">{{ (report.durationMs / 1000).toFixed(1) }}s</div>
-            <div class="sum-label">耗时</div>
+            <div class="sum-label">{{ t('doctor.duration') }}</div>
           </div>
         </div>
 
@@ -115,7 +123,7 @@ async function fix(check: DoctorCheck): Promise<void> {
                 @click="fix(check)"
               >
                 <template #icon><NIcon :component="ConstructOutline" /></template>
-                一键修复
+                {{ t('doctor.fix') }}
               </NButton>
             </div>
             <div class="check-detail mono">{{ check.detail }}</div>
@@ -126,9 +134,9 @@ async function fix(check: DoctorCheck): Promise<void> {
           </article>
         </div>
       </template>
-      <NEmpty v-else description="点击右上角「开始体检」，对当前 ComfyUI 实例做一次全面检查" class="empty">
+      <NEmpty v-else :description="t('doctor.empty')" class="empty">
         <template #icon>
-          <NIcon :size="48" :component="MedkitOutline" style="color: #7c5cfc" />
+          <NIcon :size="48" :component="MedkitOutline" class="medkit-icon" />
         </template>
       </NEmpty>
     </NSpin>
@@ -139,20 +147,24 @@ async function fix(check: DoctorCheck): Promise<void> {
 <style lang="scss" scoped>
 @use '@/styles/variables.scss' as *;
 .summary { display: grid; grid-template-columns: repeat(4, 1fr); padding: 20px; margin-bottom: 16px; text-align: center; }
-.sum-num { font-size: 30px; font-weight: 750; letter-spacing: -0.03em; }
+.sum-num { font-size: 30px; font-weight: 800; letter-spacing: -0.03em; }
 .sum-label { margin-top: 4px; font-size: 12.5px; color: $color-text-muted; }
 .checks { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
 .check { padding: 18px; }
 .check-top { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 10px; }
 .check-icon {
   width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center;
-  &.pass { background: rgba(16, 185, 129, 0.14); color: #059669; }
-  &.warn, &.info { background: rgba(245, 158, 11, 0.16); color: #b45309; }
-  &.fail { background: rgba(239, 68, 68, 0.12); color: #b91c1c; }
+  &.pass { background: rgba(16, 185, 129, 0.14); color: $color-success; }
+  &.warn, &.info { background: rgba(245, 158, 11, 0.16); color: $color-warning; }
+  &.fail { background: rgba(239, 68, 68, 0.12); color: $color-danger; }
 }
-.check-title { font-size: 15px; font-weight: 720; }
+.check-title { font-size: 15px; font-weight: 700; }
 .check-group { display: flex; gap: 6px; margin-top: 6px; align-items: center; }
 .check-detail { font-size: 12.5px; color: $color-text-secondary; background: $color-surface-2; border-radius: 10px; padding: 10px 12px; line-height: 1.55; word-break: break-all; }
-.check-fix { margin-top: 10px; display: flex; gap: 6px; align-items: flex-start; font-size: 12.5px; color: #4f6ef7; line-height: 1.5; }
+.check-fix { margin-top: 10px; display: flex; gap: 6px; align-items: flex-start; font-size: 12.5px; color: $color-primary; line-height: 1.5; }
+.pass-ink { color: $color-success; }
+.warn-ink { color: $color-warning; }
+.fail-ink { color: $color-danger; }
+.medkit-icon { color: $color-primary-2; }
 .empty { padding: 72px 0; }
 </style>

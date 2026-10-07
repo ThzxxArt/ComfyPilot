@@ -91,8 +91,14 @@ export function hasParentHop(pathStr: string): boolean {
 }
 
 export function isPathInside(child: string, parent: string): boolean {
-  const resolvedChild = resolve(child)
-  const resolvedParent = resolve(parent)
+  let resolvedChild = resolve(child)
+  let resolvedParent = resolve(parent)
+  // Win32 paths are case-insensitive; without folding, `C:\Out` vs `c:\out\img`
+  // fails containment (fail-closed) and breaks media thumbnails.
+  if (process.platform === 'win32') {
+    resolvedChild = resolvedChild.toLowerCase()
+    resolvedParent = resolvedParent.toLowerCase()
+  }
   if (resolvedChild === resolvedParent) return true
   return resolvedChild.startsWith(resolvedParent.endsWith(sep) ? resolvedParent : resolvedParent + sep)
 }

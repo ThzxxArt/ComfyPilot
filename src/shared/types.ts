@@ -43,6 +43,10 @@ export interface AppSettings {
   /** On app ready, start every instance whose autoStart is true */
   autoStartInstancesOnLaunch: boolean
   proxy: ProxySettings
+  /** PyPI index URL for pip/uv installs (empty = official). e.g. https://pypi.tuna.tsinghua.edu.cn/simple */
+  pipIndex: string
+  /** Optional torch wheel index override (empty = download.pytorch.org per channel) */
+  torchIndexMirror: string
 }
 
 // ---------- Instance ----------
@@ -186,6 +190,12 @@ export interface DownloadTask {
   speedBps?: number
   resumedFrom?: number
   source: 'huggingface' | 'civitai' | 'direct'
+  /** Expected SHA256 from remote manifest (if provided) — verified on completion. */
+  expectedSha256?: string
+  /** Computed SHA256 after a successful download (when verification ran). */
+  actualSha256?: string
+  /** 'length' = Content-Length match only; 'sha256' = hash verified. */
+  verified?: 'length' | 'sha256' | 'failed'
 }
 
 export interface StorageStats {
@@ -489,6 +499,7 @@ export interface RegistryPageResult<T> {
 
 // ---------- Installer (one-click isolated setup) ----------
 export type InstallStepId =
+  | 'bootstrap'
   | 'preflight'
   | 'python'
   | 'venv'
@@ -496,6 +507,7 @@ export type InstallStepId =
   | 'torch'
   | 'requirements'
   | 'register'
+  | 'starter'
   | 'done'
 
 export type InstallStepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped'
@@ -506,6 +518,9 @@ export interface InstallStep {
   status: InstallStepStatus
   detail: string
   log: string[]
+  /** i18n key for UI display of detail (renderer translates). */
+  detailKey?: string
+  detailParams?: Record<string, string | number>
 }
 
 export type TorchChannel =
@@ -527,6 +542,20 @@ export interface InstallPlan {
   comfyBranch: string
   createDesktopShortcut: boolean
   autoStart: boolean
+  /** 'zip' downloads a GitHub archive (no Git needed). 'git' uses git clone. */
+  comfySource?: 'zip' | 'git'
+  /** Skip the post-install starter-model step. */
+  skipStarter?: boolean
+  /** One-click mode: use defaults for everything not explicitly set. */
+  fullAuto?: boolean
+}
+
+export interface InstallStepByteProgress {
+  /** Bytes transferred in the current sub-download (torch wheel, archive, etc.) */
+  receivedBytes: number
+  totalBytes: number
+  speedBps: number
+  label: string
 }
 
 export interface InstallProgress {
@@ -537,6 +566,10 @@ export interface InstallProgress {
   message: string
   percent: number
   error?: string
+  /** Set once register step completes — authoritative instance id for this run. */
+  instanceId?: string
+  /** Fine-grained download progress inside the active step, when applicable. */
+  bytes?: InstallStepByteProgress
 }
 
 export interface GpuCapability {
@@ -544,7 +577,58 @@ export interface GpuCapability {
   model: string
   recommendedTorch: TorchChannel
   notes: string
+  /** i18n key for UI (renderer translates); notes is a log-only English fallback. */
+  notesKey?: string
+  notesParams?: Record<string, string | number>
 }
+
+// ---------- Runtime bootstrap (zero-prerequisite) ----------
+export type RuntimeKind = 'uv' | 'python' | 'mingit' | 'aria2'
+
+export interface RuntimeComponentStatus {
+  kind: RuntimeKind
+  /** Absolute path to the executable once installed. */
+  path: string
+  installed: boolean
+  version?: string
+  /** Source used: system PATH vs downloaded into userData/runtimes. */
+  origin: 'system' | 'runtimes' | 'missing'
+}
+
+export interface BootstrapStatus {
+  runtimesDir: string
+  components: RuntimeComponentStatus[]
+  /** Best resolved python for creating venvs (system or portable). */
+  pythonPath: string
+  pythonOrigin: RuntimeComponentStatus['origin']
+  /** True when zip-based ComfyUI fetch is available (no Git needed). */
+  zipInstallReady: boolean
+}
+
+export interface RuntimeDownloadProgress {
+  kind: RuntimeKind
+  receivedBytes: number
+  totalBytes: number
+  speedBps: number
+  phase: 'download' | 'extract' | 'done' | 'error'
+  message?: string
+}
+
+// ---------- Starter models (post-install guided download) ----------
+export interface StarterModel {
+  id: string
+  name: string
+  description: string
+  /** Direct or HF/Civitai URL — model.download handles expansion. */
+  url: string
+  category: ModelCategory
+  approxBytes: number
+  /** Human label e.g. "SD 1.5" / "SDXL" / "Flux.1-schnell" */
+  family: string
+  recommended?: boolean
+}
+
+// ---------- Node install progress ----------
 
 // ---------- IPC ----------
 export interface IpcResult<T = unknown> {
@@ -598,7 +682,10 @@ export type IpcChannelMap = {
   'model.tag': { args: [string, string[]]; result: ModelRecord }
   'model.findDuplicates': { args: []; result: DuplicateGroup[] }
   'model.downloads': { args: []; result: DownloadTask[] }
-  'model.download': { args: [{ url: string; destDir?: string; fileName?: string }]; result: DownloadTask }
+  'model.download': {
+    args: [{ url: string; destDir?: string; fileName?: string; expectedSha256?: string }]
+    result: DownloadTask
+  }
   'model.pauseDownload': { args: [string]; result: DownloadTask }
   'model.resumeDownload': { args: [string]; result: DownloadTask }
   'model.cancelDownload': { args: [string]; result: boolean }
@@ -678,10 +765,61 @@ export type IpcChannelMap = {
 
   // installer
   'installer.detectGpu': { args: []; result: GpuCapability[] }
-  'installer.preflight': { args: [{ installRoot: string; useUv: boolean }]; result: { ok: boolean; checks: Array<{ id: string; ok: boolean; detail: string }> } }
+  'installer.preflight': {
+    args: [{ installRoot: string; useUv: boolean; pythonPath?: string; torchChannel?: TorchChannel }?]
+    result: {
+      ok: boolean
+      checks: Array<{
+        id: string
+        ok: boolean
+        detail: string
+        /** i18n key — renderer translates; detail is English log fallback. */
+        detailKey?: string
+        detailParams?: Record<string, string | number>
+        /** When set, UI can offer a one-click repair action. */
+        fixId?: string
+        fixLabel?: string
+        fixLabelKey?: string
+      }>
+      /** Disk requirement estimate for the selected torch channel. */
+      diskNeedGb?: number
+      diskFreeGb?: number
+    }
+  }
   'installer.start': { args: [InstallPlan]; result: { runId: string } }
   'installer.status': { args: []; result: InstallProgress | null }
   'installer.cancel': { args: []; result: boolean }
+  'installer.suggestInstallRoot': { args: []; result: { path: string; freeGb: number } }
+  'installer.starterModels': { args: []; result: StarterModel[] }
+  'installer.installStarter': { args: [{ id: string; instanceId?: string }]; result: DownloadTask }
+
+  // runtime bootstrap
+  'bootstrap.status': { args: []; result: BootstrapStatus }
+  'bootstrap.ensure': {
+    args: [{ kinds?: RuntimeKind[]; downloadIfMissing?: boolean }?]
+    result: BootstrapStatus
+  }
+  'bootstrap.download': { args: [RuntimeKind]; result: RuntimeComponentStatus }
+
+  // network probe
+  'net.recommendMirrors': {
+    args: []
+    result: {
+      pipIndex: string
+      pipLabel: string
+      torchIndexMirror: string
+      torchLabel: string
+      githubEndpoint: string
+      githubLabel: string
+      probes: Array<{ id: string; label: string; url: string; ok: boolean; latencyMs: number; error?: string }>
+    }
+  }
+
+  // launch script export
+  'instance.exportLaunchScript': {
+    args: [string, { dir?: string; kind?: 'bat' | 'sh' }?]
+    result: { path: string }
+  }
 
   // batch
   'batch.list': { args: []; result: BatchJob[] }
@@ -736,7 +874,8 @@ export const IPC_EVENTS = {
   nodeInstallProgress: 'event:node-install-progress',
   installProgress: 'event:install-progress',
   registryIndexProgress: 'event:registry-index-progress',
-  notification: 'event:notification'
+  notification: 'event:notification',
+  runtimeProgress: 'event:runtime-progress'
 } as const
 
 export interface AppNotification {

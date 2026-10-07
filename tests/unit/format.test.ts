@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { clampPercent, formatPercent, formatBytes } from '../../src/renderer/src/utils/format'
+import { clampPercent, formatPercent, formatBytes, formatUptime, formatSpeed } from '../../src/renderer/src/utils/format'
 
 describe('format helpers', () => {
   it('clampPercent rounds to integer and clamps 0-100', () => {
@@ -24,5 +24,17 @@ describe('format helpers', () => {
     expect(formatBytes(1536)).toBe('1.5 KB')
     expect(formatBytes(20 * 1024)).toBe('20 KB')
     expect(formatBytes(16376 * 1024 * 1024)).toBe('16 GB')
+  })
+
+  it('formatUptime is human-readable', () => {
+    expect(formatUptime(42_000)).toBe('42s')
+    expect(formatUptime(5 * 60_000 + 3_000)).toBe('5m 3s')
+    expect(formatUptime(3 * 3_600_000 + 12 * 60_000)).toBe('3h 12m')
+    expect(formatUptime(0)).toBe('0s')
+  })
+
+  it('formatSpeed', () => {
+    expect(formatSpeed(0)).toBe('—')
+    expect(formatSpeed(1024 * 1024)).toBe('1.0 MB/s')
   })
 })

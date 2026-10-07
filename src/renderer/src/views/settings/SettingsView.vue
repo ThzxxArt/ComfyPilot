@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { onMounted, ref, watch, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   NButton, NCard, NForm, NFormItem, NInput, NInputNumber, NSwitch, NSpace, useMessage,
@@ -8,7 +8,37 @@ import {
 import { useAppStore } from '@/stores/app'
 import { ipc } from '@/composables/useIpc'
 import type { AppSettings, RemoteInstanceConfig, EnvProbe, ProxySettings } from '@shared/types'
-import { APP_VERSION, DEFAULT_SETTINGS } from '@shared/constants'
+import { APP_VERSION, DEFAULT_SETTINGS, PIP_INDEX_PRESETS, TORCH_INDEX_PRESETS } from '@shared/constants'
+
+const pipIndexLabelKeys: Record<string, string> = {
+  '': 'settings.pipOfficial',
+  'https://pypi.tuna.tsinghua.edu.cn/simple': 'settings.pipTsinghua',
+  'https://mirrors.aliyun.com/pypi/simple/': 'settings.mirrorAliyun',
+  'https://pypi.mirrors.ustc.edu.cn/simple/': 'settings.pipUstc'
+}
+const torchIndexLabelKeys: Record<string, string> = {
+  '': 'settings.torchOfficial',
+  'https://mirror.sjtu.edu.cn/pytorch-wheels': 'settings.torchSjtu',
+  'https://mirrors.aliyun.com/pytorch-wheels': 'settings.mirrorAliyun'
+}
+const pipIndexOptions = computed(() =>
+  PIP_INDEX_PRESETS.map((p) => ({
+    label: pipIndexLabelKeys[p.value] ? t(pipIndexLabelKeys[p.value]) : p.value,
+    value: p.value
+  }))
+)
+const torchIndexOptions = computed(() =>
+  TORCH_INDEX_PRESETS.map((p) => ({
+    label: torchIndexLabelKeys[p.value] ? t(torchIndexLabelKeys[p.value]) : p.value,
+    value: p.value
+  }))
+)
+
+const shortcuts = computed(() => [
+  { keys: 'Ctrl+1 … Ctrl+9', desc: t('settings.shortcutNav') },
+  { keys: 'Ctrl+Enter', desc: t('settings.shortcutLaunch') },
+  { keys: 'Ctrl+,', desc: t('settings.shortcutSettings') }
+])
 
 const defaultProxy: ProxySettings = { ...DEFAULT_SETTINGS.proxy }
 
@@ -108,7 +138,7 @@ async function save(opts?: { silent?: boolean }): Promise<boolean> {
       applyingIncoming = false
       userEditedProxy = false
     }
-    if (!opts?.silent) message.success('设置已保存')
+    if (!opts?.silent) message.success(t('settings.saveSuccess'))
     return true
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
@@ -137,7 +167,7 @@ async function applyProxy(): Promise<void> {
     const saved = await save({ silent: true })
     if (!saved) return
     const r = await ipc('proxy.apply')
-    message.success(r.enabled ? `已应用代理 ${r.url}` : '已切换为直连')
+    message.success(r.enabled ? t('settings.proxyApplied', { url: r.url }) : t('settings.proxyDirect'))
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   }
@@ -166,7 +196,7 @@ async function saveRemote(): Promise<void> {
     await ipc('remote.save', remoteDraft.value)
     showRemote.value = false
     remoteDraft.value = emptyRemote()
-    message.success('远程实例已保存')
+    message.success(t('settings.remoteSaved'))
     await loadRemotes()
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
@@ -190,7 +220,7 @@ async function probeEnv(): Promise<void> {
       venvPath: form.value.defaultInstancePath || undefined
     })
     pythons.value = await ipc('env.listPythons')
-    message.success('环境探测完成')
+    message.success(t('settings.envProbeDone'))
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   }
@@ -229,55 +259,73 @@ onMounted(async () => {
   <div class="page">
     <div class="page-header">
       <div>
-        <h1 class="page-title">设置</h1>
-        <p class="page-subtitle">路径、网络、安全策略、远程实例与环境。</p>
+        <h1 class="page-title">{{ t('settings.title') }}</h1>
+        <p class="page-subtitle">{{ t('settings.subtitle') }}</p>
       </div>
-      <NButton type="primary" :loading="saving" @click="save()">保存设置</NButton>
+      <NButton type="primary" :loading="saving" @click="save()">{{ t('settings.saveSettings') }}</NButton>
     </div>
 
     <div class="page-body">
     <div class="grid settings-grid">
-      <NCard title="路径" class="card" size="small">
+      <NCard :title="t('settings.paths')" class="card" size="small">
         <NForm label-placement="top">
-          <NFormItem label="默认 ComfyUI 实例目录">
+          <NFormItem :label="t('settings.defaultInstancePath')">
             <NInput v-model:value="form.defaultInstancePath">
               <template #suffix>
-                <NButton size="tiny" secondary @click="pickDir('defaultInstancePath')">浏览</NButton>
+                <NButton size="tiny" secondary @click="pickDir('defaultInstancePath')">{{ t('settings.browse') }}</NButton>
               </template>
             </NInput>
           </NFormItem>
-          <NFormItem label="模型下载目录">
+          <NFormItem :label="t('settings.downloadDir')">
             <NInput v-model:value="form.downloadDir">
               <template #suffix>
-                <NButton size="tiny" secondary @click="pickDir('downloadDir')">浏览</NButton>
+                <NButton size="tiny" secondary @click="pickDir('downloadDir')">{{ t('settings.browse') }}</NButton>
               </template>
             </NInput>
           </NFormItem>
           <NFormItem label="extra_model_paths.yaml">
-            <NInput v-model:value="form.extraModelPathsFile" placeholder="共享模型路径配置" />
+            <NInput v-model:value="form.extraModelPathsFile" :placeholder="t('settings.extraModelPathsPlaceholder')" />
           </NFormItem>
-          <NFormItem label="产物索引根目录">
+          <NFormItem :label="t('settings.outputIndexRoot')">
             <NInput v-model:value="form.outputIndexRoot">
               <template #suffix>
-                <NButton size="tiny" secondary @click="pickDir('outputIndexRoot')">浏览</NButton>
+                <NButton size="tiny" secondary @click="pickDir('outputIndexRoot')">{{ t('settings.browse') }}</NButton>
               </template>
             </NInput>
           </NFormItem>
         </NForm>
       </NCard>
 
-      <NCard title="网络" class="card" size="small">
+      <NCard :title="t('settings.network')" class="card" size="small">
         <NForm label-placement="top">
-          <NFormItem label="GitHub 镜像 / 代理前缀">
-            <NInput v-model:value="form.githubEndpoint" placeholder="可选" />
+          <NFormItem :label="t('settings.githubEndpoint')">
+            <NInput v-model:value="form.githubEndpoint" :placeholder="t('settings.optional')" />
           </NFormItem>
           <NFormItem label="HuggingFace Endpoint">
-            <NInput v-model:value="form.hfEndpoint" placeholder="例如 https://hf-mirror.com" />
+            <NInput v-model:value="form.hfEndpoint" :placeholder="t('settings.hfEndpointPlaceholder')" />
           </NFormItem>
           <NFormItem label="Civitai Endpoint">
             <NInput v-model:value="form.civitaiEndpoint" placeholder="https://civitai.com" />
           </NFormItem>
-          <NFormItem label="网络模式">
+          <NFormItem :label="t('settings.pipIndexLabel')">
+            <NSelect
+              v-model:value="form.pipIndex"
+              :options="pipIndexOptions"
+              filterable
+              tag
+            />
+            <div class="hint">{{ t('settings.pipMirrorHint') }}</div>
+          </NFormItem>
+          <NFormItem :label="t('settings.torchIndexLabel')">
+            <NSelect
+              v-model:value="form.torchIndexMirror"
+              :options="torchIndexOptions"
+              filterable
+              tag
+            />
+            <div class="hint">{{ t('settings.torchIndexHint') }}</div>
+          </NFormItem>
+          <NFormItem :label="t('settings.networkMode')">
             <NSelect
               v-model:value="form.networkMode"
               :options="[
@@ -291,7 +339,7 @@ onMounted(async () => {
         </NForm>
       </NCard>
 
-      <NCard title="安全策略（对齐 Manager 语义）" class="card" size="small">
+      <NCard :title="t('settings.security')" class="card" size="small">
         <NForm label-placement="top">
           <NFormItem label="security_level">
             <NSelect
@@ -310,22 +358,22 @@ onMounted(async () => {
           <NFormItem label="allow_pip_install">
             <NSwitch v-model:value="form.allowPipInstall" />
           </NFormItem>
-          <NFormItem label="使用 aria2 下载">
+          <NFormItem :label="t('settings.useAria2')">
             <NSwitch v-model:value="form.useAria2" />
           </NFormItem>
-          <NFormItem label="aria2 路径">
-            <NInput v-model:value="form.aria2Path" placeholder="可选" />
+          <NFormItem :label="t('settings.aria2Path')">
+            <NInput v-model:value="form.aria2Path" :placeholder="t('settings.optional')" />
           </NFormItem>
         </NForm>
       </NCard>
 
-      <NCard title="网络代理" class="card" size="small">
+      <NCard :title="t('settings.proxy')" class="card" size="small">
         <NForm label-placement="top">
-          <NFormItem label="启用代理">
+          <NFormItem :label="t('settings.proxyEnabled')">
             <NSwitch v-model:value="form.proxy.enabled" />
           </NFormItem>
           <div class="proxy-grid">
-            <NFormItem label="协议">
+            <NFormItem :label="t('settings.proxyProtocol')">
               <NSelect
                 v-model:value="form.proxy.protocol"
                 :options="[
@@ -335,16 +383,16 @@ onMounted(async () => {
                 ]"
               />
             </NFormItem>
-            <NFormItem label="主机">
+            <NFormItem :label="t('settings.proxyHost')">
               <NInput v-model:value="form.proxy.host" placeholder="127.0.0.1" :disabled="!form.proxy.enabled" />
             </NFormItem>
-            <NFormItem label="端口">
+            <NFormItem :label="t('settings.proxyPort')">
               <NInputNumber v-model:value="form.proxy.port" :min="1" :max="65535" :disabled="!form.proxy.enabled" />
             </NFormItem>
-            <NFormItem label="用户名（可选）">
+            <NFormItem :label="t('settings.proxyUsername')">
               <NInput v-model:value="form.proxy.username" :disabled="!form.proxy.enabled" />
             </NFormItem>
-            <NFormItem label="密码（可选）">
+            <NFormItem :label="t('settings.proxyPassword')">
               <NInput
                 v-model:value="form.proxy.password"
                 type="password"
@@ -352,7 +400,7 @@ onMounted(async () => {
                 :disabled="!form.proxy.enabled"
               />
             </NFormItem>
-            <NFormItem label="绕过列表（逗号分隔）">
+            <NFormItem :label="t('settings.proxyBypass')">
               <NInput
                 v-model:value="form.proxy.bypass"
                 placeholder="localhost,127.0.0.1,::1"
@@ -361,55 +409,55 @@ onMounted(async () => {
             </NFormItem>
           </div>
           <NSpace>
-            <NButton secondary :loading="testingProxy" @click="testProxy">测试连接</NButton>
-            <NButton secondary @click="applyProxy">立即应用</NButton>
+            <NButton secondary :loading="testingProxy" @click="testProxy">{{ t('settings.testConnection') }}</NButton>
+            <NButton secondary @click="applyProxy">{{ t('settings.applyNow') }}</NButton>
           </NSpace>
-          <div v-if="proxyTestResult" class="meta" :style="{ color: proxyTestResult.ok ? '#059669' : '#b91c1c' }">
+          <div v-if="proxyTestResult" class="meta" :class="proxyTestResult.ok ? 'pass-ink' : 'fail-ink'">
             {{ proxyTestResult.ok ? '✓' : '✗' }} {{ proxyTestResult.via }} · {{ proxyTestResult.ms }}ms
             <span v-if="proxyTestResult.error">{{ proxyTestResult.error }}</span>
           </div>
-          <div class="meta">代理将作用于应用内下载、Registry、git/pip 子进程与内嵌页面。</div>
+          <div class="meta">{{ t('settings.proxyHint') }}</div>
         </NForm>
       </NCard>
 
-      <NCard title="应用行为" class="card" size="small">
+      <NCard :title="t('settings.appBehavior')" class="card" size="small">
         <NForm label-placement="top">
-          <NFormItem label="启动时检查更新">
+          <NFormItem :label="t('settings.autoCheckUpdates')">
             <NSwitch v-model:value="form.enableAutoCheckUpdates" />
           </NFormItem>
-          <NFormItem label="优先内嵌 ComfyUI Frontend">
+          <NFormItem :label="t('settings.embedFrontend')">
             <NSwitch v-model:value="form.embedFrontend" />
           </NFormItem>
-          <NFormItem :label="t('settingsNew.launchOnBoot')">
+          <NFormItem :label="t('settings.launchOnBoot')">
             <NSwitch v-model:value="form.launchOnBoot" @update:value="() => save({ silent: true })" />
           </NFormItem>
-          <NFormItem :label="t('settingsNew.minimizeToTray')">
+          <NFormItem :label="t('settings.minimizeToTray')">
             <NSwitch v-model:value="form.minimizeToTray" />
           </NFormItem>
-          <NFormItem :label="t('settingsNew.autoStartInstances')">
+          <NFormItem :label="t('settings.autoStartInstances')">
             <NSwitch v-model:value="form.autoStartInstancesOnLaunch" />
           </NFormItem>
           <NFormItem :label="t('settings.language')">
             <NSpace>
               <NButton :type="form.locale === 'zh-CN' ? 'primary' : 'default'" secondary @click="setLocale('zh-CN')">
-                简体中文
+                {{ t('settings.langZhCN') }}
               </NButton>
               <NButton :type="form.locale === 'en-US' ? 'primary' : 'default'" secondary @click="setLocale('en-US')">
                 English
               </NButton>
             </NSpace>
           </NFormItem>
-          <NFormItem label="主题">
+          <NFormItem :label="t('settings.theme')">
             <NSpace>
               <NButton :type="form.theme === 'light' ? 'primary' : 'default'" secondary @click="form.theme = 'light'">
-                亮色（推荐）
+                {{ t('settings.themeLight') }}
               </NButton>
             </NSpace>
           </NFormItem>
         </NForm>
       </NCard>
 
-      <NCard title="远程实例" class="card" size="small">
+      <NCard :title="t('settings.remotes')" class="card" size="small">
         <NList v-if="remotes.length" bordered>
           <NListItem v-for="r in remotes" :key="r.id">
             <div class="row">
@@ -418,23 +466,23 @@ onMounted(async () => {
                 <div class="meta mono">{{ r.baseUrl }}</div>
               </div>
               <NSpace>
-                <NButton size="tiny" secondary @click="testRemote(r.id)">测试</NButton>
+                <NButton size="tiny" secondary @click="testRemote(r.id)">{{ t('settings.test') }}</NButton>
                 <NPopconfirm @positive-click="removeRemote(r.id)">
                   <template #trigger>
-                    <NButton size="tiny" type="error" secondary>删除</NButton>
+                    <NButton size="tiny" type="error" secondary>{{ t('common.delete') }}</NButton>
                   </template>
-                  删除远程配置？
+                  {{ t('settings.deleteRemoteConfirm') }}
                 </NPopconfirm>
               </NSpace>
             </div>
           </NListItem>
         </NList>
-        <div v-else class="meta">暂无远程实例</div>
-        <NButton style="margin-top: 12px" secondary @click="openRemoteDialog">添加远程实例</NButton>
+        <div v-else class="meta">{{ t('settings.noRemotes') }}</div>
+        <NButton style="margin-top: 12px" secondary @click="openRemoteDialog">{{ t('settings.addRemote') }}</NButton>
       </NCard>
 
-      <NCard title="Python 环境" class="card" size="small">
-        <NButton secondary @click="probeEnv">探测环境</NButton>
+      <NCard :title="t('settings.pythonEnv')" class="card" size="small">
+        <NButton secondary @click="probeEnv">{{ t('settings.probeEnv') }}</NButton>
         <template v-if="envProbe">
           <NDivider style="margin: 12px 0" />
           <div class="meta">Python: {{ envProbe.pythonVersion }}</div>
@@ -443,23 +491,32 @@ onMounted(async () => {
             MPS: <NTag size="tiny" round>{{ envProbe.mpsAvailable ? 'yes' : 'no' }}</NTag>
             NPU: <NTag size="tiny" round>{{ envProbe.npuAvailable ? 'yes' : 'no' }}</NTag>
           </div>
-          <div v-if="pythons.length" class="meta">可用解释器：{{ pythons.length }} 个</div>
+          <div v-if="pythons.length" class="meta">{{ t('settings.availablePythons', { n: pythons.length }) }}</div>
         </template>
       </NCard>
 
-      <NCard title="关于" class="card" size="small">
+      <NCard :title="t('settings.shortcuts')" class="card" size="small">
+        <div class="shortcut-list">
+          <div v-for="s in shortcuts" :key="s.keys" class="shortcut-row">
+            <NTag size="small" round>{{ s.keys }}</NTag>
+            <span class="shortcut-desc">{{ s.desc }}</span>
+          </div>
+        </div>
+      </NCard>
+
+      <NCard :title="t('settings.about')" class="card" size="small">
         <div class="about">
           <div class="about-logo">ComfyPilot</div>
           <div class="about-line">v{{ APP_VERSION }} · MIT License</div>
           <div class="about-line">TypeScript · Vue 3 · Electron · Naive UI</div>
-          <div class="about-line">数据存储：JSONC 配置文件（无 SQLite / 无原生模块）</div>
+          <div class="about-line">{{ t('settings.aboutStorage') }}</div>
           <NDivider style="margin: 12px 0" />
-          <div class="about-line">配置目录：{{ configPath }}</div>
-          <div class="about-line">控制塔，不是编辑器。旁路管理 ComfyUI 生产资产。</div>
+          <div class="about-line">{{ t('settings.aboutConfigDir', { path: configPath }) }}</div>
+          <div class="about-line">{{ t('settings.aboutTagline') }}</div>
           <NSpace style="margin-top: 12px">
-            <NButton secondary @click="openConfigDir">打开配置目录</NButton>
+            <NButton secondary @click="openConfigDir">{{ t('settings.openConfigDir') }}</NButton>
             <NButton secondary @click="ipc('shell.openExternal', 'https://github.com/ThzxxArt/ComfyPilot')">
-              GitHub 仓库
+              {{ t('settings.githubRepo') }}
             </NButton>
           </NSpace>
         </div>
@@ -467,16 +524,16 @@ onMounted(async () => {
     </div>
     </div>
 
-    <NModal v-model:show="showRemote" preset="card" title="添加远程实例" style="width: 480px; border-radius: 20px">
+    <NModal v-model:show="showRemote" preset="card" :title="t('settings.addRemote')" style="width: 480px; border-radius: 20px">
       <NSpace vertical>
-        <NInput v-model:value="remoteDraft.name" placeholder="名称" />
+        <NInput v-model:value="remoteDraft.name" :placeholder="t('settings.remoteName')" />
         <NInput v-model:value="remoteDraft.baseUrl" placeholder="http://192.168.1.10:8188" />
-        <NInput v-model:value="remoteDraft.label" placeholder="标签" />
+        <NInput v-model:value="remoteDraft.label" :placeholder="t('settings.remoteLabel')" />
       </NSpace>
       <template #footer>
         <NSpace justify="end">
-          <NButton @click="cancelRemoteDialog">取消</NButton>
-          <NButton type="primary" @click="saveRemote">保存</NButton>
+          <NButton @click="cancelRemoteDialog">{{ t('common.cancel') }}</NButton>
+          <NButton type="primary" @click="saveRemote">{{ t('common.save') }}</NButton>
         </NSpace>
       </template>
     </NModal>
@@ -500,4 +557,9 @@ onMounted(async () => {
 .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; width: 100%; }
 .name { font-size: 14px; font-weight: 700; }
 .meta { font-size: 12px; color: $color-text-muted; margin-top: 2px; word-break: break-all; }
+.shortcut-list { display: flex; flex-direction: column; gap: 10px; }
+.shortcut-row { display: flex; align-items: center; gap: 12px; }
+.shortcut-desc { font-size: 13px; color: $color-text-secondary; }
+.pass-ink { color: $color-success; }
+.fail-ink { color: $color-danger; }
 </style>

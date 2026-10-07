@@ -11,10 +11,11 @@ import { nodePackService } from '../services/nodePack'
 import { workflowService } from '../services/workflow'
 import { monitorService } from '../services/monitor'
 import { doctorService } from '../services/doctor'
+import { bootstrapService } from '../services/bootstrap'
 import { backupService } from '../services/backup'
 import { envService } from '../services/env'
 import { batchService, outputService, remoteService, marketService } from '../services/p1p2'
-import { installerService } from '../services/installer'
+import { installerService, listStarterModels } from '../services/installer'
 import { testProxy, syncProxyFromSettings } from '../services/proxy'
 
 function ok<T>(data: T): IpcResult<T> {
@@ -227,7 +228,17 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   }))
 
   // models
-  ipcMain.handle('model.list', wrap(() => modelService.list()))
+  ipcMain.handle(
+    'model.list',
+    wrap(async () => {
+      const { thumbnailDisplayUrl } = await import('../services/media')
+      const list = await modelService.list()
+      return list.map((m) => ({
+        ...m,
+        thumbnail: thumbnailDisplayUrl(m.thumbnail) || undefined
+      }))
+    })
+  )
   ipcMain.handle('model.scan', wrap((opts?: { roots?: string[]; hash?: boolean }) => modelService.scan(opts)))
   ipcMain.handle('model.delete', wrap((id: string, deleteFile: boolean) => modelService.remove(id, deleteFile)))
   ipcMain.handle('model.move', wrap((id: string, destDir: string) => modelService.move(id, destDir)))
@@ -345,10 +356,49 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
   // installer
   ipcMain.handle('installer.detectGpu', wrap(() => installerService.detectGpu()))
-  ipcMain.handle('installer.preflight', wrap((opts: { installRoot: string; useUv: boolean }) => installerService.preflight(opts)))
+  ipcMain.handle(
+    'installer.preflight',
+    wrap((opts: { installRoot: string; useUv: boolean; pythonPath?: string; torchChannel?: string }) =>
+      installerService.preflight(opts as Parameters<typeof installerService.preflight>[0])
+    )
+  )
   ipcMain.handle('installer.start', wrap((plan: InstallPlan) => installerService.start(plan)))
   ipcMain.handle('installer.status', wrap(() => installerService.getStatus()))
   ipcMain.handle('installer.cancel', wrap(() => installerService.cancel()))
+  ipcMain.handle('installer.suggestInstallRoot', wrap(() => installerService.suggestInstallRoot()))
+  ipcMain.handle('installer.starterModels', wrap(() => listStarterModels()))
+  ipcMain.handle(
+    'installer.installStarter',
+    wrap((opts: { id: string; instanceId?: string }) => installerService.installStarter(opts))
+  )
+
+  // runtime bootstrap
+  ipcMain.handle('bootstrap.status', wrap(() => bootstrapService.status()))
+  ipcMain.handle(
+    'bootstrap.ensure',
+    wrap((opts?: { kinds?: string[]; downloadIfMissing?: boolean }) =>
+      bootstrapService.ensure(opts as Parameters<typeof bootstrapService.ensure>[0])
+    )
+  )
+  ipcMain.handle('bootstrap.download', wrap((kind: string) => bootstrapService.download(kind as never)))
+
+  // network probe → fastest mirrors
+  ipcMain.handle(
+    'net.recommendMirrors',
+    wrap(async () => {
+      const { recommendMirrors } = await import('../services/netProbe')
+      return recommendMirrors()
+    })
+  )
+
+  // launch script export
+  ipcMain.handle(
+    'instance.exportLaunchScript',
+    wrap(async (id: string, opts?: { dir?: string; kind?: 'bat' | 'sh' }) => {
+      const { instanceService } = await import('../services/instance')
+      return instanceService.exportLaunchScript(id, opts)
+    })
+  )
 
   // batch
   ipcMain.handle('batch.list', wrap(() => batchService.list()))
@@ -358,7 +408,17 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle('batch.remove', wrap((id: string) => batchService.remove(id)))
 
   // output
-  ipcMain.handle('output.list', wrap((opts?: { root?: string; type?: string; limit?: number }) => outputService.list(opts)))
+  ipcMain.handle(
+    'output.list',
+    wrap(async (opts?: { root?: string; type?: string; limit?: number }) => {
+      const { thumbnailDisplayUrl, toMediaUrl } = await import('../services/media')
+      const list = await outputService.list(opts)
+      return list.map((a) => ({
+        ...a,
+        thumbnail: thumbnailDisplayUrl(a.thumbnail) || toMediaUrl(a.path) || undefined
+      }))
+    })
+  )
   ipcMain.handle('output.open', wrap(async (path: string) => {
     if (!isSafeOpenPath(path)) throw new Error('Blocked opening executable/script file')
     return shell.openPath(path).then((r) => r === '')

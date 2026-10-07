@@ -8,6 +8,10 @@ import { ComfyApiClient } from './comfyApi'
 function extractPngTextMeta(buf: Buffer): Record<string, unknown> {
   // PNG tEXt chunks: length(4) type(4) data crc(4)
   const meta: Record<string, unknown> = {}
+  // PNG signature: 89 50 4E 47 0D 0A 1A 0A — refuse non-PNG buffers.
+  if (buf.length < 8 || buf[0] !== 0x89 || buf.toString('ascii', 1, 4) !== 'PNG') {
+    return meta
+  }
   try {
     let offset = 8 // skip signature
     while (offset + 8 < buf.length) {
@@ -253,17 +257,31 @@ export class WorkflowService {
 
     const client = new ComfyApiClient(url)
     const { COMFY_CLIENT_ID } = await import('./comfyApi')
+    // queuePrompt throws with ComfyUI's error body on rejection — propagate it.
     const promptId = await client.queuePrompt(prompt, COMFY_CLIENT_ID)
     if (!promptId) {
-      throw new Error('ComfyUI rejected prompt (check instance is running and workflow is valid)')
+      throw new Error('ComfyUI accepted the prompt but returned no prompt_id')
     }
     return promptId
   }
 
   async parsePngMeta(path: string): Promise<Record<string, unknown> | null> {
     if (!existsSync(path)) return null
-    const buf = readFileSync(path)
-    return extractPngTextMeta(buf)
+    // PNG only — never slurp videos/audio into memory looking for tEXt chunks.
+    if (!/\.png$/i.test(path)) return null
+    const { statSync, openSync, readSync, closeSync } = await import('fs')
+    const st = statSync(path)
+    if (!st.size) return null
+    // tEXt/iTXt live near the head; cap how much we read (full file only when small).
+    const cap = Math.min(st.size, 8 * 1024 * 1024)
+    const fd = openSync(path, 'r')
+    try {
+      const buf = Buffer.alloc(cap)
+      readSync(fd, buf, 0, cap, 0)
+      return extractPngTextMeta(buf)
+    } finally {
+      closeSync(fd)
+    }
   }
 
   listCached(): WorkflowRecord[] {

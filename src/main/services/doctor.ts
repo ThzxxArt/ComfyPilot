@@ -4,6 +4,7 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { randomUUID } from 'crypto'
 import net from 'net'
+import { EventEmitter } from 'events'
 import type { DoctorCheck, DoctorReport, DoctorSeverity } from '@shared/types'
 import { loadInstanceConfigs, loadSettings } from './db'
 import { REGISTRY_API } from '@shared/constants'
@@ -48,13 +49,17 @@ async function isComfyListening(port: number): Promise<boolean> {
   }
 }
 
-export class DoctorService {
+export class DoctorService extends EventEmitter {
   async run(instanceId: string): Promise<DoctorReport> {
     const started = Date.now()
     const configs = loadInstanceConfigs()
     const config = configs.find((c) => c.id === instanceId) || configs[0]
     const settings = loadSettings()
     const checks: DoctorCheck[] = []
+    const emitProgress = (done: number, total: number, title: string): void => {
+      this.emit('progress', { done, total, title, ts: Date.now() })
+    }
+    emitProgress(0, 13, 'Starting health check…')
 
     // 1. install path
     const installPath = config?.path || settings.defaultInstancePath
@@ -102,6 +107,7 @@ export class DoctorService {
     })
 
     // 3. Torch / CUDA
+    emitProgress(checks.length, 13, 'Probing torch / CUDA…')
     const torchOut = await safeExec(
       python,
       [
@@ -308,6 +314,7 @@ export class DoctorService {
     }
 
     // 10. Manager / Registry connectivity
+    emitProgress(checks.length, 13, 'Checking network…')
     let registryOk = false
     try {
       const res = await fetch(`${REGISTRY_API}/nodes?limit=1`, {

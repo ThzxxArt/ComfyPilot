@@ -40,11 +40,27 @@ export class ComfyApiClient {
         body: JSON.stringify({ prompt, client_id: clientId }),
         signal: AbortSignal.timeout(8000)
       })
-      if (!res.ok) return null
+      if (!res.ok) {
+        // Surface ComfyUI's error body so callers can report WHY queueing failed.
+        const text = await res.text().catch(() => '')
+        let detail = text.slice(0, 500)
+        try {
+          const parsed = JSON.parse(text) as { error?: { message?: string; details?: string }; node_errors?: Record<string, unknown> }
+          const msg = parsed.error?.message || parsed.error?.details
+          if (msg) detail = msg
+          else if (parsed.node_errors && Object.keys(parsed.node_errors).length) {
+            detail = `node errors: ${Object.keys(parsed.node_errors).join(', ')}`
+          }
+        } catch {
+          /* keep raw text */
+        }
+        throw new Error(`ComfyUI rejected prompt (HTTP ${res.status}): ${detail || 'no detail'}`)
+      }
       const data = (await res.json()) as { prompt_id?: string }
       return data.prompt_id || null
-    } catch {
-      return null
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith('ComfyUI rejected prompt')) throw err
+      throw new Error(`queuePrompt failed: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 

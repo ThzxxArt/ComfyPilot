@@ -207,28 +207,28 @@ body {
 
 .chip-success {
   background: rgba(16, 185, 129, 0.12);
-  color: #059669;
+  color: $color-success;
   border-color: rgba(16, 185, 129, 0.2);
 }
 .chip-warning {
   background: rgba(245, 158, 11, 0.14);
-  color: #b45309;
+  color: $color-warning;
   border-color: rgba(245, 158, 11, 0.22);
 }
 .chip-danger {
   background: rgba(239, 68, 68, 0.12);
-  color: #b91c1c;
+  color: $color-danger;
   border-color: rgba(239, 68, 68, 0.2);
 }
 .chip-muted {
   background: rgba(148, 163, 184, 0.14);
-  color: #64748b;
+  color: $color-text-muted;
   border-color: rgba(148, 163, 184, 0.2);
 }
 
 .stat-value {
   font-size: 28px;
-  font-weight: 750;
+  font-weight: 700;
   letter-spacing: -0.03em;
   color: $color-text;
   font-variant-numeric: tabular-nums;

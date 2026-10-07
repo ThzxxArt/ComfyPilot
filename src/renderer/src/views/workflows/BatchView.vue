@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { PlayOutline, CloseOutline, TrashOutline, AddOutline } from '@vicons/ionicons5'
 import {
   NButton, NIcon, NInput, NInputNumber, NSpace, NSpin, NTag, NEmpty, useMessage,
@@ -10,6 +11,7 @@ import { ipc, onIpc, IPC_EVENTS } from '@/composables/useIpc'
 import { clampPercent } from '@/utils/format'
 import type { BatchJob } from '@shared/types'
 
+const { t } = useI18n()
 const store = useAppStore()
 const message = useMessage()
 const loading = ref(false)
@@ -17,7 +19,7 @@ const jobs = ref<BatchJob[]>([])
 const showCreate = ref(false)
 
 const draft = ref({
-  name: '批量出图',
+  name: t('batch.defaultName'),
   workflowPath: '',
   instanceId: '',
   count: 4,
@@ -43,7 +45,7 @@ async function pickWorkflow(): Promise<void> {
 
 async function createJob(): Promise<void> {
   if (!draft.value.workflowPath) {
-    message.warning('请选择工作流')
+    message.warning(t('batch.selectWorkflow'))
     return
   }
   const job = await ipc('batch.create', {
@@ -54,14 +56,14 @@ async function createJob(): Promise<void> {
     notes: draft.value.notes
   })
   showCreate.value = false
-  message.success(`已创建任务 ${job.name}`)
+  message.success(t('batch.created', { name: job.name }))
   await refresh()
 }
 
 async function start(id: string): Promise<void> {
   try {
     await ipc('batch.start', id)
-    message.success('批量任务完成')
+    message.success(t('batch.jobDone'))
     await refresh()
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
@@ -102,13 +104,13 @@ onUnmounted(() => offBatch?.())
   <div class="page">
     <div class="page-header">
       <div>
-        <h1 class="page-title">批量出图</h1>
-        <p class="page-subtitle">选择工作流与实例，批量提交到 ComfyUI 队列。</p>
+        <h1 class="page-title">{{ $t('batch.title') }}</h1>
+        <p class="page-subtitle">{{ $t('batch.subtitle') }}</p>
       </div>
       <NSpace>
-        <NButton secondary @click="refresh">刷新</NButton>
+        <NButton secondary @click="refresh">{{ $t('batch.refresh') }}</NButton>
         <NButton type="primary" @click="showCreate = true">
-          <template #icon><NIcon :component="AddOutline" /></template>新建任务
+          <template #icon><NIcon :component="AddOutline" /></template>{{ $t('batch.newJob') }}
         </NButton>
       </NSpace>
     </div>
@@ -138,10 +140,10 @@ onUnmounted(() => offBatch?.())
           </div>
           <NSpace>
             <NButton size="small" type="primary" secondary @click="start(job.id)">
-              <template #icon><NIcon :component="PlayOutline" /></template>执行
+              <template #icon><NIcon :component="PlayOutline" /></template>{{ $t('batch.run') }}
             </NButton>
             <NButton size="small" secondary @click="cancelJob(job.id)">
-              <template #icon><NIcon :component="CloseOutline" /></template>取消
+              <template #icon><NIcon :component="CloseOutline" /></template>{{ $t('batch.cancel') }}
             </NButton>
             <NPopconfirm @positive-click="removeJob(job.id)">
               <template #trigger>
@@ -149,35 +151,35 @@ onUnmounted(() => offBatch?.())
                   <template #icon><NIcon :component="TrashOutline" /></template>
                 </NButton>
               </template>
-              删除任务？
+              {{ $t('batch.removeJobConfirm') }}
             </NPopconfirm>
           </NSpace>
         </article>
       </div>
-      <NEmpty v-else description="暂无批量任务" class="empty" />
+      <NEmpty v-else :description="$t('batch.empty')" class="empty" />
     </NSpin>
     </div>
 
-    <NModal v-model:show="showCreate" preset="card" title="新建批量任务" style="width: 520px; border-radius: 20px">
+    <NModal v-model:show="showCreate" preset="card" :title="$t('batch.createTitle')" style="width: 520px; border-radius: 20px">
       <NSpace vertical>
-        <NInput v-model:value="draft.name" placeholder="任务名称" />
-        <NInput v-model:value="draft.workflowPath" placeholder="工作流路径">
+        <NInput v-model:value="draft.name" :placeholder="$t('batch.namePlaceholder')" />
+        <NInput v-model:value="draft.workflowPath" :placeholder="$t('batch.workflowPlaceholder')">
           <template #suffix>
-            <NButton size="tiny" secondary @click="pickWorkflow">浏览</NButton>
+            <NButton size="tiny" secondary @click="pickWorkflow">{{ $t('batch.browse') }}</NButton>
           </template>
         </NInput>
         <NSelect
           v-model:value="draft.instanceId"
           :options="store.instances.map((i) => ({ label: i.name, value: i.id }))"
-          placeholder="目标实例"
+          :placeholder="$t('batch.instancePlaceholder')"
         />
-        <NInputNumber v-model:value="draft.count" :min="1" :max="100" placeholder="执行次数" />
-        <NInput v-model:value="draft.notes" type="textarea" :rows="2" placeholder="备注" />
+        <NInputNumber v-model:value="draft.count" :min="1" :max="100" :placeholder="$t('batch.countPlaceholder')" />
+        <NInput v-model:value="draft.notes" type="textarea" :rows="2" :placeholder="$t('batch.notesPlaceholder')" />
       </NSpace>
       <template #footer>
         <NSpace justify="end">
-          <NButton @click="showCreate = false">取消</NButton>
-          <NButton type="primary" @click="createJob">创建</NButton>
+          <NButton @click="showCreate = false">{{ $t('batch.cancel') }}</NButton>
+          <NButton type="primary" @click="createJob">{{ $t('batch.create') }}</NButton>
         </NSpace>
       </template>
     </NModal>
@@ -189,7 +191,7 @@ onUnmounted(() => offBatch?.())
 .cards { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
 .job { padding: 18px; }
 .job-head { display: flex; justify-content: space-between; gap: 12px; }
-.job-name { font-size: 16px; font-weight: 720; }
+.job-name { font-size: 16px; font-weight: 700; }
 .job-meta { font-size: 11.5px; color: $color-text-muted; margin-top: 4px; word-break: break-all; }
 .job-progress { margin: 14px 0; }
 .bar { height: 8px; border-radius: 999px; background: rgba(79, 110, 247, 0.12); overflow: hidden; }

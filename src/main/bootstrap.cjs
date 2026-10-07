@@ -31,7 +31,7 @@ try {
   try {
     const { app, dialog } = require('electron')
     app.whenReady().then(() => {
-      dialog.showErrorBox('ComfyPilot 启动失败', String(e && e.stack ? e.stack : e))
+      dialog.showErrorBox('ComfyPilot startup failed', String(e && e.stack ? e.stack : e))
       app.exit(1)
     })
   } catch (e2) {

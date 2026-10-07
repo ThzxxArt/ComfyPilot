@@ -3,12 +3,22 @@ import { join } from 'path'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import type { EnvCreateRequest, EnvProbe } from '@shared/types'
+import { loadSettings } from './db'
+import { proxyEnv } from './proxy'
 
 const execFileAsync = promisify(execFile)
 
 async function safeExec(cmd: string, args: string[], cwd?: string, timeoutMs = 20000): Promise<string> {
   try {
-    const { stdout } = await execFileAsync(cmd, args, { cwd, timeout: timeoutMs, windowsHide: true, maxBuffer: 20 * 1024 * 1024 })
+    // Must inherit app proxy settings — previously env-created venv/pip ignored them
+    // while installer.ts honored them (inconsistent failure for proxy users).
+    const { stdout } = await execFileAsync(cmd, args, {
+      cwd,
+      timeout: timeoutMs,
+      windowsHide: true,
+      maxBuffer: 20 * 1024 * 1024,
+      env: proxyEnv(loadSettings().proxy)
+    })
     return stdout.trim()
   } catch (err) {
     return err instanceof Error ? err.message : String(err)
@@ -88,8 +98,14 @@ export class EnvService {
   }
 
   async createVenv(req: EnvCreateRequest): Promise<EnvProbe> {
+    const { assertSafeRelativeFilename, isPathInside } = await import('./security')
+    // Name must be a single safe directory segment — never `..` or a path.
+    const safeName = assertSafeRelativeFilename(req.name || 'venv')
     mkdirSync(req.basePath, { recursive: true })
-    const venvPath = join(req.basePath, req.name)
+    const venvPath = join(req.basePath, safeName)
+    if (!isPathInside(venvPath, req.basePath)) {
+      throw new Error(`Invalid venv name: ${req.name}`)
+    }
     if (req.useUv) {
       await safeExec('uv', ['venv', venvPath, '--python', req.pythonPath], undefined, LONG_TIMEOUT_MS)
     } else {
@@ -98,6 +114,9 @@ export class EnvService {
     const python = existsSync(join(venvPath, 'Scripts', 'python.exe'))
       ? join(venvPath, 'Scripts', 'python.exe')
       : join(venvPath, 'bin', 'python')
+    if (!existsSync(python)) {
+      throw new Error(`venv creation failed — no interpreter at ${python}`)
+    }
 
     if (req.torchIndex) {
       await safeExec(
@@ -117,6 +136,17 @@ export class EnvService {
     for (const cmd of candidates) {
       const v = await safeExec(cmd, ['--version'])
       if (/Python/i.test(v)) out.push({ path: cmd, version: v })
+    }
+    // ComfyPilot-managed portable Python (zero-prereq bootstrap)
+    try {
+      const { resolveRuntimesPythonSync } = await import('./instance')
+      const runtimePy = resolveRuntimesPythonSync()
+      if (runtimePy) {
+        const v = await safeExec(runtimePy, ['--version'])
+        if (/Python/i.test(v)) out.push({ path: runtimePy, version: v })
+      }
+    } catch {
+      /* ignore */
     }
     // Common Windows installs
     for (const p of [

@@ -12,12 +12,14 @@ import {
 import { useAppStore } from '@/stores/app'
 import { ipc, onInstanceStatus, onIpc, IPC_EVENTS } from '@/composables/useIpc'
 import { useLaunch } from '@/composables/useLaunch'
+import { useI18n } from 'vue-i18n'
 import type { ComfyInstanceInfo, ComfyLogLine, LaunchCommandPreview } from '@shared/types'
 
 const route = useRoute()
 const router = useRouter()
 const store = useAppStore()
 const message = useMessage()
+const { t } = useI18n()
 const { launch, stop, busy } = useLaunch()
 const loading = ref(true)
 const logs = ref<ComfyLogLine[]>([])
@@ -60,7 +62,7 @@ async function refresh(): Promise<void> {
 async function copyCommand(): Promise<void> {
   if (!preview.value) return
   await ipc('shell.writeClipboard', preview.value.commandLine)
-  message.success('启动命令已复制')
+  message.success(t('instance.launchCmdCopied'))
 }
 
 let off: (() => void) | null = null
@@ -94,9 +96,9 @@ onUnmounted(() => {
           <template #icon>
             <NIcon :component="ArrowBackOutline" />
           </template>
-          返回实例列表
+          {{ $t('instance.backToList') }}
         </NButton>
-        <h1 class="page-title" style="margin-top: 8px">{{ instance?.name || '实例详情' }}</h1>
+        <h1 class="page-title" style="margin-top: 8px">{{ instance?.name || $t('instance.detailTitle') }}</h1>
         <p class="page-subtitle mono">{{ instance?.path }}</p>
       </div>
       <NSpace>
@@ -109,25 +111,25 @@ onUnmounted(() => {
           <template #icon>
             <NIcon :component="PlayOutline" />
           </template>
-          启动并打开
+          {{ $t('header.launchAndOpen') }}
         </NButton>
         <NButton v-else type="warning" secondary @click="doStop">
           <template #icon>
             <NIcon :component="StopOutline" />
           </template>
-          停止
+          {{ $t('header.stop') }}
         </NButton>
         <NButton secondary @click="doLaunch('none')">
           <template #icon>
             <NIcon :component="PlayOutline" />
           </template>
-          仅启动
+          {{ $t('instance.startOnly') }}
         </NButton>
         <NButton secondary :disabled="!instance?.url" @click="instance?.url && ipc('shell.openExternal', instance.url)">
           <template #icon>
             <NIcon :component="OpenOutline" />
           </template>
-          外链打开
+          {{ $t('header.openExternal') }}
         </NButton>
         <NButton
           type="primary"
@@ -138,13 +140,13 @@ onUnmounted(() => {
           <template #icon>
             <NIcon :component="PulseOutline" />
           </template>
-          内嵌 Frontend
+          {{ $t('header.embed') }}
         </NButton>
         <NButton secondary @click="router.push('/instances')">
           <template #icon>
             <NIcon :component="CreateOutline" />
           </template>
-          编辑
+          {{ $t('common.edit') }}
         </NButton>
       </NSpace>
     </div>
@@ -153,31 +155,31 @@ onUnmounted(() => {
     <NSpin :show="loading">
       <div class="grid layout">
         <section class="card panel">
-          <div class="panel-title">基本信息</div>
+          <div class="panel-title">{{ $t('instance.basicInfo') }}</div>
           <NDescriptions bordered size="small" :column="2" label-placement="left" class="desc">
-            <NDescriptionsItem label="状态">
+            <NDescriptionsItem :label="$t('common.status')">
               <NTag :type="instance?.status === 'running' ? 'success' : instance?.status === 'error' ? 'error' : 'default'" round>
                 {{ instance?.status }}
               </NTag>
             </NDescriptionsItem>
             <NDescriptionsItem label="PID">{{ instance?.pid || '—' }}</NDescriptionsItem>
-            <NDescriptionsItem label="监听">{{ instance?.listen }}:{{ instance?.port }}</NDescriptionsItem>
-            <NDescriptionsItem label="版本">{{ instance?.version || '—' }}</NDescriptionsItem>
+            <NDescriptionsItem :label="$t('instance.listen')">{{ instance?.listen }}:{{ instance?.port }}</NDescriptionsItem>
+            <NDescriptionsItem :label="$t('common.version')">{{ instance?.version || '—' }}</NDescriptionsItem>
             <NDescriptionsItem label="Python">{{ instance?.pythonPath || 'system' }}</NDescriptionsItem>
-            <NDescriptionsItem label="autoStart">{{ instance?.autoStart ? '是' : '否' }}</NDescriptionsItem>
+            <NDescriptionsItem label="autoStart">{{ instance?.autoStart ? $t('common.yes') : $t('common.no') }}</NDescriptionsItem>
             <NDescriptionsItem label="URL" :span="2">
               <span class="mono">{{ instance?.url }}</span>
             </NDescriptionsItem>
           </NDescriptions>
 
           <NCollapse v-if="preview" class="cmd-collapse">
-            <NCollapseItem title="启动命令（可复制）" name="cmd">
+            <NCollapseItem :title="$t('instance.launchCmdTitle')" name="cmd">
               <div class="cmd-box">
                 <div class="mono cmd-cwd">cwd: {{ preview.cwd }}</div>
                 <pre class="mono cmd-line">{{ preview.commandLine }}</pre>
                 <NButton size="tiny" secondary @click="copyCommand">
                   <template #icon><NIcon :component="TerminalOutline" /></template>
-                  复制命令
+                  {{ $t('instance.copyCmd') }}
                 </NButton>
               </div>
             </NCollapseItem>
@@ -186,14 +188,14 @@ onUnmounted(() => {
 
         <section class="card panel logs">
           <div class="panel-head">
-            <div class="panel-title">实时日志</div>
+            <div class="panel-title">{{ $t('instance.liveLogs') }}</div>
             <NButton size="tiny" secondary @click="refresh">
               <template #icon><NIcon :component="RefreshOutline" /></template>
-              刷新
+              {{ $t('common.refresh') }}
             </NButton>
           </div>
           <NScrollbar class="log-scroll">
-            <div v-if="!logs.length" class="log-empty">启动实例后，日志会实时出现在这里。</div>
+            <div v-if="!logs.length" class="log-empty">{{ $t('instance.logEmptyHint') }}</div>
             <div v-for="(line, idx) in logs" :key="idx" class="log-line" :class="line.level">
               <span class="log-time">{{ new Date(line.ts).toLocaleTimeString() }}</span>
               <span class="log-msg">{{ line.message }}</span>
@@ -260,7 +262,7 @@ onUnmounted(() => {
 
 .log-scroll {
   height: 420px;
-  background: #fbfcff;
+  background: $color-bg-soft;
   border: 1px solid $color-border;
   border-radius: 14px;
   padding: 12px;
@@ -275,13 +277,13 @@ onUnmounted(() => {
   padding: 2px 0;
 
   &.error {
-    color: #b91c1c;
+    color: $color-danger;
   }
   &.warn {
-    color: #b45309;
+    color: $color-warning;
   }
   &.info {
-    color: #334155;
+    color: $color-text-secondary;
   }
 }
 

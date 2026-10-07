@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { AddOutline, TrashOutline, RefreshOutline, DownloadOutline } from '@vicons/ionicons5'
 import {
   NButton, NIcon, NInput, NSpace, NSpin, NEmpty, useMessage, NModal, NPopconfirm, NList, NListItem
@@ -8,6 +9,7 @@ import { ipc } from '@/composables/useIpc'
 import { formatBytes } from '@/utils/format'
 import type { BackupManifest } from '@shared/types'
 
+const { t } = useI18n()
 const message = useMessage()
 const loading = ref(false)
 const items = ref<BackupManifest[]>([])
@@ -30,7 +32,7 @@ async function create(): Promise<void> {
     showCreate.value = false
     name.value = ''
     notes.value = ''
-    message.success(`已创建备份 ${b.name}`)
+    message.success(t('backup.created', { name: b.name }))
     await refresh()
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
@@ -40,7 +42,7 @@ async function create(): Promise<void> {
 async function restore(id: string): Promise<void> {
   try {
     await ipc('backup.restore', id)
-    message.success('备份已恢复（配置/实例/节点清单/模型清单/工作流/远程）')
+    message.success(t('backup.restored'))
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   }
@@ -70,15 +72,15 @@ onMounted(() => void refresh())
   <div class="page">
     <div class="page-header">
       <div>
-        <h1 class="page-title">备份与恢复</h1>
-        <p class="page-subtitle">备份配置、实例、节点清单与模型清单（不含大模型本体）。</p>
+        <h1 class="page-title">{{ t('backup.title') }}</h1>
+        <p class="page-subtitle">{{ t('backup.subtitle') }}</p>
       </div>
       <NSpace>
         <NButton secondary @click="refresh">
-          <template #icon><NIcon :component="RefreshOutline" /></template>刷新
+          <template #icon><NIcon :component="RefreshOutline" /></template>{{ t('common.refresh') }}
         </NButton>
         <NButton type="primary" @click="showCreate = true">
-          <template #icon><NIcon :component="AddOutline" /></template>创建备份
+          <template #icon><NIcon :component="AddOutline" /></template>{{ t('backup.create') }}
         </NButton>
       </NSpace>
     </div>
@@ -95,34 +97,34 @@ onMounted(() => void refresh())
             </div>
             <NSpace>
               <NButton size="small" type="primary" secondary @click="restore(b.id)">
-                <template #icon><NIcon :component="DownloadOutline" /></template>恢复
+                <template #icon><NIcon :component="DownloadOutline" /></template>{{ t('backup.restore') }}
               </NButton>
-              <NButton size="small" secondary @click="openFolder(b.id)">打开目录</NButton>
+              <NButton size="small" secondary @click="openFolder(b.id)">{{ t('backup.openFolder') }}</NButton>
               <NPopconfirm @positive-click="removeBackup(b.id)">
                 <template #trigger>
                   <NButton size="small" type="error" secondary>
                     <template #icon><NIcon :component="TrashOutline" /></template>
                   </NButton>
                 </template>
-                删除备份？
+                {{ t('backup.deleteConfirm') }}
               </NPopconfirm>
             </NSpace>
           </div>
         </NListItem>
       </NList>
-      <NEmpty v-else description="暂无备份" class="empty" />
+      <NEmpty v-else :description="t('backup.empty')" class="empty" />
     </NSpin>
     </div>
 
-    <NModal v-model:show="showCreate" preset="card" title="创建备份" style="width: 480px; border-radius: 20px">
+    <NModal v-model:show="showCreate" preset="card" :title="t('backup.create')" style="width: 480px; border-radius: 20px">
       <NSpace vertical>
-        <NInput v-model:value="name" placeholder="备份名称" />
-        <NInput v-model:value="notes" type="textarea" :rows="3" placeholder="备注（可选）" />
+        <NInput v-model:value="name" :placeholder="t('backup.namePlaceholder')" />
+        <NInput v-model:value="notes" type="textarea" :rows="3" :placeholder="t('backup.notesPlaceholder')" />
       </NSpace>
       <template #footer>
         <NSpace justify="end">
-          <NButton @click="showCreate = false">取消</NButton>
-          <NButton type="primary" @click="create">创建</NButton>
+          <NButton @click="showCreate = false">{{ t('common.cancel') }}</NButton>
+          <NButton type="primary" @click="create">{{ t('backup.createAction') }}</NButton>
         </NSpace>
       </template>
     </NModal>
@@ -132,7 +134,7 @@ onMounted(() => void refresh())
 <style lang="scss" scoped>
 @use '@/styles/variables.scss' as *;
 .row { display: flex; justify-content: space-between; align-items: center; gap: 16px; width: 100%; }
-.name { font-size: 15px; font-weight: 720; }
+.name { font-size: 15px; font-weight: 700; }
 .meta { font-size: 12px; color: $color-text-muted; margin-top: 4px; word-break: break-all; }
 .empty { padding: 64px 0; }
 </style>

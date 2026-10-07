@@ -29,6 +29,7 @@ import { ipc } from '@/composables/useIpc'
 import { useLaunch } from '@/composables/useLaunch'
 import { useI18n } from 'vue-i18n'
 import { APP_VERSION } from '@shared/constants'
+import { COLORS } from '@/styles/tokens'
 import type { ComfyInstanceInfo } from '@shared/types'
 
 const router = useRouter()
@@ -43,20 +44,55 @@ const SIDEBAR_W = 240
 const SIDEBAR_W_COLLAPSED = 72
 
 const nav = computed(() => [
-  { key: 'dashboard', label: t('nav.dashboard'), icon: SpeedometerOutline, path: '/' },
-  { key: 'instances', label: t('nav.instances'), icon: ServerOutline, path: '/instances' },
-  { key: 'models', label: t('nav.models'), icon: FolderOpenOutline, path: '/models' },
-  { key: 'nodes', label: t('nav.nodes'), icon: ExtensionPuzzleOutline, path: '/nodes' },
-  { key: 'market', label: t('nav.market'), icon: StorefrontOutline, path: '/market' },
-  { key: 'workflows', label: t('nav.workflows'), icon: GitBranchOutline, path: '/workflows' },
-  { key: 'batch', label: t('nav.batch'), icon: PlayForwardOutline, path: '/batch' },
-  { key: 'output', label: t('nav.output'), icon: ImagesOutline, path: '/output' },
-  { key: 'monitor', label: t('nav.monitor'), icon: PulseOutline, path: '/monitor' },
-  { key: 'doctor', label: t('nav.doctor'), icon: MedkitOutline, path: '/doctor' },
-  { key: 'install', label: t('nav.install'), icon: RocketOutline, path: '/install' },
-  { key: 'backup', label: t('nav.backup'), icon: SaveOutline, path: '/backup' },
-  { key: 'settings', label: t('nav.settings'), icon: SettingsOutline, path: '/settings' }
+  // 生产
+  { key: 'dashboard', label: t('nav.dashboard'), icon: SpeedometerOutline, path: '/', group: 'produce' as const },
+  { key: 'instances', label: t('nav.instances'), icon: ServerOutline, path: '/instances', group: 'produce' as const },
+  { key: 'workflows', label: t('nav.workflows'), icon: GitBranchOutline, path: '/workflows', group: 'produce' as const },
+  { key: 'batch', label: t('nav.batch'), icon: PlayForwardOutline, path: '/batch', group: 'produce' as const },
+  { key: 'output', label: t('nav.output'), icon: ImagesOutline, path: '/output', group: 'produce' as const },
+  // 资产
+  { key: 'models', label: t('nav.models'), icon: FolderOpenOutline, path: '/models', group: 'assets' as const },
+  { key: 'nodes', label: t('nav.nodes'), icon: ExtensionPuzzleOutline, path: '/nodes', group: 'assets' as const },
+  { key: 'market', label: t('nav.market'), icon: StorefrontOutline, path: '/market', group: 'assets' as const },
+  // 运维
+  { key: 'monitor', label: t('nav.monitor'), icon: PulseOutline, path: '/monitor', group: 'ops' as const },
+  { key: 'doctor', label: t('nav.doctor'), icon: MedkitOutline, path: '/doctor', group: 'ops' as const },
+  { key: 'install', label: t('nav.install'), icon: RocketOutline, path: '/install', group: 'ops' as const },
+  { key: 'backup', label: t('nav.backup'), icon: SaveOutline, path: '/backup', group: 'ops' as const },
+  { key: 'settings', label: t('nav.settings'), icon: SettingsOutline, path: '/settings', group: 'ops' as const }
 ])
+
+const navGroups = computed(() => {
+  const g = { produce: [] as typeof nav.value, assets: [] as typeof nav.value, ops: [] as typeof nav.value }
+  for (const item of nav.value) g[item.group].push(item)
+  return [
+    { key: 'produce', label: t('nav.groupProduce'), items: g.produce },
+    { key: 'assets', label: t('nav.groupAssets'), items: g.assets },
+    { key: 'ops', label: t('nav.groupOps'), items: g.ops }
+  ].filter((x) => x.items.length)
+})
+
+/** Align Naive UI chrome with the blue-violet design tokens (no more green default). */
+const themeOverrides = {
+  common: {
+    primaryColor: COLORS.primary,
+    primaryColorHover: COLORS.primaryHover,
+    primaryColorPressed: COLORS.primaryPressed,
+    primaryColorSuppl: COLORS.primary2,
+    borderRadius: '12px',
+    borderRadiusSmall: '8px',
+    fontFamily:
+      "'Inter','Segoe UI','PingFang SC','HarmonyOS Sans SC','Microsoft YaHei',system-ui,sans-serif",
+    fontSize: '14px',
+    successColor: COLORS.success,
+    warningColor: COLORS.warning,
+    errorColor: COLORS.danger,
+    textColorBase: COLORS.text
+  },
+  Button: { fontWeight: '600' },
+  Card: { borderRadius: '16px' },
+  Modal: { borderRadius: '20px' }
+}
 
 const activeKey = computed(() => {
   const hit = nav.value.find((n) => route.path === n.path || (n.path !== '/' && route.path.startsWith(n.path)))
@@ -80,6 +116,14 @@ const selectedInstanceId = computed({
 })
 
 const activeStatus = computed(() => store.activeInstance?.status || 'unknown')
+const activeStatusLabel = computed(() => {
+  const s = activeStatus.value
+  try {
+    return t(`status.${s}`)
+  } catch {
+    return s
+  }
+})
 
 const sidebarWidth = computed(() => (collapsed.value ? SIDEBAR_W_COLLAPSED : SIDEBAR_W))
 
@@ -186,13 +230,13 @@ async function toggleInstanceRun(): Promise<void> {
 </script>
 
 <template>
-  <NConfigProvider>
+  <NConfigProvider :theme-overrides="themeOverrides">
     <NMessageProvider>
       <NDialogProvider>
         <div class="shell" :class="{ collapsed }">
           <aside class="sider glass">
             <div class="brand">
-              <div class="brand-mark" @click="toggleCollapse" title="折叠/展开侧栏">
+              <div class="brand-mark" @click="toggleCollapse" :title="t('header.collapseSidebar')">
                 <span class="brand-orb" />
               </div>
               <div v-if="!collapsed" class="brand-text">
@@ -202,24 +246,27 @@ async function toggleInstanceRun(): Promise<void> {
             </div>
 
             <nav class="nav">
-              <button
-                v-for="item in nav"
-                :key="item.key"
-                class="nav-item"
-                :class="{ active: activeKey === item.key }"
-                :title="collapsed ? item.label : undefined"
-                @click="go(item.path)"
-              >
-                <NIcon :size="18" :component="item.icon" />
-                <span v-if="!collapsed" class="nav-label">{{ item.label }}</span>
-                <span v-if="!collapsed && item.key === 'instances' && runningCount" class="nav-badge">{{ runningCount }}</span>
-              </button>
+              <div v-for="group in navGroups" :key="group.key" class="nav-group">
+                <div v-if="!collapsed" class="nav-group-label">{{ group.label }}</div>
+                <button
+                  v-for="item in group.items"
+                  :key="item.key"
+                  class="nav-item"
+                  :class="{ active: activeKey === item.key }"
+                  :title="collapsed ? item.label : undefined"
+                  @click="go(item.path)"
+                >
+                  <NIcon :size="18" :component="item.icon" />
+                  <span v-if="!collapsed" class="nav-label">{{ item.label }}</span>
+                  <span v-if="!collapsed && item.key === 'instances' && runningCount" class="nav-badge">{{ runningCount }}</span>
+                </button>
+              </div>
             </nav>
 
             <div class="sider-footer">
-              <div class="status-pill">
+              <div class="status-pill" :class="{ idle: runningCount === 0 }">
                 <span class="pulse-dot" />
-                <span v-if="!collapsed">{{ t('common.running') }}</span>
+                <span v-if="!collapsed">{{ runningCount > 0 ? `${runningCount} ${t('common.running')}` : t('common.stopped') }}</span>
               </div>
               <NButton text class="github-btn" @click="openGithub">
                 <template #icon>
@@ -251,7 +298,7 @@ async function toggleInstanceRun(): Promise<void> {
                     round
                     :type="activeStatus === 'running' ? 'success' : activeStatus === 'error' ? 'error' : 'default'"
                   >
-                    {{ activeStatus }}
+                    {{ activeStatusLabel }}
                   </NTag>
                   <NButton
                     size="small"
@@ -396,7 +443,7 @@ async function toggleInstanceRun(): Promise<void> {
 .nav {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 10px;
   margin-top: 8px;
   flex: 1;
   min-height: 0;
@@ -405,16 +452,31 @@ async function toggleInstanceRun(): Promise<void> {
   padding-right: 2px;
 }
 
+.nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.nav-group-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: $color-text-muted;
+  padding: 6px 14px 2px;
+}
+
 .nav-item {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 11px 14px;
-  border-radius: 14px;
+  padding: 10px 14px;
+  border-radius: 12px;
   border: 1px solid transparent;
   background: transparent;
   color: $color-text-secondary;
-  font-size: 14px;
+  font-size: 13.5px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s ease;
@@ -473,9 +535,20 @@ async function toggleInstanceRun(): Promise<void> {
   padding: 8px 12px;
   border-radius: 999px;
   background: rgba(16, 185, 129, 0.1);
-  color: #047857;
+  color: $color-success;
   font-size: 12px;
   font-weight: 600;
+
+  &.idle {
+    background: rgba(148, 163, 184, 0.12);
+    color: $color-text-muted;
+
+    .pulse-dot {
+      background: $color-text-muted;
+      box-shadow: none;
+      animation: none;
+    }
+  }
 }
 
 .main {
@@ -497,7 +570,7 @@ async function toggleInstanceRun(): Promise<void> {
 
 .header-title {
   font-size: 18px;
-  font-weight: 750;
+  font-weight: 700;
   letter-spacing: -0.02em;
 }
 

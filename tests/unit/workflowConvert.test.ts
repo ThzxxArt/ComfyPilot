@@ -22,6 +22,22 @@ describe('format detection', () => {
     expect(isUiWorkflow({ nodes: [{ id: 1, type: 'KSampler' }] })).toBe(true)
     expect(isUiWorkflow({ foo: 1 })).toBe(false)
   })
+
+  it('rejects non-objects and malformed API entries', () => {
+    expect(isApiPrompt(null)).toBe(false)
+    expect(isApiPrompt(undefined)).toBe(false)
+    expect(isApiPrompt('x')).toBe(false)
+    expect(isApiPrompt(123)).toBe(false)
+    expect(isApiPrompt({})).toBe(false)
+    expect(isApiPrompt({ a: { class_type: 'X' } })).toBe(false)
+    expect(isApiPrompt({ a: { inputs: {} } })).toBe(false)
+    expect(isApiPrompt({ a: { class_type: 'X', inputs: null } })).toBe(false)
+    expect(isUiWorkflow(null)).toBe(false)
+    expect(isUiWorkflow(undefined)).toBe(false)
+    expect(isUiWorkflow('nodes')).toBe(false)
+    expect(isUiWorkflow(5)).toBe(false)
+    expect(isUiWorkflow({ nodes: {} })).toBe(false)
+  })
 })
 
 describe('uiWorkflowToApiPrompt', () => {
@@ -135,6 +151,174 @@ describe('uiWorkflowToApiPrompt', () => {
     expect(api['3'].inputs.seed).toBe(1)
   })
 
+  it('drops links whose input.link is not in the links table', () => {
+    const api = uiWorkflowToApiPrompt({
+      nodes: [
+        {
+          id: 3,
+          type: 'KSampler',
+          inputs: [{ name: 'model', link: 555 }],
+          widgets_values: [1, 'fixed', 10, 7, 'euler', 'normal', 1]
+        }
+      ],
+      links: []
+    })
+    expect(api['3'].inputs.model).toBeUndefined()
+  })
+
+  it('rewires through muted / bypassed nodes (mode 2 and 4)', () => {
+    const nodes = [
+      {
+        id: 10,
+        type: 'CheckpointLoaderSimple',
+        inputs: [],
+        outputs: [{ name: 'MODEL', links: [100] }],
+        widgets_values: ['m.safetensors']
+      },
+      {
+        id: 3,
+        type: 'KSampler',
+        mode: 2,
+        inputs: [{ name: 'model', link: 100 }],
+        outputs: [{ links: [101] }],
+        widgets_values: [1, 'fixed', 10, 7, 'euler', 'normal', 1]
+      },
+      {
+        id: 12,
+        type: 'LoraLoader',
+        mode: 4,
+        inputs: [{ name: 'model', link: 101 }],
+        outputs: [{ links: [102] }],
+        widgets_values: ['l.safetensors', 0.8, 0.8]
+      },
+      {
+        id: 5,
+        type: 'VAEDecode',
+        inputs: [{ name: 'samples', link: 102 }],
+        widgets_values: []
+      }
+    ]
+    const links: Array<[number, number, number, number, number, string]> = [
+      [100, 10, 0, 3, 0, 'MODEL'],
+      [101, 3, 0, 12, 0, 'MODEL'],
+      [102, 12, 0, 5, 0, 'MODEL']
+    ]
+    const api = uiWorkflowToApiPrompt({ nodes, links })
+    // muted/bypassed nodes are skipped as outputs but reconnected through
+    expect(api['3']).toBeUndefined()
+    expect(api['12']).toBeUndefined()
+    expect(api['5'].inputs.samples).toEqual(['10', 0])
+  })
+
+  it('returns null when a muted node has no usable input link', () => {
+    const api = uiWorkflowToApiPrompt({
+      nodes: [
+        {
+          id: 3,
+          type: 'KSampler',
+          mode: 2,
+          inputs: [{ name: 'model', link: null }],
+          widgets_values: []
+        },
+        {
+          id: 5,
+          type: 'VAEDecode',
+          inputs: [{ name: 'samples', link: 101 }],
+          widgets_values: []
+        }
+      ],
+      links: [[101, 3, 0, 5, 0, 'MODEL']]
+    })
+    expect(api['5'].inputs.samples).toBeUndefined()
+
+    const missingPrev = uiWorkflowToApiPrompt({
+      nodes: [
+        {
+          id: 3,
+          type: 'KSampler',
+          mode: 4,
+          inputs: [{ name: 'model', link: 888 }],
+          widgets_values: []
+        },
+        {
+          id: 5,
+          type: 'VAEDecode',
+          inputs: [{ name: 'samples', link: 101 }],
+          widgets_values: []
+        }
+      ],
+      links: [[101, 3, 0, 5, 0, 'MODEL']]
+    })
+    expect(missingPrev['5'].inputs.samples).toBeUndefined()
+
+    // muted node with no inputs array at all
+    const noInputs = uiWorkflowToApiPrompt({
+      nodes: [
+        { id: 3, type: 'KSampler', mode: 2, widgets_values: [] },
+        {
+          id: 5,
+          type: 'VAEDecode',
+          inputs: [{ name: 'samples', link: 101 }],
+          widgets_values: []
+        }
+      ],
+      links: [[101, 3, 0, 5, 0, 'MODEL']]
+    })
+    expect(noInputs['5'].inputs.samples).toBeUndefined()
+  })
+
+  it('drops Reroute with missing input link or missing previous node', () => {
+    const noInput = uiWorkflowToApiPrompt({
+      nodes: [
+        { id: 11, type: 'Reroute', inputs: [] },
+        {
+          id: 3,
+          type: 'KSampler',
+          inputs: [{ name: 'model', link: 101 }],
+          widgets_values: [1, 'fixed', 10, 7, 'euler', 'normal', 1]
+        }
+      ],
+      links: [[101, 11, 0, 3, 0, 'MODEL']]
+    })
+    expect(noInput['3'].inputs.model).toBeUndefined()
+
+    const missingPrev = uiWorkflowToApiPrompt({
+      nodes: [
+        { id: 11, type: 'Reroute', inputs: [{ name: 'input', link: 999 }] },
+        {
+          id: 3,
+          type: 'KSampler',
+          inputs: [{ name: 'model', link: 101 }],
+          widgets_values: [1, 'fixed', 10, 7, 'euler', 'normal', 1]
+        }
+      ],
+      links: [[101, 11, 0, 3, 0, 'MODEL']]
+    })
+    expect(missingPrev['3'].inputs.model).toBeUndefined()
+  })
+
+  it('breaks cyclic Reroute chains instead of hanging', () => {
+    const api = uiWorkflowToApiPrompt({
+      nodes: [
+        { id: 1, type: 'Reroute', inputs: [{ name: 'input', link: 201 }] },
+        { id: 2, type: 'Reroute', inputs: [{ name: 'input', link: 202 }] },
+        {
+          id: 3,
+          type: 'KSampler',
+          inputs: [{ name: 'model', link: 203 }],
+          widgets_values: [1, 'fixed', 10, 7, 'euler', 'normal', 1]
+        }
+      ],
+      links: [
+        [201, 2, 0, 1, 0, 'MODEL'],
+        [202, 1, 0, 2, 0, 'MODEL'],
+        [203, 1, 0, 3, 0, 'MODEL']
+      ]
+    })
+    expect(api['3'].inputs.model).toBeUndefined()
+    expect(api['3'].inputs.seed).toBe(1)
+  })
+
   it('does not shift values when some widgets became linked inputs', () => {
     // seed is converted to an input widget → widget-backed names would be partial
     const api = uiWorkflowToApiPrompt({
@@ -201,6 +385,153 @@ describe('uiWorkflowToApiPrompt', () => {
     expect(api['5'].inputs.strength).toBe(0.75)
     expect(api['5'].inputs.mode).toBe('soft')
   })
+
+  it('uses node.widgets name metadata when no builtin order', () => {
+    const api = uiWorkflowToApiPrompt({
+      nodes: [
+        {
+          id: 1,
+          type: 'CustomMetaNode',
+          widgets: [{ name: 'alpha' }, { name: 'beta' }, { name: 'upload' }, { name: '' }],
+          widgets_values: [10, 'x', 'f.png']
+        }
+      ]
+    })
+    expect(api['1'].inputs.alpha).toBe(10)
+    expect(api['1'].inputs.beta).toBe('x')
+    expect(api['1'].inputs).not.toHaveProperty('upload')
+  })
+
+  it('maps widget-backed input names only when count matches values', () => {
+    const full = uiWorkflowToApiPrompt({
+      nodes: [
+        {
+          id: 1,
+          type: 'CustomWidgetBacked',
+          inputs: [
+            { name: 'a', widget: { name: 'a' } },
+            { name: 'b', widget: { name: 'b' } }
+          ],
+          widgets_values: [1, 2]
+        }
+      ]
+    })
+    expect(full['1'].inputs.a).toBe(1)
+    expect(full['1'].inputs.b).toBe(2)
+
+    // Partial widget-backed names must NOT shift the full widgets_values list
+    const partial = uiWorkflowToApiPrompt({
+      nodes: [
+        {
+          id: 2,
+          type: 'CustomPartial',
+          inputs: [{ name: 'only', widget: { name: 'only' } }],
+          widgets_values: [1, 2]
+        }
+      ]
+    })
+    expect(partial['2'].inputs.only).toBe(1)
+    expect(partial['2'].inputs).not.toHaveProperty('b')
+  })
+
+  it('covers widgetValueMatchesType edges through leftover fill', () => {
+    const api = uiWorkflowToApiPrompt({
+      nodes: [
+        { id: 1, type: 'T1', inputs: [{ name: 'a', type: 'INT' }], widgets_values: [null] },
+        { id: 2, type: 'T2', inputs: [{ name: 'a' }], widgets_values: ['x'] },
+        { id: 3, type: 'T3', inputs: [{ name: 'a', type: 'STRING' }], widgets_values: [1] },
+        { id: 4, type: 'T4', inputs: [{ name: 'a', type: 'INT' }], widgets_values: [true] },
+        { id: 5, type: 'T5', inputs: [{ name: 'a', type: 'INT' }], widgets_values: ['x'] },
+        { id: 6, type: 'T6', inputs: [{ name: 'a', type: 'INT' }], widgets_values: [{ x: 1 }] },
+        { id: 7, type: 'T7', inputs: [{ name: 'a', type: 'FLOAT' }], widgets_values: [1.5] },
+        { id: 8, type: 'T8', inputs: [{ name: 'a', type: 'NUMBER' }], widgets_values: [2] },
+        { id: 9, type: 'T9', inputs: [{ name: 'a', type: 'SEED' }], widgets_values: [3] },
+        { id: 10, type: 'T10', inputs: [{ name: 'a', type: 'BOOL' }], widgets_values: [true] },
+        { id: 11, type: 'T11', inputs: [{ name: 'a', type: 'BOOLEAN' }], widgets_values: [false] },
+        { id: 12, type: 'T12', inputs: [{ name: 'a', type: 'LATENT' }], widgets_values: ['s'] },
+        {
+          id: 13,
+          type: 'T13',
+          inputs: [{ name: 'a', type: 'INT' }, { name: 'b', type: 'INT' }],
+          widgets_values: [{ x: 1 }]
+        }
+      ]
+    })
+    expect(api['1'].inputs.a).toBeNull()
+    expect(api['2'].inputs.a).toBe('x')
+    // number vs STRING → deferred second pass
+    expect(api['3'].inputs.a).toBe(1)
+    expect(api['4'].inputs.a).toBe(true)
+    expect(api['5'].inputs.a).toBe('x')
+    expect(api['6'].inputs.a).toEqual({ x: 1 })
+    expect(api['7'].inputs.a).toBe(1.5)
+    expect(api['8'].inputs.a).toBe(2)
+    expect(api['9'].inputs.a).toBe(3)
+    expect(api['10'].inputs.a).toBe(true)
+    expect(api['11'].inputs.a).toBe(false)
+    expect(api['12'].inputs.a).toBe('s')
+    // deferred loop breaks when leftovers run out
+    expect(api['13'].inputs.a).toEqual({ x: 1 })
+    expect(api['13'].inputs).not.toHaveProperty('b')
+  })
+
+  it('skips empty widgets_values and UI-only leftover candidates', () => {
+    const empty = uiWorkflowToApiPrompt({
+      nodes: [{ id: 1, type: 'CustomEmpty', widgets_values: [] }]
+    })
+    expect(empty['1'].inputs).toEqual({})
+
+    // missing widgets_values falls back to []
+    const missing = uiWorkflowToApiPrompt({
+      nodes: [{ id: 3, type: 'CustomMissing', inputs: [{ name: 'a', type: 'INT' }] }]
+    })
+    expect(missing['3'].inputs).toEqual({})
+
+    const uiOnly = uiWorkflowToApiPrompt({
+      nodes: [
+        {
+          id: 2,
+          type: 'CustomUiOnly',
+          inputs: [
+            { name: 'upload', type: 'STRING' },
+            { name: 'real', type: 'STRING' }
+          ],
+          widgets_values: ['a', 'b']
+        }
+      ]
+    })
+    expect(uiOnly['2'].inputs).not.toHaveProperty('upload')
+    expect(uiOnly['2'].inputs.real).toBe('a')
+  })
+
+  it('falls back to input name when widget metadata name is blank', () => {
+    const api = uiWorkflowToApiPrompt({
+      nodes: [
+        {
+          id: 1,
+          type: 'CustomBlankWidgetName',
+          inputs: [{ name: 'fromInput', widget: { name: '' } }],
+          widgets_values: ['v']
+        }
+      ]
+    })
+    expect(api['1'].inputs.fromInput).toBe('v')
+  })
+
+  it('uses empty builtin widget order as a no-match (PreviewImage)', () => {
+    const api = uiWorkflowToApiPrompt({
+      nodes: [
+        {
+          id: 1,
+          type: 'PreviewImage',
+          inputs: [{ name: 'images', type: 'IMAGE' }],
+          widgets_values: ['ignored']
+        }
+      ]
+    })
+    expect(api['1'].class_type).toBe('PreviewImage')
+    expect(api['1'].inputs.images).toBe('ignored')
+  })
 })
 
 describe('toApiPrompt wrappers', () => {
@@ -210,6 +541,44 @@ describe('toApiPrompt wrappers', () => {
     })
     expect(api['1']).toBeTruthy()
     expect(() => toApiPrompt({ foo: 1 })).toThrow()
+  })
+
+  it('converts UI workflows and unwraps workflow wrapper', () => {
+    const fromUi = toApiPrompt({
+      nodes: [{ id: 1, type: 'SaveImage', widgets_values: ['out'] }]
+    })
+    expect(fromUi['1'].class_type).toBe('SaveImage')
+
+    const fromWrapper = toApiPrompt({
+      workflow: { nodes: [{ id: 2, type: 'CLIPTextEncode', widgets_values: ['hi'] }] }
+    })
+    expect(fromWrapper['2'].inputs.text).toBe('hi')
+
+    expect(() => toApiPrompt({ nodes: [{ id: 1, type: 'Note' }] })).toThrow(
+      /no executable nodes/i
+    )
+  })
+
+  it('ignores malformed link table entries and empty graphs', () => {
+    const empty = uiWorkflowToApiPrompt({ nodes: [] })
+    expect(empty).toEqual({})
+
+    const noNodes = uiWorkflowToApiPrompt({})
+    expect(noNodes).toEqual({})
+
+    const api = uiWorkflowToApiPrompt({
+      nodes: [
+        {
+          id: 3,
+          type: 'KSampler',
+          inputs: [{ name: 'model', link: 1 }],
+          widgets_values: [1, 'fixed', 10, 7, 'euler', 'normal', 1]
+        }
+      ],
+      links: [[1, 2], 'bad', null, 42] as never
+    })
+    expect(api['3'].inputs.model).toBeUndefined()
+    expect(api['3'].inputs.seed).toBe(1)
   })
 })
 
@@ -231,5 +600,18 @@ describe('seed application', () => {
     const s1 = applySeedForIteration(structuredClone(prompt), 100, 1)
     expect(s0.a.inputs.seed).toBe(100)
     expect(s1.a.inputs.seed).toBe(101)
+  })
+
+  it('skips nodes without numeric seed fields', () => {
+    const out = applySeedToPrompt(
+      {
+        a: { class_type: 'X', inputs: { seed: 'nope', noise_seed: 'nope' } },
+        b: { class_type: 'Y' } as never
+      },
+      55
+    )
+    expect(out.a.inputs.seed).toBe('nope')
+    expect(out.a.inputs.noise_seed).toBe('nope')
+    expect(out.b.inputs).toBeUndefined()
   })
 })

@@ -116,8 +116,11 @@ export class BatchService extends EventEmitter {
             } else {
               job.failed += 1
             }
-          } catch {
+          } catch (err) {
             job.failed += 1
+            // Surface WHY the queue call failed (was silently counting failures).
+            const msg = err instanceof Error ? err.message : String(err)
+            job.notes = [job.notes, `#${i + 1} ${msg}`].filter(Boolean).join('; ').slice(-500)
           }
           const after = listBatchJobs().find((j) => j.id === id)
           if (!this.runningIds.has(id) || after?.status === 'cancelled') {

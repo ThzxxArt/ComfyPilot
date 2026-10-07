@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
   sanitizeId,
   normalizePathSegment,
@@ -12,7 +12,10 @@ import {
   isSafeEmbedUrl,
   isLocalhostUrl,
   isSafeOpenPath,
-  assertSafeRelativeFilename
+  assertSafeRelativeFilename,
+  safeJoinFile,
+  isAbsoluteOrRelativePath,
+  isWinReservedName
 } from '../../src/main/services/security'
 
 const root = process.platform === 'win32' ? 'C:\\app\\root' : '/app/root'
@@ -144,5 +147,168 @@ describe('assertSafeRelativeFilename', () => {
   it('throws on empty', () => {
     expect(() => assertSafeRelativeFilename('')).toThrow()
     expect(() => assertSafeRelativeFilename('..')).toThrow()
+    expect(() => assertSafeRelativeFilename('   ')).toThrow()
+    expect(() => assertSafeRelativeFilename('.')).toThrow()
+    expect(() => assertSafeRelativeFilename('...')).toThrow()
+    expect(() => assertSafeRelativeFilename('///')).toThrow()
+    expect(() => assertSafeRelativeFilename('___')).toThrow()
+  })
+
+  it('throws on reserved device names', () => {
+    expect(() => assertSafeRelativeFilename('con.txt')).toThrow(/Reserved/)
+    expect(() => assertSafeRelativeFilename('NUL')).toThrow(/Reserved/)
+    expect(() => assertSafeRelativeFilename('COM1.dat')).toThrow(/Reserved/)
+    expect(assertSafeRelativeFilename('normal.txt')).toBe('normal.txt')
+    expect(isWinReservedName('lpt3')).toBe(true)
+    expect(isWinReservedName('console')).toBe(false)
+  })
+})
+
+describe('safeJoin / normalizePathEverySegment roots', () => {
+  it('joins safe relative parts under root', () => {
+    const target = safeJoin(root, 'assets', 'logo.png')
+    expect(target.startsWith(root)).toBe(true)
+    expect(safeJoin(root, '')).toBe(root.replace(/[/\\]+$/, '') || root)
+    expect(safeJoin(root, '.')).toBeTruthy()
+  })
+
+  it('rejects absolute paths that leave the root', () => {
+    if (process.platform === 'win32') {
+      expect(() => safeJoin(root, 'C:\\Windows\\win.ini')).toThrow()
+    } else {
+      expect(() => safeJoin(root, '/etc/passwd')).toThrow()
+    }
+  })
+
+  it('keeps a root separator after the drive prefix', () => {
+    const n = normalizePathEverySegment('C:/foo/bar')
+    expect(n.toLowerCase().startsWith('c:')).toBe(true)
+    expect(n.includes('foo')).toBe(true)
+  })
+
+  it('keeps a leading separator for unix-style absolute paths', () => {
+    const n = normalizePathEverySegment('/foo/bar')
+    expect(n.startsWith('/')).toBe(true)
+    expect(n).toContain('foo')
+    const win = normalizePathEverySegment('\\foo\\bar')
+    expect(win.startsWith('\\')).toBe(true)
+  })
+})
+
+describe('safeResolveUnder decode and empty edges', () => {
+  it('rejects malformed percent-encoding and empty targets', () => {
+    expect(safeResolveUnder(root, '%')).toBeNull()
+    expect(safeResolveUnder(root, '%25252525')).toBeNull()
+    expect(safeResolveUnder(root, '///')).toBeNull()
+    expect(safeResolveUnder(root, '   ')).toBeNull()
+    expect(safeResolveUnder(root, '')).toBeNull()
+    expect(safeResolveUnder(root, 'a%00b')).toBeNull()
+  })
+
+  it('allows plain nested paths without decoding', () => {
+    expect(safeResolveUnder(root, 'a/b.png')).toBeTruthy()
+    expect(safeResolveUnder(root, './a/b.png')).toBeTruthy()
+  })
+})
+
+describe('resolveInsideAnyRoot matching', () => {
+  const allow = process.platform === 'win32' ? 'D:\\Downloads' : '/home/user/Downloads'
+
+  it('accepts the root itself and skips empty root entries', () => {
+    expect(resolveInsideAnyRoot(allow, ['', allow])).toBe(allow)
+    expect(resolveInsideAnyRoot(allow, [])).toBeNull()
+  })
+
+  it('rejects candidates outside every root', () => {
+    const outside = process.platform === 'win32' ? 'C:\\Windows\\win.ini' : '/etc/passwd'
+    expect(resolveInsideAnyRoot(outside, [allow])).toBeNull()
+    expect(resolveInsideAnyRoot('', [allow])).toBeNull()
+  })
+
+  it('returns null when roots cannot be iterated', () => {
+    expect(resolveInsideAnyRoot('a/b', null as never)).toBeNull()
+    expect(resolveInsideAnyRoot('a/b', undefined as never)).toBeNull()
+  })
+})
+
+describe('URL parse failures and non-http localhost', () => {
+  it('returns false for unparseable URLs', () => {
+    expect(isSafeExternalUrl('%%%')).toBe(false)
+    expect(isSafeExternalUrl('http://')).toBe(false)
+    expect(isSafeEmbedUrl('nope')).toBe(false)
+    expect(isSafeEmbedUrl('')).toBe(false)
+    expect(isLocalhostUrl('nope')).toBe(false)
+    expect(isLocalhostUrl('')).toBe(false)
+  })
+
+  it('rejects non-http(s) localhost lookalikes', () => {
+    expect(isLocalhostUrl('ftp://localhost')).toBe(false)
+    expect(isLocalhostUrl('file://localhost')).toBe(false)
+    expect(isLocalhostUrl('http://[::1]:8188')).toBe(true)
+    expect(isLocalhostUrl('http://127.0.0.1')).toBe(true)
+    expect(isLocalhostUrl('https://localhost')).toBe(true)
+    expect(isLocalhostUrl('http://LOCALHOST:8188')).toBe(true)
+    expect(isLocalhostUrl('http://127.0.0.2')).toBe(false)
+  })
+
+  it('isSafeEmbedUrl allows http(s) only', () => {
+    expect(isSafeEmbedUrl('https://example.com')).toBe(true)
+    expect(isSafeEmbedUrl('javascript:alert(1)')).toBe(false)
+    expect(isSafeEmbedUrl('not-a-url')).toBe(false)
+  })
+})
+
+describe('isSafeOpenPath / safeJoinFile / isAbsoluteOrRelativePath', () => {
+  it('blocks empty and NUL paths', () => {
+    expect(isSafeOpenPath('')).toBe(false)
+    expect(isSafeOpenPath('a\u0000b.exe')).toBe(false)
+    expect(isSafeOpenPath('plain.txt')).toBe(true)
+  })
+
+  it('blocks remaining executable extensions', () => {
+    for (const ext of ['.msi', '.jar', '.cpl', '.reg', '.url', '.hta', '.vbs', '.wsf']) {
+      expect(isSafeOpenPath(`C:\\x\\a${ext}`)).toBe(false)
+    }
+  })
+
+  it('safeJoinFile builds a contained path', () => {
+    const out = safeJoinFile(root, 'report.pdf')
+    expect(out).toContain('report.pdf')
+    expect(safeJoinFile(root, '../../evil.bin')).toContain('evil')
+    expect(() => safeJoinFile(root, 'con')).toThrow()
+    expect(() => safeJoinFile(root, '')).toThrow()
+  })
+
+  it('isAbsoluteOrRelativePath classifies inputs', () => {
+    expect(isAbsoluteOrRelativePath('file.txt')).toBe(false)
+    expect(isAbsoluteOrRelativePath('')).toBe(false)
+    expect(isAbsoluteOrRelativePath('a/b')).toBe(true)
+    expect(isAbsoluteOrRelativePath('a\\b')).toBe(true)
+    expect(isAbsoluteOrRelativePath(process.platform === 'win32' ? 'C:\\a' : '/a')).toBe(true)
+  })
+})
+
+describe('isPathInside platform folding', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('folds case on win32 and is strict off win32', () => {
+    const spy = vi.spyOn(process, 'platform', 'get')
+    spy.mockReturnValue('win32')
+    expect(isPathInside('C:\\App\\Root\\x', 'c:\\app\\root')).toBe(true)
+
+    spy.mockReturnValue('linux')
+    expect(isPathInside('/app/root/x', '/app/root')).toBe(true)
+    expect(isPathInside('/app/root', '/app/root')).toBe(true)
+    expect(isPathInside('/app/root-evil/x', '/app/root')).toBe(false)
+  })
+})
+
+describe('normalizePathSegment empty input', () => {
+  it('handles empty and undefined-like segments', () => {
+    expect(normalizePathSegment('')).toBe('')
+    expect(normalizePathSegment('...')).toBe('')
+    expect(normalizePathSegment('   ')).toBe('')
   })
 })

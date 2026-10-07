@@ -46,7 +46,7 @@ async function buildMenu(): Promise<Menu> {
     label: `${inst.status === 'running' ? '●' : '○'} ${inst.name} :${inst.port}`,
     submenu: [
       {
-        label: inst.status === 'running' ? '停止' : '启动并打开',
+        label: inst.status === 'running' ? 'Stop' : 'Launch & open',
         click: () => {
           void (async () => {
             try {
@@ -60,14 +60,14 @@ async function buildMenu(): Promise<Menu> {
         }
       },
       {
-        label: '打开 Frontend',
+        label: 'Open Frontend',
         enabled: Boolean(inst.url),
         click: () => {
           if (inst.url && isSafeExternalUrl(inst.url)) void shell.openExternal(inst.url)
         }
       },
       {
-        label: '显示主窗口',
+        label: 'Show window',
         click: () => onShowWindow?.()
       }
     ]
@@ -75,23 +75,23 @@ async function buildMenu(): Promise<Menu> {
 
   return Menu.buildFromTemplate([
     {
-      label: `${APP_NAME} · ${running.length} 运行中 / ${instances.length} 实例`,
+      label: `${APP_NAME} · ${running.length} running / ${instances.length} total`,
       enabled: false
     },
     { type: 'separator' },
     {
-      label: '显示主窗口',
+      label: 'Show window',
       click: () => onShowWindow?.()
     },
     {
-      label: '启动全部实例',
+      label: 'Start all instances',
       enabled: stopped.length > 0,
       click: () => {
         void instanceService.startAll().then(refreshTray)
       }
     },
     {
-      label: '停止全部实例',
+      label: 'Stop all instances',
       enabled: running.length > 0,
       click: () => {
         void instanceService.stopAll().then(refreshTray)
@@ -100,10 +100,10 @@ async function buildMenu(): Promise<Menu> {
     { type: 'separator' },
     ...(instanceItems.length
       ? (instanceItems as Electron.MenuItemConstructorOptions[])
-      : [{ label: '（暂无实例）', enabled: false } as Electron.MenuItemConstructorOptions]),
+      : [{ label: '(no instances)', enabled: false } as Electron.MenuItemConstructorOptions]),
     { type: 'separator' },
     {
-      label: '退出',
+      label: 'Quit',
       click: () => {
         try {
           instanceService.killAllNow()
@@ -123,7 +123,7 @@ export async function refreshTray(): Promise<void> {
     tray.setContextMenu(menu)
     const list = instanceService.list()
     const running = list.filter((i) => i.status === 'running').length
-    tray.setToolTip(`${APP_NAME} — ${running}/${list.length} 实例运行中`)
+    tray.setToolTip(`${APP_NAME} — ${running}/${list.length} running`)
   } catch {
     /* ignore */
   }

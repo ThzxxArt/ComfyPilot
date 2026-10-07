@@ -17,6 +17,10 @@ describe('findZipSlipEntry', () => {
     expect(findZipSlipEntry(['/etc/passwd'])).toBeTruthy()
     expect(findZipSlipEntry(['C:/Windows/win.ini'])).toBeTruthy()
     expect(findZipSlipEntry(['C:\\Windows\\win.ini'])).toBeTruthy()
+    // drive-relative (not absolute on win32) still matches the drive-letter guard
+    expect(findZipSlipEntry(['C:foo/bar.txt'])).toBeTruthy()
+    expect(findZipSlipEntry(['c:evil'])).toBeTruthy()
+    expect(findZipSlipEntry(['ok.txt'])).toBeNull()
   })
 
   it('flags NUL bytes', () => {

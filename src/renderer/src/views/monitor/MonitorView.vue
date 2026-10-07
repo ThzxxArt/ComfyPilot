@@ -6,6 +6,7 @@ import StatCard from '@/components/StatCard.vue'
 import { useAppStore } from '@/stores/app'
 import { ipc, onMonitorTick } from '@/composables/useIpc'
 import { clampPercent, formatBytes, formatPercent } from '@/utils/format'
+import { COLORS } from '@/styles/tokens'
 import type { QueueSnapshot, SystemSnapshot } from '@shared/types'
 
 const store = useAppStore()
@@ -69,48 +70,48 @@ onUnmounted(() => {
   <div class="page">
     <div class="page-header">
       <div>
-        <h1 class="page-title">运行监控</h1>
-        <p class="page-subtitle">系统资源、GPU 与 ComfyUI 队列实时状态。</p>
+        <h1 class="page-title">{{ $t('monitor.title') }}</h1>
+        <p class="page-subtitle">{{ $t('monitor.subtitle') }}</p>
       </div>
       <NSpace>
-        <NButton secondary @click="refreshQueue">刷新队列</NButton>
+        <NButton secondary @click="refreshQueue">{{ $t('monitor.refreshQueue') }}</NButton>
       </NSpace>
     </div>
 
     <div class="page-body">
     <div class="grid stats">
       <StatCard
-        label="CPU 使用率"
+        :label="$t('monitor.cpuUsage')"
         :value="formatPercent(store.system?.cpuUsage ?? 0, 1)"
         :icon="PulseOutline"
         tone="primary"
-        hint="采样周期 2s"
+        :hint="$t('monitor.cpuHint')"
       />
       <StatCard
-        label="内存"
+        :label="$t('monitor.memory')"
         :value="formatBytes(store.system?.ramUsed || 0)"
         :icon="HardwareChipOutline"
         tone="success"
         :hint="`/ ${formatBytes(store.system?.ramTotal || 0)}`"
       />
       <StatCard
-        label="磁盘剩余"
+        :label="$t('monitor.diskFree')"
         :value="formatBytes(store.system?.diskFree || 0)"
         :icon="HardwareChipOutline"
         tone="warning"
-        :hint="`共 ${formatBytes(store.system?.diskTotal || 0)}`"
+        :hint="$t('monitor.diskTotalHint', { n: formatBytes(store.system?.diskTotal || 0) })"
       />
       <StatCard
-        label="队列任务"
+        :label="$t('monitor.queueTasks')"
         :value="(queue?.running?.length || 0) + (queue?.pending?.length || 0)"
         :icon="PulseOutline"
-        :hint="`运行中 ${queue?.running?.length || 0} · 等待 ${queue?.pending?.length || 0}`"
+        :hint="$t('monitor.queueHint', { running: queue?.running?.length || 0, pending: queue?.pending?.length || 0 })"
       />
     </div>
 
     <div class="grid lower">
       <section class="card panel">
-        <div class="panel-title">CPU 趋势</div>
+        <div class="panel-title">{{ $t('monitor.cpuTrend') }}</div>
         <div class="chart">
           <div v-for="(v, i) in cpuHistory" :key="i" class="bar" :style="{ height: `${Math.max(4, v)}%` }" />
         </div>
@@ -127,7 +128,7 @@ onUnmounted(() => {
                 :percentage="pct(gpu.vramUsed, gpu.vramTotal)"
                 :height="10"
                 indicator-placement="inside"
-                color="#4f6ef7"
+                :color="COLORS.primary"
               />
               <div class="gpu-sub">
                 VRAM {{ formatBytes(gpu.vramUsed) }} / {{ formatBytes(gpu.vramTotal) }}
@@ -137,14 +138,14 @@ onUnmounted(() => {
             </div>
           </div>
         </div>
-        <NEmpty v-else description="未检测到 GPU 信息（部分平台需要管理员权限）" />
+        <NEmpty v-else :description="$t('monitor.noGpu')" />
       </section>
     </div>
 
     <section class="card panel queue-panel">
-      <div class="panel-title">ComfyUI 队列</div>
+      <div class="panel-title">{{ $t('monitor.queueTitle') }}</div>
       <div v-if="!queue || (!queue.running.length && !queue.pending.length)" class="queue-empty">
-        当前实例没有排队中的任务。启动 ComfyUI 并提交工作流后，这里会实时更新。
+        {{ $t('monitor.queueEmpty') }}
       </div>
       <div v-else class="queue-list">
         <div v-for="r in queue.running" :key="r.promptId" class="queue-row">
@@ -190,13 +191,13 @@ onUnmounted(() => {
   height: 160px;
   padding: 8px;
   border-radius: 14px;
-  background: linear-gradient(180deg, #f8faff 0%, #eef3ff 100%);
+  background: $gradient-hero;
 }
 
 .bar {
   flex: 1;
   border-radius: 6px 6px 2px 2px;
-  background: linear-gradient(180deg, #7c5cfc 0%, #4f6ef7 100%);
+  background: $gradient-primary;
   opacity: 0.85;
   min-width: 4px;
 }

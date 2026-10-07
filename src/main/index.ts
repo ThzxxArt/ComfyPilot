@@ -16,6 +16,13 @@ import { IPC_EVENTS } from '@shared/types'
 import { APP_NAME } from '@shared/constants'
 import { isSafeExternalUrl, safeResolveUnder } from './services/security'
 
+// Custom schemes must be privileged BEFORE app ready so <img src="comfy-pilot-media:...">
+// and fetch() work inside the renderer.
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'comfy-pilot', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
+  { scheme: 'comfy-pilot-media', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
+])
+
 let mainWindow: BrowserWindow | null = null
 /** Set when the user actually quit — close then destroys instead of hiding. */
 let forceQuit = false
@@ -39,7 +46,7 @@ function crashLog(msg: string): void {
 process.on('uncaughtException', (err) => {
   crashLog('uncaughtException: ' + (err?.stack || err))
   try {
-    dialog.showErrorBox('ComfyPilot 启动错误', String(err?.stack || err))
+    dialog.showErrorBox('ComfyPilot error', String(err?.stack || err))
   } catch {
     /* ignore */
   }
@@ -276,6 +283,14 @@ app.whenReady().then(async () => {
         }
         return net.fetch(pathToFileURL(resolve(safePath)).href)
       })
+      // Controlled media for <img> tags: thumbnails + output previews only.
+      // Never a general file:// passthrough — roots are explicit allow-lists.
+      protocol.handle('comfy-pilot-media', async (request) => {
+        const { resolveMediaUrlToPath } = await import('./services/media')
+        const abs = resolveMediaUrlToPath(request.url)
+        if (!abs) return new Response('Forbidden', { status: 403 })
+        return net.fetch(pathToFileURL(abs).href)
+      })
       crashLog('protocol ok')
     } catch (err) {
       crashLog('protocol fail ' + err)
@@ -394,6 +409,35 @@ app.whenReady().then(async () => {
   monitorService.on('ws', (evt) => broadcast(IPC_EVENTS.monitorWs, evt))
   batchService.on('progress', (job) => broadcast(IPC_EVENTS.batchProgress, job))
   installerService.on('progress', (p) => broadcast(IPC_EVENTS.installProgress, p))
+  // Resume interrupted model downloads so Range continues where we left off.
+  import('./services/model')
+    .then(({ modelService }) => {
+      const n = modelService.resumeInterruptedOnBoot?.() ?? 0
+      if (n > 0) console.log(`resumed ${n} interrupted download(s) on boot`)
+    })
+    .catch(() => undefined)
+  // Wire previously-declared-but-dead events + bootstrap progress.
+  import('./services/bootstrap')
+    .then(({ bootstrapService }) => {
+      bootstrapService.on('progress', (p) => broadcast(IPC_EVENTS.runtimeProgress, p))
+    })
+    .catch(() => undefined)
+  import('./services/nodePack')
+    .then(({ nodePackService }) => {
+      nodePackService.on('install-progress', (p) => broadcast(IPC_EVENTS.nodeInstallProgress, p))
+    })
+    .catch(() => undefined)
+  import('./services/doctor')
+    .then(({ doctorService }) => {
+      // doctorProgress is emitted as 'progress' from DoctorService when running
+      if (typeof (doctorService as unknown as { on?: unknown }).on === 'function') {
+        ;(doctorService as unknown as { on: (e: string, cb: (p: unknown) => void) => void }).on(
+          'progress',
+          (p) => broadcast(IPC_EVENTS.doctorProgress, p)
+        )
+      }
+    })
+    .catch(() => undefined)
   void import('./services/registryIndex')
     .then(({ registryIndex }) => {
       registryIndex.on('progress', (p) => broadcast(IPC_EVENTS.registryIndexProgress, p))

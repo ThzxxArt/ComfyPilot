@@ -178,6 +178,41 @@ export async function sha256File(filePath: string): Promise<string> {
 export class ModelService extends EventEmitter {
   private downloads = new Map<string, DownloadTask>()
   private abortControllers = new Map<string, AbortController>()
+  /** Max concurrent downloads — protects disk/network; excess wait in 'queued'. */
+  private static MAX_CONCURRENT = 3
+  private runningCount = 0
+  private pendingStarts: Array<() => void> = []
+  /** Survives Map deletion so a cancelled-while-queued task cannot start later. */
+  private cancelledIds = new Set<string>()
+
+  private async acquireSlot(): Promise<void> {
+    if (this.runningCount < ModelService.MAX_CONCURRENT) {
+      this.runningCount += 1
+      return
+    }
+    await new Promise<void>((resolve) => this.pendingStarts.push(resolve))
+    this.runningCount += 1
+  }
+
+  private releaseSlot(): void {
+    this.runningCount = Math.max(0, this.runningCount - 1)
+    const next = this.pendingStarts.shift()
+    if (next) next()
+  }
+
+  /** Re-queue paused tasks after app restart (partial files are kept for Range resume). */
+  resumeInterruptedOnBoot(): number {
+    const persisted = listDownloadTasks()
+    let n = 0
+    for (const t of persisted) {
+      if (t.status === 'paused' || (t.status === 'running' && !this.downloads.has(t.id))) {
+        t.status = 'paused'
+        this.downloads.set(t.id, t)
+        n += 1
+      }
+    }
+    return n
+  }
 
   /** Allowed roots for user-supplied destDir (move/symlink/download). */
   private allowedDestRoots(): string[] {
@@ -486,6 +521,7 @@ export class ModelService extends EventEmitter {
     url: string
     destDir?: string
     fileName?: string
+    expectedSha256?: string
   }): Promise<DownloadTask> {
     // Protocol allowlist — blocks file:// ftp:// magnet: etc (aria2 supports those)
     if (!isSafeExternalUrl(opts.url)) {
@@ -529,6 +565,8 @@ export class ModelService extends EventEmitter {
     const fileName = assertSafeRelativeFilename(rawName)
     const destPath = join(destDir, fileName)
     const id = createHash('sha1').update(url + destPath).digest('hex').slice(0, 12)
+    // A fresh download() re-enables a previously cancelled id.
+    this.cancelledIds.delete(id)
     const existing = this.downloads.get(id)
     if (existing && (existing.status === 'running' || existing.status === 'queued')) {
       throw new Error('Download already in progress')
@@ -542,12 +580,15 @@ export class ModelService extends EventEmitter {
       receivedBytes: 0,
       status: 'queued',
       startedAt: Date.now(),
-      source: this.detectDownloadSource(url)
+      source: this.detectDownloadSource(url),
+      expectedSha256: opts.expectedSha256
+        ? String(opts.expectedSha256).toLowerCase()
+        : undefined
     }
     this.downloads.set(id, task)
     upsertDownloadTask(task)
     this.emit('download', { ...task })
-    void this.runDownload(task).catch((err) => {
+    void this.scheduleDownload(task).catch((err) => {
       task.status = 'error'
       task.error = err instanceof Error ? err.message : String(err)
       task.finishedAt = Date.now()
@@ -557,7 +598,127 @@ export class ModelService extends EventEmitter {
     return task
   }
 
+  /**
+   * SHA256 gate shared by native + aria2 paths.
+   * Returns false and marks the task failed when verification does not pass.
+   * On mismatch the corrupt file is deleted so retries cannot resume over it.
+   */
+  private async verifyDownload(task: DownloadTask): Promise<boolean> {
+    const fail = (error: string): boolean => {
+      task.status = 'error'
+      task.error = error
+      task.verified = 'failed'
+      task.finishedAt = Date.now()
+      try {
+        unlinkSync(task.destPath)
+      } catch {
+        /* ignore */
+      }
+      return false
+    }
+    if (!existsSync(task.destPath)) return fail('Download file missing after transfer')
+    if (task.expectedSha256) {
+      const actual = await sha256File(task.destPath)
+      task.actualSha256 = actual
+      if (actual.toLowerCase() !== String(task.expectedSha256).toLowerCase()) {
+        return fail('SHA256 mismatch — file corrupted or tampered')
+      }
+      task.verified = 'sha256'
+      return true
+    }
+    // Companion checksum — ONLY trust bare-hash or `hash  filename` bodies from
+    // hosts that publish them. An HTML error page containing some hex is NOT a checksum.
+    try {
+      const { session } = await import('electron')
+      const sidecar = await session.defaultSession.fetch(`${task.url}.sha256`, {
+        signal: AbortSignal.timeout(6000)
+      })
+      if (sidecar.ok) {
+        const text = (await sidecar.text()).trim()
+        // Strict: entire body must be `hash` or `hash  filename` (optional whitespace).
+        const strict = text.match(/^([a-f0-9]{64})(?:\s+\S+)?$/i)
+        if (strict) {
+          const actual = await sha256File(task.destPath)
+          task.actualSha256 = actual
+          if (actual.toLowerCase() !== strict[1].toLowerCase()) {
+            // Untrusted/mismatched sidecar: warn but do NOT destroy the file.
+            task.verified = 'length'
+            task.error = 'Companion .sha256 mismatch — file kept (untrusted sidecar)'
+            return true
+          }
+          task.verified = 'sha256'
+          return true
+        }
+      }
+    } catch {
+      /* no usable sidecar — length check already applied */
+    }
+    task.verified = 'length'
+    return true
+  }
+
+  /** Concurrency gate + bounded retry around runDownload. */
+  private async scheduleDownload(task: DownloadTask, resume = false): Promise<void> {
+    // Disk pre-check: refuse when free space is clearly too small for the file.
+    if (task.totalBytes > 0 || task.source !== 'direct') {
+      try {
+        const { statfsSync } = await import('fs')
+        const probe = existsSync(task.destPath) ? task.destPath : dirname(task.destPath)
+        const st = statfsSync(probe)
+        const free = Number(st.bsize) * Number(st.bavail)
+        const need = task.totalBytes > 0 ? task.totalBytes * 1.05 : 2 * 1024 ** 3
+        if (free < need) {
+          throw new Error(`Insufficient disk space: ${Math.round(free / 1024 ** 3)}GB free, need ~${Math.round(need / 1024 ** 3)}GB`)
+        }
+      } catch (err) {
+        if (err instanceof Error && err.message.startsWith('Insufficient')) throw err
+        /* statfs unavailable — proceed */
+      }
+    }
+    await this.acquireSlot()
+    try {
+      // Root-cause reliability: transient network failures should not force a
+      // manual re-download. 3 attempts, exponential backoff, resume-aware.
+      const maxAttempts = 3
+      let lastErr: unknown
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          await this.runDownload(task, resume || attempt > 1)
+          if (task.status === 'done' || task.status === 'cancelled') return
+          // paused is user-intent — do not retry
+          if (task.status === 'paused') return
+          lastErr = new Error(task.error || 'download did not complete')
+        } catch (err) {
+          lastErr = err
+          const msg = err instanceof Error ? err.message : String(err)
+          if (/Insufficient disk|Blocked download|already exists|already in progress/i.test(msg)) throw err
+          if (task.status === 'cancelled' || task.status === 'paused') return
+        }
+        if (attempt < maxAttempts) {
+          const backoff = 1000 * 2 ** (attempt - 1)
+          task.status = 'queued'
+          task.error = `retry ${attempt}/${maxAttempts - 1} after error`
+          upsertDownloadTask(task)
+          this.emit('download', { ...task })
+          await new Promise((r) => setTimeout(r, backoff))
+        }
+      }
+      if (task.status !== 'done' && task.status !== 'cancelled' && task.status !== 'paused') {
+        task.status = 'error'
+        task.error = lastErr instanceof Error ? lastErr.message : String(lastErr)
+        task.finishedAt = Date.now()
+        upsertDownloadTask(task)
+        this.emit('download', { ...task })
+      }
+    } finally {
+      this.releaseSlot()
+    }
+  }
+
   private async runDownload(task: DownloadTask, resume = false): Promise<void> {
+    if (this.cancelledIds.has(task.id)) {
+      throw new Error('Download cancelled')
+    }
     if (this.abortControllers.has(task.id)) {
       throw new Error('Download already in progress')
     }
@@ -589,6 +750,14 @@ export class ModelService extends EventEmitter {
             task.receivedBytes = statSync(task.destPath).size
             task.totalBytes = task.receivedBytes
             if (resume) task.resumedFrom = Math.max(0, task.receivedBytes)
+            // aria2 path must go through the SAME integrity gate as native.
+            const verified = await this.verifyDownload(task)
+            if (!verified) {
+              upsertDownloadTask(task)
+              this.emit('download', { ...task })
+              return
+            }
+            task.status = 'done'
           }
           upsertDownloadTask(task)
           this.emit('download', { ...task })
@@ -625,8 +794,18 @@ export class ModelService extends EventEmitter {
             signal: controller.signal
           } as never)) as unknown as Response)
         : await fetch(task.url, { headers, signal: controller.signal })
-      // 416 Range Not Satisfiable → file already fully downloaded
+      // 416 Range Not Satisfiable → file already fully downloaded — MUST verify.
       if (resume && res.status === 416 && existsSync(task.destPath)) {
+        const ok = await this.verifyDownload(task)
+        if (!ok) {
+          // Corrupt leftover — wipe and fall through to a clean full download.
+          try {
+            unlinkSync(task.destPath)
+          } catch {
+            /* ignore */
+          }
+          return this.runDownload(task, false)
+        }
         task.status = 'done'
         task.receivedBytes = statSync(task.destPath).size
         task.totalBytes = task.receivedBytes
@@ -702,6 +881,30 @@ export class ModelService extends EventEmitter {
       }
 
       if (isCancelled()) return
+      // Integrity: Content-Length must match received bytes; optional SHA256.
+      const finalSize = existsSync(task.destPath) ? statSync(task.destPath).size : task.receivedBytes
+      if (task.totalBytes > 0 && finalSize !== task.totalBytes) {
+        task.status = 'error'
+        task.error = `Download incomplete: ${finalSize} of ${task.totalBytes} bytes`
+        task.verified = 'failed'
+        task.finishedAt = Date.now()
+        // Remove the bad file so a retry cannot resume over corrupt bytes.
+        try {
+          unlinkSync(task.destPath)
+        } catch {
+          /* ignore */
+        }
+        upsertDownloadTask(task)
+        this.emit('download', { ...task })
+        return
+      }
+      task.receivedBytes = finalSize
+      const verified = await this.verifyDownload(task)
+      if (!verified) {
+        upsertDownloadTask(task)
+        this.emit('download', { ...task })
+        return
+      }
       task.status = 'done'
       task.finishedAt = Date.now()
       task.speedBps = 0
@@ -742,14 +945,16 @@ export class ModelService extends EventEmitter {
       throw new Error('Download already in progress')
     }
     task.status = 'queued'
-    this.downloads.set(id, task)
+    this.downloads.set(task.id, task)
     this.emit('download', { ...task })
-    await this.runDownload(task, true)
+    await this.scheduleDownload(task, true)
     return task
   }
 
   cancelDownload(id: string): boolean {
     const task = this.downloads.get(id)
+    // Persist cancel intent even if the task is still waiting for a concurrency slot.
+    this.cancelledIds.add(id)
     if (task) {
       task.status = 'cancelled'
       task.error = 'cancelled'

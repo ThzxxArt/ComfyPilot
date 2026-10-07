@@ -27,33 +27,54 @@ export default defineConfig({
         'src/shared/constants.ts'
       ],
       thresholds: {
-        // Per-file floors so one hot module cannot mask another
+        // Per-file floors so one hot module cannot mask another.
+        // 0.1.3 mandate: EVERY metric ≥85% on EVERY included file.
         'src/main/services/security.ts': {
-          lines: 75,
-          functions: 75,
-          branches: 65
+          statements: 85,
+          lines: 85,
+          functions: 85,
+          branches: 85
         },
         'src/main/services/workflowConvert.ts': {
-          lines: 80,
-          functions: 85
+          statements: 85,
+          lines: 85,
+          functions: 85,
+          branches: 85
         },
         'src/main/services/proxy.ts': {
-          lines: 50,
-          functions: 50
+          statements: 85,
+          lines: 85,
+          functions: 85,
+          branches: 85
+        },
+        'src/main/services/zipSafe.ts': {
+          statements: 85,
+          lines: 85,
+          functions: 85,
+          branches: 85
         },
         'src/main/services/installer.ts': {
-          // Unit locks validators + argv order; full runPlan needs a live env
-          lines: 33,
-          functions: 35
+          statements: 85,
+          lines: 85,
+          functions: 85,
+          branches: 85
         },
         'src/main/services/media.ts': {
-          lines: 15,
-          functions: 9
+          statements: 85,
+          lines: 85,
+          functions: 85,
+          branches: 85
         },
-        lines: 55,
-        functions: 55,
-        branches: 65,
-        statements: 55
+        'src/shared/constants.ts': {
+          statements: 85,
+          lines: 85,
+          functions: 85,
+          branches: 85
+        },
+        lines: 85,
+        functions: 85,
+        branches: 85,
+        statements: 85
       }
     }
   }

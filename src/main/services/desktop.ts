@@ -24,7 +24,7 @@ function desktopDir(): string {
   return join(homedir(), 'Desktop')
 }
 
-function safeShortcutName(name: string): string {
+export function safeShortcutName(name: string): string {
   const cleaned = String(name || 'ComfyPilot')
     // Control chars (incl. newlines) must never reach .desktop / .lnk / AppleScript
     // eslint-disable-next-line no-control-regex

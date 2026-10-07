@@ -3,7 +3,11 @@ import { useRouter } from 'vue-router'
 import { createDiscreteApi, type MessageApi, type DialogApi } from 'naive-ui'
 import { ipc, ComfyPilotIpcError } from '@/composables/useIpc'
 import { useAppStore } from '@/stores/app'
+import { i18n } from '@/i18n'
 import type { ComfyInstanceInfo, LaunchOptions } from '@shared/types'
+
+const t = (key: string, params?: Record<string, unknown>): string =>
+  i18n.global.t(key, params as never)
 
 /**
  * Discrete APIs so the launcher works from App.vue (outside NMessageProvider)
@@ -45,7 +49,7 @@ export function useLaunch() {
     open: NonNullable<LaunchOpts['open']>
   ): Promise<void> {
     if (open === 'none') return
-    if (!info.url) throw new Error('实例没有可用 URL')
+    if (!info.url) throw new Error(t('launch.noUrl'))
     if (open === 'browser') {
       await ipc('shell.openExternal', info.url)
       return
@@ -63,7 +67,7 @@ export function useLaunch() {
       const result = await ipc('instance.launch', id, { ...opts, open: 'none', relocatePort: false })
       await store.refreshInstances()
       await openFrontend(result, open)
-      ui().message.success(`${result.name} 已就绪`)
+      ui().message.success(t('launch.ready', { name: result.name }))
       return true
     } catch (err) {
       await handleLaunchError(err, info, opts)
@@ -84,10 +88,14 @@ export function useLaunch() {
     if (e?.code === 'PORT_IN_USE' && e.suggestedPort) {
       const suggested = e.suggestedPort
       ui().dialog.warning({
-        title: '端口被占用',
-        content: `端口 ${info.port} 已被占用。是否改用空闲端口 ${suggested} 启动「${info.name}」？配置会自动保存。`,
-        positiveText: `改用 ${suggested} 并启动`,
-        negativeText: '取消',
+        title: t('launch.portBusyTitle'),
+        content: t('launch.portBusyBody', {
+          port: info.port,
+          suggested,
+          name: info.name
+        }),
+        positiveText: t('launch.usePort', { port: suggested }),
+        negativeText: t('common.cancel'),
         onPositiveClick: () => {
           void (async () => {
             setBusy(info.id, true)
@@ -116,7 +124,7 @@ export function useLaunch() {
               })
               await store.refreshInstances()
               await openFrontend(result, open)
-              ui().message.success(`${info.name} 已在端口 ${suggested} 就绪`)
+              ui().message.success(t('launch.readyOnPort', { name: info.name, port: suggested }))
             } catch (err2) {
               ui().message.error(err2 instanceof Error ? err2.message : String(err2))
             } finally {
@@ -134,7 +142,7 @@ export function useLaunch() {
     try {
       await ipc('instance.stop', info.id)
       await store.refreshInstances()
-      ui().message.success(`已停止 ${info.name}`)
+      ui().message.success(t('launch.stopped', { name: info.name }))
     } catch (err) {
       ui().message.error(err instanceof Error ? err.message : String(err))
     }
@@ -149,7 +157,7 @@ export function useLaunch() {
       await store.refreshInstances()
       const after = store.instances.find((i) => i.id === info.id) || info
       await openFrontend(after, open)
-      ui().message.success(`${info.name} 已重启`)
+      ui().message.success(t('launch.restarted', { name: info.name }))
     } catch (err) {
       await handleLaunchError(err, info, opts)
     } finally {
@@ -161,7 +169,7 @@ export function useLaunch() {
     try {
       await ipc('instance.forceKill', info.id)
       await store.refreshInstances()
-      ui().message.warning(`已强杀 ${info.name}`)
+      ui().message.warning(t('launch.forceKilled', { name: info.name }))
     } catch (err) {
       ui().message.error(err instanceof Error ? err.message : String(err))
     }
