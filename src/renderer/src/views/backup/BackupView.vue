@@ -83,6 +83,7 @@ onMounted(() => void refresh())
       </NSpace>
     </div>
 
+    <div class="page-body">
     <NSpin :show="loading">
       <NList v-if="items.length" bordered>
         <NListItem v-for="b in items" :key="b.id">
@@ -111,6 +112,7 @@ onMounted(() => void refresh())
       </NList>
       <NEmpty v-else description="暂无备份" class="empty" />
     </NSpin>
+    </div>
 
     <NModal v-model:show="showCreate" preset="card" title="创建备份" style="width: 480px; border-radius: 20px">
       <NSpace vertical>

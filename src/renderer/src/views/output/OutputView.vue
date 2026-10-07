@@ -68,6 +68,7 @@ onMounted(() => void refresh())
       </NSpace>
     </div>
 
+    <div class="page-body">
     <NSpin :show="loading">
       <div v-if="assets.length">
         <NGrid :cols="4" :x-gap="14" :y-gap="14">
@@ -87,6 +88,7 @@ onMounted(() => void refresh())
       </div>
       <NEmpty v-else description="选择 output 目录后点击扫描" class="empty" />
     </NSpin>
+    </div>
   </div>
 </template>
 

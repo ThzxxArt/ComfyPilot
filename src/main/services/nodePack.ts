@@ -318,37 +318,26 @@ export class NodePackService {
     return out
   }
 
-  async registrySearch(opts?: { query?: string; limit?: number }): Promise<RegistryNodePack[]> {
+  async registrySearch(opts?: {
+    query?: string
+    limit?: number
+    page?: number
+    scanPages?: number
+  }): Promise<import('@shared/types').RegistryPageResult<RegistryNodePack>> {
     const settings = loadSettings()
-    const q = encodeURIComponent(opts?.query || '')
-    const url = `${REGISTRY_API}/nodes?limit=${opts?.limit || 30}&offset=0${q ? `&search=${q}` : ''}`
     try {
-      const res = await fetch(url, {
-        headers: { 'User-Agent': 'ComfyPilot/0.1' },
-        signal: AbortSignal.timeout(10000)
+      const { searchRegistry, toPageResult, mapRegistryPack } = await import('./registry')
+      const result = await searchRegistry({
+        query: opts?.query,
+        limit: opts?.limit,
+        page: opts?.page,
+        scanPages: opts?.scanPages
       })
-      if (!res.ok) throw new Error(`Registry HTTP ${res.status}`)
-      const data = (await res.json()) as {
-        nodes?: Array<Record<string, unknown>>
-        items?: Array<Record<string, unknown>>
-      }
-      const items = data.nodes || data.items || []
-      return items.map((n) => ({
-        id: String(n.id || n.name),
-        name: String(n.name || ''),
-        displayName: String(n.displayName || n.title || n.name),
-        description: String(n.description || ''),
-        author: String((n.publisher as { name?: string } | undefined)?.name || n.author || ''),
-        latestVersion: String(n.latest_version || n.version || ''),
-        repository: String(n.repository || n.html_url || ''),
-        tags: Array.isArray(n.tags) ? n.tags.map(String) : [],
-        downloads: Number(n.downloads || n.downloadsTotal || 0),
-        score: Number(n.score || 0),
-        icon: n.icon ? String(n.icon) : undefined,
-        status: (n.status as RegistryNodePack['status']) || 'active'
-      }))
+      return toPageResult(result, mapRegistryPack)
     } catch (err) {
-      if (settings.networkMode === 'offline') return []
+      if (settings.networkMode === 'offline') {
+        return { items: [], total: 0, page: 1, pageSize: opts?.limit || 50, totalPages: 0, scanned: 0, clientFiltered: Boolean(opts?.query) }
+      }
       throw err
     }
   }

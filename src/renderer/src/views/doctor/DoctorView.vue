@@ -72,6 +72,7 @@ async function fix(check: DoctorCheck): Promise<void> {
       </NSpace>
     </div>
 
+    <div class="page-body">
     <NSpin :show="running || fixing">
       <template v-if="report">
         <div class="summary card">
@@ -131,6 +132,7 @@ async function fix(check: DoctorCheck): Promise<void> {
         </template>
       </NEmpty>
     </NSpin>
+    </div>
   </div>
 </template>
 

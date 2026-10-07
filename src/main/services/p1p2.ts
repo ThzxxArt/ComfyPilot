@@ -345,38 +345,30 @@ export class RemoteService {
 export const remoteService = new RemoteService()
 
 export class MarketService {
-  async list(opts?: { query?: string; category?: string }) {
+  async list(opts?: { query?: string; category?: string; limit?: number; page?: number; scanPages?: number }) {
     const settings = loadSettings()
     try {
-      const q = encodeURIComponent(opts?.query || '')
-      const url = `https://api.comfy.org/nodes?limit=50${q ? `&search=${q}` : ''}`
-      const res = await fetch(url, {
-        headers: { 'User-Agent': 'ComfyPilot/0.1' },
-        signal: AbortSignal.timeout(10000)
+      const { searchRegistry, toPageResult, mapMarketItem } = await import('./registry')
+      const result = await searchRegistry({
+        query: opts?.query,
+        limit: opts?.limit,
+        page: opts?.page,
+        scanPages: opts?.scanPages
       })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = (await res.json()) as { nodes?: Array<Record<string, unknown>> }
-      const installed = new Set(
-        readdirSafe(settings.defaultInstancePath)
-      )
-      return (data.nodes || []).map((n) => ({
-        id: String(n.id || n.name),
-        name: String(n.name || ''),
-        displayName: String(n.displayName || n.name),
-        description: String(n.description || ''),
-        author: String((n.publisher as { name?: string } | undefined)?.name || n.author || ''),
-        version: String(n.latest_version || ''),
-        category: String(n.category || opts?.category || 'tools'),
-        tags: Array.isArray(n.tags) ? n.tags.map(String) : [],
-        downloads: Number(n.downloads || 0),
-        stars: Number(n.stars || n.score || 0),
-        installed: installed.has(String(n.name || '')),
-        repository: String(n.repository || ''),
-        icon: n.icon ? String(n.icon) : undefined,
-        rating: Number(n.rating || 4.5)
-      }))
+      const installed = new Set(readdirSafe(settings.defaultInstancePath))
+      return toPageResult(result, (n) => mapMarketItem(n, installed, opts?.category || 'tools'))
     } catch (err) {
-      if (settings.networkMode === 'offline') return []
+      if (settings.networkMode === 'offline') {
+        return {
+          items: [],
+          total: 0,
+          page: opts?.page || 1,
+          pageSize: opts?.limit || 50,
+          totalPages: 0,
+          scanned: 0,
+          clientFiltered: Boolean(opts?.query)
+        }
+      }
       throw err
     }
   }

@@ -68,15 +68,16 @@ body {
   border: 2px solid transparent;
 }
 
-/* Shared UI atoms */
+/* Shared UI atoms
+ * Layout contract: .page NEVER scrolls. The data list / .page-body owns the scrollbar.
+ */
 .page {
   flex: 1;
   min-height: 0;
-  height: auto;
-  overflow-x: hidden;
-  overflow-y: auto;
-  padding: 24px 28px 40px;
-  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 24px 28px 0;
 }
 
 .page-header {
@@ -84,7 +85,60 @@ body {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
+  flex-shrink: 0;
+}
+
+/* Internal scroll region — the only place a vertical scrollbar is allowed */
+.page-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-bottom: 28px;
+  overscroll-behavior: contain;
+}
+
+/* Tabs fill the page and their panes scroll internally */
+.page .n-tabs {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.page .n-tabs .n-tabs-nav {
+  flex-shrink: 0;
+}
+
+.page .n-tabs .n-tabs-pane-wrapper {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.page .n-tabs .n-tab-pane {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+
+/* Banner / toolbar rows stay pinned above the scroll region */
+.page > .scan-banner,
+.page > .toolbar {
+  flex-shrink: 0;
+  margin-bottom: 12px;
+}
+
+/* Lists that live inside a pane: keep their own scroll when given a max height */
+.list-scroll {
+  max-height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .page-title {

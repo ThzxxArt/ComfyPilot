@@ -85,6 +85,7 @@ async function runDoctor(): Promise<void> {
       </NSpace>
     </div>
 
+    <div class="page-body">
     <NSpin :show="loading">
       <div class="grid stats">
         <StatCard
@@ -173,6 +174,7 @@ async function runDoctor(): Promise<void> {
         </section>
       </div>
     </NSpin>
+    </div>
   </div>
 </template>
 

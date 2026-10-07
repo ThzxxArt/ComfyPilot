@@ -203,6 +203,7 @@ function statusClass(s: string): string {
       </NSpace>
     </div>
 
+    <div class="page-body">
     <NSpin :show="loading">
       <div v-if="store.instances.length" class="grid cards">
         <article
@@ -284,6 +285,7 @@ function statusClass(s: string): string {
         </NEmpty>
       </div>
     </NSpin>
+    </div>
 
     <NModal v-model:show="showCreate" preset="card" title="添加 ComfyUI 实例" style="width: 640px; border-radius: 20px">
       <NForm label-placement="top">

@@ -97,6 +97,7 @@ onMounted(() => void refresh())
       </NSpace>
     </div>
 
+    <div class="page-body">
     <NSpin :show="loading">
       <div v-if="filtered().length" class="grid cards">
         <article v-for="wf in filtered()" :key="wf.id" class="card card-interactive wf">
@@ -130,6 +131,7 @@ onMounted(() => void refresh())
       </div>
       <NEmpty v-else description="暂无工作流，可导入 JSON/PNG" class="empty" />
     </NSpin>
+    </div>
 
     <NModal v-model:show="showQueue" preset="card" title="排队执行工作流" style="width: 480px; border-radius: 20px">
       <NSpace vertical>

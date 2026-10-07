@@ -77,6 +77,7 @@ onUnmounted(() => {
       </NSpace>
     </div>
 
+    <div class="page-body">
     <div class="grid stats">
       <StatCard
         label="CPU 使用率"
@@ -156,6 +157,7 @@ onUnmounted(() => {
         </div>
       </div>
     </section>
+    </div>
   </div>
 </template>
 

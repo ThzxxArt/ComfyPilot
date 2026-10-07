@@ -113,6 +113,7 @@ onUnmounted(() => offBatch?.())
       </NSpace>
     </div>
 
+    <div class="page-body">
     <NSpin :show="loading">
       <div v-if="jobs.length" class="grid cards">
         <article v-for="job in jobs" :key="job.id" class="card job">
@@ -155,6 +156,7 @@ onUnmounted(() => offBatch?.())
       </div>
       <NEmpty v-else description="暂无批量任务" class="empty" />
     </NSpin>
+    </div>
 
     <NModal v-model:show="showCreate" preset="card" title="新建批量任务" style="width: 520px; border-radius: 20px">
       <NSpace vertical>

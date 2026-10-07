@@ -26,66 +26,26 @@ app.whenReady().then(async () => {
   await new Promise((r) => setTimeout(r, 1500))
   const metrics = await win.webContents.executeJavaScript(`(() => {
     const page = document.querySelector('.page')
+    const body = document.querySelector('.page-body')
     const content = document.querySelector('.content')
-    const shell = document.querySelector('.shell')
-    const body = document.body
-    const html = document.documentElement
     const cs = page ? getComputedStyle(page) : null
-    const ccs = content ? getComputedStyle(content) : null
     return {
       hasPage: !!page,
       page: page ? {
         clientHeight: page.clientHeight,
         scrollHeight: page.scrollHeight,
         overflowY: cs.overflowY,
-        height: cs.height,
-        display: cs.display,
-        canScroll: page.scrollHeight > page.clientHeight
+        canScroll: page.scrollHeight > page.clientHeight + 1
       } : null,
-      content: content ? {
-        clientHeight: content.clientHeight,
-        scrollHeight: content.scrollHeight,
-        overflowY: ccs.overflowY,
-        height: ccs.height,
-        display: ccs.display
+      pageBody: body ? {
+        clientHeight: body.clientHeight,
+        scrollHeight: body.scrollHeight,
+        overflowY: getComputedStyle(body).overflowY,
+        canScroll: body.scrollHeight > body.clientHeight + 1
       } : null,
-      shellH: shell ? shell.clientHeight : null,
-      bodyH: body.clientHeight,
-      bodyOverflow: getComputedStyle(body).overflowY,
-      htmlH: html.clientHeight,
-      tree: (() => {
-        let n = document.getElementById('app')
-        const chain = []
-        while (n && chain.length < 8) {
-          const s = getComputedStyle(n)
-          chain.push({
-            tag: n.tagName,
-            id: n.id,
-            cls: String(n.className).slice(0, 60),
-            h: n.clientHeight,
-            overflowY: s.overflowY,
-            display: s.display
-          })
-          n = n.firstElementChild
-        }
-        return chain
-      })()
+      contentOverflow: content ? getComputedStyle(content).overflowY : null
     }
   })()`)
   console.log(JSON.stringify(metrics, null, 2))
-  // Try wheel scroll
-  const before = await win.webContents.executeJavaScript(
-    `document.querySelector('.page')?.scrollTop ?? -1`
-  )
-  // Programmatic scroll proves the container can move
-  const prog = await win.webContents.executeJavaScript(
-    `(() => { const p=document.querySelector('.page'); if(!p) return -1; p.scrollTop=200; return p.scrollTop })()`
-  )
-  win.webContents.sendInputEvent({ type: 'mouseWheel', x: 800, y: 500, deltaY: 400, deltaX: 0 })
-  await new Promise((r) => setTimeout(r, 500))
-  const after = await win.webContents.executeJavaScript(
-    `document.querySelector('.page')?.scrollTop ?? -1`
-  )
-  console.log('scrollTop before=' + before + ' programmatic=' + prog + ' afterWheel=' + after)
   app.exit(0)
 })

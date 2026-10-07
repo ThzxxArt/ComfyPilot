@@ -235,6 +235,7 @@ onMounted(async () => {
       <NButton type="primary" :loading="saving" @click="save()">保存设置</NButton>
     </div>
 
+    <div class="page-body">
     <div class="grid settings-grid">
       <NCard title="路径" class="card" size="small">
         <NForm label-placement="top">
@@ -454,6 +455,7 @@ onMounted(async () => {
           </NSpace>
         </div>
       </NCard>
+    </div>
     </div>
 
     <NModal v-model:show="showRemote" preset="card" title="添加远程实例" style="width: 480px; border-radius: 20px">

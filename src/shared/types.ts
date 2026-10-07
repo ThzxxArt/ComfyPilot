@@ -441,6 +441,20 @@ export interface MarketItem {
   rating: number
 }
 
+/** Paged registry/market result. API has no server-side search — query is filtered after fetch. */
+export interface RegistryPageResult<T> {
+  items: T[]
+  /** total registry size when browsing; matched count when searching */
+  total: number
+  page: number
+  pageSize: number
+  totalPages: number
+  /** how many remote items were scanned to produce this page (search mode) */
+  scanned: number
+  /** true when the query had to be applied client-side */
+  clientFiltered: boolean
+}
+
 // ---------- Installer (one-click isolated setup) ----------
 export type InstallStepId =
   | 'preflight'
@@ -556,7 +570,10 @@ export type IpcChannelMap = {
   // node packs
   'node.list': { args: []; result: NodePackRecord[] }
   'node.refresh': { args: []; result: NodePackRecord[] }
-  'node.registrySearch': { args: [{ query?: string; limit?: number }?]; result: RegistryNodePack[] }
+  'node.registrySearch': {
+    args: [{ query?: string; limit?: number; page?: number; scanPages?: number }?]
+    result: RegistryPageResult<RegistryNodePack>
+  }
   'node.managerChannel': { args: []; result: RegistryNodePack[] }
   'node.install': { args: [{ id: string; version?: string; source: 'registry' | 'git' | 'manager'; url?: string }]; result: NodePackRecord }
   'node.uninstall': { args: [string]; result: boolean }
@@ -630,7 +647,10 @@ export type IpcChannelMap = {
   'remote.listStatus': { args: []; result: RemoteInstanceStatus[] }
 
   // market
-  'market.list': { args: [{ query?: string; category?: string }?]; result: MarketItem[] }
+  'market.list': {
+    args: [{ query?: string; category?: string; limit?: number; page?: number; scanPages?: number }?]
+    result: RegistryPageResult<MarketItem>
+  }
   'market.install': { args: [string]; result: NodePackRecord }
 
   // shell

@@ -168,6 +168,7 @@ onUnmounted(() => off?.())
       </NSpace>
     </div>
 
+    <div class="page-body">
     <NAlert v-if="progress?.error" type="error" class="mb" :title="'安装失败'">
       {{ progress.error }}
     </NAlert>
@@ -301,6 +302,7 @@ onUnmounted(() => off?.())
           </div>
         </div>
       </section>
+    </div>
     </div>
   </div>
 </template>

@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import {
   ExtensionPuzzleOutline, RefreshOutline, WarningOutline, CheckmarkCircleOutline,
-  DownloadOutline, LockClosedOutline, LockOpenOutline, GitBranchOutline
+  DownloadOutline, LockClosedOutline, LockOpenOutline, GitBranchOutline, SearchOutline
 } from '@vicons/ionicons5'
 import {
   NButton, NIcon, NSpace, NSpin, NTag, NSwitch, NEmpty, useMessage,
   NCollapse, NCollapseItem, NInput, NModal, NPopconfirm, NTabs, NTabPane, NList, NListItem
 } from 'naive-ui'
 import { ipc } from '@/composables/useIpc'
-import type { NodeNameConflict, NodePackRecord, NodeSnapshot, RegistryNodePack } from '@shared/types'
+import type {
+  NodeNameConflict, NodePackRecord, NodeSnapshot, RegistryNodePack, RegistryPageResult
+} from '@shared/types'
 
 const message = useMessage()
 const loading = ref(false)
@@ -18,9 +20,38 @@ const conflicts = ref<NodeNameConflict[]>([])
 const snapshots = ref<NodeSnapshot[]>([])
 const registry = ref<RegistryNodePack[]>([])
 const registryQuery = ref('')
+const activeRegistryQuery = ref('')
+const installedQuery = ref('')
 const showInstall = ref(false)
 const installUrl = ref('')
 const tab = ref('installed')
+
+const registryPage = ref(1)
+const registryTotal = ref(0)
+const registryTotalPages = ref(1)
+const registryScanned = ref(0)
+const registryLoading = ref(false)
+const registryMore = ref(false)
+const registryScanPages = ref(20)
+const registryPageSize = 40
+
+const filteredPacks = computed(() => {
+  const q = installedQuery.value.trim().toLowerCase()
+  if (!q) return packs.value
+  return packs.value.filter((p) =>
+    [p.name, p.displayName, p.description, ...(p.tags || [])]
+      .join(' ')
+      .toLowerCase()
+      .includes(q)
+  )
+})
+
+function registryHint(): string {
+  if (activeRegistryQuery.value) {
+    return `「${activeRegistryQuery.value}」匹配 ${registryTotal.value} 条 · 已扫描 ${registryScanned.value} 条`
+  }
+  return `Registry 共 ${registryTotal.value} 个节点包 · 第 ${registryPage.value}/${Math.max(1, registryTotalPages.value)} 页`
+}
 
 async function refresh(): Promise<void> {
   loading.value = true
@@ -35,12 +66,46 @@ async function refresh(): Promise<void> {
   }
 }
 
-async function searchRegistry(): Promise<void> {
+async function searchRegistry(reset = true): Promise<void> {
+  if (reset) {
+    registryLoading.value = true
+    registryPage.value = 1
+    registry.value = []
+    activeRegistryQuery.value = registryQuery.value.trim()
+  } else {
+    registryMore.value = true
+  }
   try {
-    registry.value = await ipc('node.registrySearch', { query: registryQuery.value, limit: 40 })
+    const res: RegistryPageResult<RegistryNodePack> = await ipc('node.registrySearch', {
+      query: activeRegistryQuery.value || undefined,
+      limit: registryPageSize,
+      page: reset ? 1 : registryPage.value + 1,
+      scanPages: registryScanPages.value
+    })
+    if (reset) registry.value = res.items
+    else registry.value = [...registry.value, ...res.items]
+    registryTotal.value = res.total
+    registryTotalPages.value = res.totalPages
+    registryScanned.value = res.scanned
+    registryPage.value = res.page
+    if (reset && !res.items.length) {
+      message.info(activeRegistryQuery.value ? '没有匹配的节点包' : 'Registry 暂无数据')
+    }
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    registryLoading.value = false
+    registryMore.value = false
   }
+}
+
+async function loadMoreRegistry(): Promise<void> {
+  if (registryPage.value >= registryTotalPages.value) {
+    registryScanPages.value = Math.min(60, registryScanPages.value + 20)
+    await searchRegistry(true)
+    return
+  }
+  await searchRegistry(false)
 }
 
 async function installRegistry(p: RegistryNodePack): Promise<void> {
@@ -143,9 +208,20 @@ onMounted(() => {
 
     <NTabs v-model:value="tab" type="line">
       <NTabPane name="installed" :tab="`已安装 (${packs.length})`">
+        <NSpace style="margin-bottom: 12px" justify="space-between">
+          <NInput
+            v-model:value="installedQuery"
+            placeholder="搜索已安装节点（名称 / 描述 / 标签）"
+            clearable
+            style="width: 320px"
+          >
+            <template #prefix><NIcon :component="SearchOutline" /></template>
+          </NInput>
+          <span class="meta">{{ filteredPacks.length }} / {{ packs.length }}</span>
+        </NSpace>
         <NSpin :show="loading">
-          <div v-if="packs.length" class="grid cards">
-            <article v-for="pack in packs" :key="pack.id" class="card card-interactive pack">
+          <div v-if="filteredPacks.length" class="grid cards">
+            <article v-for="pack in filteredPacks" :key="pack.id" class="card card-interactive pack">
               <div class="pack-head">
                 <div class="pack-icon"><NIcon :size="22" :component="ExtensionPuzzleOutline" /></div>
                 <div style="flex:1">
@@ -193,35 +269,55 @@ onMounted(() => {
               </NCollapse>
             </article>
           </div>
-          <NEmpty v-else description="未发现 custom_nodes 节点包" class="empty" />
+          <NEmpty v-else description="未发现匹配的 custom_nodes 节点包" class="empty" />
         </NSpin>
       </NTabPane>
 
       <NTabPane name="registry" tab="Registry 市场">
-        <NSpace style="margin-bottom: 12px">
-          <NInput v-model:value="registryQuery" placeholder="搜索 Registry 节点包" style="width: 280px" @keyup.enter="searchRegistry" />
-          <NButton type="primary" secondary @click="searchRegistry">搜索</NButton>
+        <NSpace style="margin-bottom: 12px" justify="space-between">
+          <NSpace>
+            <NInput
+              v-model:value="registryQuery"
+              placeholder="搜索 Registry（名称 / 描述 / 作者 / 标签）"
+              clearable
+              style="width: 320px"
+              @keyup.enter="searchRegistry(true)"
+              @clear="searchRegistry(true)"
+            >
+              <template #prefix><NIcon :component="SearchOutline" /></template>
+            </NInput>
+            <NButton type="primary" secondary @click="searchRegistry(true)">搜索</NButton>
+          </NSpace>
+          <span class="meta">{{ registryHint() }}</span>
         </NSpace>
-        <NList bordered>
-          <NListItem v-for="r in registry" :key="r.id">
-            <div class="reg-row">
-              <div>
-                <div class="pack-name">{{ r.displayName }}</div>
-                <div class="pack-desc">{{ r.description }}</div>
-                <div class="pack-tags">
-                  <NTag size="tiny" round>{{ r.author }}</NTag>
-                  <NTag size="tiny" round>{{ r.latestVersion }}</NTag>
-                  <NTag size="tiny" round>{{ r.downloads }} downloads</NTag>
-                  <NTag v-if="r.status === 'flagged'" size="tiny" round type="warning">flagged</NTag>
+        <NSpin :show="registryLoading">
+          <NList v-if="registry.length" bordered>
+            <NListItem v-for="r in registry" :key="r.id">
+              <div class="reg-row">
+                <div>
+                  <div class="pack-name">{{ r.displayName }}</div>
+                  <div class="pack-desc">{{ r.description }}</div>
+                  <div class="pack-tags">
+                    <NTag size="tiny" round>{{ r.author }}</NTag>
+                    <NTag size="tiny" round>{{ r.latestVersion }}</NTag>
+                    <NTag size="tiny" round>{{ r.downloads }} downloads</NTag>
+                    <NTag v-if="r.status === 'flagged'" size="tiny" round type="warning">flagged</NTag>
+                  </div>
                 </div>
+                <NButton type="primary" secondary :disabled="r.status === 'banned'" @click="installRegistry(r)">
+                  <template #icon><NIcon :component="DownloadOutline" /></template>
+                  安装
+                </NButton>
               </div>
-              <NButton type="primary" secondary :disabled="r.status === 'banned'" @click="installRegistry(r)">
-                <template #icon><NIcon :component="DownloadOutline" /></template>
-                安装
-              </NButton>
-            </div>
-          </NListItem>
-        </NList>
+            </NListItem>
+          </NList>
+          <NEmpty v-else-if="!registryLoading" description="暂无数据" class="empty" />
+        </NSpin>
+        <div v-if="registry.length" class="more-row">
+          <NButton secondary :loading="registryMore" @click="loadMoreRegistry">
+            {{ registryPage < registryTotalPages ? '加载下一页' : '扩大搜索范围' }}
+          </NButton>
+        </div>
       </NTabPane>
 
       <NTabPane name="conflicts" :tab="`冲突 (${conflicts.length})`">
@@ -290,4 +386,6 @@ onMounted(() => {
 .reg-row { display: flex; justify-content: space-between; gap: 16px; align-items: center; width: 100%; }
 .conflict-row, .snap-row { display: flex; justify-content: space-between; align-items: center; padding: 12px 4px; border-bottom: 1px solid $color-border; }
 .empty { padding: 48px 0; }
+.meta { font-size: 12px; color: $color-text-muted; align-self: center; }
+.more-row { display: flex; justify-content: center; padding: 14px 0 6px; }
 </style>

@@ -107,6 +107,7 @@ onUnmounted(() => off?.())
       </NSpace>
     </div>
 
+    <div class="page-body">
     <NSpin :show="loading">
       <div class="grid layout">
         <section class="card panel">
@@ -142,6 +143,7 @@ onUnmounted(() => off?.())
         </section>
       </div>
     </NSpin>
+    </div>
   </div>
 </template>
 
