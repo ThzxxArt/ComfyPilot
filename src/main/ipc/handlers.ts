@@ -157,7 +157,19 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   // node packs
   ipcMain.handle('node.list', wrap(() => nodePackService.list()))
   ipcMain.handle('node.refresh', wrap(() => nodePackService.refresh()))
-  ipcMain.handle('node.registrySearch', wrap((opts?: { query?: string; limit?: number }) => nodePackService.registrySearch(opts)))
+  ipcMain.handle('node.registrySearch', wrap((opts?: { query?: string; limit?: number; page?: number; scanPages?: number }) => nodePackService.registrySearch(opts)))
+  ipcMain.handle('registry.indexStatus', wrap(async () => {
+    const { registryIndex } = await import('../services/registryIndex')
+    return registryIndex.status()
+  }))
+  ipcMain.handle('registry.refreshIndex', wrap(async () => {
+    const { registryIndex } = await import('../services/registryIndex')
+    return registryIndex.ensure({ force: true })
+  }))
+  ipcMain.handle('registry.ensureIndex', wrap(async () => {
+    const { registryIndex } = await import('../services/registryIndex')
+    return registryIndex.ensure()
+  }))
   ipcMain.handle('node.managerChannel', wrap(() => nodePackService.managerChannelList()))
   ipcMain.handle('node.install', wrap((opts: { id: string; version?: string; source: 'registry' | 'git' | 'manager'; url?: string }) => nodePackService.install(opts)))
   ipcMain.handle('node.uninstall', wrap((id: string) => nodePackService.uninstall(id)))
@@ -270,7 +282,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle('remote.listStatus', wrap(() => remoteService.listStatus()))
 
   // market
-  ipcMain.handle('market.list', wrap((opts?: { query?: string; category?: string }) => marketService.list(opts)))
+  ipcMain.handle('market.list', wrap((opts?: { query?: string; category?: string; limit?: number; page?: number; scanPages?: number }) => marketService.list(opts)))
   ipcMain.handle('market.install', wrap(async (id: string): Promise<NodePackRecord> => {
     return nodePackService.install({ id, source: 'registry' })
   }))

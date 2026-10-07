@@ -319,6 +319,11 @@ app.whenReady().then(async () => {
   monitorService.on('ws', (evt) => broadcast(IPC_EVENTS.monitorWs, evt))
   batchService.on('progress', (job) => broadcast(IPC_EVENTS.batchProgress, job))
   installerService.on('progress', (p) => broadcast(IPC_EVENTS.installProgress, p))
+  void import('./services/registryIndex')
+    .then(({ registryIndex }) => {
+      registryIndex.on('progress', (p) => broadcast(IPC_EVENTS.registryIndexProgress, p))
+    })
+    .catch(() => undefined)
 
   const timer = setInterval(() => {
     void monitorService

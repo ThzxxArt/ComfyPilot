@@ -574,6 +574,18 @@ export type IpcChannelMap = {
     args: [{ query?: string; limit?: number; page?: number; scanPages?: number }?]
     result: RegistryPageResult<RegistryNodePack>
   }
+  'registry.indexStatus': {
+    args: []
+    result: { ready: boolean; updatedAt: number; total: number; pages: number; count: number }
+  }
+  'registry.refreshIndex': {
+    args: []
+    result: { ready: boolean; updatedAt: number; total: number; pages: number; count: number }
+  }
+  'registry.ensureIndex': {
+    args: []
+    result: { ready: boolean; updatedAt: number; total: number; pages: number; count: number }
+  }
   'node.managerChannel': { args: []; result: RegistryNodePack[] }
   'node.install': { args: [{ id: string; version?: string; source: 'registry' | 'git' | 'manager'; url?: string }]; result: NodePackRecord }
   'node.uninstall': { args: [string]; result: boolean }
@@ -679,6 +691,7 @@ export const IPC_EVENTS = {
   batchProgress: 'event:batch-progress',
   nodeInstallProgress: 'event:node-install-progress',
   installProgress: 'event:install-progress',
+  registryIndexProgress: 'event:registry-index-progress',
   notification: 'event:notification'
 } as const
 

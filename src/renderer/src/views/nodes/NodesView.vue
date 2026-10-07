@@ -32,7 +32,6 @@ const registryTotalPages = ref(1)
 const registryScanned = ref(0)
 const registryLoading = ref(false)
 const registryMore = ref(false)
-const registryScanPages = ref(20)
 const registryPageSize = 40
 
 const filteredPacks = computed(() => {
@@ -48,7 +47,7 @@ const filteredPacks = computed(() => {
 
 function registryHint(): string {
   if (activeRegistryQuery.value) {
-    return `「${activeRegistryQuery.value}」匹配 ${registryTotal.value} 条 · 已扫描 ${registryScanned.value} 条`
+    return `「${activeRegistryQuery.value}」在全库 ${registryScanned.value || registryTotal.value} 条中匹配 ${registryTotal.value} 条`
   }
   return `Registry 共 ${registryTotal.value} 个节点包 · 第 ${registryPage.value}/${Math.max(1, registryTotalPages.value)} 页`
 }
@@ -79,8 +78,7 @@ async function searchRegistry(reset = true): Promise<void> {
     const res: RegistryPageResult<RegistryNodePack> = await ipc('node.registrySearch', {
       query: activeRegistryQuery.value || undefined,
       limit: registryPageSize,
-      page: reset ? 1 : registryPage.value + 1,
-      scanPages: registryScanPages.value
+      page: reset ? 1 : registryPage.value + 1
     })
     if (reset) registry.value = res.items
     else registry.value = [...registry.value, ...res.items]
@@ -89,7 +87,7 @@ async function searchRegistry(reset = true): Promise<void> {
     registryScanned.value = res.scanned
     registryPage.value = res.page
     if (reset && !res.items.length) {
-      message.info(activeRegistryQuery.value ? '没有匹配的节点包' : 'Registry 暂无数据')
+      message.info(activeRegistryQuery.value ? '全库中没有匹配的节点包' : 'Registry 暂无数据')
     }
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
@@ -100,11 +98,7 @@ async function searchRegistry(reset = true): Promise<void> {
 }
 
 async function loadMoreRegistry(): Promise<void> {
-  if (registryPage.value >= registryTotalPages.value) {
-    registryScanPages.value = Math.min(60, registryScanPages.value + 20)
-    await searchRegistry(true)
-    return
-  }
+  if (registryPage.value >= registryTotalPages.value) return
   await searchRegistry(false)
 }
 
@@ -314,8 +308,8 @@ onMounted(() => {
           <NEmpty v-else-if="!registryLoading" description="暂无数据" class="empty" />
         </NSpin>
         <div v-if="registry.length" class="more-row">
-          <NButton secondary :loading="registryMore" @click="loadMoreRegistry">
-            {{ registryPage < registryTotalPages ? '加载下一页' : '扩大搜索范围' }}
+          <NButton secondary :loading="registryMore" :disabled="registryPage >= registryTotalPages" @click="loadMoreRegistry">
+            {{ registryPage < registryTotalPages ? '加载下一页' : '已到末页' }}
           </NButton>
         </div>
       </NTabPane>

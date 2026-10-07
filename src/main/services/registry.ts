@@ -133,9 +133,9 @@ export interface SearchOpts {
 
 /**
  * Browse or search the registry.
- * - no query → one server page (`page`/`limit`)
- * - with query → scan up to `scanPages` remote pages and filter locally
- *   (API has no working search parameter)
+ * - no query → one live server page (`page`/`limit`)
+ * - with query → match against the FULL catalog via local index
+ *   (api.comfy.org has no working search parameter)
  */
 export async function searchRegistry(opts: SearchOpts = {}): Promise<{
   raw: RawNode[]
@@ -151,12 +151,18 @@ export async function searchRegistry(opts: SearchOpts = {}): Promise<{
   const pageSize = Math.min(100, Math.max(1, Math.floor(opts.limit || 50)))
   const page = Math.max(1, Math.floor(opts.page || 1))
 
-  if (settings.networkMode === 'offline') {
-    return { raw: [], total: 0, page, pageSize, totalPages: 0, scanned: 0, clientFiltered: Boolean(query) }
+  if (settings.networkMode === 'offline' && !query) {
+    return { raw: [], total: 0, page, pageSize, totalPages: 0, scanned: 0, clientFiltered: false }
+  }
+
+  // Search mode: full-catalog local index (all ~5.8k packs)
+  if (query) {
+    const { registryIndex } = await import('./registryIndex')
+    return registryIndex.search({ query, page, limit: pageSize })
   }
 
   // Browse mode: a single remote page
-  if (!query) {
+  try {
     const p = await fetchRegistryPage(page, pageSize)
     return {
       raw: p.nodes,
@@ -167,52 +173,11 @@ export async function searchRegistry(opts: SearchOpts = {}): Promise<{
       scanned: p.nodes.length,
       clientFiltered: false
     }
-  }
-
-  // Search mode: API ignores search params — scan pages and filter
-  const scanPages = Math.min(60, Math.max(1, Math.floor(opts.scanPages || 20)))
-  const collected: RawNode[] = []
-  let scanned = 0
-  let totalPages = 0
-  const batchSize = 5
-  for (let start = 1; start <= scanPages; start += batchSize) {
-    const pages: number[] = []
-    for (let i = 0; i < batchSize && start + i <= scanPages; i++) pages.push(start + i)
-    const results = await Promise.all(
-      pages.map((pg) =>
-        fetchRegistryPage(pg, pageSize).catch(() => ({
-          nodes: [] as RawNode[],
-          total: 0,
-          page: pg,
-          totalPages: 0,
-          limit: pageSize
-        }))
-      )
-    )
-    for (const r of results) {
-      scanned += r.nodes.length
-      if (r.totalPages) totalPages = r.totalPages
-      for (const n of r.nodes) {
-        if (matchesQuery(n, query)) collected.push(n)
-      }
+  } catch (err) {
+    if (settings.networkMode === 'offline') {
+      return { raw: [], total: 0, page, pageSize, totalPages: 0, scanned: 0, clientFiltered: false }
     }
-    // enough matches to fill several UI pages
-    if (collected.length >= pageSize * 3) break
-    // exhausted registry
-    if (totalPages && start + batchSize > totalPages) break
-  }
-
-  // paginate the filtered set locally
-  const startIdx = (page - 1) * pageSize
-  const slice = collected.slice(startIdx, startIdx + pageSize)
-  return {
-    raw: slice,
-    total: collected.length,
-    page,
-    pageSize,
-    totalPages: Math.max(1, Math.ceil(collected.length / pageSize)),
-    scanned,
-    clientFiltered: true
+    throw err
   }
 }
 
