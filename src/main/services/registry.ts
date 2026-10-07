@@ -66,15 +66,35 @@ export function matchesQuery(n: RawNode, query: string): boolean {
   return q.split(/\s+/).every((w) => textOf(n).includes(w))
 }
 
+function asVersion(v: unknown): string {
+  if (v == null) return ''
+  if (typeof v === 'string' || typeof v === 'number') return String(v)
+  if (typeof v === 'object') {
+    const o = v as Record<string, unknown>
+    return String(o.version || o.name || o.tag || o.id || '')
+  }
+  return ''
+}
+
+function asName(v: unknown): string {
+  if (v == null) return ''
+  if (typeof v === 'string') return v
+  if (typeof v === 'object') {
+    const o = v as Record<string, unknown>
+    return String(o.name || o.id || o.displayName || '')
+  }
+  return String(v)
+}
+
 export function mapRegistryPack(n: RawNode): RegistryNodePack {
   return {
     id: String(n.id || n.name),
     name: String(n.name || ''),
     displayName: String(n.displayName || n.title || n.name),
     description: String(n.description || ''),
-    author: String((n.publisher as { name?: string } | undefined)?.name || n.author || ''),
-    latestVersion: String(n.latest_version || n.version || ''),
-    repository: String(n.repository || n.html_url || ''),
+    author: asName((n.publisher as unknown) || n.author),
+    latestVersion: asVersion(n.latest_version) || asVersion(n.version),
+    repository: String(n.repository || n.html_url || n.homepage || ''),
     tags: Array.isArray(n.tags) ? (n.tags as unknown[]).map(String) : [],
     downloads: Number(n.downloads || n.downloadsTotal || 0),
     score: Number(n.score || n.github_stars || 0),
@@ -90,8 +110,8 @@ export function mapMarketItem(n: RawNode, installed: Set<string>, categoryFallba
     name,
     displayName: String(n.displayName || n.title || name),
     description: String(n.description || ''),
-    author: String((n.publisher as { name?: string } | undefined)?.name || n.author || ''),
-    version: String(n.latest_version || n.version || ''),
+    author: asName((n.publisher as unknown) || n.author),
+    version: asVersion(n.latest_version) || asVersion(n.version),
     category: String(n.category || categoryFallback || 'tools'),
     tags: Array.isArray(n.tags) ? (n.tags as unknown[]).map(String) : [],
     downloads: Number(n.downloads || 0),

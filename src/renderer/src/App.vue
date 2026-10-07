@@ -355,9 +355,8 @@ function openGithub(): void {
   flex-direction: column;
 }
 
-/* router-view / transition must fill content so .page can own scrolling */
-.content > *,
-.content > * > * {
+/* router-view page fills content — do NOT flex grandchildren (breaks page-header) */
+.content > * {
   flex: 1;
   min-height: 0;
 }

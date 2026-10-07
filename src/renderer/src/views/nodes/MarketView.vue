@@ -112,9 +112,9 @@ onMounted(() => void load(true))
                 <div class="name">{{ item.displayName }}</div>
                 <div class="desc">{{ item.description }}</div>
                 <div class="tags">
-                  <NTag size="tiny" round>{{ item.author }}</NTag>
-                  <NTag size="tiny" round>{{ item.version }}</NTag>
-                  <NTag size="tiny" round>{{ item.category }}</NTag>
+                  <NTag v-if="item.author" size="tiny" round>{{ item.author }}</NTag>
+                  <NTag v-if="item.version" size="tiny" round>v{{ item.version }}</NTag>
+                  <NTag v-if="item.category" size="tiny" round>{{ item.category }}</NTag>
                   <NTag size="tiny" round>
                     <template #icon><NIcon :component="StarOutline" /></template>
                     {{ item.stars }}

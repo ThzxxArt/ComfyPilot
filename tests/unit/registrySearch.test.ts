@@ -30,4 +30,15 @@ describe('registry search matching', () => {
     expect(pack.latestVersion).toBe('1.0.0')
     expect(pack.tags).toContain('controlnet')
   })
+
+  it('unwraps latest_version object to a version string', () => {
+    const pack = mapRegistryPack({
+      name: 'x',
+      latest_version: { version: '2.2.2', id: 'abc' },
+      publisher: { name: 'Dever', id: 'dever' }
+    })
+    expect(pack.latestVersion).toBe('2.2.2')
+    expect(pack.author).toBe('Dever')
+    expect(pack.latestVersion).not.toContain('object')
+  })
 })

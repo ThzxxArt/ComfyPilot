@@ -26,24 +26,22 @@ app.whenReady().then(async () => {
   await new Promise((r) => setTimeout(r, 1500))
   const metrics = await win.webContents.executeJavaScript(`(() => {
     const page = document.querySelector('.page')
-    const body = document.querySelector('.page-body')
-    const content = document.querySelector('.content')
-    const cs = page ? getComputedStyle(page) : null
+    const header = document.querySelector('.page-header')
+    const body = document.querySelector('.page-body') || document.querySelector('.n-tabs-pane-wrapper') || document.querySelector('.n-tab-pane')
+    const hr = header?.getBoundingClientRect()
+    const br = body?.getBoundingClientRect()
     return {
-      hasPage: !!page,
-      page: page ? {
-        clientHeight: page.clientHeight,
-        scrollHeight: page.scrollHeight,
-        overflowY: cs.overflowY,
-        canScroll: page.scrollHeight > page.clientHeight + 1
-      } : null,
-      pageBody: body ? {
-        clientHeight: body.clientHeight,
-        scrollHeight: body.scrollHeight,
-        overflowY: getComputedStyle(body).overflowY,
-        canScroll: body.scrollHeight > body.clientHeight + 1
-      } : null,
-      contentOverflow: content ? getComputedStyle(content).overflowY : null
+      header: header ? { height: Math.round(hr.height), bottom: Math.round(hr.bottom) } : null,
+      bodyTop: br ? Math.round(br.top) : null,
+      gap: hr && br ? Math.round(br.top - hr.bottom) : null,
+      pageOverflow: page ? getComputedStyle(page).overflowY : null,
+      bodyOverflow: body ? getComputedStyle(body).overflowY : null,
+      bodyCanScroll: body ? body.scrollHeight > body.clientHeight + 1 : null,
+      firstListTop: (() => {
+        const el = document.querySelector('.n-list, .cards, .grid, .n-data-table')
+        return el ? Math.round(el.getBoundingClientRect().top) : null
+      })(),
+      versionSample: Array.from(document.querySelectorAll('.tags .n-tag')).slice(0, 8).map(n => n.textContent.trim())
     }
   })()`)
   console.log(JSON.stringify(metrics, null, 2))
