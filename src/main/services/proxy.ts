@@ -6,6 +6,8 @@ import { isSafeExternalUrl } from './security'
 /** Build a proxy URL for child-process env (may include credentials). */
 export function buildProxyUrl(p: ProxySettings, opts?: { withAuth?: boolean }): string {
   if (!p.enabled || !p.host || !p.port) return ''
+  assertSafeProxyHost(p.host)
+  assertSafeProxyPort(p.port)
   const withAuth = opts?.withAuth !== false
   const auth =
     withAuth && p.username
@@ -70,7 +72,13 @@ export function proxyEnv(p: ProxySettings): NodeJS.ProcessEnv {
   delete base.NO_PROXY
   delete base.no_proxy
   if (!p.enabled) return base
-  const url = buildProxyUrl(p)
+  let url = ''
+  try {
+    url = buildProxyUrl(p)
+  } catch {
+    // Invalid proxy config must never poison child-process env.
+    return base
+  }
   if (!url) return base
   base.HTTP_PROXY = url
   base.HTTPS_PROXY = url
@@ -109,18 +117,20 @@ export function applyProxyToElectron(p: ProxySettings): {
   const bypass = buildBypassList(p)
   const ses = session.defaultSession
   if (!p.enabled || !p.host || !p.port) {
-    void ses.setProxy({ mode: 'direct' })
+    void ses.setProxy({ mode: 'direct' }).catch(() => {})
     return { enabled: false, url: '', bypass }
   }
   assertSafeProxyHost(p.host)
   assertSafeProxyPort(p.port)
   // Chromium proxyRules: no credentials; use socks: for socks5
   const rules = `${p.protocol === 'socks5' ? 'socks' : p.protocol}://${p.host}:${p.port}`
-  void ses.setProxy({
-    mode: 'fixed_servers',
-    proxyRules: rules,
-    proxyBypassRules: bypass
-  })
+  void ses
+    .setProxy({
+      mode: 'fixed_servers',
+      proxyRules: rules,
+      proxyBypassRules: bypass
+    })
+    .catch(() => {})
   return { enabled: true, url: redactProxyUrl(p), bypass }
 }
 
@@ -169,7 +179,7 @@ export function syncProxyFromSettings(): { enabled: boolean; url: string; bypass
     // On invalid config, explicitly fall back to direct so we never
     // claim "direct" while a stale proxy remains active.
     try {
-      void session.defaultSession.setProxy({ mode: 'direct' })
+      void session.defaultSession.setProxy({ mode: 'direct' }).catch(() => {})
     } catch {
       /* ignore */
     }

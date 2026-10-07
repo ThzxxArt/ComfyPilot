@@ -23,7 +23,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   aria2Path: '',
   useAria2: false,
   outputIndexRoot: '',
-  remoteInstances: [],
   proxy: {
     enabled: false,
     protocol: 'http',

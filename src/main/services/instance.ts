@@ -4,6 +4,7 @@ import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'child_proc
 import { promisify } from 'util'
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, mkdirSync, rmSync } from 'fs'
 import { join, dirname } from 'path'
+import { homedir } from 'os'
 import net from 'net'
 import type {
   ComfyInstanceConfig,
@@ -18,10 +19,12 @@ import type {
 import {
   deleteInstanceConfig,
   loadInstanceConfigs,
+  loadSettings,
   logsDir,
   upsertInstanceConfig,
   userDataDir
 } from './db'
+import { resolveInsideAnyRoot } from './security'
 import { COMFY_DEFAULT_PORTS, LAUNCH_TEMPLATES } from '@shared/constants'
 
 const execFileAsync = promisify(execFile)
@@ -144,21 +147,31 @@ export class InstanceService extends EventEmitter {
   }
 
   private commonRoots(extra?: string): string[] {
+    const settings = loadSettings()
+    const home = homedir()
     const candidates = [
       extra,
       process.env.COMFYUI_PATH,
       'D:\\ComfyUI',
       'C:\\ComfyUI',
       'D:\\AI\\ComfyUI',
+      home,
+      join(home, 'Desktop'),
+      join(home, 'Documents'),
+      join(home, 'Downloads'),
       join(process.env.USERPROFILE || '', 'ComfyUI'),
-      join(process.env.LOCALAPPDATA || '', 'Programs', 'comfyui-desktop')
+      join(process.env.LOCALAPPDATA || '', 'Programs', 'comfyui-desktop'),
+      settings.defaultInstancePath,
+      ...settings.modelScanRoots
     ].filter(Boolean) as string[]
     return [...new Set(candidates)]
   }
 
   discover(root?: string): InstanceDiscoveryCandidate[] {
     const found: InstanceDiscoveryCandidate[] = []
-    for (const p of this.commonRoots(root)) {
+    // Renderer-supplied root must resolve inside an allow-listed tree; ignore otherwise.
+    const safeRoot = root ? resolveInsideAnyRoot(root, this.commonRoots()) : null
+    for (const p of this.commonRoots(safeRoot ?? undefined)) {
       if (!p || !existsSync(p)) continue
       let entries: string[] = []
       try {
@@ -243,9 +256,10 @@ export class InstanceService extends EventEmitter {
   async probeEnv(id: string): Promise<EnvProbe> {
     const configs = loadInstanceConfigs()
     const config = configs.find((c) => c.id === id)
-    const pythonPath = config?.venvPath
-      ? join(config.venvPath, 'Scripts', 'python.exe')
-      : config?.pythonPath || 'python'
+    // Same platform-aware lookup as launch (venv Scripts/bin, embeds, fallback).
+    const pythonPath = config
+      ? this.resolvePython(config)
+      : 'python'
     const errors: string[] = []
     let pythonVersion = ''
     let torchVersion: string | undefined

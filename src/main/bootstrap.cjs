@@ -27,12 +27,19 @@ try {
   log('index.js required OK')
 } catch (e) {
   log('index.js REQUIRE FAIL: ' + (e && e.stack ? e.stack : e))
+  process.exitCode = 1
   try {
     const { app, dialog } = require('electron')
     app.whenReady().then(() => {
       dialog.showErrorBox('ComfyPilot 启动失败', String(e && e.stack ? e.stack : e))
+      app.exit(1)
     })
   } catch (e2) {
     log('dialog fail ' + e2)
+    try {
+      require('electron').app.exit(1)
+    } catch {
+      process.exit(1)
+    }
   }
 }

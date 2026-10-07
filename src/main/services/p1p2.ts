@@ -19,6 +19,9 @@ import { ComfyApiClient } from './comfyApi'
 import { extractPngTextMeta } from './workflow'
 
 export class BatchService extends EventEmitter {
+  /** Ids with an in-flight run; cancel() clears the flag so late prompt results are ignored. */
+  private runningIds = new Set<string>()
+
   list(): BatchJob[] {
     return listBatchJobs()
   }
@@ -87,34 +90,49 @@ export class BatchService extends EventEmitter {
       const { toApiPrompt, applySeedForIteration } = await import('./workflowConvert')
       const { COMFY_CLIENT_ID } = await import('./comfyApi')
       const baseSeed = Date.now() % 2 ** 32
-      for (let i = 0; i < job.count; i++) {
-        const current = listBatchJobs().find((j) => j.id === id)
-        if (current?.status === 'cancelled') {
-          job.status = 'cancelled'
-          job.finishedAt = Date.now()
-          upsertBatchJob(job)
-          this.emit('progress', job)
-          return job
-        }
-        const promptForRun = applySeedForIteration(toApiPrompt(prompt), baseSeed, i)
-        try {
-          // Same clientId as WS so live progress is visible in Monitor
-          const promptId = await client.queuePrompt(promptForRun, COMFY_CLIENT_ID)
-          if (promptId) {
-            job.promptIds.push(promptId)
-            job.completed += 1
-          } else {
+      this.runningIds.add(id)
+      try {
+        for (let i = 0; i < job.count; i++) {
+          const current = listBatchJobs().find((j) => j.id === id)
+          if (!this.runningIds.has(id) || current?.status === 'cancelled') {
+            job.status = 'cancelled'
+            job.finishedAt = Date.now()
+            upsertBatchJob(job)
+            this.emit('progress', job)
+            return job
+          }
+          const promptForRun = applySeedForIteration(toApiPrompt(prompt), baseSeed, i)
+          try {
+            // Same clientId as WS so live progress is visible in Monitor
+            const promptId = await client.queuePrompt(promptForRun, COMFY_CLIENT_ID)
+            // cancel() clears runningIds immediately; already-queued prompts must
+            // not be recorded as success once the job is cancelled.
+            const live = listBatchJobs().find((j) => j.id === id)
+            if (!this.runningIds.has(id) || live?.status === 'cancelled') {
+              // dropped: result arrived after cancel
+            } else if (promptId) {
+              job.promptIds.push(promptId)
+              job.completed += 1
+            } else {
+              job.failed += 1
+            }
+          } catch {
             job.failed += 1
           }
-        } catch {
-          job.failed += 1
+          const after = listBatchJobs().find((j) => j.id === id)
+          if (!this.runningIds.has(id) || after?.status === 'cancelled') {
+            // Persist this iteration's progress before honouring the cancel.
+            job.status = 'cancelled'
+            job.finishedAt = after?.finishedAt ?? Date.now()
+            upsertBatchJob(job)
+            this.emit('progress', job)
+            return job
+          }
+          upsertBatchJob(job)
+          this.emit('progress', job)
         }
-        const after = listBatchJobs().find((j) => j.id === id)
-        if (after?.status === 'cancelled') {
-          return after
-        }
-        upsertBatchJob(job)
-        this.emit('progress', job)
+      } finally {
+        this.runningIds.delete(id)
       }
     } catch (e) {
       job.status = 'error'
@@ -136,6 +154,9 @@ export class BatchService extends EventEmitter {
   }
 
   cancel(id: string): BatchJob {
+    // Clear the local running flag immediately so already-queued prompts are
+    // ignored when their results arrive (see start()).
+    this.runningIds.delete(id)
     const job = listBatchJobs().find((j) => j.id === id)
     if (!job) throw new Error('Batch job not found')
     job.status = 'cancelled'
@@ -271,24 +292,38 @@ export class RemoteService {
     const remotes = listRemotes()
     const remote = remotes.find((r) => r.id === id)
     if (!remote) throw new Error('Remote not found')
+    const headers: Record<string, string> = remote.apiKey
+      ? { Authorization: `Bearer ${remote.apiKey}` }
+      : {}
     try {
       const res = await fetch(`${remote.baseUrl.replace(/\/$/, '')}/system_stats`, {
-        headers: remote.apiKey ? { Authorization: `Bearer ${remote.apiKey}` } : {},
+        headers,
         signal: AbortSignal.timeout(4000)
       })
       if (!res.ok) return { id, online: false, queueRunning: 0, queuePending: 0, error: `HTTP ${res.status}` }
-      const queueRes = await fetch(`${remote.baseUrl.replace(/\/$/, '')}/queue`, {
-        signal: AbortSignal.timeout(3000)
-      })
-      const queue = (await queueRes.json()) as {
-        queue_running?: unknown[]
-        queue_pending?: unknown[]
+      let queueRunning = 0
+      let queuePending = 0
+      try {
+        const queueRes = await fetch(`${remote.baseUrl.replace(/\/$/, '')}/queue`, {
+          headers,
+          signal: AbortSignal.timeout(3000)
+        })
+        if (queueRes.ok) {
+          const queue = (await queueRes.json()) as {
+            queue_running?: unknown[]
+            queue_pending?: unknown[]
+          }
+          queueRunning = queue.queue_running?.length || 0
+          queuePending = queue.queue_pending?.length || 0
+        }
+      } catch {
+        // stats succeeded — still online even if queue is unreachable
       }
       return {
         id,
         online: true,
-        queueRunning: queue.queue_running?.length || 0,
-        queuePending: queue.queue_pending?.length || 0
+        queueRunning,
+        queuePending
       }
     } catch (e) {
       return {

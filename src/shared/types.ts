@@ -36,7 +36,6 @@ export interface AppSettings {
   aria2Path: string
   useAria2: boolean
   outputIndexRoot: string
-  remoteInstances: RemoteInstanceConfig[]
   proxy: ProxySettings
 }
 
@@ -70,15 +69,11 @@ export interface ComfyInstanceInfo extends ComfyInstanceConfig {
   status: InstanceStatus
   pid?: number
   version?: string
-  torchVersion?: string
-  cudaVersion?: string
-  pythonVersion?: string
   managerEnabled?: boolean
   url?: string
   startedAt?: number
   uptimeMs?: number
   lastError?: string
-  portConflict?: boolean
 }
 
 export interface InstanceDiscoveryCandidate {

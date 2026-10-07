@@ -75,9 +75,38 @@ export function parseJsonc<T>(text: string): T {
     }
     out += c
   }
-  // trailing commas: `,` before } or ]
-  out = out.replace(/,(\s*[}\]])/g, '$1')
-  return JSON.parse(out) as T
+  return JSON.parse(stripTrailingCommas(out)) as T
+}
+
+/** Drop `,` before } or ] outside strings (string content like "x,]y" is kept). */
+function stripTrailingCommas(text: string): string {
+  let out = ''
+  let inStr = false
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (inStr) {
+      out += c
+      if (c === '\\') {
+        out += text[i + 1] ?? ''
+        i++
+      } else if (c === '"') {
+        inStr = false
+      }
+      continue
+    }
+    if (c === '"') {
+      inStr = true
+      out += c
+      continue
+    }
+    if (c === ',') {
+      let j = i + 1
+      while (j < text.length && /\s/.test(text[j])) j++
+      if (j < text.length && (text[j] === '}' || text[j] === ']')) continue
+    }
+    out += c
+  }
+  return out
 }
 
 export function stringifyJsonc(value: unknown, header?: string): string {
@@ -131,9 +160,20 @@ function readJsonc<T>(name: string, fallback: T): T {
   const p = fileFor(name)
   try {
     if (!existsSync(p)) return fallback
-    return parseJsonc<T>(readFileSync(p, 'utf-8'))
+    try {
+      return parseJsonc<T>(readFileSync(p, 'utf-8'))
+    } catch (err) {
+      console.error('jsonc parse fail', basename(p), err)
+      // Keep the unparseable file; defaults must not overwrite user data.
+      try {
+        renameSync(p, `${p}.bad-${Date.now()}`)
+      } catch {
+        /* ignore */
+      }
+      return fallback
+    }
   } catch (err) {
-    console.error('jsonc parse fail', basename(p), err)
+    console.error('jsonc read fail', basename(p), err)
     return fallback
   }
 }

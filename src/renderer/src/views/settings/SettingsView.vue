@@ -15,6 +15,7 @@ const defaultProxy: ProxySettings = { ...DEFAULT_SETTINGS.proxy }
 function cloneSettings(s: Partial<AppSettings> | null | undefined): AppSettings {
   const base = (s && typeof s === 'object' ? JSON.parse(JSON.stringify(s)) : {}) as Partial<AppSettings>
   return {
+    ...(DEFAULT_SETTINGS as AppSettings),
     ...(base as AppSettings),
     proxy: { ...defaultProxy, ...(base.proxy || {}) }
   } as AppSettings
@@ -58,19 +59,34 @@ async function openConfigDir(): Promise<void> {
 }
 /** Skip watch merge while we are the ones writing store.settings */
 let suppressSettingsWatch = false
+/** User has typed into the proxy form — do not clobber those edits */
+let userEditedProxy = false
+let applyingIncoming = false
+
+watch(
+  () => form.value.proxy,
+  () => {
+    if (!applyingIncoming) userEditedProxy = true
+  },
+  { deep: true }
+)
 
 watch(
   () => store.settings,
   (s) => {
     if (!s || suppressSettingsWatch) return
-    // Merge non-proxy keys; leave in-flight proxy edits alone
-    const incoming = cloneSettings(s)
-    for (const key of Object.keys(incoming) as Array<keyof AppSettings>) {
-      if (key === 'proxy' || key === 'remoteInstances') continue
-      // @ts-expect-error index write
-      form.value[key] = incoming[key]
+    applyingIncoming = true
+    try {
+      const incoming = cloneSettings(s)
+      for (const key of Object.keys(incoming) as Array<keyof AppSettings>) {
+        if (key === 'proxy' && userEditedProxy) continue
+        // @ts-expect-error index write
+        form.value[key] = incoming[key]
+      }
+    } finally {
+      applyingIncoming = false
     }
-    proxyTestResult.value = null
+    if (!userEditedProxy) proxyTestResult.value = null
   },
   { deep: true }
 )
@@ -81,6 +97,17 @@ async function save(opts?: { silent?: boolean }): Promise<boolean> {
   try {
     const next = await ipc('settings.set', form.value)
     store.settings = next
+    applyingIncoming = true
+    try {
+      const merged = cloneSettings(next)
+      for (const key of Object.keys(merged) as Array<keyof AppSettings>) {
+        // @ts-expect-error index write
+        form.value[key] = merged[key]
+      }
+    } finally {
+      applyingIncoming = false
+      userEditedProxy = false
+    }
     if (!opts?.silent) message.success('设置已保存')
     return true
   } catch (err) {
@@ -366,9 +393,6 @@ onMounted(async () => {
             <NSpace>
               <NButton :type="form.theme === 'light' ? 'primary' : 'default'" secondary @click="form.theme = 'light'">
                 亮色（推荐）
-              </NButton>
-              <NButton :type="form.theme === 'system' ? 'primary' : 'default'" secondary @click="form.theme = 'system'">
-                跟随系统
               </NButton>
             </NSpace>
           </NFormItem>

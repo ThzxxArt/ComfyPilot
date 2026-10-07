@@ -57,11 +57,27 @@ export class ComfyApiClient {
       })
       if (!res.ok) return []
       const data = (await res.json()) as Record<string, Record<string, unknown>>
-      return Object.entries(data).map(([promptId, v]) => ({
-        promptId,
-        status: String((v?.status as { completed?: boolean })?.completed ? 'done' : 'unknown'),
-        completedAt: Number((v?.status as { completed_at?: number })?.completed_at || 0) || undefined
-      }))
+      return Object.entries(data).map(([promptId, v]) => {
+        // ComfyUI history has no completed_at; use status_str + last exec message timestamp.
+        const st = v?.status as
+          | {
+              status_str?: string
+              completed?: boolean
+              messages?: Array<[string, Record<string, unknown>?]>
+            }
+          | undefined
+        const statusStr = typeof st?.status_str === 'string' ? st.status_str : undefined
+        const status = statusStr || (st?.completed ? 'success' : 'unknown')
+        let completedAt: number | undefined
+        for (const msg of st?.messages || []) {
+          const [type, payload] = Array.isArray(msg) ? msg : [String(msg), undefined]
+          if (type === 'execution_success' || type === 'execution_error') {
+            const ts = Number(payload?.timestamp)
+            if (Number.isFinite(ts) && ts > 0) completedAt = ts
+          }
+        }
+        return { promptId, status, completedAt }
+      })
     } catch {
       return []
     }

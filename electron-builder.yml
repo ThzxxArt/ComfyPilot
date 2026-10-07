@@ -21,6 +21,12 @@ extraResources:
     to: preload
   - from: out/renderer
     to: renderer
+  - from: resources
+    to: resources
+    filter:
+      - '**/*.ico'
+      - '**/*.icns'
+      - '**/*.png'
 win:
   target:
     - target: nsis

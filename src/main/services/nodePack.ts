@@ -34,6 +34,8 @@ import {
 } from './db'
 import { REGISTRY_API } from '@shared/constants'
 import { proxyEnv } from './proxy'
+import { sanitizeId, isPathInside, normalizePathEverySegment } from './security'
+import { assertSafeGitUrl, applyGithubMirror } from './installer'
 
 const execFileAsync = promisify(execFile)
 
@@ -62,6 +64,18 @@ function resolveNestedPackDir(dest: string): string {
     /* ignore */
   }
   return dest
+}
+
+/** Best-effort python for the first configured instance (venv preferred). */
+function resolveInstancePython(): string {
+  const inst = loadInstanceConfigs()[0]
+  if (inst?.venvPath) {
+    const win = join(inst.venvPath, 'Scripts', 'python.exe')
+    const unix = join(inst.venvPath, 'bin', 'python')
+    if (existsSync(win)) return win
+    if (existsSync(unix)) return unix
+  }
+  return inst?.pythonPath || 'python'
 }
 
 function detectCustomNodesRoot(instancePath?: string): string {
@@ -377,20 +391,29 @@ export class NodePackService {
     if (!root) throw new Error('custom_nodes root not found — add a ComfyUI instance first')
     mkdirSync(root, { recursive: true })
 
-    if (opts.source === 'git') {
-      const { assertSafeGitUrl } = await import('./installer')
-      const url = assertSafeGitUrl(opts.url || opts.id)
-      const destName = sanitizeInstallName(url.split('/').pop()?.replace(/\.git$/, '') || `pack-${Date.now()}`)
-      const dest = join(root, destName)
-      await execFileAsync('git', ['clone', '--depth', '1', url, dest], {
+    if (opts.source === 'git' || opts.source === 'manager') {
+      let url = (opts.url || '').trim()
+      if (!url && opts.source === 'manager') {
+        const list = await this.managerChannelList()
+        const hit = list.find((n) => n.id === opts.id || n.name === opts.id || n.displayName === opts.id)
+        url = (hit?.repository || '').trim()
+      }
+      if (!url) {
+        if (opts.source === 'manager') throw new Error('Manager pack has no repository URL')
+        url = opts.id
+      }
+      const safeUrl = assertSafeGitUrl(applyGithubMirror(url))
+      const destName = sanitizeInstallName(safeUrl.split('/').pop()?.replace(/\.git$/, '') || `pack-${Date.now()}`)
+      const dest = join(root, normalizePathEverySegment(destName))
+      await execFileAsync('git', ['clone', '--depth', '1', safeUrl, dest], {
         timeout: 120000,
         maxBuffer: 20 * 1024 * 1024,
         env: proxyEnv(loadSettings().proxy)
       })
-      return this.afterInstall(resolveNestedPackDir(dest))
+      return this.afterInstall(resolveNestedPackDir(dest), opts.source)
     }
 
-    const versionPart = opts.version ? `/${opts.version}` : ''
+    const versionPart = opts.version ? `/${encodeURIComponent(opts.version)}` : ''
     const apiUrl = `${REGISTRY_API}/nodes/${encodeURIComponent(opts.id)}/install${versionPart}`
     const res = await fetch(apiUrl, {
       headers: { 'User-Agent': 'ComfyPilot/0.1' },
@@ -411,7 +434,7 @@ export class NodePackService {
     const buf = Buffer.from(await zipRes.arrayBuffer())
     const tmpZip = join(root, `._install_${Date.now()}.zip`)
     writeFileSync(tmpZip, buf)
-    const dest = join(root, sanitizeInstallName(opts.id))
+    const dest = join(root, normalizePathEverySegment(sanitizeInstallName(opts.id)))
     try {
       const { safeUnzip } = await import('./zipSafe')
       await safeUnzip(tmpZip, dest)
@@ -435,12 +458,50 @@ export class NodePackService {
     } catch {
       /* ignore */
     }
-    return this.afterInstall(resolveNestedPackDir(dest))
+    return this.afterInstall(resolveNestedPackDir(dest), 'registry', opts.id)
   }
 
-  private afterInstall(dir: string): NodePackRecord {
+  private afterInstall(
+    dir: string,
+    source: 'registry' | 'git' | 'manager' | 'local' = 'local',
+    registryId?: string
+  ): NodePackRecord {
     const meta = readPackMeta(dir)
     const issues = collectIssues(dir, meta)
+    // Optional pip deps — only when Settings.allowPipInstall is on (Manager semantics)
+    const reqFile = join(dir, 'requirements.txt')
+    if (existsSync(reqFile)) {
+      const settings = loadSettings()
+      if (!settings.allowPipInstall) {
+        issues.push({
+          code: 'pip-disabled',
+          severity: 'warning',
+          message: 'requirements.txt present but allow_pip_install is off — install deps manually',
+          suggestion: 'Enable allow_pip_install in Settings, or pip install -r requirements.txt in the instance venv.',
+          fixable: false
+        })
+      } else {
+        try {
+          const vpy = resolveInstancePython()
+          if (vpy) {
+            execFile(vpy, ['-m', 'pip', 'install', '-r', reqFile], {
+              timeout: 10 * 60 * 1000,
+              maxBuffer: 10 * 1024 * 1024,
+              windowsHide: true,
+              env: proxyEnv(loadSettings().proxy)
+            })
+          }
+        } catch {
+          issues.push({
+            code: 'pip-failed',
+            severity: 'warning',
+            message: 'pip install of pack requirements did not complete',
+            suggestion: 'Install requirements.txt manually in the instance environment.',
+            fixable: false
+          })
+        }
+      }
+    }
     const rec: NodePackRecord = {
       id: createHash('sha1').update(dir).digest('hex').slice(0, 16),
       name: meta.name || dir.split(/[\\/]/).pop() || 'unknown',
@@ -451,9 +512,10 @@ export class NodePackService {
       status: 'installed',
       path: dir,
       repository: meta.repository,
+      registryId,
       nodeCount: meta.nodeList?.length || 0,
       tags: [],
-      installSource: 'registry',
+      installSource: source,
       lastCheckedAt: Date.now(),
       issues,
       locked: false,
@@ -486,43 +548,43 @@ export class NodePackService {
     const pack = packs.find((p) => p.id === idOrName || p.name === idOrName)
     if (!pack) throw new Error('Pack not found')
     if (pack.locked) throw new Error('Pack is locked')
-    if (pack.registryId || pack.installSource === 'registry') {
-      if (pack.path) {
-        const trash = `${pack.path}.bak-${Date.now()}`
-        renameSync(pack.path, trash)
-        try {
-          const next = await this.install({
-            id: pack.registryId || pack.name,
-            version,
-            source: 'registry'
-          })
-          // Clean backup only after successful reinstall
-          try {
-            rmSync(trash, { recursive: true, force: true })
-          } catch {
-            /* keep bak if cleanup fails */
-          }
-          deleteNodePack(pack.id)
-          return next
-        } catch (e) {
-          // rollback
-          try {
-            if (existsSync(pack.path)) rmSync(pack.path, { recursive: true, force: true })
-            renameSync(trash, pack.path)
-          } catch {
-            /* ignore */
-          }
-          throw e
-        }
-      }
-    }
-    if (pack.path && existsSync(join(pack.path, '.git'))) {
+    const isGitPack =
+      pack.installSource === 'git' || Boolean(pack.path && existsSync(join(pack.path, '.git')))
+    if (isGitPack && pack.path) {
       await execFileAsync('git', ['-C', pack.path, 'pull', '--ff-only'], {
         timeout: 60000,
         maxBuffer: 20 * 1024 * 1024,
         env: proxyEnv(loadSettings().proxy)
       })
-      return this.afterInstall(pack.path)
+      return this.afterInstall(pack.path, pack.installSource === 'registry' ? 'git' : pack.installSource)
+    }
+    if (pack.installSource === 'registry' && pack.registryId && pack.path) {
+      const trash = `${pack.path}.bak-${Date.now()}`
+      renameSync(pack.path, trash)
+      try {
+        const next = await this.install({
+          id: pack.registryId,
+          version,
+          source: 'registry'
+        })
+        // Clean backup only after successful reinstall
+        try {
+          rmSync(trash, { recursive: true, force: true })
+        } catch {
+          /* keep bak if cleanup fails */
+        }
+        deleteNodePack(pack.id)
+        return next
+      } catch (e) {
+        // rollback
+        try {
+          if (existsSync(pack.path)) rmSync(pack.path, { recursive: true, force: true })
+          renameSync(trash, pack.path)
+        } catch {
+          /* ignore */
+        }
+        throw e
+      }
     }
     throw new Error('Pack is not updatable via Registry or git')
   }
@@ -586,37 +648,52 @@ export class NodePackService {
     const pack = this.list().find((p) => p.id === idOrName || p.name === idOrName)
     if (!pack?.path) return []
     const issues: NodePackIssue[] = []
-    const settings = loadSettings()
-    const configs = loadInstanceConfigs()
-    const inst = configs[0]
-    let python = settings.defaultInstancePath ? 'python' : 'python'
-    if (inst?.venvPath) {
-      const win = join(inst.venvPath, 'Scripts', 'python.exe')
-      const unix = join(inst.venvPath, 'bin', 'python')
-      if (existsSync(win)) python = win
-      else if (existsSync(unix)) python = unix
-    } else if (inst?.pythonPath) {
-      python = inst.pythonPath
-    }
+    const python = resolveInstancePython()
+    // Import for real (exec_module) so syntax/import errors surface; path arrives via argv.
+    const py = [
+      'import importlib.util,sys,os,traceback',
+      'p=sys.argv[1]',
+      'f=os.path.join(p,"__init__.py")',
+      'if not os.path.isfile(f):',
+      '    sys.exit(3)',
+      'try:',
+      '    spec=importlib.util.spec_from_file_location("cp_pack",f)',
+      '    if not spec or not spec.loader:',
+      '        sys.exit(2)',
+      '    m=importlib.util.module_from_spec(spec)',
+      '    spec.loader.exec_module(m)',
+      '    sys.exit(0)',
+      'except Exception:',
+      '    traceback.print_exc()',
+      '    sys.exit(2)'
+    ].join('\n')
     try {
-      // No string interpolation of path into -c source; pass via env-less argv list.
-      await execFileAsync(
-        python,
-        [
-          '-c',
-          'import importlib.util,sys,os;p=sys.argv[1];f=os.path.join(p,"__init__.py");spec=importlib.util.spec_from_file_location("cp_pack",f) if os.path.isfile(f) else None;sys.exit(0 if spec else 2)',
-          pack.path
-        ],
-        { timeout: 15000, cwd: pack.path, maxBuffer: 20 * 1024 * 1024 }
-      )
-    } catch (e) {
-      issues.push({
-        severity: 'error',
-        code: 'IMPORT_FAIL',
-        message: `Import smoke test failed: ${e instanceof Error ? e.message.slice(0, 220) : String(e)}`,
-        suggestion: 'Check requirements and Python version compatibility.',
-        fixable: false
+      await execFileAsync(python, ['-c', py, pack.path], {
+        timeout: 15000,
+        cwd: pack.path,
+        maxBuffer: 20 * 1024 * 1024
       })
+    } catch (e) {
+      const code = (e as { code?: number }).code
+      const msg = e instanceof Error ? e.message : String(e)
+      if (code === 3) {
+        // Missing __init__.py is a low-severity packaging gap, not an import failure.
+        issues.push({
+          severity: 'warning',
+          code: 'NO_INIT',
+          message: 'No top-level __init__.py — skipped import smoke test.',
+          suggestion: 'Add __init__.py if this pack should be importable as a package.',
+          fixable: false
+        })
+      } else {
+        issues.push({
+          severity: 'error',
+          code: 'IMPORT_FAIL',
+          message: `Import smoke test failed: ${msg.slice(0, 220)}`,
+          suggestion: 'Check requirements and Python version compatibility.',
+          fixable: false
+        })
+      }
     }
     return issues
   }
@@ -686,7 +763,6 @@ export class NodePackService {
   }
 
   deleteSnapshot(id: string): boolean {
-    const { sanitizeId, isPathInside } = require('./security') as typeof import('./security')
     const safe = sanitizeId(id)
     try {
       const file = join(snapshotDir(), `${safe}.json`)

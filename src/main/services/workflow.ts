@@ -13,13 +13,29 @@ function extractPngTextMeta(buf: Buffer): Record<string, unknown> {
     while (offset + 8 < buf.length) {
       const len = buf.readUInt32BE(offset)
       const type = buf.toString('ascii', offset + 4, offset + 8)
-      if (type === 'tEXt' || type === 'iTXt') {
-        const data = buf.toString('utf-8', offset + 8, offset + 8 + len)
+      const dataStart = offset + 8
+      const dataEnd = dataStart + len
+      if (type === 'tEXt') {
+        const data = buf.toString('utf-8', dataStart, dataEnd)
         const nul = data.indexOf('\0')
         if (nul > 0) {
-          const key = data.slice(0, nul)
-          const value = data.slice(nul + 1)
-          meta[key] = value
+          meta[data.slice(0, nul)] = data.slice(nul + 1)
+        }
+      } else if (type === 'iTXt') {
+        // keyword\0 flag method lang\0 transkey\0 text
+        const data = buf.subarray(dataStart, dataEnd)
+        const keyEnd = data.indexOf(0)
+        if (keyEnd > 0) {
+          const key = data.toString('utf-8', 0, keyEnd)
+          let p = keyEnd + 3 // NUL + compression flag + compression method
+          const langEnd = data.indexOf(0, p)
+          if (langEnd >= 0) {
+            p = langEnd + 1
+            const transEnd = data.indexOf(0, p)
+            if (transEnd >= 0) {
+              meta[key] = data.toString('utf-8', transEnd + 1)
+            }
+          }
         }
       }
       if (type === 'IEND') break

@@ -2,11 +2,9 @@ import { existsSync, mkdirSync, writeFileSync, readFileSync, renameSync } from '
 import { join, basename, dirname, extname } from 'path'
 import { createHash } from 'crypto'
 import { execFile } from 'child_process'
-import { promisify } from 'util'
 import { cacheDir, loadSettings, listModels, upsertModel, deleteModel as dbDeleteModel } from './db'
+import { assertSafeRelativeFilename, isSafeExternalUrl } from './security'
 import type { ModelRecord } from '@shared/types'
-
-const execFileAsync = promisify(execFile)
 
 /**
  * Thumbnail pipeline (PLAN: 缩略图存 userData/cache)
@@ -144,8 +142,20 @@ export class RenameService {
         .replace(/\{category\}/g, rec.category)
         .replace(/\{index\}/g, String(index).padStart(3, '0'))
         .replace(/\{arch\}/g, (rec.architecture || 'unknown').replace(/[\\/]/g, '_'))
-      // Prevent path escape via pattern content
-      const safeBase = basename(newName.replace(/[\\/]/g, '_')).slice(0, 120)
+      // Prevent path escape via pattern content + Win32 reserved names
+      let safeBase: string
+      try {
+        safeBase = assertSafeRelativeFilename(basename(newName.replace(/[\\/]/g, '_')).slice(0, 120))
+      } catch (e) {
+        results.push({
+          from: rec.path,
+          to: '',
+          ok: false,
+          error: e instanceof Error ? e.message : String(e)
+        })
+        index += 1
+        continue
+      }
       const ext = extname(rec.fileName)
       const dest = join(dirname(rec.path), `${safeBase}${ext}`)
       index += 1
@@ -162,7 +172,7 @@ export class RenameService {
         renameSync(rec.path, dest)
         const next: ModelRecord = {
           ...rec,
-          name: newName,
+          name: safeBase,
           fileName: basename(dest),
           path: dest
         }
@@ -195,9 +205,8 @@ export class Aria2Service {
   async download(
     url: string,
     destPath: string,
-    opts?: { resume?: boolean }
-  ): Promise<{ ok: boolean; log: string }> {
-    const { isSafeExternalUrl } = await import('./security')
+    opts?: { resume?: boolean; signal?: AbortSignal }
+  ): Promise<{ ok: boolean; log: string; aborted?: boolean }> {
     if (!isSafeExternalUrl(url)) {
       return { ok: false, log: `Blocked URL scheme: ${url.slice(0, 40)}` }
     }
@@ -208,16 +217,44 @@ export class Aria2Service {
     // -c continue / resume partial
     if (opts?.resume !== false) args.push('-c')
     args.push(url)
-    try {
-      const { stdout, stderr } = await execFileAsync(bin, args, {
-        timeout: 30 * 60 * 1000,
-        maxBuffer: 20 * 1024 * 1024,
-        env: proxyEnv(settings.proxy)
-      })
-      return { ok: true, log: (stdout || '') + (stderr || '') }
-    } catch (e) {
-      return { ok: false, log: e instanceof Error ? e.message : String(e) }
-    }
+    return new Promise((resolve) => {
+      let settled = false
+      const finish = (result: { ok: boolean; log: string; aborted?: boolean }): void => {
+        if (settled) return
+        settled = true
+        resolve(result)
+      }
+      const child = execFile(
+        bin,
+        args,
+        {
+          timeout: 30 * 60 * 1000,
+          maxBuffer: 20 * 1024 * 1024,
+          env: proxyEnv(settings.proxy)
+        },
+        (e, stdout, stderr) => {
+          const log = (stdout || '') + (stderr || '')
+          if (opts?.signal?.aborted) {
+            finish({ ok: false, log: log || 'aborted', aborted: true })
+            return
+          }
+          if (e) finish({ ok: false, log: e instanceof Error ? e.message : String(e) })
+          else finish({ ok: true, log })
+        }
+      )
+      const onAbort = (): void => {
+        try {
+          child.kill('SIGTERM')
+        } catch {
+          /* ignore */
+        }
+        finish({ ok: false, log: 'aborted', aborted: true })
+      }
+      if (opts?.signal) {
+        if (opts.signal.aborted) onAbort()
+        else opts.signal.addEventListener('abort', onAbort, { once: true })
+      }
+    })
   }
 }
 

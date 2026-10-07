@@ -13,6 +13,13 @@ export function sanitizeId(id: string, fallback = ''): string {
   return cleaned
 }
 
+/** Win32 reserved device names — must never be used as a file/folder segment. */
+const WIN_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i
+
+export function isWinReservedName(segment: string): boolean {
+  return WIN_RESERVED.test(normalizePathSegment(segment))
+}
+
 /** Strict filename sanitizer for download/rename targets. */
 export function assertSafeRelativeFilename(name: string): string {
   const raw = String(name || '').trim()
@@ -23,6 +30,7 @@ export function assertSafeRelativeFilename(name: string): string {
     .replace(/[^\w.\- ]/g, '_')
     .trim()
   if (!cleaned || cleaned === '.' || /^[_]+$/.test(cleaned)) throw new Error('Empty filename')
+  if (isWinReservedName(cleaned)) throw new Error(`Reserved filename: ${cleaned}`)
   return cleaned.slice(0, 180)
 }
 

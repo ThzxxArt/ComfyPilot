@@ -8,6 +8,39 @@ import type {
   SystemSnapshot
 } from '@shared/types'
 import { ComfyApiClient, COMFY_CLIENT_ID } from './comfyApi'
+import { isLocalhostUrl } from './security'
+import { loadInstanceConfigs, listRemotes } from './db'
+
+/**
+ * Monitor fetches/WebSockets must only target localhost or a configured
+ * instance/remote origin — renderer-supplied URLs are untrusted (SSRF).
+ */
+export function assertMonitorBaseUrl(baseUrl: string): void {
+  if (!baseUrl) throw new Error('Monitor baseUrl is required')
+  let parsed: URL
+  try {
+    parsed = new URL(baseUrl)
+  } catch {
+    throw new Error(`Monitor: invalid URL ${baseUrl}`)
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`Monitor: unsupported protocol ${parsed.protocol}`)
+  }
+  if (isLocalhostUrl(baseUrl)) return
+  const origin = parsed.origin
+  for (const inst of loadInstanceConfigs()) {
+    const host = inst.listen === '0.0.0.0' ? '127.0.0.1' : inst.listen
+    if (origin === `http://${host}:${inst.port}` || origin === `https://${host}:${inst.port}`) return
+  }
+  for (const remote of listRemotes()) {
+    try {
+      if (new URL(remote.baseUrl).origin === origin) return
+    } catch {
+      /* skip malformed remote */
+    }
+  }
+  throw new Error(`Monitor: URL origin not allowed: ${origin}`)
+}
 
 export class MonitorService extends EventEmitter {
   private last: SystemSnapshot | null = null
@@ -16,37 +49,50 @@ export class MonitorService extends EventEmitter {
   private reconnectTimer: NodeJS.Timeout | null = null
   private reconnectAttempts = 0
 
+  /** Never rejects: partial si failures degrade instead of blowing up the tick. */
   async systemSnapshot(): Promise<SystemSnapshot> {
-    const [cpu, mem, fsSize, graphics] = await Promise.all([
-      si.currentLoad(),
-      si.mem(),
-      si.fsSize(),
-      si.graphics()
-    ])
+    try {
+      const [cpu, mem, fsSize, graphics] = await Promise.all([
+        si.currentLoad().catch(() => null),
+        si.mem().catch(() => null),
+        si.fsSize().catch(() => null),
+        si.graphics().catch(() => null)
+      ])
 
-    const gpus: GpuInfo[] = (graphics.controllers || []).map((c, index) => ({
-      index,
-      model: c.model || 'Unknown GPU',
-      vendor: c.vendor || 'unknown',
-      vramTotal: (c.vram || 0) * 1024 * 1024,
-      vramUsed: (c.memoryUsed || 0) > 0 ? (c.memoryUsed || 0) * 1024 * 1024 : 0,
-      utilization: c.utilizationGpu || 0,
-      temperature: c.temperatureGpu || undefined,
-      powerDraw: (c.powerDraw || 0) > 0 ? c.powerDraw : undefined
-    }))
+      const gpus: GpuInfo[] = ((graphics && graphics.controllers) || []).map((c, index) => ({
+        index,
+        model: c.model || 'Unknown GPU',
+        vendor: c.vendor || 'unknown',
+        vramTotal: (c.vram || 0) * 1024 * 1024,
+        vramUsed: (c.memoryUsed || 0) > 0 ? (c.memoryUsed || 0) * 1024 * 1024 : 0,
+        utilization: c.utilizationGpu || 0,
+        temperature: c.temperatureGpu || undefined,
+        powerDraw: (c.powerDraw || 0) > 0 ? c.powerDraw : undefined
+      }))
 
-    const root = fsSize[0]
-    const snapshot: SystemSnapshot = {
-      cpuUsage: Math.round(cpu.currentLoad * 10) / 10,
-      ramTotal: mem.total,
-      ramUsed: mem.used,
-      diskFree: root?.available || 0,
-      diskTotal: root?.size || 0,
-      gpus,
-      timestamp: Date.now()
+      const root = fsSize && fsSize[0]
+      const snapshot: SystemSnapshot = {
+        cpuUsage: cpu ? Math.round(cpu.currentLoad * 10) / 10 : this.last?.cpuUsage ?? 0,
+        ramTotal: mem?.total ?? this.last?.ramTotal ?? 0,
+        ramUsed: mem?.used ?? this.last?.ramUsed ?? 0,
+        diskFree: root?.available ?? this.last?.diskFree ?? 0,
+        diskTotal: root?.size ?? this.last?.diskTotal ?? 0,
+        gpus,
+        timestamp: Date.now()
+      }
+      this.last = snapshot
+      return snapshot
+    } catch {
+      return {
+        cpuUsage: 0,
+        ramTotal: 0,
+        ramUsed: 0,
+        diskFree: 0,
+        diskTotal: 0,
+        gpus: [],
+        timestamp: Date.now()
+      }
     }
-    this.last = snapshot
-    return snapshot
   }
 
   getLastSnapshot(): SystemSnapshot | null {
@@ -56,6 +102,7 @@ export class MonitorService extends EventEmitter {
   async queueSnapshot(baseUrl?: string): Promise<QueueSnapshot> {
     const empty: QueueSnapshot = { running: [], pending: [], doneCount: 0, history: [] }
     if (!baseUrl) return empty
+    assertMonitorBaseUrl(baseUrl)
     const client = new ComfyApiClient(baseUrl)
     try {
       const res = await fetch(`${baseUrl.replace(/\/$/, '')}/queue`, {
@@ -89,10 +136,12 @@ export class MonitorService extends EventEmitter {
   }
 
   async history(baseUrl?: string): Promise<QueueSnapshot> {
+    if (baseUrl) assertMonitorBaseUrl(baseUrl)
     return this.queueSnapshot(baseUrl)
   }
 
   connectWs(baseUrl: string): boolean {
+    assertMonitorBaseUrl(baseUrl)
     this.disconnectWs()
     this.reconnectAttempts = 0
     this.wsBaseUrl = baseUrl
@@ -145,13 +194,20 @@ export class MonitorService extends EventEmitter {
   }
 
   private scheduleReconnect(): void {
-    if (!this.wsBaseUrl || this.reconnectAttempts >= 8) return
+    if (!this.wsBaseUrl) return
     if (this.reconnectTimer) return
-    const delay = Math.min(15000, 500 * 2 ** this.reconnectAttempts)
+    // Retry forever; exponential backoff capped at 60s.
+    const delay = Math.min(60000, 500 * 2 ** Math.min(this.reconnectAttempts, 10))
     this.reconnectAttempts += 1
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
-      if (this.wsBaseUrl) this.openWs(this.wsBaseUrl)
+      if (this.wsBaseUrl) {
+        try {
+          this.openWs(this.wsBaseUrl)
+        } catch {
+          this.scheduleReconnect()
+        }
+      }
     }, delay)
   }
 

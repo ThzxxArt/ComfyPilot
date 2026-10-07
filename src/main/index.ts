@@ -1,5 +1,6 @@
 import { app, BrowserWindow, shell, protocol, net, nativeImage, dialog } from 'electron'
-import { join, resolve } from 'path'
+import { join, resolve, dirname, relative, isAbsolute } from 'path'
+import { pathToFileURL, fileURLToPath } from 'url'
 import { existsSync, mkdirSync, appendFileSync } from 'fs'
 import { registerIpcHandlers, broadcast } from './ipc/handlers'
 import { instanceService } from './services/instance'
@@ -10,7 +11,7 @@ import { installerService } from './services/installer'
 import { syncProxyFromSettings } from './services/proxy'
 import { IPC_EVENTS } from '@shared/types'
 import { APP_NAME } from '@shared/constants'
-import { isSafeExternalUrl, safeResolveUnder, isLocalhostUrl } from './services/security'
+import { isSafeExternalUrl, safeResolveUnder } from './services/security'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -64,6 +65,35 @@ function resolveAppIcon(): string {
   return candidates[0]
 }
 
+/** Only the renderer entry we load (dev server or our index.html) may navigate. */
+function isOwnRendererEntry(url: string): boolean {
+  if (process.env.ELECTRON_RENDERER_URL && url.startsWith(process.env.ELECTRON_RENDERER_URL)) {
+    return true
+  }
+  if (!url.startsWith('file:')) return false
+  try {
+    const target = resolve(fileURLToPath(url))
+    const htmlReal = join(process.resourcesPath || '', 'renderer', 'index.html')
+    const htmlAsar = join(__dirname, '../renderer/index.html')
+    const entry = resolve(existsSync(htmlReal) ? htmlReal : htmlAsar)
+    if (target === entry) return true
+    const rendererDir = dirname(entry)
+    const rel = relative(rendererDir, target)
+    if (!rel || rel.startsWith('..') || isAbsolute(rel)) return false
+    return Boolean(safeResolveUnder(rendererDir, rel))
+  } catch {
+    return false
+  }
+}
+
+function revealWindow(): void {
+  try {
+    mainWindow?.show()
+  } catch {
+    /* ignore */
+  }
+}
+
 function createWindow(): void {
   crashLog('createWindow enter')
   const iconPath = resolveAppIcon()
@@ -112,6 +142,10 @@ function createWindow(): void {
     crashLog('ready-to-show')
     mainWindow?.show()
   })
+  mainWindow.webContents.on('did-fail-load', (_e, code, desc) => {
+    crashLog('did-fail-load ' + code + ' ' + desc)
+    revealWindow()
+  })
   mainWindow.webContents.on('render-process-gone', (_e, details) => {
     crashLog('RENDERER GONE reason=' + details.reason + ' code=' + details.exitCode)
   })
@@ -129,11 +163,7 @@ function createWindow(): void {
   })
 
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    const allowed =
-      isLocalhostUrl(url) ||
-      url.startsWith('file:') ||
-      Boolean(process.env.ELECTRON_RENDERER_URL && url.startsWith(process.env.ELECTRON_RENDERER_URL))
-    if (!allowed) {
+    if (!isOwnRendererEntry(url)) {
       event.preventDefault()
       if (isSafeExternalUrl(url)) void shell.openExternal(url)
     }
@@ -151,18 +181,33 @@ function createWindow(): void {
     const p2 = join(__dirname, '../renderer', probeMap[bootProbe])
     const use = existsSync(p) ? p : p2
     crashLog('probe ' + bootProbe + ' ' + use)
-    void mainWindow.loadFile(use).then(() => crashLog('probe ' + bootProbe + ' ok')).catch((e) => crashLog('probe fail ' + e))
+    void mainWindow
+      .loadFile(use)
+      .then(() => crashLog('probe ' + bootProbe + ' ok'))
+      .catch((e) => {
+        crashLog('probe fail ' + e)
+        revealWindow()
+      })
     return
   }
   if (process.env.ELECTRON_RENDERER_URL) {
     crashLog('loadURL ' + process.env.ELECTRON_RENDERER_URL)
-    void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
+    void mainWindow
+      .loadURL(process.env.ELECTRON_RENDERER_URL)
+      .then(() => crashLog('loadURL ok'))
+      .catch((e) => {
+        crashLog('loadURL fail ' + e)
+        revealWindow()
+      })
   } else if (process.env.COMFYPILOT_BOOT_PROBE === '1') {
     crashLog('probe data url')
     void mainWindow
       .loadURL('data:text/html,<html><body><h1>ComfyPilot</h1></body></html>')
       .then(() => crashLog('probe ok'))
-      .catch((e) => crashLog('probe fail ' + e))
+      .catch((e) => {
+        crashLog('probe fail ' + e)
+        revealWindow()
+      })
   } else {
     // Prefer unpacked renderer (module scripts + native fs are happier outside asar)
     const htmlReal = join(process.resourcesPath || '', 'renderer', 'index.html')
@@ -172,7 +217,10 @@ function createWindow(): void {
     void mainWindow
       .loadFile(html)
       .then(() => crashLog('loadFile ok'))
-      .catch((e) => crashLog('loadFile fail ' + e))
+      .catch((e) => {
+        crashLog('loadFile fail ' + e)
+        revealWindow()
+      })
   }
 }
 
@@ -199,7 +247,7 @@ app.whenReady().then(async () => {
         if (!safePath) {
           return new Response('Forbidden', { status: 403 })
         }
-        return net.fetch('file://' + resolve(safePath).replace(/\\/g, '/'))
+        return net.fetch(pathToFileURL(resolve(safePath)).href)
       })
       crashLog('protocol ok')
     } catch (err) {
@@ -234,12 +282,30 @@ app.whenReady().then(async () => {
 
   if (app.isPackaged) {
     try {
-      const updater = await import('electron-updater')
-      const autoUpdater = updater.autoUpdater || (updater as { default?: { autoUpdater?: unknown } }).default?.autoUpdater
-      if (autoUpdater && typeof (autoUpdater as { checkForUpdatesAndNotify?: unknown }).checkForUpdatesAndNotify === 'function') {
-        ;(autoUpdater as { checkForUpdatesAndNotify: () => void }).checkForUpdatesAndNotify()
+      const { loadSettings } = await import('./services/db')
+      const settings = await loadSettings()
+      if (settings.enableAutoCheckUpdates) {
+        const updater = await import('electron-updater')
+        const autoUpdater = updater.autoUpdater || (updater as { default?: { autoUpdater?: unknown } }).default?.autoUpdater
+        if (autoUpdater && typeof (autoUpdater as { checkForUpdatesAndNotify?: unknown }).checkForUpdatesAndNotify === 'function') {
+          try {
+            const au = autoUpdater as {
+              checkForUpdatesAndNotify: () => unknown
+              on?: (ev: string, cb: (...a: unknown[]) => void) => void
+            }
+            au.on?.('error', (e) => crashLog('updater error event: ' + String(e)))
+            const maybe = au.checkForUpdatesAndNotify()
+            if (maybe && typeof (maybe as Promise<unknown>).catch === 'function') {
+              ;(maybe as Promise<unknown>).catch((e) => crashLog('updater check: ' + String(e)))
+            }
+          } catch (e) {
+            crashLog('updater check threw: ' + String(e))
+          }
+        } else {
+          crashLog('updater api missing')
+        }
       } else {
-        crashLog('updater api missing')
+        crashLog('updater disabled by settings')
       }
     } catch (err) {
       crashLog('updater skipped: ' + String(err))
@@ -255,7 +321,10 @@ app.whenReady().then(async () => {
   installerService.on('progress', (p) => broadcast(IPC_EVENTS.installProgress, p))
 
   const timer = setInterval(() => {
-    void monitorService.systemSnapshot().then((snap) => broadcast(IPC_EVENTS.monitorTick, snap))
+    void monitorService
+      .systemSnapshot()
+      .then((snap) => broadcast(IPC_EVENTS.monitorTick, snap))
+      .catch(() => {})
   }, 2000)
 
   app.on('activate', () => {

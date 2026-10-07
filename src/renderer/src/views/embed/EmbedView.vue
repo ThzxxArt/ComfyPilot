@@ -4,18 +4,30 @@ import { useRoute, useRouter } from 'vue-router'
 import { NButton, NSpace, NIcon, NInput, useMessage } from 'naive-ui'
 import { OpenOutline, CloseOutline, ArrowBackOutline, RefreshOutline } from '@vicons/ionicons5'
 import { ipc } from '@/composables/useIpc'
+import { useAppStore } from '@/stores/app'
 
 const route = useRoute()
 const router = useRouter()
 const message = useMessage()
+const store = useAppStore()
 const url = ref(String(route.query.url || ''))
 const embedded = ref(false)
 const showFallback = ref(false)
 
 const displayUrl = computed(() => url.value || 'http://127.0.0.1:8188')
 
+function embedEnabled(): boolean {
+  return store.settings?.embedFrontend !== false
+}
+
 async function embed(): Promise<void> {
   if (!displayUrl.value) return
+  if (!embedEnabled()) {
+    showFallback.value = true
+    message.info('已关闭内嵌 Frontend，正在用系统浏览器打开')
+    await openExternal()
+    return
+  }
   try {
     await ipc('embed.open', { url: displayUrl.value, title: 'ComfyUI' })
     embedded.value = true

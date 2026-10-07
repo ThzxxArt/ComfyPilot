@@ -43,6 +43,16 @@ async function refreshQueue(): Promise<void> {
 let off: (() => void) | null = null
 let queueTimer: ReturnType<typeof setInterval> | null = null
 
+async function connectLiveWs(): Promise<void> {
+  const inst = store.activeInstance
+  if (!inst?.url) return
+  try {
+    await ipc('monitor.connectWs', inst.url)
+  } catch {
+    /* offline — polling still covers queue */
+  }
+}
+
 onMounted(async () => {
   await store.bootstrap({ keepSelection: true })
   const snap = await ipc('monitor.system')
@@ -54,6 +64,7 @@ onMounted(async () => {
     history.value.push(snap.cpuUsage)
     if (history.value.length > 60) history.value.shift()
   })
+  await connectLiveWs()
   await refreshQueue()
   queueTimer = setInterval(() => void refreshQueue(), 3000)
 })
@@ -61,6 +72,7 @@ onMounted(async () => {
 onUnmounted(() => {
   off?.()
   if (queueTimer) clearInterval(queueTimer)
+  void ipc('monitor.disconnectWs').catch(() => undefined)
 })
 </script>
 

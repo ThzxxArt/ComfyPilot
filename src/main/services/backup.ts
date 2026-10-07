@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, writeFileSync, readFileSync, statSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, readFileSync, statSync, rmSync, renameSync } from 'fs'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
-import type { BackupManifest } from '@shared/types'
+import type { AppSettings, BackupManifest } from '@shared/types'
 import {
   backupDir,
   deleteBackup,
@@ -10,15 +10,12 @@ import {
   loadInstanceConfigs,
   loadSettings,
   saveSettings,
-  upsertInstanceConfig,
   listRemotes,
-  upsertRemote,
   listModels,
-  upsertModel,
   listWorkflows,
-  upsertWorkflow,
   listNodePacks,
-  upsertNodePack
+  stringifyJsonc,
+  userDataDir
 } from './db'
 import { sanitizeId, isPathInside } from './security'
 
@@ -29,6 +26,14 @@ function resolveBackupDir(id: string): string {
     throw new Error('Invalid backup id')
   }
   return dir
+}
+
+/** Replace a jsonc list wholesale so restore matches the backup snapshot. */
+function replaceJsoncList(name: string, items: unknown[]): void {
+  const p = join(userDataDir(), `${name}.jsonc`)
+  const tmp = p + '.tmp'
+  writeFileSync(tmp, stringifyJsonc(items), 'utf-8')
+  renameSync(tmp, p)
 }
 
 export class BackupService {
@@ -95,50 +100,58 @@ export class BackupService {
     const dir = resolveBackupDir(id)
     if (!existsSync(dir)) return false
 
-    const settingsFile = join(dir, 'settings.json')
-    if (existsSync(settingsFile)) {
-      const settings = JSON.parse(readFileSync(settingsFile, 'utf-8'))
-      saveSettings(settings)
+    // Parse every file first so a corrupt one cannot abort halfway through apply.
+    const errors: string[] = []
+    let settings: AppSettings | undefined
+    const lists: Record<string, unknown[]> = {}
+
+    const parseFile = (name: string): unknown => {
+      const file = join(dir, name)
+      if (!existsSync(file)) return undefined
+      try {
+        return JSON.parse(readFileSync(file, 'utf-8'))
+      } catch (e) {
+        errors.push(`${name}: ${e instanceof Error ? e.message : String(e)}`)
+        return undefined
+      }
     }
 
-    const instFile = join(dir, 'instances.json')
-    if (existsSync(instFile)) {
-      const instances = JSON.parse(readFileSync(instFile, 'utf-8')) as Parameters<
-        typeof upsertInstanceConfig
-      >[0][]
-      for (const i of instances) upsertInstanceConfig(i)
+    const settingsVal = parseFile('settings.json')
+    if (settingsVal !== undefined) {
+      if (settingsVal && typeof settingsVal === 'object' && !Array.isArray(settingsVal)) {
+        settings = settingsVal as AppSettings
+      } else {
+        errors.push('settings.json: expected object')
+      }
+    }
+    // Backup file name → jsonc collection name
+    const listEntries: Array<[string, string]> = [
+      ['instances.json', 'instances'],
+      ['node-packs.json', 'node_packs'],
+      ['model-manifest.json', 'models'],
+      ['workflows.json', 'workflows'],
+      ['remote-instances.json', 'remote_instances']
+    ]
+    for (const [file, key] of listEntries) {
+      const val = parseFile(file)
+      if (val === undefined) continue
+      if (Array.isArray(val)) {
+        lists[key] = val
+      } else {
+        errors.push(`${file}: expected array`)
+      }
     }
 
-    const nodeFile = join(dir, 'node-packs.json')
-    if (existsSync(nodeFile)) {
-      const packs = JSON.parse(readFileSync(nodeFile, 'utf-8')) as Parameters<
-        typeof upsertNodePack
-      >[0][]
-      for (const p of packs) upsertNodePack(p)
+    if (errors.length) {
+      throw new Error(`Backup restore aborted, nothing applied — ${errors.join('; ')}`)
     }
 
-    const modelFile = join(dir, 'model-manifest.json')
-    if (existsSync(modelFile)) {
-      const models = JSON.parse(readFileSync(modelFile, 'utf-8')) as Parameters<
-        typeof upsertModel
-      >[0][]
-      for (const m of models) upsertModel(m)
-    }
-
-    const wfFile = join(dir, 'workflows.json')
-    if (existsSync(wfFile)) {
-      const workflows = JSON.parse(readFileSync(wfFile, 'utf-8')) as Parameters<
-        typeof upsertWorkflow
-      >[0][]
-      for (const w of workflows) upsertWorkflow(w)
-    }
-
-    const remoteFile = join(dir, 'remote-instances.json')
-    if (existsSync(remoteFile)) {
-      const remotes = JSON.parse(readFileSync(remoteFile, 'utf-8')) as Parameters<
-        typeof upsertRemote
-      >[0][]
-      for (const r of remotes) upsertRemote(r)
+    // Apply only after all files parsed: whole-list replace so records deleted
+    // after the backup was taken do not survive the restore.
+    if (settings) saveSettings(settings)
+    for (const [, key] of listEntries) {
+      const items = lists[key]
+      if (items) replaceJsoncList(key, items)
     }
 
     return true

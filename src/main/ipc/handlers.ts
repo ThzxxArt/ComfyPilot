@@ -1,4 +1,6 @@
 import { ipcMain, dialog, shell, BrowserWindow, WebContentsView, clipboard } from 'electron'
+import { existsSync } from 'fs'
+import { basename, extname } from 'path'
 import type { IpcResult, ComfyInstanceConfig, RemoteInstanceConfig, NodePackRecord, BatchJob, EnvCreateRequest, WorkflowRecord, AppSettings, InstallPlan } from '@shared/types'
 import { isSafeExternalUrl, isSafeEmbedUrl, sanitizeId, isSafeOpenPath, isLocalhostUrl } from '../services/security'
 import { loadSettings, saveSettings, loadInstanceConfigs, upsertInstanceConfig, deleteInstanceConfig } from '../services/db'
@@ -34,6 +36,56 @@ function wrap<A extends unknown[], R>(
       return fail(error)
     }
   }
+}
+
+/** Origins of configured ComfyUI instances and remotes (renderer may target these). */
+function configuredComfyOrigins(): string[] {
+  const origins: string[] = []
+  for (const inst of loadInstanceConfigs()) {
+    let host = inst.listen || '127.0.0.1'
+    if (host === '0.0.0.0' || host === '::' || host === '[::]') host = '127.0.0.1'
+    if (!inst.port) continue
+    origins.push(`http://${host}:${inst.port}`)
+    origins.push(`https://${host}:${inst.port}`)
+  }
+  for (const remote of remoteService.list()) {
+    if (remote.baseUrl) origins.push(remote.baseUrl)
+  }
+  return origins
+}
+
+/** localhost or a configured instance/remote origin only. */
+function isTrustedComfyUrl(raw: string | undefined | null): boolean {
+  if (!raw) return false
+  let u: URL
+  try {
+    u = new URL(raw)
+  } catch {
+    return false
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false
+  if (isLocalhostUrl(raw)) return true
+  for (const candidate of configuredComfyOrigins()) {
+    try {
+      if (new URL(candidate).origin === u.origin) return true
+    } catch {
+      /* ignore */
+    }
+  }
+  return false
+}
+
+function isAllowedEmbedUrl(raw: string): boolean {
+  return isSafeEmbedUrl(raw) && isTrustedComfyUrl(raw)
+}
+
+const READ_DATA_EXTS = new Set(['.json', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.yaml', '.yml', '.txt'])
+
+function isSafeReadPath(path: string): boolean {
+  if (!path || path.includes('\0')) return false
+  const ext = extname(basename(path)).toLowerCase()
+  if (!READ_DATA_EXTS.has(ext)) return false
+  return isSafeOpenPath(path) || existsSync(path)
 }
 
 let embedView: WebContentsView | null = null
@@ -122,7 +174,10 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
   // workflows
   ipcMain.handle('workflow.list', wrap(() => workflowService.list()))
-  ipcMain.handle('workflow.import', wrap((path: string) => workflowService.importFile(path)))
+  ipcMain.handle('workflow.import', wrap((path: string) => {
+    if (!isSafeReadPath(path)) throw new Error('Blocked unsafe workflow path')
+    return workflowService.importFile(path)
+  }))
   ipcMain.handle('workflow.launch', wrap(async (path: string, baseUrl?: string) => {
     if (baseUrl) {
       if (!isSafeExternalUrl(baseUrl)) throw new Error('Blocked unsafe URL')
@@ -134,13 +189,25 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   }))
   ipcMain.handle('workflow.tag', wrap((id: string, tags: string[]) => workflowService.tag(id, tags)))
   ipcMain.handle('workflow.queue', wrap((opts: { workflowPath: string; instanceId: string; seed?: number }) => workflowService.queue(opts)))
-  ipcMain.handle('workflow.parsePngMeta', wrap((path: string) => workflowService.parsePngMeta(path)))
+  ipcMain.handle('workflow.parsePngMeta', wrap((path: string) => {
+    if (!isSafeReadPath(path)) throw new Error('Blocked unsafe image path')
+    return workflowService.parsePngMeta(path)
+  }))
 
   // monitor
   ipcMain.handle('monitor.system', wrap(() => monitorService.systemSnapshot()))
-  ipcMain.handle('monitor.queue', wrap((baseUrl?: string) => monitorService.queueSnapshot(baseUrl)))
-  ipcMain.handle('monitor.history', wrap((baseUrl?: string) => monitorService.history(baseUrl)))
-  ipcMain.handle('monitor.connectWs', wrap((baseUrl: string) => monitorService.connectWs(baseUrl)))
+  ipcMain.handle('monitor.queue', wrap((baseUrl?: string) => {
+    if (baseUrl && !isTrustedComfyUrl(baseUrl)) throw new Error('Blocked untrusted monitor URL')
+    return monitorService.queueSnapshot(baseUrl)
+  }))
+  ipcMain.handle('monitor.history', wrap((baseUrl?: string) => {
+    if (baseUrl && !isTrustedComfyUrl(baseUrl)) throw new Error('Blocked untrusted monitor URL')
+    return monitorService.history(baseUrl)
+  }))
+  ipcMain.handle('monitor.connectWs', wrap((baseUrl: string) => {
+    if (!isTrustedComfyUrl(baseUrl)) throw new Error('Blocked untrusted monitor URL')
+    return monitorService.connectWs(baseUrl)
+  }))
   ipcMain.handle('monitor.disconnectWs', wrap(() => {
     monitorService.disconnectWs()
     return true
@@ -187,6 +254,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     return shell.openPath(path).then((r) => r === '')
   }))
   ipcMain.handle('output.importToWorkflow', wrap(async (path: string): Promise<WorkflowRecord | null> => {
+    if (!isSafeReadPath(path)) throw new Error('Blocked unsafe image path')
     const meta = await workflowService.parsePngMeta(path)
     if (meta?.workflow) {
       return workflowService.importFile(path)
@@ -240,7 +308,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle('embed.open', wrap((opts: { url: string; title?: string }) => {
     const win = getWindow()
     if (!win) return false
-    if (!isSafeEmbedUrl(opts.url)) throw new Error('Blocked unsafe embed URL')
+    if (!isAllowedEmbedUrl(opts.url)) throw new Error('Blocked unsafe embed URL')
     if (embedView) {
       win.contentView.removeChildView(embedView)
       embedView.webContents.close()
@@ -264,7 +332,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       return { action: 'deny' }
     })
     view.webContents.on('will-navigate', (event, navUrl) => {
-      if (!isSafeEmbedUrl(navUrl) && !isLocalhostUrl(navUrl)) {
+      if (!isAllowedEmbedUrl(navUrl)) {
         event.preventDefault()
       }
     })
@@ -289,7 +357,6 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   }))
 
   // keep unused imports referenced for type completeness
-  void loadInstanceConfigs
   void upsertInstanceConfig
   void deleteInstanceConfig
 }

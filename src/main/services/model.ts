@@ -36,6 +36,11 @@ import {
   upsertDownloadTask,
   listDownloadTasks
 } from './db'
+import {
+  resolveInsideAnyRoot,
+  assertSafeRelativeFilename,
+  isSafeExternalUrl
+} from './security'
 
 const MODEL_EXT = new Set(['.safetensors', '.ckpt', '.pt', '.pth', '.bin', '.gguf', '.onnx'])
 
@@ -130,23 +135,32 @@ function readFileSyncSafe(file: string): string {
 
 /** Read safetensors header (first 8 bytes LE u64 + JSON). */
 export function readSafetensorsMeta(filePath: string): Record<string, unknown> | null {
+  let fd: number | null = null
   try {
-    const fd = openSync(filePath, 'r')
+    fd = openSync(filePath, 'r')
     const headerLenBuf = Buffer.alloc(8)
     readSync(fd, headerLenBuf, 0, 8, 0)
     const headerLen = Number(headerLenBuf.readBigUInt64LE(0))
     if (headerLen <= 0 || headerLen > 100 * 1024 * 1024) {
-      closeSync(fd)
       return null
     }
     const jsonBuf = Buffer.alloc(Math.min(headerLen, 8 * 1024 * 1024))
     readSync(fd, jsonBuf, 0, jsonBuf.length, 8)
     closeSync(fd)
+    fd = null
     const json = JSON.parse(jsonBuf.toString('utf-8').replace(/\0+$/, ''))
     const meta = json.__metadata__ || {}
     return { tensors: Object.keys(json).filter((k) => k !== '__metadata__').length, ...meta }
   } catch {
     return null
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd)
+      } catch {
+        /* ignore */
+      }
+    }
   }
 }
 
@@ -163,6 +177,23 @@ export async function sha256File(filePath: string): Promise<string> {
 export class ModelService extends EventEmitter {
   private downloads = new Map<string, DownloadTask>()
   private abortControllers = new Map<string, AbortController>()
+
+  /** Allowed roots for user-supplied destDir (move/symlink/download). */
+  private allowedDestRoots(): string[] {
+    const settings = loadSettings()
+    return [
+      settings.downloadDir,
+      join(homedir(), 'Downloads'),
+      ...settings.modelScanRoots,
+      settings.defaultInstancePath && join(settings.defaultInstancePath, 'models')
+    ].filter(Boolean) as string[]
+  }
+
+  private assertSafeDestDir(destDir: string): string {
+    const safe = resolveInsideAnyRoot(destDir, this.allowedDestRoots())
+    if (!safe) throw new Error(`Blocked destination outside allowed model roots: ${destDir}`)
+    return safe
+  }
 
   list(): ModelRecord[] {
     return listModels()
@@ -369,8 +400,9 @@ export class ModelService extends EventEmitter {
   async move(id: string, destDir: string): Promise<ModelRecord> {
     const rec = listModels().find((m) => m.id === id)
     if (!rec) throw new Error('Model not found')
-    mkdirSync(destDir, { recursive: true })
-    const destPath = join(destDir, rec.fileName)
+    const safeDest = this.assertSafeDestDir(destDir)
+    mkdirSync(safeDest, { recursive: true })
+    const destPath = join(safeDest, rec.fileName)
     if (existsSync(destPath) && destPath !== rec.path) {
       throw new Error(`Target already exists: ${destPath}`)
     }
@@ -393,7 +425,7 @@ export class ModelService extends EventEmitter {
       ...rec,
       id: createHash('sha1').update(destPath).digest('hex').slice(0, 16),
       path: destPath,
-      pathRoot: destDir
+      pathRoot: safeDest
     }
     upsertModel(next)
     return next
@@ -402,15 +434,16 @@ export class ModelService extends EventEmitter {
   async symlink(id: string, destDir: string): Promise<ModelRecord> {
     const rec = listModels().find((m) => m.id === id)
     if (!rec) throw new Error('Model not found')
-    mkdirSync(destDir, { recursive: true })
-    const destPath = join(destDir, rec.fileName)
+    const safeDest = this.assertSafeDestDir(destDir)
+    mkdirSync(safeDest, { recursive: true })
+    const destPath = join(safeDest, rec.fileName)
     if (existsSync(destPath)) throw new Error(`Target already exists: ${destPath}`)
     symlinkSync(rec.path, destPath, 'file')
     const next: ModelRecord = {
       ...rec,
       id: createHash('sha1').update(destPath).digest('hex').slice(0, 16),
       path: destPath,
-      pathRoot: destDir,
+      pathRoot: safeDest,
       source: 'imported'
     }
     upsertModel(next)
@@ -447,28 +480,32 @@ export class ModelService extends EventEmitter {
     fileName?: string
   }): Promise<DownloadTask> {
     // Protocol allowlist — blocks file:// ftp:// magnet: etc (aria2 supports those)
-    const { isSafeExternalUrl } = await import('./security')
     if (!isSafeExternalUrl(opts.url)) {
       throw new Error(`Blocked download URL scheme: ${opts.url.slice(0, 40)}`)
     }
     const settings = loadSettings()
     const defaultDir = settings.downloadDir || join(homedir(), 'Downloads', 'ComfyPilot')
     let destDir = opts.destDir || defaultDir
-    // Constrain destDir to known-safe roots (settings.downloadDir, default Downloads, model scan roots)
     {
-      const { resolveInsideAnyRoot } = await import('./security')
-      const allowedRoots = [
-        settings.downloadDir,
-        join(homedir(), 'Downloads'),
-        ...settings.modelScanRoots,
-        settings.defaultInstancePath && join(settings.defaultInstancePath, 'models')
-      ].filter(Boolean) as string[]
-      const safeDest = resolveInsideAnyRoot(destDir, allowedRoots)
+      const safeDest = resolveInsideAnyRoot(destDir, this.allowedDestRoots())
       if (!safeDest) destDir = defaultDir
       else destDir = safeDest
     }
     mkdirSync(destDir, { recursive: true })
     let url = opts.url
+
+    // Optional HuggingFace endpoint mirror (Settings → hfEndpoint)
+    if (settings.hfEndpoint) {
+      try {
+        const u = new URL(url)
+        if (u.hostname === 'huggingface.co' || u.hostname === 'hf.co' || u.hostname === 'cdn-lfs.huggingface.co') {
+          const mirror = settings.hfEndpoint.replace(/\/+$/, '')
+          url = mirror + u.pathname + u.search
+        }
+      } catch {
+        /* keep original url */
+      }
+    }
 
     // Civitai download API redirect helper
     if (url.includes('civitai.com') && !url.includes('/api/download')) {
@@ -481,10 +518,13 @@ export class ModelService extends EventEmitter {
     }
 
     const rawName = opts.fileName || basename(new URL(url).pathname) || `download-${Date.now()}`
-    const { assertSafeRelativeFilename } = await import('./security')
     const fileName = assertSafeRelativeFilename(rawName)
     const destPath = join(destDir, fileName)
     const id = createHash('sha1').update(url + destPath).digest('hex').slice(0, 12)
+    const existing = this.downloads.get(id)
+    if (existing && (existing.status === 'running' || existing.status === 'queued')) {
+      throw new Error('Download already in progress')
+    }
     const task: DownloadTask = {
       id,
       url,
@@ -499,7 +539,13 @@ export class ModelService extends EventEmitter {
     this.downloads.set(id, task)
     upsertDownloadTask(task)
     this.emit('download', { ...task })
-    void this.runDownload(task)
+    void this.runDownload(task).catch((err) => {
+      task.status = 'error'
+      task.error = err instanceof Error ? err.message : String(err)
+      task.finishedAt = Date.now()
+      upsertDownloadTask(task)
+      this.emit('download', { ...task })
+    })
     return task
   }
 
@@ -507,6 +553,13 @@ export class ModelService extends EventEmitter {
     if (this.abortControllers.has(task.id)) {
       throw new Error('Download already in progress')
     }
+    if (!resume && existsSync(task.destPath)) {
+      throw new Error(`Target already exists: ${task.fileName}`)
+    }
+    const controller = new AbortController()
+    this.abortControllers.set(task.id, controller)
+    const isCancelled = (): boolean =>
+      controller.signal.aborted || this.downloads.get(task.id)?.status === 'cancelled'
     // Optional aria2 path (PLAN)
     const settings = loadSettings()
     if (settings.useAria2 && (settings.aria2Path || 'aria2c')) {
@@ -516,7 +569,11 @@ export class ModelService extends EventEmitter {
           task.status = 'running'
           this.emit('download', { ...task })
           // aria2 -c continues partial downloads
-          const res = await aria2Service.download(task.url, task.destPath, { resume })
+          const res = await aria2Service.download(task.url, task.destPath, {
+            resume,
+            signal: controller.signal
+          })
+          if (isCancelled()) return
           task.status = res.ok ? 'done' : 'error'
           task.error = res.ok ? undefined : res.log.slice(0, 300)
           task.finishedAt = Date.now()
@@ -530,12 +587,10 @@ export class ModelService extends EventEmitter {
           return
         }
       } catch {
+        if (isCancelled()) return
         /* fall back to native */
       }
     }
-
-    const controller = new AbortController()
-    this.abortControllers.set(task.id, controller)
     try {
       task.status = 'running'
       this.emit('download', { ...task })
@@ -638,6 +693,7 @@ export class ModelService extends EventEmitter {
         await closeStream()
       }
 
+      if (isCancelled()) return
       task.status = 'done'
       task.finishedAt = Date.now()
       task.speedBps = 0

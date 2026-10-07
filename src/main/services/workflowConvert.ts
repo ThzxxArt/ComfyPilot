@@ -6,9 +6,10 @@
  *  - UI:   { nodes, links, ... }
  *
  * Widget mapping strategy:
- *  1. Prefer node.widgets[].name metadata when present
- *  2. Else map widgets_values to widget-backed inputs (input.widget.name)
- *  3. Else use builtin widget order tables for popular node types
+ *  1. Prefer builtin widget order tables for popular node types
+ *  2. Else node.widgets[].name metadata when present
+ *  3. Else map widgets_values to widget-backed inputs only when the full order is known
+ * Leftover values are filled into unlinked inputs by type, then declaration order.
  */
 export type ApiPrompt = Record<string, { class_type: string; inputs: Record<string, unknown> }>
 
@@ -110,7 +111,11 @@ const WIDGET_ORDER: Record<string, string[]> = {
   GLIGENTextBoxApply: ['position', 'size', 'conditioning', 'clip', 'gligen_textbox_model', 'text', 'strength'],
   DiffusersLoader: ['unet_path', 'vae_path', 'weight_dtype'],
   DifferentialDiffusion: ['model', 'conditioning'],
-  UNETLoaderGGUF: ['unet_name', 'weight_dtype']
+  UNETLoaderGGUF: ['unet_name', 'weight_dtype'],
+  ControlNetLoader: ['control_net_name'],
+  UpscaleModelLoader: ['model_name'],
+  LoadImageMask: ['image', 'channel'],
+  SAMLoader: ['model_name', 'device_mode']
 }
 
 function isNonExecutable(type: string): boolean {
@@ -138,35 +143,70 @@ export function isUiWorkflow(value: unknown): value is UiWorkflow {
   return Array.isArray(v.nodes)
 }
 
+function widgetValueMatchesType(inputType: string | undefined, value: unknown): boolean {
+  if (value == null) return true
+  if (!inputType) return true
+  const t = inputType.toUpperCase()
+  if (typeof value === 'number') return t === 'INT' || t === 'FLOAT' || t === 'NUMBER' || t === 'SEED'
+  if (typeof value === 'boolean') return t === 'BOOLEAN' || t === 'BOOL'
+  if (typeof value === 'string') return t !== 'INT' && t !== 'FLOAT' && t !== 'BOOLEAN'
+  return false
+}
+
 function mapWidgets(node: UiNode, linkedNames: Set<string>): Record<string, unknown> {
   const values = node.widgets_values || []
   const inputs: Record<string, unknown> = {}
   if (!values.length) return inputs
 
-  // 1) widgets metadata
+  // Prefer a known full builtin order; else widgets metadata; else widget-backed
+  // names only when they cover the complete widgets_values list (never partial).
   let widgetNames: string[] = []
-  if (Array.isArray(node.widgets) && node.widgets.length) {
+  const knownOrder = WIDGET_ORDER[node.type]
+  if (knownOrder && knownOrder.length) {
+    widgetNames = knownOrder
+  } else if (Array.isArray(node.widgets) && node.widgets.length) {
     widgetNames = node.widgets.map((w) => w?.name || '').filter(Boolean)
-  }
-
-  // 2) widget-backed inputs (declared order)
-  if (!widgetNames.length) {
+  } else {
     const widgetLike = (node.inputs || []).filter((i) => i.widget?.name)
-    widgetNames = widgetLike.map((w) => w.widget?.name || w.name)
+    const names = widgetLike.map((w) => w.widget?.name || w.name)
+    if (names.length && names.length === values.length) {
+      widgetNames = names
+    }
   }
 
-  // 3) builtin table
-  if (!widgetNames.length) {
-    widgetNames = WIDGET_ORDER[node.type] || []
-  }
-
-  // Some UI versions pack control_after_generate as a separate widget after seed
+  const used = new Set<number>()
   for (let i = 0; i < values.length; i++) {
     const name = widgetNames[i]
     if (!name) continue
+    used.add(i)
     if (UI_ONLY_WIDGETS.has(name)) continue
     if (linkedNames.has(name)) continue
     inputs[name] = values[i]
+  }
+
+  // Leftover values → unlinked inputs: type match first, then declaration order
+  const leftovers: number[] = []
+  for (let i = 0; i < values.length; i++) {
+    if (!used.has(i)) leftovers.push(i)
+  }
+  if (leftovers.length) {
+    const candidates = (node.inputs || []).filter(
+      (inp) => inp?.name && !linkedNames.has(inp.name) && !(inp.name in inputs) && !UI_ONLY_WIDGETS.has(inp.name)
+    )
+    const deferred: typeof candidates = []
+    for (const inp of candidates) {
+      const li = leftovers.findIndex((idx) => widgetValueMatchesType(inp.type, values[idx]))
+      if (li >= 0) {
+        inputs[inp.name] = values[leftovers[li]]
+        leftovers.splice(li, 1)
+      } else {
+        deferred.push(inp)
+      }
+    }
+    for (const inp of deferred) {
+      if (!leftovers.length) break
+      inputs[inp.name] = values[leftovers.shift()!]
+    }
   }
 
   return inputs

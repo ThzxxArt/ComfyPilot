@@ -1,8 +1,8 @@
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { join, isAbsolute, normalize, resolve, sep } from 'path'
-import { existsSync, readdirSync, statSync, rmSync } from 'fs'
-import { isPathInside, normalizePathEverySegment } from './security'
+import { existsSync, readdirSync, lstatSync, realpathSync, rmSync } from 'fs'
+import { isPathInside, isWinReservedName, normalizePathEverySegment, normalizePathSegment } from './security'
 
 const execFileAsync = promisify(execFile)
 const EXEC = { timeout: 60000, windowsHide: true, maxBuffer: 20 * 1024 * 1024 } as const
@@ -44,6 +44,17 @@ export function findZipSlipEntry(entries: string[]): string | null {
     if (/^[a-zA-Z]:/.test(entry)) return entry
     // Raw parent hops including `.. ` / `..` / `../`
     if (/(^|[\\/])\.\.[\\/]*/.test(entry)) return entry
+
+    // Per-segment Win32 checks: reserved device names, trailing dot/space, empties
+    const segments = entry.split(/[\\/]/)
+    while (segments.length && segments[segments.length - 1] === '') segments.pop()
+    for (const seg of segments) {
+      if (seg === '.') continue
+      if (seg === '') return entry
+      if (normalizePathSegment(seg) !== seg) return entry
+      if (isWinReservedName(seg)) return entry
+    }
+
     // After per-segment normalize any remaining `..` is a hop
     const normalized = normalizePathEverySegment(entry)
     if (normalized.split(/[\\/]+/).some((s) => s === '..')) return entry
@@ -75,6 +86,15 @@ export async function safeUnzip(zipPath: string, destDir: string): Promise<void>
 
   // Post-extract containment walk (defense in depth)
   const stack = [destDir]
+  const visited = new Set<string>()
+  const markReal = (p: string): string => {
+    try {
+      return realpathSync(p)
+    } catch {
+      return resolve(p)
+    }
+  }
+  visited.add(markReal(destDir))
   while (stack.length) {
     const dir = stack.pop()!
     for (const name of readdirSync(dir)) {
@@ -87,10 +107,26 @@ export async function safeUnzip(zipPath: string, destDir: string): Promise<void>
         }
         throw new Error(`Zip-slip blocked (escaped: ${full.slice(0, 120)})`)
       }
+      let st
       try {
-        if (statSync(full).isDirectory()) stack.push(full)
+        st = lstatSync(full)
       } catch {
-        /* ignore */
+        continue
+      }
+      // Symlinks can escape the tree or form directory loops — treat as unsafe
+      if (st.isSymbolicLink()) {
+        try {
+          rmSync(destDir, { recursive: true, force: true })
+        } catch {
+          /* ignore */
+        }
+        throw new Error(`Zip-slip blocked (symlink: ${full.slice(0, 120)})`)
+      }
+      if (st.isDirectory()) {
+        const key = markReal(full)
+        if (visited.has(key)) continue
+        visited.add(key)
+        stack.push(full)
       }
     }
   }

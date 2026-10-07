@@ -140,7 +140,7 @@ async function scan(hash = false): Promise<void> {
     const roots = store.settings?.modelScanRoots?.length
       ? store.settings.modelScanRoots
       : store.instances[0]?.path
-        ? [`${store.instances[0].path}\\models`]
+        ? [`${store.instances[0].path.replace(/[\\/]+$/, '')}/models`]
         : []
     models.value = await ipc('model.scan', { roots, hash })
     storage.value = await ipc('model.storageStats')

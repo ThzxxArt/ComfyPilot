@@ -134,6 +134,73 @@ describe('uiWorkflowToApiPrompt', () => {
     expect(api['3'].inputs.model).toBeUndefined()
     expect(api['3'].inputs.seed).toBe(1)
   })
+
+  it('does not shift values when some widgets became linked inputs', () => {
+    // seed is converted to an input widget → widget-backed names would be partial
+    const api = uiWorkflowToApiPrompt({
+      nodes: [
+        {
+          id: 3,
+          type: 'KSampler',
+          inputs: [
+            { name: 'seed', link: 50, widget: { name: 'seed' } },
+            { name: 'model', link: 1 },
+            { name: 'positive', link: 2 },
+            { name: 'negative', link: 3 },
+            { name: 'latent_image', link: 4 }
+          ],
+          widgets_values: [12345, 'randomize', 20, 8.0, 'euler', 'normal', 1.0]
+        },
+        {
+          id: 9,
+          type: 'SeedNode',
+          widgets_values: [999]
+        }
+      ],
+      links: [[50, 9, 0, 3, 0, 'INT']]
+    })
+    expect(api['3'].inputs.seed).toEqual(['9', 0])
+    expect(api['3'].inputs.steps).toBe(20)
+    expect(api['3'].inputs.cfg).toBe(8.0)
+    expect(api['3'].inputs.sampler_name).toBe('euler')
+    expect(api['3'].inputs.scheduler).toBe('normal')
+    expect(api['3'].inputs.denoise).toBe(1.0)
+  })
+
+  it('maps loader widgets for types without widgets metadata', () => {
+    const api = uiWorkflowToApiPrompt({
+      nodes: [
+        { id: 1, type: 'ControlNetLoader', widgets_values: ['control_v11p.pth'] },
+        { id: 2, type: 'UpscaleModelLoader', widgets_values: ['4x-UltraSharp.pth'] },
+        { id: 3, type: 'LoadImageMask', widgets_values: ['mask.png', 'alpha'] },
+        { id: 4, type: 'SAMLoader', widgets_values: ['sam_vit_b.pth', 'AUTO'] }
+      ]
+    })
+    expect(api['1'].inputs.control_net_name).toBe('control_v11p.pth')
+    expect(api['2'].inputs.model_name).toBe('4x-UltraSharp.pth')
+    expect(api['3'].inputs.image).toBe('mask.png')
+    expect(api['3'].inputs.channel).toBe('alpha')
+    expect(api['4'].inputs.model_name).toBe('sam_vit_b.pth')
+    expect(api['4'].inputs.device_mode).toBe('AUTO')
+  })
+
+  it('fills leftover widgets into unlinked inputs without throwing', () => {
+    const api = uiWorkflowToApiPrompt({
+      nodes: [
+        {
+          id: 5,
+          type: 'CustomUnknownNode',
+          inputs: [
+            { name: 'strength', link: null, type: 'FLOAT' },
+            { name: 'mode', link: null, type: 'STRING' }
+          ],
+          widgets_values: [0.75, 'soft']
+        }
+      ]
+    })
+    expect(api['5'].inputs.strength).toBe(0.75)
+    expect(api['5'].inputs.mode).toBe('soft')
+  })
 })
 
 describe('toApiPrompt wrappers', () => {

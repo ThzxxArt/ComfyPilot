@@ -86,9 +86,28 @@ export function assertSafeBranch(branch: string): string {
   return b
 }
 
+/** Rewrite github.com URLs through the optional Settings → githubEndpoint mirror prefix. */
+export function applyGithubMirror(url: string): string {
+  const raw = String(url || '').trim()
+  if (!raw) return raw
+  let endpoint = ''
+  try {
+    endpoint = String(loadSettings().githubEndpoint || '').trim()
+  } catch {
+    endpoint = ''
+  }
+  if (!endpoint) return raw
+  if (!/^(https?:\/\/|git@|ssh:\/\/)/i.test(raw)) return raw
+  const isGithub =
+    /github\.com/i.test(raw) || /^git@github\.com:/i.test(raw) || /ghcr\.io/i.test(raw)
+  if (!isGithub) return raw
+  // Mirror prefixes typically expect the full URL appended, e.g. https://mirror/https://github.com/…
+  return endpoint.replace(/\/+$/, '') + '/' + raw
+}
+
 /** Build git clone argv — exported for regression tests (arg order bugs). */
 export function buildGitCloneArgs(repo: string, dest: string, branch?: string): string[] {
-  const safeRepo = assertSafeGitUrl(repo)
+  const safeRepo = assertSafeGitUrl(applyGithubMirror(repo))
   const safeBranch = assertSafeBranch(branch || '')
   const args = ['clone', '--depth', '1']
   if (safeBranch) args.push('--branch', safeBranch)
@@ -452,6 +471,12 @@ export class InstallerService extends EventEmitter {
         }
         this.setStep('comfyui', 'done', '复用已有 ComfyUI')
       } else {
+        // A dir without main.py is a crashed prior clone — git clone refuses non-empty targets.
+        if (existsSync(comfyDir)) {
+          if (!isPathInside(comfyDir, installRoot)) throw new Error('Refusing to remove ComfyUI outside install root')
+          rmSync(comfyDir, { recursive: true, force: true })
+          this.log('comfyui', '发现不完整的 ComfyUI 目录，已清理后重新克隆')
+        }
         const repo = plan.comfyRepo || COMFY_REPO
         const branch = plan.comfyBranch || ''
         const args = buildGitCloneArgs(repo, comfyDir, branch)
@@ -564,10 +589,28 @@ export class InstallerService extends EventEmitter {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       const cancelled = this.cancelled || message === 'Installation cancelled' || /Installation cancelled/i.test(message)
+      // Remove partial debris so a retry can proceed instead of hitting git-clone/venv conflicts.
+      const cleaned: string[] = []
+      try {
+        const root = resolve(normalizePathEverySegment(plan.installRoot))
+        const comfyDir = join(root, 'ComfyUI')
+        if (isPathInside(comfyDir, root) && existsSync(comfyDir) && !existsSync(join(comfyDir, 'main.py'))) {
+          rmSync(comfyDir, { recursive: true, force: true })
+          cleaned.push('ComfyUI')
+        }
+        const venvPath = join(root, '.venv')
+        if (isPathInside(venvPath, root) && existsSync(venvPath) && !existsSync(this.venvPython(venvPath))) {
+          rmSync(venvPath, { recursive: true, force: true })
+          cleaned.push('.venv')
+        }
+      } catch {
+        /* cleanup is best-effort */
+      }
+      const cleanedNote = cleaned.length ? `（已清理残留：${cleaned.join('、')}，可直接重试）` : ''
       if (this.progress) {
         this.progress.status = 'failed'
         this.progress.error = cancelled ? 'Installation cancelled' : message
-        this.progress.message = this.progress.error
+        this.progress.message = this.progress.error + cleanedNote
         const running = this.progress.steps.find((s) => s.status === 'running')
         if (running) {
           running.status = 'failed'
@@ -602,6 +645,4 @@ export const installerService = new InstallerService()
 export { TORCH_INDEX, COMFY_REPO }
 
 void spawn
-void rmSync
 void basename
-void isPathInside

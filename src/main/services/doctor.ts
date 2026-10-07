@@ -1,6 +1,6 @@
-import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, rmSync } from 'fs'
+import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
-import { execFile, execSync } from 'child_process'
+import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { randomUUID } from 'crypto'
 import net from 'net'
@@ -11,11 +11,11 @@ import { parseExtraModelPaths } from './model'
 
 const execFileAsync = promisify(execFile)
 
-async function safeExec(cmd: string, args: string[], cwd?: string): Promise<string> {
+async function safeExec(cmd: string, args: string[], cwd?: string, timeoutMs = 10000): Promise<string> {
   try {
     const { stdout } = await execFileAsync(cmd, args, {
       cwd,
-      timeout: 10000,
+      timeout: timeoutMs,
       windowsHide: true,
       maxBuffer: 20 * 1024 * 1024
     })
@@ -32,6 +32,20 @@ function isPortInUse(port: number): Promise<boolean> {
     server.once('listening', () => server.close(() => resolve(false)))
     server.listen(port, '0.0.0.0')
   })
+}
+
+/** True when a ComfyUI API answers on 127.0.0.1:port (i.e. it is our own app, not a conflict). */
+async function isComfyListening(port: number): Promise<boolean> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/system_stats`, {
+      signal: AbortSignal.timeout(1500)
+    })
+    if (!res.ok) return false
+    const data = (await res.json()) as { system?: unknown; devices?: unknown }
+    return Boolean(data && typeof data === 'object' && ('system' in data || 'devices' in data))
+  } catch {
+    return false
+  }
 }
 
 export class DoctorService {
@@ -68,32 +82,65 @@ export class DoctorService {
           : config?.pythonPath || 'python'
       : config?.pythonPath || 'python'
     const pyOut = await safeExec(python, ['--version'])
-    const pyOk = /python\s+3\.(1[0-9])/i.test(pyOut)
+    const pyMatch = pyOut.match(/python\s+3\.(\d+)/i)
+    const pyMinor = pyMatch ? Number(pyMatch[1]) : null
+    // 3.10+ pass; 3.9 warns; anything older (or unparseable) fails.
+    const pySeverity: DoctorSeverity = pyMinor == null ? 'fail' : pyMinor >= 10 ? 'pass' : pyMinor >= 9 ? 'warn' : 'fail'
     checks.push({
       id: 'python',
       group: 'Environment',
       title: 'Python interpreter',
-      severity: pyOk ? 'pass' : 'fail',
+      severity: pySeverity,
       detail: pyOut || 'Python not found',
-      suggestion: pyOk ? undefined : 'Install Python 3.12/3.13 and point the instance to it.',
+      suggestion:
+        pySeverity === 'pass'
+          ? undefined
+          : pyMinor != null && pyMinor >= 9
+            ? 'Python 3.9 works but 3.10+ is recommended for current ComfyUI.'
+            : 'Install Python 3.12/3.13 and point the instance to it.',
       fixable: false
     })
 
     // 3. Torch / CUDA
-    const torchOut = await safeExec(python, [
-      '-c',
-      'import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())'
-    ])
-    const torchOk = /True|^\d+\./.test(torchOut) && !/Error|Traceback|No module/i.test(torchOut)
+    const torchOut = await safeExec(
+      python,
+      [
+        '-c',
+        'import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())'
+      ],
+      undefined,
+      60000
+    )
+    // Validate the printed version / cuda / is_available triple explicitly —
+    // CPU-only torch must not be reported as a CUDA success.
+    const torchLine = torchOut.trim().split(/\r?\n/).filter(Boolean).pop() || ''
+    const tripleMatch = torchLine.match(/^(\S+)\s+(\S+)\s+(True|False)\s*$/i)
+    const importFailed = /Error|Traceback|No module/i.test(torchOut) || !tripleMatch
+    let torchSeverity: DoctorSeverity = 'warn'
+    let torchDetail = torchOut || 'torch not importable'
+    let torchSuggestion: string | undefined =
+      'Install a torch build matching your GPU driver (cu130+ recommended for NVIDIA 20+).'
+    if (!importFailed && tripleMatch) {
+      const torchVersion = tripleMatch[1]
+      const cudaVersion = tripleMatch[2].toLowerCase() === 'none' ? null : tripleMatch[2]
+      const cudaAvailable = tripleMatch[3].toLowerCase() === 'true'
+      torchDetail = `torch ${torchVersion}, cuda ${cudaVersion ?? 'none'}, available ${String(cudaAvailable)}`
+      if (cudaVersion && cudaAvailable) {
+        torchSeverity = 'pass'
+        torchSuggestion = undefined
+      } else if (!cudaVersion) {
+        torchSuggestion = 'CPU-only torch build — install a CUDA build matching your GPU driver.'
+      } else {
+        torchSuggestion = `CUDA ${cudaVersion} build but torch.cuda.is_available() is False — check the NVIDIA driver.`
+      }
+    }
     checks.push({
       id: 'torch',
       group: 'Runtime',
       title: 'PyTorch & CUDA',
-      severity: torchOk ? 'pass' : 'warn',
-      detail: torchOut || 'torch not importable',
-      suggestion: torchOk
-        ? undefined
-        : 'Install a torch build matching your GPU driver (cu130+ recommended for NVIDIA 20+).',
+      severity: torchSeverity,
+      detail: torchDetail,
+      suggestion: torchSuggestion,
       fixable: false
     })
 
@@ -158,13 +205,27 @@ export class DoctorService {
     // 7. port
     const port = config?.port || 8188
     const portBusy = await isPortInUse(port)
+    let portSeverity: DoctorSeverity = 'pass'
+    let portDetail = `${config?.listen || '127.0.0.1'}:${port}`
+    let portSuggestion: string | undefined
+    if (portBusy) {
+      const ownComfy = await isComfyListening(port)
+      if (ownComfy) {
+        portSeverity = 'info'
+        portDetail += ' — ComfyUI already running on this port'
+      } else {
+        portSeverity = 'warn'
+        portDetail += ' (currently in use)'
+        portSuggestion = 'Port is in use — stop the conflicting process or choose another port.'
+      }
+    }
     checks.push({
       id: 'port',
       group: 'Network',
       title: 'Listen address / port',
-      severity: portBusy && config ? 'warn' : 'pass',
-      detail: `${config?.listen || '127.0.0.1'}:${port}${portBusy ? ' (currently in use)' : ''}`,
-      suggestion: portBusy ? 'Port is in use — stop the conflicting process or choose another port.' : undefined,
+      severity: portSeverity,
+      detail: portDetail,
+      suggestion: portSuggestion,
       fixable: false
     })
 
@@ -379,8 +440,4 @@ export class DoctorService {
 
 export const doctorService = new DoctorService()
 
-void execSync
-void appendFileSync
-void rmSync
-void readFileSync
 export type { DoctorSeverity }
