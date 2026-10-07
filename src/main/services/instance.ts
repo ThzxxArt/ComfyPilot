@@ -93,7 +93,12 @@ interface RuntimeEntry {
 
 const LOG_CAP = 5000
 const READY_POLL_MS = 500
-const READY_TIMEOUT_MS = 45_000
+// Cold start with modern ComfyUI + plugins can take 60–120s before the HTTP
+// port binds (alembic/kitchen/aimdo imports, torch JIT, custom nodes). 45s was
+// a false negative — the process was alive and listening ~20s later.
+const READY_TIMEOUT_MS = 180_000
+/** If the process is still alive at the first timeout, grant one extra window. */
+const READY_EXTEND_MS = 120_000
 
 export class InstanceService extends EventEmitter {
   private runtimes = new Map<string, RuntimeEntry>()
@@ -654,7 +659,7 @@ export class InstanceService extends EventEmitter {
     return waited.info
   }
 
-  async waitReady(id: string, timeoutMs = READY_TIMEOUT_MS + 5_000): Promise<WaitReadyResult> {
+  async waitReady(id: string, timeoutMs = READY_TIMEOUT_MS + READY_EXTEND_MS + 5_000): Promise<WaitReadyResult> {
     const rt = this.runtimes.get(id)
     const started = Date.now()
     if (!rt) {
@@ -728,6 +733,8 @@ export class InstanceService extends EventEmitter {
       rt.readyPollTimer = undefined
     }
     const started = Date.now()
+    let deadline = started + READY_TIMEOUT_MS
+    let extended = false
     const base = this.baseUrlOf(rt.config)
     const tick = async (): Promise<void> => {
       if (rt.generation !== gen) {
@@ -765,10 +772,24 @@ export class InstanceService extends EventEmitter {
       } catch {
         /* not up yet */
       }
-      if (Date.now() - started > READY_TIMEOUT_MS) {
+      const now = Date.now()
+      if (now > deadline) {
         if (rt.generation !== gen) return
+        // Process still alive → give it one more window. Cold start with
+        // plugins routinely exceeds 45s before the HTTP port binds.
+        const stillAlive = rt.process && rt.process.exitCode === null
+        if (stillAlive && !extended) {
+          extended = true
+          deadline = now + READY_EXTEND_MS
+          this.pushLog(
+            rt,
+            'info',
+            `Still waiting for HTTP on ${base} (process alive, ${Math.round((now - started) / 1000)}s) — extending…`
+          )
+          return
+        }
         rt.status = 'error'
-        rt.lastError = `ComfyUI did not answer on ${base} within ${Math.round(READY_TIMEOUT_MS / 1000)}s`
+        rt.lastError = `ComfyUI did not answer on ${base} within ${Math.round((now - started) / 1000)}s`
         if (rt.readyPollTimer) {
           clearInterval(rt.readyPollTimer)
           rt.readyPollTimer = undefined
