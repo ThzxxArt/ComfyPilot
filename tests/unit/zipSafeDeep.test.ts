@@ -43,7 +43,8 @@ vi.mock('child_process', async () => {
         (cmd.includes('powershell') && args.some((a) => String(a).includes('ZipFile') && !String(a).includes('Extract'))))
     const isExtract =
       Array.isArray(args) &&
-      (args.includes('-o') || args.some((a) => String(a).includes('ExtractToDirectory')))
+      (args.includes('-o') ||
+        args.some((a) => String(a).includes('ExtractToDirectory') || String(a).includes('Expand-Archive')))
 
     if (isList && state.exec.unzipFails && args.includes('-Z1')) {
       const err = new Error('unzip missing') as Error & { code?: number }
@@ -76,7 +77,8 @@ vi.mock('child_process', async () => {
         args.some((a) => String(a).includes('ZipFile') && !String(a).includes('Extract')))
     const isExtract =
       Array.isArray(args) &&
-      (args.includes('-o') || args.some((a) => String(a).includes('ExtractToDirectory')))
+      (args.includes('-o') ||
+        args.some((a) => String(a).includes('ExtractToDirectory') || String(a).includes('Expand-Archive')))
     if (isList && state.exec.unzipFails && args.includes('-Z1')) {
       const err = new Error('unzip missing') as Error & { code?: number }
       err.code = 127

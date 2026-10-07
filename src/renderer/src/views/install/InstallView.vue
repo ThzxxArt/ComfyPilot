@@ -361,10 +361,10 @@ async function startInstall(overrides: Partial<InstallPlan>): Promise<void> {
   }
 }
 
-/** Primary CTA: one-click defaults; still honors an explicit skipStarter. */
+/** Primary CTA: one-click defaults; still honors the form's comfySource & skipStarter. */
 function startFullAuto(): void {
   void startInstall({
-    comfySource: 'zip',
+    comfySource: plan.value.comfySource || 'zip',
     useUv: true,
     autoStart: true,
     skipStarter: Boolean(plan.value.skipStarter),

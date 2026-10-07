@@ -75,11 +75,14 @@ export async function safeUnzip(zipPath: string, destDir: string): Promise<void>
   await assertZipSafe(zipPath)
 
   if (process.platform === 'win32') {
+    // PowerShell 5.1 binds `$true` to ZipFile.ExtractToDirectory's
+    // Encoding entryNameEncoding overload, not the bool overwrite one.
+    // Use Expand-Archive -Force (unambiguous) instead of the 3-arg .NET call.
     const ps = [
       'Add-Type -AssemblyName System.IO.Compression.FileSystem',
-      `[System.IO.Compression.ZipFile]::ExtractToDirectory('${zipPath.replace(/'/g, "''")}','${destDir.replace(/'/g, "''")}', $true)`
+      `Expand-Archive -LiteralPath '${zipPath.replace(/'/g, "''")}' -DestinationPath '${destDir.replace(/'/g, "''")}' -Force`
     ].join(';')
-    await execFileAsync('powershell', ['-NoProfile', '-Command', ps], EXEC)
+    await execFileAsync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], EXEC)
   } else {
     await execFileAsync('unzip', ['-o', zipPath, '-d', destDir], EXEC)
   }
