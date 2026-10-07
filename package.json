@@ -5,13 +5,13 @@
   "main": "./out/main/bootstrap.cjs",
   "author": "ThzxxArt",
   "license": "MIT",
-  "homepage": "https://github.com/comfy-pilot/comfy-pilot",
+  "homepage": "https://github.com/ThzxxArt/ComfyPilot",
   "repository": {
     "type": "git",
-    "url": "https://github.com/comfy-pilot/comfy-pilot.git"
+    "url": "https://github.com/ThzxxArt/ComfyPilot.git"
   },
   "bugs": {
-    "url": "https://github.com/comfy-pilot/comfy-pilot/issues"
+    "url": "https://github.com/ThzxxArt/ComfyPilot/issues"
   },
   "keywords": [
     "comfyui",
@@ -41,8 +41,8 @@
   },
   "publish": {
     "provider": "github",
-    "owner": "comfy-pilot",
-    "repo": "comfy-pilot"
+    "owner": "ThzxxArt",
+    "repo": "ComfyPilot"
   },
   "dependencies": {
     "@vicons/ionicons5": "^0.13.0",

@@ -79,7 +79,7 @@ function openEmbed(): void {
 }
 
 function openGithub(): void {
-  void ipc('shell.openExternal', 'https://github.com/comfy-pilot/comfy-pilot')
+  void ipc('shell.openExternal', 'https://github.com/ThzxxArt/ComfyPilot')
 }
 </script>
 

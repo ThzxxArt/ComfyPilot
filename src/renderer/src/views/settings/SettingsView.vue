@@ -448,7 +448,7 @@ onMounted(async () => {
           <div class="about-line">控制塔，不是编辑器。旁路管理 ComfyUI 生产资产。</div>
           <NSpace style="margin-top: 12px">
             <NButton secondary @click="openConfigDir">打开配置目录</NButton>
-            <NButton secondary @click="ipc('shell.openExternal', 'https://github.com/comfy-pilot/comfy-pilot')">
+            <NButton secondary @click="ipc('shell.openExternal', 'https://github.com/ThzxxArt/ComfyPilot')">
               GitHub 仓库
             </NButton>
           </NSpace>
