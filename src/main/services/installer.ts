@@ -680,20 +680,20 @@ export class InstallerService extends EventEmitter {
       }
       this.assertNotCancelled()
 
-      // 3. venv isolated — PIN to CPython 3.12.
-      // A system 3.14+ interpreter has no torch wheels yet; 3.12 is the sweet spot.
+      // 3. venv isolated — PIN to CPython 3.13.
+      // A system 3.14+ interpreter has no torch wheels yet; 3.13 is the current sweet spot.
       mkdirSync(installRoot, { recursive: true })
       const venvPath = join(installRoot, '.venv')
       this.setStep('venv', 'running', useUv ? 'uv venv…' : 'python -m venv…', undefined, useUv ? 'stepMsg.venvUv' : 'stepMsg.venvPy')
       if (useUv && uvComp?.path) {
-        // Ensure uv has a 3.12 interpreter, then build the venv from it.
+        // Ensure uv has a 3.13 interpreter, then build the venv from it.
         try {
-          await this.run(uvComp.path, ['python', 'install', '3.12'], { timeout: 180000 })
-          this.log('venv', 'uv python 3.12 ready')
+          await this.run(uvComp.path, ['python', 'install', '3.13'], { timeout: 180000 })
+          this.log('venv', 'uv python 3.13 ready')
         } catch (e) {
-          this.log('venv', `uv python install 3.12: ${e instanceof Error ? e.message : String(e)}`)
+          this.log('venv', `uv python install 3.13: ${e instanceof Error ? e.message : String(e)}`)
         }
-        await this.run(uvComp.path, ['venv', venvPath, '--python', '3.12'], { timeout: 180000 })
+        await this.run(uvComp.path, ['venv', venvPath, '--python', '3.13'], { timeout: 180000 })
       } else {
         // Prefer an explicit 3.10–3.13 interpreter; reject nothing here but log.
         await this.run(python, ['-m', 'venv', venvPath], { timeout: 180000 })
@@ -701,7 +701,7 @@ export class InstallerService extends EventEmitter {
         if (/Python\s+3\.(1[4-9]|\d{2,})/i.test(verOut)) {
           this.log(
             'venv',
-            `Warning: ${verOut.trim()} may not have torch wheels — prefer Python 3.12. Re-run with uv enabled.`
+            `Warning: ${verOut.trim()} may not have torch wheels — prefer Python 3.13. Re-run with uv enabled.`
           )
         }
       }
