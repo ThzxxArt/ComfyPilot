@@ -7,7 +7,7 @@ export const APP_NAME = 'ComfyPilot'
  */
 declare const __APP_VERSION__: string | undefined
 export const APP_VERSION =
-  (typeof __APP_VERSION__ !== 'undefined' && __APP_VERSION__) || '0.1.1'
+  (typeof __APP_VERSION__ !== 'undefined' && __APP_VERSION__) || '0.1.2'
 
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'light',

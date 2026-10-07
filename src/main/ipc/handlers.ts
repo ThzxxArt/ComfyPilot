@@ -18,7 +18,9 @@ import { installerService } from '../services/installer'
 import { testProxy, syncProxyFromSettings } from '../services/proxy'
 
 function ok<T>(data: T): IpcResult<T> {
-  return { ok: true, data }
+  // Structured-clone safety: never hand a class instance / Response / Proxy
+  // back over IPC — reduce to plain JSON data first.
+  return { ok: true, data: toPlainIpcData(data) }
 }
 
 function fail(error: unknown): IpcResult<never> {
@@ -27,11 +29,23 @@ function fail(error: unknown): IpcResult<never> {
     return {
       ok: false,
       error: e.message || String(error),
-      code: e.code,
-      suggestedPort: e.suggestedPort
+      code: typeof e.code === 'string' ? e.code : undefined,
+      suggestedPort: typeof e.suggestedPort === 'number' ? e.suggestedPort : undefined
     }
   }
   return { ok: false, error: String(error) }
+}
+
+/** JSON round-trip keeps IPC payloads structured-clone safe. */
+function toPlainIpcData<T>(data: T): T {
+  if (data === undefined || data === null) return data
+  const t = typeof data
+  if (t === 'string' || t === 'number' || t === 'boolean') return data
+  try {
+    return JSON.parse(JSON.stringify(data)) as T
+  } catch {
+    return null as unknown as T
+  }
 }
 
 function wrap<A extends unknown[], R>(

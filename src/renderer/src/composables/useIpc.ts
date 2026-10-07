@@ -7,6 +7,22 @@ import { IPC_EVENTS } from '@shared/types'
 
 const hasBridge = typeof window !== 'undefined' && Boolean(window.comfyPilot)
 
+/**
+ * Strip Vue reactive Proxies / class instances down to plain JSON data.
+ * Electron IPC structured-clone rejects Proxies with
+ * "An object could not be cloned." — this runs BEFORE the bridge call.
+ */
+export function toPlainIpcArg<T>(value: T): T {
+  if (value === undefined || value === null) return value
+  const t = typeof value
+  if (t === 'string' || t === 'number' || t === 'boolean') return value
+  try {
+    return JSON.parse(JSON.stringify(value)) as T
+  } catch {
+    return null as unknown as T
+  }
+}
+
 /** Error with machine-readable code + optional suggested port (PORT_IN_USE). */
 export class ComfyPilotIpcError extends Error {
   code?: string
@@ -26,7 +42,8 @@ export async function ipc<C extends IpcChannel>(
   if (!hasBridge) {
     throw new Error('ComfyPilot bridge is unavailable in this environment')
   }
-  const res = (await window.comfyPilot.invoke(channel, ...args)) as IpcResult<
+  const plainArgs = args.map((a) => toPlainIpcArg(a)) as IpcChannelMap[C]['args']
+  const res = (await window.comfyPilot.invoke(channel, ...plainArgs)) as IpcResult<
     IpcChannelMap[C]['result']
   >
   if (!res.ok) {

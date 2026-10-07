@@ -4,11 +4,37 @@ import { IPC_EVENTS } from '@shared/types'
 
 const ALLOWED_EVENTS = new Set<string>(Object.values(IPC_EVENTS))
 
+/**
+ * Electron IPC uses the structured clone algorithm, which REJECTS Vue
+ * reactive Proxies, functions, DOM nodes and class instances with
+ * "An object could not be cloned.".
+ *
+ * Every argument must be reduced to plain JSON data before crossing the
+ * bridge. JSON round-trip is the only transform that also unwraps Proxies
+ * (JSON.stringify walks them via get traps).
+ */
+export function toPlainIpcArg<T>(value: T): T {
+  if (value === undefined) return value
+  if (value === null) return value
+  const t = typeof value
+  if (t === 'string' || t === 'number' || t === 'boolean') return value
+  try {
+    return JSON.parse(JSON.stringify(value)) as T
+  } catch {
+    // Non-serializable on its own — last resort is to pass a placeholder
+    // rather than crash the whole invoke with a clone error.
+    return null as unknown as T
+  }
+}
+
 async function invoke<C extends IpcChannel>(
   channel: C,
   ...args: IpcChannelMap[C]['args']
 ): Promise<IpcResult<IpcChannelMap[C]['result']>> {
-  return ipcRenderer.invoke(channel, ...args) as Promise<IpcResult<IpcChannelMap[C]['result']>>
+  const plainArgs = args.map((a) => toPlainIpcArg(a)) as IpcChannelMap[C]['args']
+  return ipcRenderer.invoke(channel, ...plainArgs) as Promise<
+    IpcResult<IpcChannelMap[C]['result']>
+  >
 }
 
 function on(event: string, listener: (...args: unknown[]) => void): () => void {

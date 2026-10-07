@@ -1,6 +1,6 @@
 {
   "name": "comfy-pilot",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "ComfyPilot - all-in-one control tower for ComfyUI instances, models, node packs, workflows, monitoring and diagnostics.",
   "main": "./out/main/bootstrap.cjs",
   "author": "ThzxxArt",
