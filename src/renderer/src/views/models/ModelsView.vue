@@ -10,6 +10,7 @@ import {
 } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 import { ipc, onDownloadProgress, onModelScanProgress } from '@/composables/useIpc'
+import { formatBytes } from '@/utils/format'
 import { MODEL_CATEGORY_LABELS } from '@shared/constants'
 import type { DownloadTask, ModelRecord, StorageStats, DuplicateGroup } from '@shared/types'
 
@@ -29,15 +30,6 @@ const downloads = ref<DownloadTask[]>([])
 const storage = ref<StorageStats[]>([])
 const duplicates = ref<DuplicateGroup[]>([])
 const tab = ref('all')
-
-function formatBytes(n: number): string {
-  if (!n) return '0 B'
-  const u = ['B', 'KB', 'MB', 'GB', 'TB']
-  let i = 0
-  let v = n
-  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++ }
-  return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${u[i]}`
-}
 
 const filtered = computed(() => {
   const k = keyword.value.trim().toLowerCase()

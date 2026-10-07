@@ -146,9 +146,10 @@ export class MonitorService extends EventEmitter {
         vendor: c.vendor || 'unknown',
         vramTotal: memPair[index]?.vramTotal || (c.vram || 0) * 1024 * 1024,
         vramUsed: memPair[index]?.vramUsed || 0,
-        utilization: c.utilizationGpu || 0,
-        temperature: c.temperatureGpu || undefined,
-        powerDraw: (c.powerDraw || 0) > 0 ? c.powerDraw : undefined
+        // integer percent — renderer prints this verbatim
+        utilization: Math.round(c.utilizationGpu || 0),
+        temperature: c.temperatureGpu != null ? Math.round(c.temperatureGpu) : undefined,
+        powerDraw: (c.powerDraw || 0) > 0 ? Math.round((c.powerDraw || 0) * 10) / 10 : undefined
       }))
 
       const root = fsSize && fsSize[0]

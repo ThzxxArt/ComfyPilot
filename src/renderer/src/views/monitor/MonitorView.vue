@@ -5,6 +5,7 @@ import { NButton, NSpace, NProgress, NEmpty } from 'naive-ui'
 import StatCard from '@/components/StatCard.vue'
 import { useAppStore } from '@/stores/app'
 import { ipc, onMonitorTick } from '@/composables/useIpc'
+import { clampPercent, formatBytes, formatPercent } from '@/utils/format'
 import type { QueueSnapshot, SystemSnapshot } from '@shared/types'
 
 const store = useAppStore()
@@ -13,21 +14,9 @@ const history = ref<number[]>([])
 
 const cpuHistory = computed(() => history.value.slice(-40))
 
-function formatBytes(n: number): string {
-  if (!n) return '0 B'
-  const u = ['B', 'KB', 'MB', 'GB', 'TB']
-  let i = 0
-  let v = n
-  while (v >= 1024 && i < u.length - 1) {
-    v /= 1024
-    i++
-  }
-  return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${u[i]}`
-}
-
 function pct(used: number, total: number): number {
   if (!total) return 0
-  return Math.min(100, Math.max(0, Math.round((used / total) * 100)))
+  return clampPercent((used / total) * 100)
 }
 
 async function refreshQueue(): Promise<void> {
@@ -91,7 +80,7 @@ onUnmounted(() => {
     <div class="grid stats">
       <StatCard
         label="CPU 使用率"
-        :value="`${(store.system?.cpuUsage ?? 0).toFixed(1)}%`"
+        :value="formatPercent(store.system?.cpuUsage ?? 0, 1)"
         :icon="PulseOutline"
         tone="primary"
         hint="采样周期 2s"
@@ -141,7 +130,7 @@ onUnmounted(() => {
               />
               <div class="gpu-sub">
                 VRAM {{ formatBytes(gpu.vramUsed) }} / {{ formatBytes(gpu.vramTotal) }}
-                <span v-if="gpu.utilization"> · GPU {{ gpu.utilization }}%</span>
+                <span v-if="gpu.utilization"> · GPU {{ formatPercent(gpu.utilization) }}</span>
                 <span v-if="gpu.temperature"> · {{ gpu.temperature }}°C</span>
               </div>
             </div>

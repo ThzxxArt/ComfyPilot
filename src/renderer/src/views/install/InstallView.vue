@@ -10,6 +10,7 @@ import {
   NSteps, NStep, NProgress, NCollapse, NCollapseItem, NTag, NAlert
 } from 'naive-ui'
 import { ipc, onIpc, IPC_EVENTS } from '@/composables/useIpc'
+import { clampPercent } from '@/utils/format'
 import type { GpuCapability, InstallPlan, InstallProgress } from '@shared/types'
 
 const router = useRouter()
@@ -266,7 +267,7 @@ onUnmounted(() => off?.())
         <div class="panel-title">安装进度</div>
         <NProgress
           type="line"
-          :percentage="progress?.percent ?? 0"
+          :percentage="clampPercent(progress?.percent ?? 0)"
           indicator-placement="inside"
           processing
           class="mb"

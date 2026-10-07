@@ -14,6 +14,7 @@ import { NButton, NIcon, NSpace, NTag, NProgress, NSpin } from 'naive-ui'
 import StatCard from '@/components/StatCard.vue'
 import { useAppStore } from '@/stores/app'
 import { ipc } from '@/composables/useIpc'
+import { clampPercent, formatBytes, formatPercent } from '@/utils/format'
 import type { NodePackRecord, ModelRecord, DoctorReport } from '@shared/types'
 
 const router = useRouter()
@@ -31,30 +32,16 @@ const stats = computed(() => {
     instances: store.instances.length,
     models: models.value.length,
     nodes: nodePacks.value.length,
-    cpu: sys ? sys.cpuUsage : 0,
-    ram: sys && sys.ramTotal ? Math.round((sys.ramUsed / sys.ramTotal) * 100) : 0
+    cpu: clampPercent(sys ? sys.cpuUsage : 0),
+    ram: clampPercent(sys && sys.ramTotal ? (sys.ramUsed / sys.ramTotal) * 100 : 0)
   }
 })
 
 const storageBytes = computed(() => models.value.reduce((s, m) => s + m.size, 0))
 
-function formatBytes(n: number): string {
-  if (!n) return '0 B'
-  const u = ['B', 'KB', 'MB', 'GB', 'TB']
-  let i = 0
-  let v = n
-  while (v >= 1024 && i < u.length - 1) {
-    v /= 1024
-    i++
-  }
-  return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${u[i]}`
-}
-
 function vramPercent(gpu: { vramUsed: number; vramTotal: number; utilization?: number }): number {
-  if (gpu.vramTotal > 0) {
-    return Math.min(100, Math.max(0, Math.round((gpu.vramUsed / gpu.vramTotal) * 100)))
-  }
-  return Math.min(100, Math.max(0, Math.round(gpu.utilization || 0)))
+  if (gpu.vramTotal > 0) return clampPercent((gpu.vramUsed / gpu.vramTotal) * 100)
+  return clampPercent(gpu.utilization || 0)
 }
 
 onMounted(async () => {
@@ -109,7 +96,7 @@ async function runDoctor(): Promise<void> {
         />
         <StatCard label="模型资产" :value="stats.models" :icon="FolderOpenOutline" :hint="formatBytes(storageBytes)" />
         <StatCard label="自定义节点包" :value="stats.nodes" :icon="ExtensionPuzzleOutline" hint="本地 custom_nodes" />
-        <StatCard label="系统负载" :value="`${stats.cpu.toFixed(0)}%`" :icon="PulseOutline" tone="warning" :hint="`内存占用 ${stats.ram}%`" />
+        <StatCard label="系统负载" :value="formatPercent(stats.cpu)" :icon="PulseOutline" tone="warning" :hint="`内存占用 ${formatPercent(stats.ram)}`" />
       </div>
 
       <div class="grid lower">
@@ -124,11 +111,11 @@ async function runDoctor(): Promise<void> {
           <div class="meter-rows">
             <div class="meter">
               <div class="meter-label">CPU</div>
-              <NProgress type="line" :percentage="Math.min(100, stats.cpu)" :height="10" indicator-placement="inside" processing />
+              <NProgress type="line" :percentage="stats.cpu" :height="10" indicator-placement="inside" processing />
             </div>
             <div class="meter">
               <div class="meter-label">Memory</div>
-              <NProgress type="line" :percentage="Math.min(100, stats.ram)" :height="10" indicator-placement="inside" />
+              <NProgress type="line" :percentage="stats.ram" :height="10" indicator-placement="inside" />
             </div>
             <div v-for="gpu in store.system?.gpus || []" :key="gpu.index" class="meter">
               <div class="meter-label">

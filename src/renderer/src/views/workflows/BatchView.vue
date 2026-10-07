@@ -7,6 +7,7 @@ import {
 } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 import { ipc, onIpc, IPC_EVENTS } from '@/composables/useIpc'
+import { clampPercent } from '@/utils/format'
 import type { BatchJob } from '@shared/types'
 
 const store = useAppStore()
@@ -130,7 +131,7 @@ onUnmounted(() => offBatch?.())
           </div>
           <div class="job-progress">
             <div class="bar">
-              <div class="bar-in" :style="{ width: `${job.count ? (job.completed / job.count) * 100 : 0}%` }" />
+              <div class="bar-in" :style="{ width: `${job.count ? clampPercent((job.completed / job.count) * 100) : 0}%` }" />
             </div>
             <div class="job-meta">{{ job.completed }}/{{ job.count }} · fail {{ job.failed }}</div>
           </div>

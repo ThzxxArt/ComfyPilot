@@ -5,6 +5,7 @@ import {
   NButton, NIcon, NSpace, NSpin, NEmpty, NInput, NSelect, useMessage, NGrid, NGi
 } from 'naive-ui'
 import { ipc } from '@/composables/useIpc'
+import { formatBytes } from '@/utils/format'
 import type { OutputAsset } from '@shared/types'
 
 const message = useMessage()
@@ -12,15 +13,6 @@ const loading = ref(false)
 const assets = ref<OutputAsset[]>([])
 const root = ref('')
 const type = ref('all')
-
-function formatBytes(n: number): string {
-  if (!n) return '0 B'
-  const u = ['B', 'KB', 'MB', 'GB']
-  let i = 0
-  let v = n
-  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++ }
-  return `${v.toFixed(1)} ${u[i]}`
-}
 
 async function refresh(): Promise<void> {
   loading.value = true

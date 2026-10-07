@@ -5,6 +5,7 @@ import {
   NButton, NIcon, NInput, NSpace, NSpin, NEmpty, useMessage, NModal, NPopconfirm, NList, NListItem
 } from 'naive-ui'
 import { ipc } from '@/composables/useIpc'
+import { formatBytes } from '@/utils/format'
 import type { BackupManifest } from '@shared/types'
 
 const message = useMessage()
@@ -13,15 +14,6 @@ const items = ref<BackupManifest[]>([])
 const showCreate = ref(false)
 const name = ref('')
 const notes = ref('')
-
-function formatBytes(n: number): string {
-  if (!n) return '0 B'
-  const u = ['B', 'KB', 'MB', 'GB']
-  let i = 0
-  let v = n
-  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++ }
-  return `${v.toFixed(1)} ${u[i]}`
-}
 
 async function refresh(): Promise<void> {
   loading.value = true
