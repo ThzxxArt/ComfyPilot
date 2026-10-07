@@ -27,7 +27,7 @@ function formatBytes(n: number): string {
 
 function pct(used: number, total: number): number {
   if (!total) return 0
-  return Math.min(100, Math.round((used / total) * 100))
+  return Math.min(100, Math.max(0, Math.round((used / total) * 100)))
 }
 
 async function refreshQueue(): Promise<void> {

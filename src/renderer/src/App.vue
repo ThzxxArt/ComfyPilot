@@ -172,6 +172,8 @@ function openGithub(): void {
 .shell {
   display: grid;
   grid-template-columns: $nav-width 1fr;
+  flex: 1;
+  min-height: 0;
   height: 100%;
   width: 100%;
 }
@@ -231,6 +233,10 @@ function openGithub(): void {
   gap: 6px;
   margin-top: 8px;
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 2px;
 }
 
 .nav-item {
@@ -310,6 +316,7 @@ function openGithub(): void {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   height: 100%;
 }
 
@@ -344,6 +351,15 @@ function openGithub(): void {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* router-view / transition must fill content so .page can own scrolling */
+.content > *,
+.content > * > * {
+  flex: 1;
+  min-height: 0;
 }
 
 .page-fade-enter-active,

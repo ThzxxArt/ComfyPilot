@@ -50,6 +50,13 @@ function formatBytes(n: number): string {
   return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${u[i]}`
 }
 
+function vramPercent(gpu: { vramUsed: number; vramTotal: number; utilization?: number }): number {
+  if (gpu.vramTotal > 0) {
+    return Math.min(100, Math.max(0, Math.round((gpu.vramUsed / gpu.vramTotal) * 100)))
+  }
+  return Math.min(100, Math.max(0, Math.round(gpu.utilization || 0)))
+}
+
 onMounted(async () => {
   try {
     nodePacks.value = await ipc('node.list')
@@ -124,10 +131,15 @@ async function runDoctor(): Promise<void> {
               <NProgress type="line" :percentage="Math.min(100, stats.ram)" :height="10" indicator-placement="inside" />
             </div>
             <div v-for="gpu in store.system?.gpus || []" :key="gpu.index" class="meter">
-              <div class="meter-label">{{ gpu.model }}</div>
+              <div class="meter-label">
+                {{ gpu.model }}
+                <span v-if="gpu.vramTotal" class="meter-sub">
+                  显存 {{ formatBytes(gpu.vramUsed) }} / {{ formatBytes(gpu.vramTotal) }}
+                </span>
+              </div>
               <NProgress
                 type="line"
-                :percentage="Math.min(100, gpu.vramTotal ? (gpu.vramUsed / gpu.vramTotal) * 100 : gpu.utilization || 0)"
+                :percentage="vramPercent(gpu)"
                 :height="10"
                 indicator-placement="inside"
                 color="#7c5cfc"
@@ -222,6 +234,15 @@ async function runDoctor(): Promise<void> {
   font-weight: 600;
   color: $color-text-secondary;
   margin-bottom: 6px;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.meter-sub {
+  font-weight: 500;
+  color: $color-text-muted;
+  font-variant-numeric: tabular-nums;
 }
 
 .empty-gpu {

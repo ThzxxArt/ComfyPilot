@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events'
+import { execFile } from 'child_process'
 import si from 'systeminformation'
 import WebSocket from 'ws'
 import type {
@@ -42,6 +43,83 @@ export function assertMonitorBaseUrl(baseUrl: string): void {
   throw new Error(`Monitor: URL origin not allowed: ${origin}`)
 }
 
+export type GpuMemAdapter = { used: number; total: number }
+
+/**
+ * systeminformation often omits memoryUsed/memoryTotal on Windows
+ * (nvidia-smi/NVML unavailable). Fall back to the GPU Adapter Memory
+ * performance counters, which report Dedicated Usage / Limit in bytes.
+ */
+let gpuMemCache: { at: number; adapters: GpuMemAdapter[] } | null = null
+
+export async function sampleWindowsGpuMemory(): Promise<GpuMemAdapter[]> {
+  if (process.platform !== 'win32') return []
+  const now = Date.now()
+  if (gpuMemCache && now - gpuMemCache.at < 4000) return gpuMemCache.adapters
+  const script = [
+    "$ErrorActionPreference='SilentlyContinue'",
+    "$u=Get-Counter '\\GPU Adapter Memory(*)\\Dedicated Usage' -ErrorAction SilentlyContinue",
+    "$l=Get-Counter '\\GPU Adapter Memory(*)\\Dedicated Limit' -ErrorAction SilentlyContinue",
+    "$map=@{}",
+    "foreach($s in @($u.CounterSamples)){ $k=$s.InstanceName; if(-not $map[$k]){$map[$k]=@{used=0;total=0}}; $map[$k].used=[long]$s.CookedValue }",
+    "foreach($s in @($l.CounterSamples)){ $k=$s.InstanceName; if(-not $map[$k]){$map[$k]=@{used=0;total=0}}; $map[$k].total=[long]$s.CookedValue }",
+    "$map.GetEnumerator() | Sort-Object Name | ForEach-Object { Write-Output ($_.Name + ',' + $_.Value.used + ',' + $_.Value.total) }"
+  ].join('; ')
+  try {
+    const out = await new Promise<string>((resolve, reject) => {
+      execFile(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-Command', script],
+        { timeout: 5000, windowsHide: true, maxBuffer: 1024 * 1024 },
+        (err, stdout) => (err ? reject(err) : resolve(stdout || ''))
+      )
+    })
+    const adapters: GpuMemAdapter[] = []
+    for (const line of out.split(/\r?\n/)) {
+      const m = line.trim().match(/^.+,(\d+),(\d+)$/)
+      if (!m) continue
+      const used = Number(m[1])
+      const total = Number(m[2])
+      if (Number.isFinite(used) && Number.isFinite(total)) adapters.push({ used, total })
+    }
+    gpuMemCache = { at: now, adapters }
+    return adapters
+  } catch {
+    return gpuMemCache?.adapters || []
+  }
+}
+
+/** Merge controller + adapter memory into byte totals. Exported for tests. */
+export function mergeGpuMemory(
+  controllers: Array<{ vram?: number | null; memoryUsed?: number | null; memoryTotal?: number | null }>,
+  adapters: GpuMemAdapter[]
+): Array<{ vramTotal: number; vramUsed: number }> {
+  const free = adapters.map((a, i) => ({ ...a, i, taken: false }))
+  return controllers.map((c) => {
+    const siTotal = (c.memoryTotal || 0) * 1024 * 1024
+    const siUsed = (c.memoryUsed || 0) * 1024 * 1024
+    const vramBytes = (c.vram || 0) * 1024 * 1024
+
+    // Prefer explicit si values when they look real
+    if (siTotal > 0 && siUsed > 0) {
+      return { vramTotal: siTotal, vramUsed: Math.min(siUsed, siTotal) }
+    }
+
+    // Match a perf-counter adapter by closest dedicated limit
+    let hit = free.find((a) => !a.taken && a.total > 0 && vramBytes > 0 && Math.abs(a.total - vramBytes) <= Math.max(vramBytes * 0.12, 64 * 1024 * 1024))
+    if (!hit) hit = free.find((a) => !a.taken && a.total > 0)
+    if (!hit) hit = free.find((a) => !a.taken && a.used > 0)
+    if (hit) {
+      hit.taken = true
+      const total = hit.total > 0 ? hit.total : vramBytes
+      const used = Math.min(Math.max(hit.used, 0), total || hit.used)
+      return { vramTotal: total || vramBytes, vramUsed: used }
+    }
+
+    return { vramTotal: vramBytes, vramUsed: 0 }
+  })
+}
+
 export class MonitorService extends EventEmitter {
   private last: SystemSnapshot | null = null
   private ws: WebSocket | null = null
@@ -52,19 +130,22 @@ export class MonitorService extends EventEmitter {
   /** Never rejects: partial si failures degrade instead of blowing up the tick. */
   async systemSnapshot(): Promise<SystemSnapshot> {
     try {
-      const [cpu, mem, fsSize, graphics] = await Promise.all([
+      const [cpu, mem, fsSize, graphics, adapters] = await Promise.all([
         si.currentLoad().catch(() => null),
         si.mem().catch(() => null),
         si.fsSize().catch(() => null),
-        si.graphics().catch(() => null)
+        si.graphics().catch(() => null),
+        sampleWindowsGpuMemory().catch(() => [] as GpuMemAdapter[])
       ])
 
-      const gpus: GpuInfo[] = ((graphics && graphics.controllers) || []).map((c, index) => ({
+      const controllers = (graphics && graphics.controllers) || []
+      const memPair = mergeGpuMemory(controllers, adapters)
+      const gpus: GpuInfo[] = controllers.map((c, index) => ({
         index,
         model: c.model || 'Unknown GPU',
         vendor: c.vendor || 'unknown',
-        vramTotal: (c.vram || 0) * 1024 * 1024,
-        vramUsed: (c.memoryUsed || 0) > 0 ? (c.memoryUsed || 0) * 1024 * 1024 : 0,
+        vramTotal: memPair[index]?.vramTotal || (c.vram || 0) * 1024 * 1024,
+        vramUsed: memPair[index]?.vramUsed || 0,
         utilization: c.utilizationGpu || 0,
         temperature: c.temperatureGpu || undefined,
         powerDraw: (c.powerDraw || 0) > 0 ? c.powerDraw : undefined
