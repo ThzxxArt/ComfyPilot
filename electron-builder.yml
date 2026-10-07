@@ -13,7 +13,15 @@ files:
   - '!docs/**'
 asar: true
 asarUnpack:
+  - '**/out/preload/**'
+  - 'out/preload/**'
+  - '**/preload/index.js'
   - '**/node_modules/better-sqlite3/**'
+extraResources:
+  - from: out/preload
+    to: preload
+  - from: out/renderer
+    to: renderer
 win:
   target:
     - target: nsis
