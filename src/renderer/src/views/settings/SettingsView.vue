@@ -45,6 +45,17 @@ const envProbe = ref<EnvProbe | null>(null)
 const pythons = ref<Array<{ path: string; version: string }>>([])
 const testingProxy = ref(false)
 const proxyTestResult = ref<{ ok: boolean; via: string; ms: number; error?: string } | null>(null)
+const configPath = ref('…')
+
+async function openConfigDir(): Promise<void> {
+  try {
+    const dir = await ipc('settings.dataDir')
+    configPath.value = dir
+    await ipc('shell.openPath', dir)
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
 /** Skip watch merge while we are the ones writing store.settings */
 let suppressSettingsWatch = false
 
@@ -179,6 +190,11 @@ async function removeRemote(id: string): Promise<void> {
 onMounted(async () => {
   await store.bootstrap({ keepSelection: true })
   await loadRemotes()
+  try {
+    configPath.value = await ipc('settings.dataDir')
+  } catch {
+    /* ignore */
+  }
 })
 </script>
 
@@ -401,10 +417,13 @@ onMounted(async () => {
         <div class="about">
           <div class="about-logo">ComfyPilot</div>
           <div class="about-line">v{{ APP_VERSION }} · MIT License</div>
-          <div class="about-line">TypeScript · Vue 3 · Electron · Naive UI · SQLite</div>
+          <div class="about-line">TypeScript · Vue 3 · Electron · Naive UI</div>
+          <div class="about-line">数据存储：JSONC 配置文件（无 SQLite / 无原生模块）</div>
           <NDivider style="margin: 12px 0" />
+          <div class="about-line">配置目录：{{ configPath }}</div>
           <div class="about-line">控制塔，不是编辑器。旁路管理 ComfyUI 生产资产。</div>
           <NSpace style="margin-top: 12px">
+            <NButton secondary @click="openConfigDir">打开配置目录</NButton>
             <NButton secondary @click="ipc('shell.openExternal', 'https://github.com/comfy-pilot/comfy-pilot')">
               GitHub 仓库
             </NButton>

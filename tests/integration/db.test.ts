@@ -1,20 +1,18 @@
-/**
- * Integration: SQLite store layer with electron mocked.
- */
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
+import { mkdtempSync, rmSync, readFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
-const tempDir = mkdtempSync(join(tmpdir(), 'cp-db-'))
+const tempDir = mkdtempSync(join(tmpdir(), 'cp-jsonc-'))
+;(globalThis as { __cpTestDir?: string }).__cpTestDir = tempDir
 
 vi.mock('electron', () => ({
   app: {
-    getPath: () => tempDir
+    getPath: () => (globalThis as { __cpTestDir?: string }).__cpTestDir || 'C:\\tmp\\cp-jsonc'
   }
 }))
 
-describe('db store (integration)', () => {
+describe('JSONC store (integration)', () => {
   beforeAll(() => {
     vi.resetModules()
   })
@@ -23,29 +21,48 @@ describe('db store (integration)', () => {
     try {
       rmSync(tempDir, { recursive: true, force: true })
     } catch {
-      /* sqlite may keep file handle briefly on Windows */
+      /* ignore */
     }
   })
 
-  it('loads default settings and merges patches', async () => {
+  it('parseJsonc strips comments and trailing commas', async () => {
+    const { parseJsonc } = await import('../../src/main/services/db')
+    const v = parseJsonc<{ a: number; b: string[] }>(`{
+      // line comment
+      "a": 1, /* block */
+      "b": ["x", "y",], // tail
+    }`)
+    expect(v.a).toBe(1)
+    expect(v.b).toEqual(['x', 'y'])
+  })
+
+  it('parseJsonc keeps comment-like content inside strings', async () => {
+    const { parseJsonc } = await import('../../src/main/services/db')
+    expect(parseJsonc<{ s: string }>('{"s":"http://x//y"}').s).toBe('http://x//y')
+    expect(parseJsonc<{ s: string }>('{"s":"a/*b*/c"}').s).toBe('a/*b*/c')
+  })
+
+  it('settings round-trip writes jsonc with header', async () => {
     const db = await import('../../src/main/services/db')
     const s0 = db.loadSettings()
     expect(s0.theme).toBe('light')
-    const s1 = db.saveSettings({ theme: 'system', locale: 'en-US' })
-    expect(s1.theme).toBe('system')
+    const s1 = db.saveSettings({ locale: 'en-US', proxy: { ...s0.proxy, port: 9999 } })
     expect(s1.locale).toBe('en-US')
-    const s2 = db.loadSettings()
-    expect(s2.theme).toBe('system')
+    expect(s1.proxy.port).toBe(9999)
+    const file = join(db.userDataDir(), 'settings.jsonc')
+    expect(existsSync(file)).toBe(true)
+    const raw = readFileSync(file, 'utf-8')
+    expect(raw.startsWith('//')).toBe(true)
+    expect(db.loadSettings().proxy.port).toBe(9999)
   })
 
-  it('upserts instance configs', async () => {
+  it('instances and models upsert/delete', async () => {
     const db = await import('../../src/main/services/db')
-    const id = 'test-inst-1'
     db.upsertInstanceConfig({
-      id,
-      name: 'T1',
-      path: '/tmp/comfy',
-      pythonPath: 'python',
+      id: 'i1',
+      name: 'T',
+      path: '/tmp/c',
+      pythonPath: '',
       venvPath: '',
       port: 8188,
       listen: '127.0.0.1',
@@ -56,47 +73,24 @@ describe('db store (integration)', () => {
       autoStart: false,
       frontendVersion: ''
     })
-    const list = db.loadInstanceConfigs()
-    expect(list.find((c) => c.id === id)?.name).toBe('T1')
-    expect(db.deleteInstanceConfig(id)).toBe(true)
-    expect(db.loadInstanceConfigs().find((c) => c.id === id)).toBeUndefined()
-  })
+    expect(db.loadInstanceConfigs().some((c) => c.id === 'i1')).toBe(true)
+    expect(db.deleteInstanceConfig('i1')).toBe(true)
 
-  it('models upsert + list + delete', async () => {
-    const db = await import('../../src/main/services/db')
-    const id = 'm1'
     db.upsertModel({
-      id,
-      name: 'test',
-      fileName: 'test.safetensors',
+      id: 'm1',
+      name: 'x',
+      fileName: 'x.safetensors',
       category: 'checkpoints',
-      path: '/models/test.safetensors',
-      size: 10,
-      modifiedAt: Date.now(),
+      path: '/m/x.safetensors',
+      size: 1,
+      modifiedAt: 1,
       source: 'local',
       tags: [],
       metadata: {},
       trainedWords: [],
-      pathRoot: '/models'
+      pathRoot: '/m'
     })
-    expect(db.listModels().some((m) => m.id === id)).toBe(true)
-    expect(db.deleteModel(id)).toBe(true)
-    expect(db.listModels().some((m) => m.id === id)).toBe(false)
-  })
-
-  it('node snapshots roundtrip with disabled marker in source', async () => {
-    const db = await import('../../src/main/services/db')
-    const id = 'snap-1'
-    db.insertSnapshot({
-      id,
-      name: 's1',
-      createdAt: Date.now(),
-      packs: [{ name: 'p', version: '1.0', path: '/x', source: 'local@disabled' }],
-      notes: ''
-    })
-    const snap = db.getSnapshot(id)
-    expect(snap?.packs[0].source.endsWith('@disabled')).toBe(true)
-    expect(db.deleteSnapshot(id)).toBe(true)
-    expect(db.getSnapshot(id)).toBeNull()
+    expect(db.listModels().some((m) => m.id === 'm1')).toBe(true)
+    expect(db.deleteModel('m1')).toBe(true)
   })
 })

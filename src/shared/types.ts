@@ -517,6 +517,7 @@ export type IpcChannelMap = {
   'settings.get': { args: []; result: AppSettings }
   'settings.set': { args: [Partial<AppSettings>]; result: AppSettings }
   'settings.launchTemplates': { args: []; result: LaunchArgTemplate[] }
+  'settings.dataDir': { args: []; result: string }
   'proxy.apply': { args: []; result: { enabled: boolean; url: string; bypass: string } }
   'proxy.test': { args: [{ url?: string }?]; result: { ok: boolean; via: string; ms: number; error?: string } }
 

@@ -48,6 +48,10 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     return next
   }))
   ipcMain.handle('settings.launchTemplates', wrap(() => LAUNCH_TEMPLATES))
+  ipcMain.handle('settings.dataDir', wrap(async () => {
+    const { userDataDir } = await import('../services/db')
+    return userDataDir()
+  }))
   ipcMain.handle('proxy.apply', wrap(() => syncProxyFromSettings()))
   ipcMain.handle('proxy.test', wrap((opts?: { url?: string }) => testProxy(opts)))
 
