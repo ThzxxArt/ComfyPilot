@@ -33,13 +33,13 @@ const EXEC_OPTS = {
 } as const
 
 const TORCH_INDEX: Record<TorchChannel, string> = {
-  cu130: 'https://download.pytorch.org/whl/cu130',
-  cu126: 'https://download.pytorch.org/whl/cu126',
-  cu124: 'https://download.pytorch.org/whl/cu124',
-  rocm: 'https://download.pytorch.org/whl/rocm6.2',
-  xpu: 'https://download.pytorch.org/whl/xpu',
-  mps: 'https://download.pytorch.org/whl/cpu',
-  cpu: 'https://download.pytorch.org/whl/cpu'
+  cu130: 'https://download.pytorch.org/whl/cu130/',
+  cu126: 'https://download.pytorch.org/whl/cu126/',
+  cu124: 'https://download.pytorch.org/whl/cu124/',
+  rocm: 'https://download.pytorch.org/whl/rocm6.2/',
+  xpu: 'https://download.pytorch.org/whl/xpu/',
+  mps: 'https://download.pytorch.org/whl/cpu/',
+  cpu: 'https://download.pytorch.org/whl/cpu/'
 }
 
 const COMFY_REPO = 'https://github.com/comfyanonymous/ComfyUI.git'
@@ -124,18 +124,26 @@ export function buildGitCloneArgs(repo: string, dest: string, branch?: string): 
   return args
 }
 
-/** Torch index for a channel. Wheel mirrors use `<prefix>/<channel>/`; official uses /whl/<channel>. */
+/**
+ * Torch index for a channel. Always a PEP 503 simple index (trailing slash).
+ * Wheel mirrors publish `<prefix>/<channel>/`; official publishes `/whl/<channel>/`.
+ */
 export function resolveTorchIndex(channel: TorchChannel): string {
   const base = TORCH_INDEX[channel] || TORCH_INDEX.cpu
   const mirror = String(loadSettings().torchIndexMirror || '').trim()
   if (!mirror) return base
-  // Official-style mirrors keep the /whl/<channel> suffix; wheel mirrors just get /<channel>.
   const isOfficialStyle = /pytorch\.org/i.test(mirror) || /\/whl\/?$/i.test(mirror)
   const prefix = mirror.replace(/\/+$/, '')
   const joined = isOfficialStyle
     ? prefix.replace(/\/whl\/?$/i, '') + base.replace('https://download.pytorch.org', '')
     : `${prefix}/${channel}`
-  return joined.replace(/\/whl\/whl\//, '/whl/').replace(/\/{3,}/g, '/')
+  const cleaned = joined.replace(/\/whl\/whl\//, '/whl/').replace(/\/{3,}/g, '/')
+  // uv/pip treat the URL as a PEP 503 simple index — trailing slash required.
+  return cleaned.endsWith('/') ? cleaned : cleaned + '/'
+}
+
+export function officialTorchIndex(channel: TorchChannel): string {
+  return TORCH_INDEX[channel] || TORCH_INDEX.cpu
 }
 
 export function listStarterModels(): StarterModel[] {
@@ -672,18 +680,30 @@ export class InstallerService extends EventEmitter {
       }
       this.assertNotCancelled()
 
-      // 3. venv isolated
+      // 3. venv isolated — PIN to CPython 3.12.
+      // A system 3.14+ interpreter has no torch wheels yet; 3.12 is the sweet spot.
       mkdirSync(installRoot, { recursive: true })
       const venvPath = join(installRoot, '.venv')
       this.setStep('venv', 'running', useUv ? 'uv venv…' : 'python -m venv…', undefined, useUv ? 'stepMsg.venvUv' : 'stepMsg.venvPy')
       if (useUv && uvComp?.path) {
-        // When no concrete interpreter is available, let uv provision one (3.12).
-        const uvArgs = ['venv', venvPath]
-        if (python && python !== 'python') uvArgs.push('--python', python)
-        else uvArgs.push('--python', '3.12')
-        await this.run(uvComp.path, uvArgs, { timeout: 180000 })
+        // Ensure uv has a 3.12 interpreter, then build the venv from it.
+        try {
+          await this.run(uvComp.path, ['python', 'install', '3.12'], { timeout: 180000 })
+          this.log('venv', 'uv python 3.12 ready')
+        } catch (e) {
+          this.log('venv', `uv python install 3.12: ${e instanceof Error ? e.message : String(e)}`)
+        }
+        await this.run(uvComp.path, ['venv', venvPath, '--python', '3.12'], { timeout: 180000 })
       } else {
+        // Prefer an explicit 3.10–3.13 interpreter; reject nothing here but log.
         await this.run(python, ['-m', 'venv', venvPath], { timeout: 180000 })
+        const verOut = await this.run(this.venvPython(venvPath), ['--version'], { timeout: 8000 }).catch(() => '')
+        if (/Python\s+3\.(1[4-9]|\d{2,})/i.test(verOut)) {
+          this.log(
+            'venv',
+            `Warning: ${verOut.trim()} may not have torch wheels — prefer Python 3.12. Re-run with uv enabled.`
+          )
+        }
       }
       const vpy = this.venvPython(venvPath)
       if (!existsSync(vpy)) throw new Error(`venv creation failed — missing ${vpy}`)
@@ -735,21 +755,34 @@ export class InstallerService extends EventEmitter {
       }
       this.assertNotCancelled()
 
-      // 5. torch
+      // 5. torch — try configured index, fall back to official on "not found"
       this.setStep('torch', 'running', plan.torchChannel, undefined, 'stepMsg.torchRun', { channel: plan.torchChannel })
       const index = resolveTorchIndex(plan.torchChannel)
+      const official = officialTorchIndex(plan.torchChannel)
       this.log('torch', `torch index: ${index}`)
-      if (useUv && uvComp?.path) {
-        await this.run(
-          uvComp.path,
-          ['pip', 'install', '--python', vpy, 'torch', 'torchvision', 'torchaudio', '--index-url', index],
-          { timeout: 30 * 60 * 1000 }
-        )
-      } else {
-        await this.run(vpy, this.pipArgs(['-m', 'pip', 'install', '--upgrade', 'pip']), { timeout: 120000 })
-        await this.run(vpy, this.pipArgs(['-m', 'pip', 'install', 'torch', 'torchvision', 'torchaudio', '--index-url', index]), {
-          timeout: 30 * 60 * 1000
-        })
+      const installTorchWith = async (idx: string): Promise<void> => {
+        if (useUv && uvComp?.path) {
+          await this.run(
+            uvComp.path,
+            ['pip', 'install', '--python', vpy, 'torch', 'torchvision', 'torchaudio', '--index-url', idx],
+            { timeout: 30 * 60 * 1000 }
+          )
+        } else {
+          await this.run(vpy, this.pipArgs(['-m', 'pip', 'install', '--upgrade', 'pip']), { timeout: 120000 })
+          await this.run(
+            vpy,
+            this.pipArgs(['-m', 'pip', 'install', 'torch', 'torchvision', 'torchaudio', '--index-url', idx]),
+            { timeout: 30 * 60 * 1000 }
+          )
+        }
+      }
+      try {
+        await installTorchWith(index)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (index === official) throw err
+        this.log('torch', `index ${index} failed (${msg.slice(0, 160)}) — retrying official ${official}`)
+        await installTorchWith(official)
       }
       this.setStep('torch', 'done', plan.torchChannel)
       this.assertNotCancelled()

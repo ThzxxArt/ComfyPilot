@@ -59,7 +59,8 @@ describe('resolveTorchIndex mirror layout', () => {
     )
     void loadSettings
     saveSettings({ torchIndexMirror: 'https://mirror.sjtu.edu.cn/pytorch-wheels' })
-    expect(resolveTorchIndex('cu130')).toBe('https://mirror.sjtu.edu.cn/pytorch-wheels/cu130')
+    // PEP 503 simple index requires a trailing slash
+    expect(resolveTorchIndex('cu130')).toBe('https://mirror.sjtu.edu.cn/pytorch-wheels/cu130/')
     saveSettings({ torchIndexMirror: '' })
     expect(resolveTorchIndex('cpu')).toContain('download.pytorch.org')
     void DEFAULT_SETTINGS
