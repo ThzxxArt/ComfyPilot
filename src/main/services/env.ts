@@ -268,19 +268,38 @@ export class EnvService {
     const reqFile = join(comfyDir, 'requirements.txt')
     if (existsSync(reqFile)) {
       const settings = loadSettings()
-      const args = ['-m', 'pip', 'install', '-r', reqFile]
+      const OFFICIAL_PYPI = 'https://pypi.org/simple'
       const pipIndex = String(settings.pipIndex || '').trim()
-      if (pipIndex) {
-        args.push('-i', pipIndex)
-        try {
-          args.push('--trusted-host', new URL(pipIndex).hostname)
-        } catch {
-          /* skip */
+      const buildArgs = (extra: boolean): string[] => {
+        const args = ['-m', 'pip', 'install', '-r', reqFile]
+        if (pipIndex) {
+          args.push('-i', pipIndex)
+          try {
+            args.push('--trusted-host', new URL(pipIndex).hostname)
+          } catch {
+            /* skip */
+          }
+          if (extra && pipIndex !== OFFICIAL_PYPI) args.push('--extra-index-url', OFFICIAL_PYPI)
         }
+        return args
       }
-      const out = await safeExec(pythonInVenv, args, undefined, LONG_TIMEOUT_MS)
-      if (/ERROR:|error: failed/i.test(out) && !/Successfully installed|Requirement already satisfied/i.test(out)) {
-        throw new Error(`requirements install reported errors: ${out.slice(0, 300)}`)
+      const looksOk = (out: string): boolean =>
+        /Successfully installed|Requirement already satisfied/i.test(out) &&
+        !/ERROR:|error: failed/i.test(out)
+      let out = await safeExec(pythonInVenv, buildArgs(true), undefined, LONG_TIMEOUT_MS)
+      if (!looksOk(out)) {
+        // Mirror gap must not be fatal — retry against official PyPI only.
+        if (pipIndex && pipIndex !== OFFICIAL_PYPI) {
+          out = await safeExec(
+            pythonInVenv,
+            ['-m', 'pip', 'install', '-r', reqFile, '-i', OFFICIAL_PYPI, '--trusted-host', 'pypi.org'],
+            undefined,
+            LONG_TIMEOUT_MS
+          )
+        }
+        if (!looksOk(out)) {
+          throw new Error(`requirements install reported errors: ${out.slice(0, 400)}`)
+        }
       }
     }
 

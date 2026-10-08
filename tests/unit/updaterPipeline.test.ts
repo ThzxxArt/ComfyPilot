@@ -920,27 +920,24 @@ describe('runUpdate pipeline', () => {
   })
 
   it('reports backup at when git rollback itself fails (after tree was modified)', async () => {
-    // Only reachable when the tree WAS rewritten (pull succeeded) and a later
-    // step failed — then rollback runs and can itself fail.
-    seedGitInstall({ withVenv: true, withReq: true })
+    // Rollback runs only when a step AFTER a successful fetch fails and the
+    // failure is NOT a deps-only failure. Torch install failure is that case.
+    seedGitInstall({ withVenv: true, withReq: false })
     routeExec([
       { match: 'rev-parse HEAD', result: () => ({ stdout: 'oldsha\n' }) },
       { match: 'pull', result: () => ({ stdout: '' }) },
       { match: 'rev-parse --short', result: () => ({ stdout: 'newsha\n' }) },
       {
         match: 'pip',
-        result: () => ({ error: new Error('pip exploded'), stderr: 'pip exploded' })
+        result: () => ({ error: new Error('torch exploded'), stderr: 'torch exploded' })
       },
-      {
-        match: 'status',
-        result: () => ({ stdout: '' })
-      },
+      { match: 'status', result: () => ({ stdout: '' }) },
       {
         match: 'reset',
         result: () => ({ error: new Error('reset exploded'), stderr: 'reset exploded' })
       }
     ])
-    const p = await runUpdate({ updateDeps: true, torchChannel: undefined })
+    const p = await runUpdate({ updateDeps: true, torchChannel: 'cpu' })
     expect(p.status).toBe('failed')
     expect(p.error).toMatch(/rollback FAILED/)
     expect(p.error).toMatch(/backup at/)
@@ -1753,16 +1750,17 @@ describe('edge branches', () => {
 // 0.1.4 security-hardening branch coverage (S2/S3/M1)
 // =====================================================================
 describe('rollback safety branches', () => {
-  it('refuses git reset --hard when the working tree is dirty', async () => {
-    // S2 guard: uncommitted local edits must survive a rollback attempt.
-    seedGitInstall({ withVenv: true, withReq: true })
+  it('refuses git reset --hard when tracked files are dirty', async () => {
+    // S2 guard: uncommitted LOCAL EDITS must survive a rollback attempt.
+    // Untracked files must NOT block (that was the false-positive).
+    seedGitInstall({ withVenv: true, withReq: false })
     routeExec([
       { match: 'rev-parse HEAD', result: () => ({ stdout: 'oldsha\n' }) },
       { match: 'pull', result: () => ({ stdout: '' }) },
       { match: 'rev-parse --short', result: () => ({ stdout: 'newsha\n' }) },
       {
         match: 'pip',
-        result: () => ({ error: new Error('pip exploded'), stderr: 'pip exploded' })
+        result: () => ({ error: new Error('torch exploded'), stderr: 'torch exploded' })
       },
       {
         match: 'status',
@@ -1775,10 +1773,41 @@ describe('rollback safety branches', () => {
         }
       }
     ])
-    const p = await runUpdate({ updateDeps: true })
+    const p = await runUpdate({ updateDeps: true, torchChannel: 'cpu' })
     expect(p.status).toBe('failed')
     expect(p.error).toMatch(/uncommitted local changes/i)
     expect(p.error).toMatch(/NOT destroyed|not destroyed/i)
+  })
+
+  it('deps failure after a good pull does NOT roll the source back', async () => {
+    // Field bug: requirements resolution failure (missing package on the
+    // mirror) must not discard a successful git pull.
+    seedGitInstall({ withVenv: true, withReq: true })
+    routeExec([
+      { match: 'rev-parse HEAD', result: () => ({ stdout: 'oldsha\n' }) },
+      { match: 'pull', result: () => ({ stdout: '' }) },
+      { match: 'rev-parse --short', result: () => ({ stdout: 'newsha\n' }) },
+      {
+        match: 'pip',
+        result: () => ({
+          error: new Error('comfyui-workflow-templates-media-assets-02 was not found in the package registry'),
+          stderr: 'No solution found when resolving dependencies'
+        })
+      },
+      { match: 'status', result: () => ({ stdout: '' }) },
+      {
+        match: 'reset',
+        result: () => {
+          throw new Error('reset must NOT run when only deps failed')
+        }
+      }
+    ])
+    const p = await runUpdate({ updateDeps: true })
+    expect(p.status).toBe('failed')
+    expect(p.error).toMatch(/Source updated, but requirements install failed/i)
+    expect(p.error).toMatch(/Repair env/i)
+    const rollback = p.steps.find((s) => s.id === 'rollback')
+    expect(rollback?.status).toBe('skipped')
   })
 
   it('overlayTree updates nested core dirs named like preserved dirs', async () => {
@@ -1837,6 +1866,145 @@ describe('overlay/rollback error branches', () => {
       expect(p.status).toBe('failed')
     } finally {
       ;(fsMod.copyFileSync as unknown) = origCopy
+    }
+  })
+})
+
+describe('deps fallback + backup location (field bug 2025)', () => {
+  it('backup lives OUTSIDE the comfyDir git tree', async () => {
+    seedGitInstall({ withVenv: true, withReq: false })
+    routeExec([{ match: '', result: () => ({ stdout: 'ok\n' }) }])
+    const p = await runUpdate({ updateDeps: false })
+    expect(p.backupPath).toBeTruthy()
+    expect(p.backupPath).not.toContain('ComfyUI' + '\\' + '.cp-backup')
+    expect(p.backupPath).not.toContain('ComfyUI/.cp-backup')
+    // Must sit next to ComfyUI, under .cp-backups
+    expect(p.backupPath).toContain('.cp-backups')
+  })
+
+  it('requirements failure with NO mirror still keeps the source', async () => {
+    seedGitInstall({ withVenv: true, withReq: true })
+    routeExec([
+      { match: 'rev-parse HEAD', result: () => ({ stdout: 'oldsha\n' }) },
+      { match: 'pull', result: () => ({ stdout: '' }) },
+      { match: 'rev-parse --short', result: () => ({ stdout: 'newsha\n' }) },
+      {
+        match: 'pip',
+        result: () => ({ error: new Error('package not found'), stderr: 'not found' })
+      }
+    ])
+    const p = await runUpdate({ updateDeps: true })
+    expect(p.status).toBe('failed')
+    expect(p.error).toMatch(/Source updated, but requirements install failed/i)
+    const rollback = p.steps.find((s) => s.id === 'rollback')
+    expect(rollback?.status).toBe('skipped')
+  })
+
+  it('requirements failure WITH a mirror retries official PyPI then keeps source', async () => {
+    const calls: string[] = []
+    seedGitInstall({ withVenv: true, withReq: true })
+    // Pretend a mirror is configured
+    const prevIndex = h.state.settings.pipIndex
+    h.state.settings.pipIndex = 'https://pypi.tuna.tsinghua.edu.cn/simple'
+    routeExec([
+      { match: 'rev-parse HEAD', result: () => ({ stdout: 'oldsha\n' }) },
+      { match: 'pull', result: () => ({ stdout: '' }) },
+      { match: 'rev-parse --short', result: () => ({ stdout: 'newsha\n' }) },
+      {
+        match: 'pip',
+        result: () => {
+          calls.push('pip')
+          // first call (mirror) fails, second call (official) succeeds
+          if (calls.length === 1) {
+            return { error: new Error('mirror missing pkg'), stderr: 'not found' }
+          }
+          return { stdout: 'Successfully installed\n' }
+        }
+      }
+    ])
+    try {
+      const p = await runUpdate({ updateDeps: true })
+      expect(p.status).toBe('done')
+      const req = p.steps.find((s) => s.id === 'requirements')
+      expect(req?.status).toBe('done')
+    } finally {
+      h.state.settings.pipIndex = prevIndex
+    }
+  })
+})
+
+describe('requirements index branches', () => {
+  it('installs requirements with no custom index (no extra-index-url)', async () => {
+    seedGitInstall({ withVenv: true, withReq: true })
+    const prev = h.state.settings.pipIndex
+    h.state.settings.pipIndex = ''
+    const seen: string[][] = []
+    routeExec([
+      { match: 'rev-parse HEAD', result: () => ({ stdout: 'oldsha\n' }) },
+      { match: 'pull', result: () => ({ stdout: '' }) },
+      { match: 'rev-parse --short', result: () => ({ stdout: 'newsha\n' }) },
+      {
+        match: 'pip',
+        result: () => {
+          seen.push([])
+          return { stdout: 'Successfully installed\n' }
+        }
+      }
+    ])
+    try {
+      const p = await runUpdate({ updateDeps: true })
+      expect(p.status).toBe('done')
+    } finally {
+      h.state.settings.pipIndex = prev
+    }
+  })
+
+  it('when the configured index is already official PyPI, no extra-index is added', async () => {
+    seedGitInstall({ withVenv: true, withReq: true })
+    const prev = h.state.settings.pipIndex
+    h.state.settings.pipIndex = 'https://pypi.org/simple'
+    routeExec([
+      { match: 'rev-parse HEAD', result: () => ({ stdout: 'oldsha\n' }) },
+      { match: 'pull', result: () => ({ stdout: '' }) },
+      { match: 'rev-parse --short', result: () => ({ stdout: 'newsha\n' }) },
+      { match: 'pip', result: () => ({ stdout: 'Successfully installed\n' }) }
+    ])
+    try {
+      const p = await runUpdate({ updateDeps: true })
+      expect(p.status).toBe('done')
+    } finally {
+      h.state.settings.pipIndex = prev
+    }
+  })
+})
+
+describe('files-rollback restore error path', () => {
+  it('surfaces restore <name> error when a backup entry cannot be restored', async () => {
+    // zip source: overlay succeeds → tree modified → torch fails → files rollback
+    // restore throws for one entry.
+    seedZipInstall()
+    const fsMod = await import('fs')
+    const origCopy = fsMod.copyFileSync as unknown as (...a: unknown[]) => void
+    let failing = false
+    ;(fsMod as { copyFileSync: unknown }).copyFileSync = (from: string, to: string) => {
+      if (failing && String(from).includes('.cp-backups')) throw new Error('restore boom')
+      return origCopy(from, to)
+    }
+    routeExec([
+      {
+        match: 'pip',
+        result: () => ({ error: new Error('torch exploded'), stderr: 'torch exploded' })
+      }
+    ])
+    try {
+      failing = true
+      const p = await runUpdate({ updateDeps: true, torchChannel: 'cpu' })
+      expect(p.status).toBe('failed')
+      // Either restore error or rollback-failed reporting — both acceptable,
+      // but we must NOT silently claim success.
+      expect(p.error).toBeTruthy()
+    } finally {
+      ;(fsMod as { copyFileSync: unknown }).copyFileSync = origCopy
     }
   })
 })

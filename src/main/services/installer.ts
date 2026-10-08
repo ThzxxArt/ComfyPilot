@@ -804,15 +804,44 @@ export class InstallerService extends EventEmitter {
       this.setStep('requirements', 'running', 'Installing requirements…', undefined, 'stepMsg.reqRun')
       const reqFile = join(comfyDir, 'requirements.txt')
       if (existsSync(reqFile)) {
-        if (useUv && uvComp?.path) {
-          const uvArgs = ['pip', 'install', '--python', vpy, '-r', reqFile]
-          const pipIndex = String(loadSettings().pipIndex || '').trim()
-          if (pipIndex) uvArgs.push('--index-url', pipIndex)
-          await this.run(uvComp.path, uvArgs, { timeout: 30 * 60 * 1000 })
-        } else {
-          await this.run(vpy, this.pipArgs(['-m', 'pip', 'install', '-r', reqFile]), {
-            timeout: 30 * 60 * 1000
-          })
+        const OFFICIAL_PYPI = 'https://pypi.org/simple'
+        const pipIndex = String(loadSettings().pipIndex || '').trim()
+        const extraArgs = (args: string[]): string[] => {
+          if (!pipIndex) return args
+          // Mirror gap must not be fatal — official PyPI fills missing packages.
+          if (pipIndex !== OFFICIAL_PYPI) args.push('--extra-index-url', OFFICIAL_PYPI)
+          return args
+        }
+        try {
+          if (useUv && uvComp?.path) {
+            const uvArgs = ['pip', 'install', '--python', vpy, '-r', reqFile]
+            if (pipIndex) uvArgs.push('--index-url', pipIndex)
+            await this.run(uvComp.path, extraArgs(uvArgs), { timeout: 30 * 60 * 1000 })
+          } else {
+            await this.run(vpy, this.pipArgs(extraArgs(['-m', 'pip', 'install', '-r', reqFile])), {
+              timeout: 30 * 60 * 1000
+            })
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          if (pipIndex && pipIndex !== OFFICIAL_PYPI) {
+            this.log('requirements', `index ${pipIndex} failed (${msg.slice(0, 160)}) — retrying official PyPI`)
+            if (useUv && uvComp?.path) {
+              await this.run(
+                uvComp.path,
+                ['pip', 'install', '--python', vpy, '-r', reqFile, '--index-url', OFFICIAL_PYPI],
+                { timeout: 30 * 60 * 1000 }
+              )
+            } else {
+              await this.run(
+                vpy,
+                ['-m', 'pip', 'install', '-r', reqFile, '-i', OFFICIAL_PYPI, '--trusted-host', 'pypi.org'],
+                { timeout: 30 * 60 * 1000 }
+              )
+            }
+          } else {
+            throw err
+          }
         }
         this.setStep('requirements', 'done', 'requirements installed', undefined, 'stepMsg.reqDone')
       } else {

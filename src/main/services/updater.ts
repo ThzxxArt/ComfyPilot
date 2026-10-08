@@ -13,9 +13,10 @@
  *          archive manifest are replaced, files absent from the archive are left)
  *
  * Every destructive step is preceded by a backup under
- *   <comfyDir>/.cp-backup-<timestamp>/
- * and a failed run rolls back from that backup. Rollback failures are reported
- * loudly (never swallowed).
+ *   <parent-of-comfyDir>/.cp-backups/<timestamp>/
+ * (deliberately OUTSIDE the git working tree — a backup dir inside comfyDir
+ * makes `git status` dirty and blocks rollback) and a failed run rolls back
+ * from that backup. Rollback failures are reported loudly (never swallowed).
  */
 import { EventEmitter } from 'events'
 import {
@@ -105,6 +106,19 @@ function venvPython(venvPath: string): string {
  * would destroy the user's uncommitted edits.
  */
 class UpdateAbortedNoTreeChange extends Error {}
+
+/**
+ * Thrown when the SOURCE update succeeded but a dependency step failed.
+ * Rollback must NOT run — the new source + new requirements.txt is the state
+ * the user wants; dropping it would lose a good update. The user retries deps
+ * via `repairEnv` (or pip manually).
+ */
+class UpdateDepsFailedAfterSourceOk extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'UpdateDepsFailedAfterSourceOk'
+  }
+}
 
 function pipArgs(base: string[]): string[] {
   const args = [...base]
@@ -565,10 +579,13 @@ export class ComfyUpdaterService extends EventEmitter {
       }
       this.assertNotCancelled()
 
-      // 2. backup
+      // 2. backup — keep it OUTSIDE the comfyDir git tree so it never shows up
+      // as an "uncommitted local change" and blocks rollback.
       this.setStep('backup', 'running', 'Backing up core files…', undefined, 'update.msgBackupRun')
       const source2 = detectComfySource(comfyDir)
-      backupPath = join(comfyDir, `.cp-backup-${Date.now()}`)
+      const backupsRoot = join(dirname(comfyDir), '.cp-backups')
+      mkdirSync(backupsRoot, { recursive: true })
+      backupPath = join(backupsRoot, `${Date.now()}`)
       mkdirSync(backupPath, { recursive: true })
       if (source2 === 'git') {
         // git is self-versioned: record the current sha so rollback can reset.
@@ -643,15 +660,72 @@ export class ComfyUpdaterService extends EventEmitter {
         } else if (!existsSync(vpy2)) {
           throw new Error(`Cannot install requirements — venv python missing at ${vpy2}`)
         } else {
+          // Requirements may reference packages missing from the configured
+          // mirror (e.g. comfyui-workflow-templates-media-assets-*). Always
+          // expose official PyPI as an extra index so a mirror gap is not fatal.
+          const OFFICIAL_PYPI = 'https://pypi.org/simple'
+          const pipIndex = String(loadSettings().pipIndex || '').trim()
           const bootstrap = await bootstrapService.ensure({ kinds: ['uv'], downloadIfMissing: false })
           const uvComp = bootstrap.components.find((c) => c.kind === 'uv' && c.installed)
-          if (uvComp?.path) {
-            const uvArgs = ['pip', 'install', '--python', vpy2, '-r', reqFile]
-            const pipIndex = String(loadSettings().pipIndex || '').trim()
-            if (pipIndex) uvArgs.push('--index-url', pipIndex)
-            await this.run(uvComp.path, uvArgs, { timeout: EXEC_OPTS.timeout })
-          } else {
-            await this.run(vpy2, pipArgs(['-m', 'pip', 'install', '-r', reqFile]), { timeout: EXEC_OPTS.timeout })
+          const installReq = async (): Promise<void> => {
+            if (uvComp?.path) {
+              const uvArgs = ['pip', 'install', '--python', vpy2, '-r', reqFile]
+              if (pipIndex) {
+                uvArgs.push('--index-url', pipIndex)
+                if (pipIndex !== OFFICIAL_PYPI) uvArgs.push('--extra-index-url', OFFICIAL_PYPI)
+              }
+              await this.run(uvComp.path, uvArgs, { timeout: EXEC_OPTS.timeout })
+            } else {
+              const args = ['-m', 'pip', 'install', '-r', reqFile]
+              if (pipIndex) {
+                args.push('-i', pipIndex)
+                try {
+                  args.push('--trusted-host', new URL(pipIndex).hostname)
+                } catch {
+                  /* skip */
+                }
+                if (pipIndex !== OFFICIAL_PYPI) args.push('--extra-index-url', OFFICIAL_PYPI)
+              }
+              await this.run(vpy2, args, { timeout: EXEC_OPTS.timeout })
+            }
+          }
+          try {
+            await installReq()
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err)
+            // Retry once against official PyPI only — the mirror is the usual
+            // reason a package "was not found in the package registry".
+            if (pipIndex && pipIndex !== OFFICIAL_PYPI) {
+              this.log('requirements', `index ${pipIndex} failed (${msg.slice(0, 160)}) — retrying official PyPI`)
+              try {
+                if (uvComp?.path) {
+                  await this.run(
+                    uvComp.path,
+                    ['pip', 'install', '--python', vpy2, '-r', reqFile, '--index-url', OFFICIAL_PYPI],
+                    { timeout: EXEC_OPTS.timeout }
+                  )
+                } else {
+                  await this.run(
+                    vpy2,
+                    ['-m', 'pip', 'install', '-r', reqFile, '-i', OFFICIAL_PYPI, '--trusted-host', 'pypi.org'],
+                    { timeout: EXEC_OPTS.timeout }
+                  )
+                }
+              } catch (err2) {
+                const msg2 = err2 instanceof Error ? err2.message : String(err2)
+                // Source is already updated — do NOT roll it back. Deps are
+                // retried via repairEnv / pip manually.
+                throw new UpdateDepsFailedAfterSourceOk(
+                  `Source updated, but requirements install failed: ${msg2.slice(0, 400)}. ` +
+                    `Use "Repair env" (or pip install -r ${reqFile}) to retry.`
+                )
+              }
+            } else {
+              throw new UpdateDepsFailedAfterSourceOk(
+                `Source updated, but requirements install failed: ${msg.slice(0, 400)}. ` +
+                  `Use "Repair env" (or pip install -r ${reqFile}) to retry.`
+              )
+            }
           }
           this.setStep('requirements', 'done', 'requirements installed', undefined, 'update.msgReqDone')
         }
@@ -737,10 +811,19 @@ export class ComfyUpdaterService extends EventEmitter {
       const message = err instanceof Error ? err.message : String(err)
       const cancelled = this.cancelled || /cancelled/i.test(message)
       const noTreeChange = err instanceof UpdateAbortedNoTreeChange
+      const depsFailed = err instanceof UpdateDepsFailedAfterSourceOk
 
-      if (noTreeChange || !treeModified) {
-        // Nothing of ours to undo — skipping rollback is the safe action.
-        this.setStep('rollback', 'skipped', 'Not needed — source tree was not modified', undefined, 'update.msgRollbackSkip')
+      if (noTreeChange || depsFailed || !treeModified) {
+        // Nothing of ours to undo (pull failed before touching the tree), OR
+        // the source update itself succeeded and only deps failed — rolling
+        // the source back would throw away a good update.
+        this.setStep(
+          'rollback',
+          'skipped',
+          depsFailed ? 'Not needed — source update succeeded, only deps failed' : 'Not needed — source tree was not modified',
+          undefined,
+          'update.msgRollbackSkip'
+        )
         if (this.progress) {
           this.progress.status = 'failed'
           this.progress.error = cancelled ? 'Update cancelled' : message
@@ -751,6 +834,9 @@ export class ComfyUpdaterService extends EventEmitter {
             running.status = 'failed'
             running.detail = this.progress.error
             running.log.push('✗ ' + this.progress.error)
+          }
+          if (depsFailed) {
+            this.log('done', 'Source kept — run Repair env to finish dependency install')
           }
         }
         this.emitProgress(message)
@@ -929,16 +1015,16 @@ export class ComfyUpdaterService extends EventEmitter {
       if (!existsSync(shaFile)) throw new Error('Backup HEAD missing')
       const sha = readFileSync(shaFile, 'utf-8').trim()
       const gitBin = resolveGitBinary()
-      // Refuse `reset --hard` when the working tree carries uncommitted changes —
-      // those are usually the user's local edits (the very reason a pull fails).
-      // Destroying them is data loss; report instead.
-      const status = await this.runRaw(gitBin, ['-C', comfyDir, 'status', '--porcelain'], { timeout: 15000 }).catch(
-        () => ''
-      )
+      // Refuse `reset --hard` when TRACKED files differ from HEAD — those are
+      // usually the user's local edits (the very reason a pull fails).
+      // Untracked files (cache, our own artifacts) must NOT block rollback.
+      const status = await this.runRaw(gitBin, ['-C', comfyDir, 'status', '--porcelain', '-uno'], {
+        timeout: 15000
+      }).catch(() => '')
       if (status.trim()) {
         this.log(
           'rollback',
-          'Working tree has uncommitted changes — refusing git reset --hard to avoid destroying local edits. ' +
+          'Working tree has uncommitted changes to tracked files — refusing git reset --hard to avoid destroying local edits. ' +
             `Manual recovery: git -C ${comfyDir} reset --hard ${sha}`
         )
         throw new Error(
