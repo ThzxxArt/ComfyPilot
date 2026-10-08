@@ -5,7 +5,7 @@ import {
   AddOutline, PlayOutline, StopOutline, TrashOutline, FolderOpenOutline,
   OpenOutline, RefreshOutline, PowerOutline, DownloadOutline, LinkOutline, RocketOutline,
   CreateOutline, TerminalOutline, PinOutline, SearchOutline, EllipsisHorizontalOutline,
-  InformationCircleOutline
+  InformationCircleOutline, CloudDownloadOutline, ArrowUpCircleOutline, ConstructOutline
 } from '@vicons/ionicons5'
 import {
   NButton, NEmpty, NIcon, NModal, NForm, NFormItem, NInput, NInputNumber, NSpace,
@@ -15,11 +15,14 @@ import {
 import { useAppStore } from '@/stores/app'
 import { ipc } from '@/composables/useIpc'
 import { useLaunch } from '@/composables/useLaunch'
+import { useComfyUpdate } from '@/composables/useComfyUpdate'
+import ComfyUpdateProgressModal from '@/components/ComfyUpdateProgressModal.vue'
 import { useI18n } from 'vue-i18n'
 import { formatUptime } from '@/utils/format'
 import type {
   ComfyInstanceConfig, ComfyInstanceInfo, LaunchArgTemplate, EnvProbe,
-  PortCheckResult, InstanceDiscoveryCandidate, LaunchCommandPreview, InstanceStatus
+  PortCheckResult, InstanceDiscoveryCandidate, LaunchCommandPreview, InstanceStatus,
+  ComfyUpdateInfo
 } from '@shared/types'
 
 const router = useRouter()
@@ -350,6 +353,101 @@ async function probeEnv(info: ComfyInstanceInfo): Promise<void> {
   }
 }
 
+// ---------- ComfyUI update / repair (0.1.4) ----------
+const { startUpdate, checkComfyUpdate, repairEnv } = useComfyUpdate()
+const showUpdateModal = ref(false)
+const updateInfos = ref<Record<string, ComfyUpdateInfo>>({})
+
+function sourceLabel(source: ComfyUpdateInfo['source']): string {
+  if (source === 'git') return t('instance.sourceGit')
+  if (source === 'zip') return t('instance.sourceZip')
+  return t('instance.sourceUnknown')
+}
+
+function updateInfoSummary(info: ComfyUpdateInfo): string {
+  const parts: string[] = [
+    `${t('instance.versionLabel')}: ${info.current}`,
+    sourceLabel(info.source)
+  ]
+  if (info.latest) parts.push(`${t('nodes.hasUpdate', { version: info.latest })}`)
+  if (typeof info.behindCount === 'number') {
+    parts.push(t('instance.behindCount', { n: info.behindCount }))
+  }
+  parts.push(
+    info.updatable
+      ? t('instance.updateAvailable', { latest: info.latest || info.current, current: info.current })
+      : t('instance.updateNone')
+  )
+  if (info.error) parts.push(t('instance.updateCheckFailed', { error: info.error }))
+  return parts.join(' · ')
+}
+
+async function doCheckComfyUpdate(item: ComfyInstanceInfo): Promise<void> {
+  try {
+    const info = await checkComfyUpdate(item.id)
+    updateInfos.value = { ...updateInfos.value, [item.id]: info }
+    dialog.info({
+      title: t('instance.checkUpdate'),
+      content: updateInfoSummary(info),
+      positiveText: t('common.confirm')
+    })
+  } catch (err) {
+    message.error(
+      t('instance.updateCheckFailed', { error: err instanceof Error ? err.message : String(err) })
+    )
+  }
+}
+
+function confirmUpdateComfy(item: ComfyInstanceInfo): void {
+  dialog.warning({
+    title: t('instance.confirmUpdateComfy'),
+    content: `${t('instance.confirmUpdateComfyBody')} ${t('instance.preserveNote')}`,
+    positiveText: t('common.confirm'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: () => {
+      void runUpdateComfy(item)
+    }
+  })
+}
+
+async function runUpdateComfy(item: ComfyInstanceInfo): Promise<void> {
+  showUpdateModal.value = true
+  try {
+    const result = await startUpdate(item.id, { updateDeps: true })
+    if (result.status === 'done') {
+      message.success(t('update.msgDone'))
+      await store.refreshInstances()
+    } else if (result.error) {
+      message.error(result.error)
+    }
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+function confirmRepairEnv(item: ComfyInstanceInfo): void {
+  dialog.warning({
+    title: t('instance.repairEnv'),
+    content: t('install.repairConfirm', { name: item.name }),
+    positiveText: t('common.confirm'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: () => {
+      void runRepairEnv(item)
+    }
+  })
+}
+
+async function runRepairEnv(item: ComfyInstanceInfo): Promise<void> {
+  try {
+    envProbes.value[item.id] = await repairEnv(item.id)
+    message.success(t('instance.repairDone'))
+  } catch (err) {
+    message.error(
+      t('instance.repairFailed', { error: err instanceof Error ? err.message : String(err) })
+    )
+  }
+}
+
 async function exportDiag(info: ComfyInstanceInfo): Promise<void> {
   try {
     const pkg = await ipc('instance.exportDiagnostics', info.id)
@@ -410,6 +508,21 @@ function moreOptions(item: ComfyInstanceInfo): DropdownOption[] {
       disabled: !item.url
     },
     { label: t('instance.probeEnv'), key: 'probeEnv', icon: () => h(NIcon, { component: LinkOutline }) },
+    {
+      label: t('instance.checkUpdate'),
+      key: 'checkComfyUpdate',
+      icon: () => h(NIcon, { component: CloudDownloadOutline })
+    },
+    {
+      label: t('instance.updateComfy'),
+      key: 'updateComfy',
+      icon: () => h(NIcon, { component: ArrowUpCircleOutline })
+    },
+    {
+      label: t('instance.repairEnv'),
+      key: 'repairEnv',
+      icon: () => h(NIcon, { component: ConstructOutline })
+    },
     { label: t('instance.exportDiag'), key: 'exportDiag', icon: () => h(NIcon, { component: DownloadOutline }) },
     { label: t('instance.detail'), key: 'detail', icon: () => h(NIcon, { component: InformationCircleOutline }) },
     { label: t('instance.remove'), key: 'remove', icon: () => h(NIcon, { component: TrashOutline }) }
@@ -438,6 +551,15 @@ function onMoreSelect(key: string | number, item: ComfyInstanceInfo): void {
       break
     case 'probeEnv':
       void probeEnv(item)
+      break
+    case 'checkComfyUpdate':
+      void doCheckComfyUpdate(item)
+      break
+    case 'updateComfy':
+      confirmUpdateComfy(item)
+      break
+    case 'repairEnv':
+      confirmRepairEnv(item)
       break
     case 'exportDiag':
       void exportDiag(item)
@@ -523,6 +645,7 @@ function statusClass(s: string): string {
 
           <div class="meta-row">
             <span>{{ $t('instance.port') }} <b>{{ item.port }}</b></span>
+            <span v-if="item.version">{{ $t('instance.versionLabel') }} <b>{{ item.version }}</b></span>
             <span v-if="item.pid">PID <b>{{ item.pid }}</b></span>
             <span v-if="item.uptimeMs">
               <b>{{ $t('instance.uptime', { t: formatUptime(item.uptimeMs) }) }}</b>
@@ -811,6 +934,9 @@ function statusClass(s: string): string {
         </NSpace>
       </template>
     </NModal>
+
+    <!-- ComfyUI update progress -->
+    <ComfyUpdateProgressModal v-model:show="showUpdateModal" />
   </div>
 </template>
 

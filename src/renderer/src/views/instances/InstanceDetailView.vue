@@ -3,17 +3,22 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ArrowBackOutline, PlayOutline, StopOutline, OpenOutline, PulseOutline,
-  TerminalOutline, CreateOutline, RefreshOutline
+  TerminalOutline, CreateOutline, RefreshOutline, CloudDownloadOutline,
+  ArrowUpCircleOutline, ConstructOutline
 } from '@vicons/ionicons5'
 import {
   NButton, NIcon, NTag, NSpace, NScrollbar, NSpin, NDescriptions, NDescriptionsItem,
-  NCollapse, NCollapseItem, useMessage
+  NCollapse, NCollapseItem, NPopconfirm, useMessage
 } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 import { ipc, onInstanceStatus, onIpc, IPC_EVENTS } from '@/composables/useIpc'
 import { useLaunch } from '@/composables/useLaunch'
+import { useComfyUpdate } from '@/composables/useComfyUpdate'
+import ComfyUpdateProgressModal from '@/components/ComfyUpdateProgressModal.vue'
 import { useI18n } from 'vue-i18n'
-import type { ComfyInstanceInfo, ComfyLogLine, LaunchCommandPreview } from '@shared/types'
+import type {
+  ComfyInstanceInfo, ComfyLogLine, ComfyUpdateInfo, LaunchCommandPreview
+} from '@shared/types'
 
 const route = useRoute()
 const router = useRouter()
@@ -63,6 +68,64 @@ async function copyCommand(): Promise<void> {
   if (!preview.value) return
   await ipc('shell.writeClipboard', preview.value.commandLine)
   message.success(t('instance.launchCmdCopied'))
+}
+
+// ---------- ComfyUI update / repair (0.1.4) ----------
+const { startUpdate, checkComfyUpdate, repairEnv, updating } = useComfyUpdate()
+const showUpdateModal = ref(false)
+const updateInfo = ref<ComfyUpdateInfo | null>(null)
+const checkingUpdate = ref(false)
+const repairing = ref(false)
+
+function sourceLabel(source: ComfyUpdateInfo['source']): string {
+  if (source === 'git') return t('instance.sourceGit')
+  if (source === 'zip') return t('instance.sourceZip')
+  return t('instance.sourceUnknown')
+}
+
+async function doCheckUpdate(): Promise<void> {
+  if (!instance.value) return
+  checkingUpdate.value = true
+  try {
+    updateInfo.value = await checkComfyUpdate(instance.value.id)
+  } catch (err) {
+    message.error(
+      t('instance.updateCheckFailed', { error: err instanceof Error ? err.message : String(err) })
+    )
+  } finally {
+    checkingUpdate.value = false
+  }
+}
+
+async function runUpdateComfy(): Promise<void> {
+  if (!instance.value) return
+  showUpdateModal.value = true
+  try {
+    const result = await startUpdate(instance.value.id, { updateDeps: true })
+    if (result.status === 'done') {
+      message.success(t('update.msgDone'))
+      await refresh()
+    } else if (result.error) {
+      message.error(result.error)
+    }
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function runRepairEnv(): Promise<void> {
+  if (!instance.value) return
+  repairing.value = true
+  try {
+    await repairEnv(instance.value.id)
+    message.success(t('instance.repairDone'))
+  } catch (err) {
+    message.error(
+      t('instance.repairFailed', { error: err instanceof Error ? err.message : String(err) })
+    )
+  } finally {
+    repairing.value = false
+  }
 }
 
 let off: (() => void) | null = null
@@ -172,6 +235,65 @@ onUnmounted(() => {
             </NDescriptionsItem>
           </NDescriptions>
 
+          <div class="update-actions">
+            <NSpace>
+              <NButton secondary :loading="checkingUpdate" @click="doCheckUpdate">
+                <template #icon><NIcon :component="CloudDownloadOutline" /></template>
+                {{ $t('instance.checkUpdate') }}
+              </NButton>
+              <NPopconfirm @positive-click="runUpdateComfy">
+                <template #trigger>
+                  <NButton type="primary" secondary :loading="updating">
+                    <template #icon><NIcon :component="ArrowUpCircleOutline" /></template>
+                    {{ $t('instance.updateComfy') }}
+                  </NButton>
+                </template>
+                <div class="confirm-body">
+                  <div>{{ $t('instance.confirmUpdateComfyBody') }}</div>
+                  <div class="confirm-note">{{ $t('instance.preserveNote') }}</div>
+                </div>
+              </NPopconfirm>
+              <NPopconfirm @positive-click="runRepairEnv">
+                <template #trigger>
+                  <NButton secondary :loading="repairing">
+                    <template #icon><NIcon :component="ConstructOutline" /></template>
+                    {{ $t('instance.repairEnv') }}
+                  </NButton>
+                </template>
+                {{ $t('install.repairConfirm', { name: instance?.name || '' }) }}
+              </NPopconfirm>
+            </NSpace>
+          </div>
+
+          <div v-if="updateInfo" class="update-result">
+            <div class="update-result-title">{{ $t('instance.checkUpdate') }}</div>
+            <div class="update-result-line">
+              <span>{{ $t('instance.versionLabel') }}: {{ updateInfo.current }}</span>
+              <span v-if="updateInfo.latest">{{ $t('nodes.hasUpdate', { version: updateInfo.latest }) }}</span>
+              <span v-if="typeof updateInfo.behindCount === 'number'">
+                {{ $t('instance.behindCount', { n: updateInfo.behindCount }) }}
+              </span>
+              <span>{{ sourceLabel(updateInfo.source) }}</span>
+            </div>
+            <NTag
+              size="small"
+              round
+              :type="updateInfo.updatable ? 'warning' : 'success'"
+            >
+              {{
+                updateInfo.updatable
+                  ? $t('instance.updateAvailable', {
+                      latest: updateInfo.latest || updateInfo.current,
+                      current: updateInfo.current
+                    })
+                  : $t('instance.updateNone')
+              }}
+            </NTag>
+            <div v-if="updateInfo.error" class="update-error">
+              {{ $t('instance.updateCheckFailed', { error: updateInfo.error }) }}
+            </div>
+          </div>
+
           <NCollapse v-if="preview" class="cmd-collapse">
             <NCollapseItem :title="$t('instance.launchCmdTitle')" name="cmd">
               <div class="cmd-box">
@@ -205,6 +327,9 @@ onUnmounted(() => {
       </div>
     </NSpin>
     </div>
+
+    <!-- ComfyUI update progress -->
+    <ComfyUpdateProgressModal v-model:show="showUpdateModal" />
   </div>
 </template>
 
@@ -234,6 +359,52 @@ onUnmounted(() => {
 
 .desc {
   --n-td-color: transparent;
+}
+
+.update-actions {
+  margin-top: 14px;
+}
+
+.confirm-body {
+  max-width: 360px;
+  line-height: 1.55;
+}
+
+.confirm-note {
+  margin-top: 6px;
+  color: $color-text-muted;
+  font-size: 12px;
+}
+
+.update-result {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: $color-surface-2;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.update-result-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: $color-text-muted;
+}
+
+.update-result-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 12.5px;
+  color: $color-text-secondary;
+}
+
+.update-error {
+  font-size: 12px;
+  color: $color-danger;
+  word-break: break-all;
 }
 
 .cmd-collapse {

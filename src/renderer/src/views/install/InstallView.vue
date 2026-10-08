@@ -17,8 +17,10 @@ import {
   NButton,
   NCollapse,
   NCollapseItem,
+  NEmpty,
   NIcon,
   NInput,
+  NPopconfirm,
   NProgress,
   NRadio,
   NRadioGroup,
@@ -116,6 +118,39 @@ const expandedLogIds = ref<string[]>([])
 const suggestFreeGb = ref(0)
 const starterModels = ref<StarterModel[]>([...STARTER_MODELS])
 const starterBusy = ref<string | null>(null)
+const repairingId = ref<string | null>(null)
+
+const repairTargets = computed(() => {
+  const list = store.instances || []
+  return list.filter((i) => i.enabled !== false)
+})
+
+async function pickPythonPath(): Promise<void> {
+  try {
+    const p = await ipc('shell.pickFile', {
+      filters: [
+        { name: 'Python', extensions: ['exe', ''] },
+        { name: 'All files', extensions: ['*'] }
+      ]
+    })
+    if (p) plan.value.pythonPath = p
+  } catch (err) {
+    message.error(errText(err))
+  }
+}
+
+async function repairInstance(inst: { id: string; name: string }): Promise<void> {
+  repairingId.value = inst.id
+  try {
+    await ipc('instance.repairEnv', inst.id, {})
+    message.success(t('instance.repairDone'))
+    await store.refreshInstances()
+  } catch (err) {
+    message.error(errText(err))
+  } finally {
+    repairingId.value = null
+  }
+}
 
 const TORCH_CHANNEL_VALUES: TorchChannel[] = [
   'cu130',
@@ -677,6 +712,17 @@ onUnmounted(() => {
               </div>
 
               <div class="field">
+                <label>{{ $t('install.pythonPath') }}</label>
+                <NInput v-model:value="plan.pythonPath" :placeholder="$t('install.pythonPathHint')">
+                  <template #suffix>
+                    <NButton size="tiny" secondary @click="pickPythonPath">
+                      <template #icon><NIcon :component="FolderOpenOutline" /></template>
+                    </NButton>
+                  </template>
+                </NInput>
+              </div>
+
+              <div class="field">
                 <label>{{ $t('install.torchChannel') }}</label>
                 <NSelect v-model:value="plan.torchChannel" :options="torchOptions" />
               </div>
@@ -770,6 +816,33 @@ onUnmounted(() => {
             </NSpace>
           </NCollapseItem>
         </NCollapse>
+
+        <!-- Repair an already-registered instance (0.1.4): bridges install wizard ↔ repairEnv -->
+        <section class="card repair-card">
+          <div class="repair-head">
+            <div>
+              <div class="repair-title">{{ $t('install.repairSection') }}</div>
+              <div class="hint">{{ $t('install.repairHint') }}</div>
+            </div>
+          </div>
+          <div v-if="repairTargets.length" class="repair-list">
+            <div v-for="inst in repairTargets" :key="inst.id" class="repair-row">
+              <div class="repair-info">
+                <div class="repair-name">{{ inst.name }}</div>
+                <div class="hint mono">{{ inst.path }}</div>
+              </div>
+              <NPopconfirm @positive-click="repairInstance(inst)">
+                <template #trigger>
+                  <NButton size="small" secondary :loading="repairingId === inst.id">
+                    {{ $t('install.repairAction') }}
+                  </NButton>
+                </template>
+                {{ $t('install.repairConfirm', { name: inst.name }) }}
+              </NPopconfirm>
+            </div>
+          </div>
+          <NEmpty v-else :description="$t('install.repairEmpty')" style="padding: 12px 0" />
+        </section>
       </section>
 
       <div class="grid layout">
@@ -925,6 +998,56 @@ onUnmounted(() => {
 .advanced-grid {
   grid-template-columns: 1fr 1fr;
   gap: 12px 16px;
+}
+
+.repair-card {
+  margin-top: 16px;
+  padding: 18px 20px;
+}
+
+.repair-head {
+  margin-bottom: 10px;
+}
+
+.repair-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: $color-text;
+  margin-bottom: 4px;
+}
+
+.repair-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.repair-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid $color-border;
+  border-radius: 12px;
+}
+
+.repair-info {
+  min-width: 0;
+}
+
+.repair-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: $color-text;
+}
+
+.repair-info .hint {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 520px;
 }
 
 .panel {

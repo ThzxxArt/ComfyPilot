@@ -424,7 +424,16 @@ app.whenReady().then(async () => {
     .catch(() => undefined)
   import('./services/nodePack')
     .then(({ nodePackService }) => {
-      nodePackService.on('install-progress', (p) => broadcast(IPC_EVENTS.nodeInstallProgress, p))
+      nodePackService.on('install-progress', (p) => {
+        broadcast(IPC_EVENTS.nodeInstallProgress, p)
+        // Update lifecycle rides the same payload shape — surface it on the dedicated channel too.
+        broadcast(IPC_EVENTS.nodeUpdateProgress, p)
+      })
+    })
+    .catch(() => undefined)
+  import('./services/updater')
+    .then(({ comfyUpdaterService }) => {
+      comfyUpdaterService.on('progress', (p) => broadcast(IPC_EVENTS.comfyUpdateProgress, p))
     })
     .catch(() => undefined)
   import('./services/doctor')

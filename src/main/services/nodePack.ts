@@ -9,7 +9,7 @@ import {
   rmSync,
   renameSync
 } from 'fs'
-import { join } from 'path'
+import { join, dirname, resolve, sep } from 'path'
 import { createHash, randomUUID } from 'crypto'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
@@ -19,6 +19,8 @@ import type {
   NodePackIssue,
   NodePackRecord,
   NodeSnapshot,
+  NodeUpdateAllResult,
+  NodeUpdateCheckResult,
   RegistryNodePack
 } from '@shared/types'
 import {
@@ -36,16 +38,100 @@ import {
 import { REGISTRY_API } from '@shared/constants'
 import { proxyEnv } from './proxy'
 import { sanitizeId, isPathInside, normalizePathEverySegment } from './security'
-import { assertSafeGitUrl, applyGithubMirror } from './installer'
+import { assertSafeGitUrl, applyGithubMirror, assertSafeBranch } from './installer'
 import { resolveRuntimesPythonSync } from './instance'
+import { findInRuntimes } from './bootstrap'
 
 const execFileAsync = promisify(execFile)
 
+/**
+ * Resolve a usable git binary: PATH first, then the portable MinGit that
+ * bootstrap may have downloaded (zero-prereq machines have no git on PATH).
+ * Mirrors installer.ts's ComfyUI-clone path so node git installs work offline-prereq.
+ */
+export function resolveGitBinary(): string {
+  const portable = findInRuntimes('git')
+  return portable || 'git'
+}
+
+/**
+ * Minimal version comparator for node packs.
+ * - numeric dotted versions (1.2.3, 1.2.3.4) compare segment-wise
+ * - pre-release suffix (1.2.3-beta) sorts before plain 1.2.3
+ * - non-semver strings fall back to localeCompare (equality still works)
+ * Returns >0 when a > b, <0 when a < b, 0 when equal/incomparable-as-equal.
+ */
+export function compareVersions(a: string, b: string): number {
+  const na = String(a || '').trim()
+  const nb = String(b || '').trim()
+  if (!na && !nb) return 0
+  if (!na) return -1
+  if (!nb) return 1
+  if (na === nb) return 0
+
+  const parse = (v: string): { nums: number[]; pre: string } => {
+    const m = v.match(/^v?(\d+(?:\.\d+)*)(?:[-+.]?(.*))?$/i)
+    if (!m) return { nums: [], pre: v.toLowerCase() }
+    const nums = m[1].split('.').map((s) => Number(s) || 0)
+    return { nums, pre: (m[2] || '').toLowerCase() }
+  }
+  const A = parse(na)
+  const B = parse(nb)
+  if (A.nums.length && B.nums.length) {
+    const len = Math.max(A.nums.length, B.nums.length)
+    for (let i = 0; i < len; i++) {
+      const x = A.nums[i] ?? 0
+      const y = B.nums[i] ?? 0
+      if (x !== y) return x - y
+    }
+    // same numeric core: a release (no pre) > a pre-release
+    if (A.pre && !B.pre) return -1
+    if (!A.pre && B.pre) return 1
+    return A.pre.localeCompare(B.pre)
+  }
+  return na.localeCompare(nb)
+}
+
+/** True when `latest` is strictly newer than `current`. */
+export function isUpdateAvailable(current: string, latest: string): boolean {
+  if (!current || !latest) return false
+  // Non-comparable free-form strings: treat any difference as "unknown", not an update.
+  const looksNumeric = (v: string): boolean => /^v?\d/i.test(v.trim())
+  if (!looksNumeric(current) || !looksNumeric(latest)) {
+    // commit shas: different means "maybe", but we only flag when latest is a
+    // clearly longer/different git describe — keep conservative (no update flag).
+    return false
+  }
+  return compareVersions(latest, current) > 0
+}
+
 function sanitizeInstallName(name: string): string {
-  return String(name)
+  const cleaned = String(name)
     .replace(/[^\w.-]/g, '_')
     .replace(/\.\./g, '_')
+    .replace(/^\.+$/, '') // '.', '..', '...' → empty
+    .replace(/^[._-]+/, '') // leading dots/dashes are never valid pack dirs
     .slice(0, 80)
+    .trim()
+  // A sanitize that collapses to empty (URL ended in '/.', '?', etc.) must not
+  // become `join(root, '') === root` — that would let cleanup wipe custom_nodes.
+  return cleaned || `pack-${Date.now()}`
+}
+
+/** True when `child` is a real descendant of `parent` (NOT equal to it). */
+export function isStrictInside(child: string, parent: string): boolean {
+  try {
+    const c = resolve(child)
+    const p = resolve(parent)
+    return c !== p && c.startsWith(p + (p.endsWith(sep) ? '' : sep))
+  } catch {
+    return false
+  }
+}
+
+/** Exported for regression tests. */
+export function sanitizeInstallNameForTest(name: string): string {
+  return sanitizeInstallName(name)
 }
 
 /** Registry zips often nest a single top-level folder — descend if needed. */
@@ -287,6 +373,12 @@ export class NodePackService extends EventEmitter {
       const disabled = existsSync(disabledMarker) || name.endsWith('.disabled')
       const id = createHash('sha1').update(dir).digest('hex').slice(0, 16)
       const prev = known.get(meta.name || name)
+      const latest = prev?.latestVersion
+      const hasUpdate =
+        !disabled &&
+        Boolean(latest) &&
+        Boolean(meta.version) &&
+        isUpdateAvailable(meta.version || '0.0.0', latest || '')
       packs.push({
         id,
         name: meta.name || name,
@@ -294,14 +386,17 @@ export class NodePackService extends EventEmitter {
         description: meta.description || '',
         author: prev?.author || '',
         version: meta.version || '0.0.0',
-        latestVersion: prev?.latestVersion,
+        latestVersion: latest,
         status: disabled
           ? 'disabled'
           : issues.some((i) => i.severity === 'error')
             ? 'error'
-            : 'installed',
+            : hasUpdate
+              ? 'update-available'
+              : 'installed',
         path: dir,
         repository: meta.repository,
+        registryId: prev?.registryId,
         nodeCount: meta.nodeList?.length || 0,
         tags: prev?.tags || [],
         installSource: prev?.installSource || 'local',
@@ -335,6 +430,7 @@ export class NodePackService extends EventEmitter {
       'https://raw.githubusercontent.com/Comfy-Org/ComfyUI-Manager/manager-v4/custom-node-list.json'
     ]
     const out: RegistryNodePack[] = []
+    const seen = new Set<string>()
     for (const url of endpoints) {
       try {
         const res = await fetch(url, {
@@ -343,9 +439,13 @@ export class NodePackService extends EventEmitter {
         })
         if (!res.ok) continue
         const data = (await res.json()) as Array<Record<string, unknown>>
-        for (const n of data.slice(0, 200)) {
+        // No hard truncation — take every entry the channel publishes.
+        for (const n of data) {
+          const id = String(n.id || n.title || n.name)
+          if (!id || seen.has(id)) continue
+          seen.add(id)
           out.push({
-            id: String(n.id || n.title || n.name),
+            id,
             name: String(n.name || n.title || ''),
             displayName: String(n.title || n.name || ''),
             description: String(n.description || ''),
@@ -416,6 +516,7 @@ export class NodePackService extends EventEmitter {
     version?: string
     source: 'registry' | 'git' | 'manager'
     url?: string
+    branch?: string
     instanceId?: string
   }): Promise<NodePackRecord> {
     this.assertInstallAllowed(opts.source)
@@ -444,11 +545,47 @@ export class NodePackService extends EventEmitter {
       const safeUrl = assertSafeGitUrl(applyGithubMirror(url))
       const destName = sanitizeInstallName(safeUrl.split('/').pop()?.replace(/\.git$/, '') || `pack-${Date.now()}`)
       const dest = join(root, normalizePathEverySegment(destName))
-      await execFileAsync('git', ['clone', '--depth', '1', safeUrl, dest], {
-        timeout: 120000,
-        maxBuffer: 20 * 1024 * 1024,
-        env: proxyEnv(loadSettings().proxy)
-      })
+      // Hard guard: dest must be a real descendant of root — never root itself.
+      if (!isStrictInside(dest, root)) {
+        throw new Error(`Refusing to install into unsafe destination: ${dest}`)
+      }
+      const gitBin = resolveGitBinary()
+      // Clone into a throwaway sibling, then rename — a failed clone can only
+      // ever remove OUR temp dir, never a pre-existing user directory.
+      const tmpDest = join(root, `._clone_tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`)
+      if (!isStrictInside(tmpDest, root)) throw new Error('Refusing unsafe temp clone path')
+      const args = ['clone', '--depth', '1']
+      const safeBranch = assertSafeBranch(opts.branch || '')
+      if (safeBranch) args.push('--branch', safeBranch)
+      args.push(safeUrl, tmpDest)
+      try {
+        await execFileAsync(gitBin, args, {
+          timeout: 120000,
+          maxBuffer: 20 * 1024 * 1024,
+          env: proxyEnv(loadSettings().proxy)
+        })
+        // Atomic-ish publish: only now do we touch `dest`.
+        if (existsSync(dest)) {
+          rmSync(tmpDest, { recursive: true, force: true })
+          throw new Error(`Destination already exists: ${destName}`)
+        }
+        renameSync(tmpDest, dest)
+      } catch (e) {
+        // Clean ONLY the temp clone we created — never a pre-existing dest.
+        try {
+          if (existsSync(tmpDest) && isStrictInside(tmpDest, root)) {
+            rmSync(tmpDest, { recursive: true, force: true })
+          }
+        } catch {
+          /* cleanup is best-effort */
+        }
+        this.emitInstallProgress({
+          phase: 'error',
+          packName: opts.id,
+          message: e instanceof Error ? e.message : String(e)
+        })
+        throw e
+      }
       return await this.afterInstall(resolveNestedPackDir(dest), opts.source, opts.id, opts.instanceId)
     }
 
@@ -473,22 +610,48 @@ export class NodePackService extends EventEmitter {
     const buf = Buffer.from(await zipRes.arrayBuffer())
     const tmpZip = join(root, `._install_${Date.now()}.zip`)
     writeFileSync(tmpZip, buf)
-    const dest = join(root, normalizePathEverySegment(sanitizeInstallName(opts.id)))
+    const destName = sanitizeInstallName(opts.id)
+    const dest = join(root, normalizePathEverySegment(destName))
+    if (!isStrictInside(dest, root)) {
+      try {
+        unlinkSync(tmpZip)
+      } catch {
+        /* ignore */
+      }
+      throw new Error(`Refusing to install into unsafe destination: ${dest}`)
+    }
+    // Unzip into a throwaway sibling, then rename — a failed unzip can only
+    // ever remove OUR temp dir, never a pre-existing user directory.
+    const tmpDest = join(root, `._unzip_tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`)
+    if (!isStrictInside(tmpDest, root)) {
+      try {
+        unlinkSync(tmpZip)
+      } catch {
+        /* ignore */
+      }
+      throw new Error('Refusing unsafe temp unzip path')
+    }
     try {
       const { safeUnzip } = await import('./zipSafe')
-      await safeUnzip(tmpZip, dest)
+      await safeUnzip(tmpZip, tmpDest)
+      if (existsSync(dest)) {
+        rmSync(tmpDest, { recursive: true, force: true })
+        throw new Error(`Destination already exists: ${destName}`)
+      }
+      renameSync(tmpDest, dest)
     } catch (e) {
       try {
         unlinkSync(tmpZip)
       } catch {
         /* ignore */
       }
-      if (existsSync(dest)) {
-        try {
-          rmSync(dest, { recursive: true, force: true })
-        } catch {
-          /* ignore */
+      // Clean ONLY the temp dir we created — never a pre-existing dest.
+      try {
+        if (existsSync(tmpDest) && isStrictInside(tmpDest, root)) {
+          rmSync(tmpDest, { recursive: true, force: true })
         }
+      } catch {
+        /* ignore */
       }
       throw e
     }
@@ -599,15 +762,225 @@ export class NodePackService extends EventEmitter {
     const pack = packs.find((p) => p.id === idOrName || p.name === idOrName)
     if (!pack?.path) return false
     if (pack.locked) throw new Error('Pack is locked — unlock before uninstall')
-    const trash = `${pack.path}.trash-${Date.now()}`
+    // Snapshot before destructive ops so the user can at least see what was removed.
     try {
-      renameSync(pack.path, trash)
-      rmSync(trash, { recursive: true, force: true })
+      this.createSnapshot(`auto-pre-uninstall-${sanitizeInstallName(pack.name)}`)
     } catch {
-      rmSync(pack.path, { recursive: true, force: true })
+      /* best-effort */
+    }
+    const targets = this.resolveRemovalTargets(pack.path, instanceId)
+    for (const target of targets) {
+      const trash = `${target}.trash-${Date.now()}`
+      try {
+        renameSync(target, trash)
+        rmSync(trash, { recursive: true, force: true })
+      } catch {
+        try {
+          rmSync(target, { recursive: true, force: true })
+        } catch {
+          /* keep going — report via remaining dirs */
+        }
+      }
     }
     deleteNodePack(pack.id)
     return true
+  }
+
+  /**
+   * Directories to remove for a pack. When the pack lives in a registry-zip
+   * nested layout (custom_nodes/<destShell>/<nested>/), the outer shell must go
+   * too — otherwise list() picks up an empty NO_ENTRY ghost pack.
+   *
+   * Safety: the shell is only removed when it contains EXACTLY ONE entry (the
+   * pack itself) — hidden files like `.git` count. A monorepo shell
+   * (`Repo/.git` + `Repo/PackA`) is never collapsed.
+   */
+  private resolveRemovalTargets(packPath: string, instanceId?: string): string[] {
+    const targets = [packPath]
+    try {
+      const parent = dirname(packPath)
+      if (!parent || parent === packPath) return targets
+      const customNodesRoot = detectCustomNodesRoot(instanceId)
+      if (!customNodesRoot) return targets
+      const parentNorm = normalizePathEverySegment(parent)
+      const rootNorm = normalizePathEverySegment(customNodesRoot)
+      if (parentNorm === rootNorm) return targets
+      if (!isPathInside(packPath, parent)) return targets
+      // parent must be exactly one level under custom_nodes
+      const parentParent = dirname(parent)
+      if (normalizePathEverySegment(parentParent) !== rootNorm) return targets
+      // Count ALL entries, including hidden ones — a shell with .git or any
+      // other residue is user/monorepo content, not our unzip artifact.
+      const allSiblings = readdirSync(parent)
+      const packBase = packPath.split(/[\\/]/).pop() || ''
+      if (allSiblings.length === 1 && allSiblings[0] === packBase) {
+        targets.push(parent)
+      }
+    } catch {
+      /* ignore */
+    }
+    return [...new Set(targets)]
+  }
+
+  /**
+   * Check every installed pack for an available update.
+   * - registry packs: compare local version with Registry latest_version
+   * - git packs (or packs with .git): git fetch + rev-list behind count
+   * - manager packs with a repository and a .git dir behave as git
+   */
+  async checkUpdates(instancePathOrId?: string): Promise<NodeUpdateCheckResult[]> {
+    const packs = this.list(instancePathOrId)
+    const results: NodeUpdateCheckResult[] = []
+    const registryLatest = new Map<string, string>()
+
+    // Warm registry latest versions for packs that have a registryId or match by name.
+    try {
+      const page = await this.registrySearch({ limit: 100, page: 1, scanPages: 1 })
+      for (const item of page.items) {
+        if (item.id) registryLatest.set(item.id, item.latestVersion || '')
+        if (item.name) registryLatest.set(item.name, item.latestVersion || '')
+      }
+      // Also peek at the local full-catalog index for names not on page 1.
+      try {
+        const { registryIndex } = await import('./registryIndex')
+        await registryIndex.ensure()
+        for (const p of packs) {
+          if (registryLatest.has(p.registryId || '') || registryLatest.has(p.name)) continue
+          const hits = registryIndex.searchPacks(p.name, 5)
+          const exact = hits.find((h) => h.name === p.name || h.id === p.registryId)
+          if (exact?.latestVersion) registryLatest.set(p.name, exact.latestVersion)
+        }
+      } catch {
+        /* index optional */
+      }
+    } catch {
+      /* offline / registry down — git checks can still run */
+    }
+
+    for (const pack of packs) {
+      const gitLike =
+        pack.installSource === 'git' ||
+        pack.installSource === 'manager' ||
+        Boolean(pack.path && existsSync(join(pack.path, '.git')))
+
+      if (pack.locked) {
+        results.push({
+          name: pack.name,
+          id: pack.id,
+          currentVersion: pack.version,
+          latestVersion: pack.latestVersion,
+          updatable: false,
+          updateSource: 'none',
+          reason: 'Pack is locked',
+          reasonKey: 'nodes.locked'
+        })
+        continue
+      }
+
+      if (gitLike && pack.path && existsSync(join(pack.path, '.git'))) {
+        try {
+          const gitBin = resolveGitBinary()
+          await execFileAsync(gitBin, ['-C', pack.path, 'fetch', '--quiet'], {
+            timeout: 30000,
+            env: proxyEnv(loadSettings().proxy)
+          })
+          const { stdout: behindOut } = await execFileAsync(
+            gitBin,
+            ['-C', pack.path, 'rev-list', '--count', 'HEAD..@{u}'],
+            { timeout: 10000, env: proxyEnv(loadSettings().proxy) }
+          )
+          const behind = Number(behindOut.trim()) || 0
+          const { stdout: remoteVer } = await execFileAsync(
+            gitBin,
+            ['-C', pack.path, 'describe', '--tags', '--abbrev=0', '@{u}'],
+            { timeout: 10000, env: proxyEnv(loadSettings().proxy) }
+          ).catch(() => ({ stdout: '' }))
+          const latest = remoteVer.trim() || pack.latestVersion
+          results.push({
+            name: pack.name,
+            id: pack.id,
+            currentVersion: pack.version,
+            latestVersion: latest,
+            updatable: behind > 0,
+            updateSource: 'git',
+            reason: behind > 0 ? `${behind} commit(s) behind` : 'Up to date',
+            reasonKey: behind > 0 ? undefined : 'nodes.upToDate'
+          })
+          continue
+        } catch {
+          /* fall through to registry comparison */
+        }
+      }
+
+      const remote =
+        (pack.registryId && registryLatest.get(pack.registryId)) || registryLatest.get(pack.name) || pack.latestVersion
+      if (!remote) {
+        results.push({
+          name: pack.name,
+          id: pack.id,
+          currentVersion: pack.version,
+          updatable: false,
+          updateSource: 'none',
+          reason: 'No remote version information',
+          reasonKey: 'nodes.notUpdatable'
+        })
+        continue
+      }
+      const canRegistry = pack.installSource === 'registry' && Boolean(pack.registryId)
+      const updatable = canRegistry && isUpdateAvailable(pack.version, remote)
+      results.push({
+        name: pack.name,
+        id: pack.id,
+        currentVersion: pack.version,
+        latestVersion: remote,
+        updatable,
+        updateSource: canRegistry ? 'registry' : gitLike ? 'git' : 'none',
+        reason: updatable
+          ? `Update available: ${remote}`
+          : canRegistry
+            ? 'Up to date'
+            : 'Pack is not updatable via Registry or git',
+        reasonKey: updatable ? 'nodes.hasUpdate' : canRegistry ? 'nodes.upToDate' : 'nodes.notUpdatable'
+      })
+      // Persist latestVersion so list() can flag update-available without another round-trip.
+      try {
+        const known = listNodePacks().find((p) => p.id === pack.id || p.name === pack.name)
+        if (known && remote && known.latestVersion !== remote) {
+          upsertNodePack({ ...known, latestVersion: remote, lastCheckedAt: Date.now() })
+        }
+      } catch {
+        /* best-effort */
+      }
+    }
+    return results
+  }
+
+  /** Sequentially update every updatable pack. Locked/non-updatable are skipped. */
+  async updateAll(instancePathOrId?: string): Promise<NodeUpdateAllResult[]> {
+    const checks = await this.checkUpdates(instancePathOrId)
+    const out: NodeUpdateAllResult[] = []
+    try {
+      this.createSnapshot('auto-pre-update-all')
+    } catch {
+      /* best-effort */
+    }
+    for (const c of checks) {
+      if (!c.updatable) {
+        out.push({ name: c.name, ok: true, skipped: true })
+        continue
+      }
+      this.emitInstallProgress({ phase: 'start', packName: c.name, message: `Updating ${c.name}…` })
+      try {
+        await this.update(c.name, undefined, instancePathOrId)
+        this.emitInstallProgress({ phase: 'done', packName: c.name, message: `Updated ${c.name}` })
+        out.push({ name: c.name, ok: true })
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        this.emitInstallProgress({ phase: 'error', packName: c.name, message: msg })
+        out.push({ name: c.name, ok: false, error: msg })
+      }
+    }
+    return out
   }
 
   async update(idOrName: string, version?: string, instanceId?: string): Promise<NodePackRecord> {
@@ -615,14 +988,27 @@ export class NodePackService extends EventEmitter {
     const pack = packs.find((p) => p.id === idOrName || p.name === idOrName)
     if (!pack) throw new Error('Pack not found')
     if (pack.locked) throw new Error('Pack is locked')
+    // Snapshot before update so enable/disable state can be aligned later.
+    try {
+      this.createSnapshot(`auto-pre-update-${sanitizeInstallName(pack.name)}`)
+    } catch {
+      /* best-effort */
+    }
     const isGitPack =
       pack.installSource === 'git' || Boolean(pack.path && existsSync(join(pack.path, '.git')))
     if (isGitPack && pack.path) {
-      await execFileAsync('git', ['-C', pack.path, 'pull', '--ff-only'], {
-        timeout: 60000,
-        maxBuffer: 20 * 1024 * 1024,
-        env: proxyEnv(loadSettings().proxy)
-      })
+      const gitBin = resolveGitBinary()
+      try {
+        await execFileAsync(gitBin, ['-C', pack.path, 'pull', '--ff-only'], {
+          timeout: 60000,
+          maxBuffer: 20 * 1024 * 1024,
+          env: proxyEnv(loadSettings().proxy)
+        })
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        this.emitInstallProgress({ phase: 'error', packName: pack.name, message: msg })
+        throw new Error(`git pull failed for ${pack.name}: ${msg}`)
+      }
       return await this.afterInstall(
         pack.path,
         pack.installSource === 'registry' ? 'git' : pack.installSource,
@@ -644,18 +1030,37 @@ export class NodePackService extends EventEmitter {
         try {
           rmSync(trash, { recursive: true, force: true })
         } catch {
-          /* keep bak if cleanup fails */
+          this.emitInstallProgress({
+            phase: 'done',
+            packName: pack.name,
+            message: `Updated, but backup cleanup failed — kept ${trash}`
+          })
         }
         deleteNodePack(pack.id)
         return next
       } catch (e) {
-        // rollback
+        // rollback — failures here MUST surface, never silently swallow.
+        let rolledBack = false
         try {
           if (existsSync(pack.path)) rmSync(pack.path, { recursive: true, force: true })
           renameSync(trash, pack.path)
-        } catch {
-          /* ignore */
+          rolledBack = true
+        } catch (rbErr) {
+          const rbMsg = rbErr instanceof Error ? rbErr.message : String(rbErr)
+          this.emitInstallProgress({
+            phase: 'error',
+            packName: pack.name,
+            message: `Update failed AND rollback failed (${rbMsg}) — backup kept at ${trash}`
+          })
+          throw new Error(
+            `Update failed for ${pack.name}: ${e instanceof Error ? e.message : String(e)}; rollback also failed (${rbMsg}) — backup at ${trash}`
+          )
         }
+        this.emitInstallProgress({
+          phase: 'error',
+          packName: pack.name,
+          message: rolledBack ? `Update failed — rolled back to previous version` : 'Update failed'
+        })
         throw e
       }
     }
@@ -789,7 +1194,13 @@ export class NodePackService extends EventEmitter {
       packs,
       notes: ''
     }
-    insertSnapshot(snapshot)
+    // Snapshot creation is best-effort on the persistence side — a DB or disk
+    // failure must not lose the in-memory snapshot the caller is about to use.
+    try {
+      insertSnapshot(snapshot)
+    } catch {
+      /* ignore */
+    }
     try {
       writeFileSync(join(snapshotDir(), `${snapshot.id}.json`), JSON.stringify(snapshot, null, 2))
     } catch {

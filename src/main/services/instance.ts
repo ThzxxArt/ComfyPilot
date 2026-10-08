@@ -150,16 +150,47 @@ export class InstanceService extends EventEmitter {
 
   private versionCache = new Map<string, string | undefined>()
 
+  /** Drop cached version for one path (or all) so post-update probes see fresh data. */
+  invalidateVersionCache(installPath?: string): void {
+    if (installPath) this.versionCache.delete(installPath)
+    else this.versionCache.clear()
+  }
+
   private probeVersion(installPath: string): string | undefined {
     if (this.versionCache.has(installPath)) return this.versionCache.get(installPath)
     let version: string | undefined
     try {
-      const pyproject = join(installPath, 'pyproject.toml')
-      if (existsSync(pyproject)) {
-        const text = readFileSync(pyproject, 'utf-8')
-        const m = text.match(/version\s*=\s*["']([^"']+)["']/)
-        if (m) version = m[1]
+      // Prefer the install stamp written by installer/updater (commit sha or fetch date).
+      const envCandidates = [join(installPath, '.comfypilot-env.json'), join(dirname(installPath), '.comfypilot-env.json')]
+      for (const f of envCandidates) {
+        if (!existsSync(f)) continue
+        const data = JSON.parse(readFileSync(f, 'utf-8')) as {
+          comfyVersion?: string
+          comfyCommit?: string
+          comfyFetchedAt?: number
+        }
+        if (data.comfyVersion) {
+          version = data.comfyVersion
+          break
+        }
+        if (data.comfyCommit) {
+          version = data.comfyCommit.slice(0, 12)
+          break
+        }
+        if (data.comfyFetchedAt) {
+          version = new Date(data.comfyFetchedAt).toISOString().slice(0, 10)
+          break
+        }
       }
+      if (!version) {
+        const pyproject = join(installPath, 'pyproject.toml')
+        if (existsSync(pyproject)) {
+          const text = readFileSync(pyproject, 'utf-8')
+          const m = text.match(/^\s*version\s*=\s*["']([^"']+)["']/m)
+          if (m) version = m[1]
+        }
+      }
+      if (!version && existsSync(join(installPath, 'main.py'))) version = 'detected'
       if (!version && existsSync(join(installPath, 'requirements.txt'))) version = 'detected'
     } catch {
       /* ignore */
@@ -169,8 +200,6 @@ export class InstanceService extends EventEmitter {
   }
 
   private toInfo(rt: RuntimeEntry): ComfyInstanceInfo {
-    const port = rt.config.port || 8188
-    const listen = rt.config.listen || '127.0.0.1'
     return {
       ...rt.config,
       // Normalize fields older JSONC records may omit
@@ -179,7 +208,8 @@ export class InstanceService extends EventEmitter {
       extraArgs: Array.isArray(rt.config.extraArgs) ? rt.config.extraArgs : [],
       status: rt.status,
       pid: rt.pid,
-      url: `http://${listen === '0.0.0.0' ? '127.0.0.1' : listen}:${port}`,
+      // Same host normalization as probes/launch (0.0.0.0 / :: / [::] → 127.0.0.1)
+      url: this.baseUrlOf(rt.config),
       startedAt: rt.startedAt,
       uptimeMs: rt.startedAt ? Date.now() - rt.startedAt : undefined,
       lastError: rt.lastError,
@@ -1003,6 +1033,9 @@ export class InstanceService extends EventEmitter {
     rt.process = undefined
     rt.pid = undefined
     rt.status = 'stopped'
+    // clearReadyProbe zeroes rt.ready — snapshot first so the external-process
+    // warning below can still see that the adopted instance *was* live.
+    const wasReady = rt.ready
     this.clearReadyProbe(rt, wasManaged ? 'Stopped' : 'External process left running')
     if (child) {
       try {
@@ -1012,12 +1045,14 @@ export class InstanceService extends EventEmitter {
       }
       setTimeout(() => {
         try {
-          if (child.exitCode === null && !child.killed) child.kill('SIGKILL')
+          // `killed` is true after ANY successful kill() (including SIGTERM), so it
+          // cannot gate escalation — only exitCode tells us the child is gone.
+          if (child.exitCode === null) child.kill('SIGKILL')
         } catch {
           /* ignore */
         }
       }, 3000)
-    } else if (!wasManaged && rt.ready) {
+    } else if (!wasManaged && wasReady) {
       // We only adopted an external ComfyUI — be honest instead of pretending we killed it.
       this.pushLog(rt, 'warn', 'Stop requested for an adopted external process — it is still running outside ComfyPilot')
     }

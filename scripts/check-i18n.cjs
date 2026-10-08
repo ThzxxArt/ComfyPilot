@@ -64,9 +64,23 @@ const dynamicDomains = {
     'comfyExtracted', 'torchRun', 'reqRun', 'reqDone', 'reqSkip', 'regRun', 'regDone',
     'starterSkip', 'starterRun', 'starterDone', 'doneStarted', 'doneStartFail', 'done'
   ],
-  'preflightKeys.*': [
+  // Must match detailKey strings emitted by src/main/services/installer.ts
+  'preflight.*': [
     'rootOk', 'rootBad', 'disk', 'diskNew', 'diskUnknown', 'gitMissing',
     'pythonOld', 'pythonMissing', 'uvMissing'
+  ],
+  'update.*': [
+    'stepPreflight', 'stepStop', 'stepBackup', 'stepFetch', 'stepRequirements',
+    'stepTorch', 'stepVerify', 'stepRollback', 'stepDone',
+    'msgRun', 'msgDone', 'msgBackup', 'msgFetchGit', 'msgFetchZip', 'msgReqRun',
+    'msgReqDone', 'msgTorchRun', 'msgTorchDone', 'msgVerifyRun', 'msgVerifyOk',
+    'msgRollback', 'msgRollbackFail', 'msgDoneStarted', 'msgDoneStartFail'
+  ],
+  'nodes.*': [
+    'checkUpdates', 'checking', 'update', 'updateAll', 'updating', 'updateDone',
+    'updateFailed', 'upToDate', 'hasUpdate', 'notUpdatable', 'rolledBack',
+    'rollbackFailed', 'confirmUpdate', 'confirmUpdateAll', 'batchDone',
+    'batchSummary', 'restoreHint'
   ],
   'gpu.*': [
     'nvidiaDefault', 'nvidiaRtx', 'amdLinux', 'amdWindows', 'intel', 'apple', 'none', 'failed'

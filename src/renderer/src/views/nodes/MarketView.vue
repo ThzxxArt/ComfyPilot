@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { SearchOutline, DownloadOutline, StarOutline, RefreshOutline } from '@vicons/ionicons5'
-import { NButton, NIcon, NInput, NList, NListItem, NSpace, NSpin, NTag, NEmpty, NProgress, useMessage } from 'naive-ui'
+import { SearchOutline, DownloadOutline, StarOutline, RefreshOutline, ArrowUpCircleOutline } from '@vicons/ionicons5'
+import { NButton, NIcon, NInput, NList, NListItem, NPopconfirm, NSpace, NSpin, NTag, NEmpty, NProgress, useMessage } from 'naive-ui'
 import { ipc, onIpc, IPC_EVENTS } from '@/composables/useIpc'
 import { useAppStore } from '@/stores/app'
 import type { MarketItem, RegistryPageResult } from '@shared/types'
@@ -131,6 +131,59 @@ async function install(item: MarketItem): Promise<void> {
   }
 }
 
+const updatingItem = ref<string | null>(null)
+
+/**
+ * Resolve the LOCAL pack record for a market item. Registry `name` often
+ * drifts from the local directory/pack name — node.update only matches the
+ * local `id || name`, so we must hand it the local identity.
+ */
+async function resolveLocalPack(item: MarketItem): Promise<{ name: string; locked?: boolean } | null> {
+  try {
+    const packs = await ipc('node.list', store.activeInstanceId || undefined)
+    return (
+      packs.find(
+        (p) =>
+          p.name === item.name ||
+          p.name?.toLowerCase() === item.name?.toLowerCase() ||
+          p.registryId === item.id ||
+          p.id === item.id
+      ) || null
+    )
+  } catch {
+    return null
+  }
+}
+
+/** Update an already-installed pack via node.update (git pull / registry reinstall). */
+async function updateItem(item: MarketItem): Promise<void> {
+  updatingItem.value = item.id
+  try {
+    const local = await resolveLocalPack(item)
+    if (!local) {
+      message.error(t('nodes.updateFailed', { error: 'Pack not found locally' }))
+      return
+    }
+    if (local.locked) {
+      message.warning(t('nodes.locked'))
+      return
+    }
+    await ipc('node.update', local.name, undefined, store.activeInstanceId || undefined)
+    message.success(t('nodes.updateDone', { name: local.name }))
+    await load(true)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    const backup = /backup at (.+)$/i.exec(msg)
+    if (/rollback (also failed|FAILED)/i.test(msg) && backup) {
+      message.error(t('nodes.rollbackFailed', { path: backup[1].trim() }))
+    } else {
+      message.error(t('nodes.updateFailed', { error: msg }))
+    }
+  } finally {
+    updatingItem.value = null
+  }
+}
+
 let offProgress: (() => void) | null = null
 
 onMounted(() => {
@@ -212,10 +265,25 @@ onUnmounted(() => offProgress?.())
                   <NTag v-if="item.installed" size="tiny" round type="success">{{ $t('market.installedTag') }}</NTag>
                 </div>
               </div>
-              <NButton type="primary" secondary :disabled="item.installed" @click="install(item)">
-                <template #icon><NIcon :component="DownloadOutline" /></template>
-                {{ item.installed ? $t('market.installedTag') : $t('market.install') }}
-              </NButton>
+              <NSpace>
+                <NPopconfirm v-if="item.installed" @positive-click="updateItem(item)">
+                  <template #trigger>
+                    <NButton
+                      size="small"
+                      secondary
+                      :loading="updatingItem === item.id"
+                    >
+                      <template #icon><NIcon :component="ArrowUpCircleOutline" /></template>
+                      {{ $t('nodes.update') }}
+                    </NButton>
+                  </template>
+                  {{ $t('nodes.confirmUpdate', { name: item.name, version: item.version }) }}
+                </NPopconfirm>
+                <NButton type="primary" secondary :disabled="item.installed" @click="install(item)">
+                  <template #icon><NIcon :component="DownloadOutline" /></template>
+                  {{ item.installed ? $t('market.installedTag') : $t('market.install') }}
+                </NButton>
+              </NSpace>
             </div>
           </NListItem>
         </NList>

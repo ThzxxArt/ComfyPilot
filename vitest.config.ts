@@ -24,11 +24,14 @@ export default defineConfig({
         'src/main/services/proxy.ts',
         'src/main/services/installer.ts',
         'src/main/services/media.ts',
+        'src/main/services/nodePack.ts',
+        'src/main/services/updater.ts',
+        'src/main/services/instance.ts',
         'src/shared/constants.ts'
       ],
       thresholds: {
         // Per-file floors so one hot module cannot mask another.
-        // 0.1.3 mandate: EVERY metric ≥85% on EVERY included file.
+        // 0.1.4 mandate: EVERY metric ≥85% on EVERY included file.
         'src/main/services/security.ts': {
           statements: 85,
           lines: 85,
@@ -60,6 +63,24 @@ export default defineConfig({
           branches: 85
         },
         'src/main/services/media.ts': {
+          statements: 85,
+          lines: 85,
+          functions: 85,
+          branches: 85
+        },
+        'src/main/services/nodePack.ts': {
+          statements: 85,
+          lines: 85,
+          functions: 85,
+          branches: 85
+        },
+        'src/main/services/updater.ts': {
+          statements: 85,
+          lines: 85,
+          functions: 85,
+          branches: 85
+        },
+        'src/main/services/instance.ts': {
           statements: 85,
           lines: 85,
           functions: 85,

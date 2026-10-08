@@ -630,6 +630,93 @@ export interface StarterModel {
 
 // ---------- Node install progress ----------
 
+// ---------- ComfyUI update (0.1.4) ----------
+export interface ComfyUpdateInfo {
+  instanceId: string
+  /** Local version / commit currently installed. */
+  current: string
+  /** Remote latest version / commit when discoverable. */
+  latest?: string
+  source: 'git' | 'zip' | 'unknown'
+  updatable: boolean
+  /** Commits behind upstream (git installs only). */
+  behindCount?: number
+  /** Short sha of remote head (git installs only). */
+  latestCommit?: string
+  checkedAt: number
+  error?: string
+}
+
+export type UpdateStepId =
+  | 'preflight'
+  | 'stop'
+  | 'backup'
+  | 'fetch'
+  | 'requirements'
+  | 'torch'
+  | 'verify'
+  | 'rollback'
+  | 'done'
+
+export interface UpdateStep {
+  id: UpdateStepId
+  title: string
+  status: InstallStepStatus
+  detail: string
+  log: string[]
+  detailKey?: string
+  detailParams?: Record<string, string | number>
+}
+
+export interface UpdateProgress {
+  runId: string
+  instanceId: string
+  step: UpdateStepId
+  status: InstallStepStatus
+  steps: UpdateStep[]
+  message: string
+  percent: number
+  error?: string
+  /** Absolute path of the backup dir when the backup step completed. */
+  backupPath?: string
+  bytes?: InstallStepByteProgress
+}
+
+export interface ComfyUpdateOptions {
+  /** Also reinstall requirements.txt after the source update. Default true. */
+  updateDeps?: boolean
+  /** Optionally reinstall torch with a (new) channel. */
+  torchChannel?: TorchChannel
+  /** Open embed/browser after a successful update+optional restart. */
+  open?: 'embed' | 'browser' | 'none'
+}
+
+export interface RepairEnvOptions {
+  torchChannel?: TorchChannel
+  /** Force recreate the venv even when one exists. */
+  recreateVenv?: boolean
+}
+
+// ---------- Node update checking ----------
+export interface NodeUpdateCheckResult {
+  name: string
+  id: string
+  currentVersion: string
+  latestVersion?: string
+  updatable: boolean
+  updateSource: 'registry' | 'git' | 'none'
+  /** Why it cannot be updated (locked / manager / local / no remote). */
+  reason?: string
+  reasonKey?: string
+}
+
+export interface NodeUpdateAllResult {
+  name: string
+  ok: boolean
+  error?: string
+  skipped?: boolean
+}
+
 // ---------- IPC ----------
 export interface IpcResult<T = unknown> {
   ok: boolean
@@ -671,6 +758,11 @@ export type IpcChannelMap = {
   'instance.probeEnv': { args: [string]; result: EnvProbe }
   'instance.exportDiagnostics': { args: [string]; result: DiagnosticPackage }
   'instance.copyDiagnostics': { args: [string]; result: string }
+  'instance.checkComfyUpdate': { args: [string]; result: ComfyUpdateInfo }
+  'instance.updateComfy': { args: [string, ComfyUpdateOptions?]; result: UpdateProgress }
+  'instance.updateStatus': { args: []; result: UpdateProgress | null }
+  'instance.cancelUpdate': { args: []; result: boolean }
+  'instance.repairEnv': { args: [string, RepairEnvOptions?]; result: EnvProbe }
 
   // models
   'model.list': { args: []; result: ModelRecord[] }
@@ -730,6 +822,8 @@ export type IpcChannelMap = {
   'node.createSnapshot': { args: [string?]; result: NodeSnapshot }
   'node.restoreSnapshot': { args: [string]; result: boolean }
   'node.deleteSnapshot': { args: [string]; result: boolean }
+  'node.checkUpdates': { args: [string?]; result: NodeUpdateCheckResult[] }
+  'node.updateAll': { args: [string?]; result: NodeUpdateAllResult[] }
 
   // workflows
   'workflow.list': { args: []; result: WorkflowRecord[] }
@@ -875,7 +969,9 @@ export const IPC_EVENTS = {
   installProgress: 'event:install-progress',
   registryIndexProgress: 'event:registry-index-progress',
   notification: 'event:notification',
-  runtimeProgress: 'event:runtime-progress'
+  runtimeProgress: 'event:runtime-progress',
+  comfyUpdateProgress: 'event:comfy-update-progress',
+  nodeUpdateProgress: 'event:node-update-progress'
 } as const
 
 export interface AppNotification {

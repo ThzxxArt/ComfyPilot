@@ -3,21 +3,25 @@ import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   ExtensionPuzzleOutline, RefreshOutline, WarningOutline, CheckmarkCircleOutline,
-  LockClosedOutline, LockOpenOutline, GitBranchOutline, SearchOutline
+  LockClosedOutline, LockOpenOutline, GitBranchOutline, SearchOutline,
+  CloudDownloadOutline, ArrowUpCircleOutline
 } from '@vicons/ionicons5'
 import {
-  NButton, NIcon, NSpace, NSpin, NTag, NSwitch, NEmpty, useMessage,
-  NCollapse, NCollapseItem, NInput, NModal, NPopconfirm, NTabs, NTabPane
+  NButton, NIcon, NSpace, NSpin, NTag, NSwitch, NEmpty, useMessage, useDialog,
+  NCollapse, NCollapseItem, NInput, NModal, NPopconfirm, NTabs, NTabPane, NTooltip
 } from 'naive-ui'
 import { ipc } from '@/composables/useIpc'
+import { useComfyUpdate } from '@/composables/useComfyUpdate'
 import { useAppStore } from '@/stores/app'
 import type {
-  NodeNameConflict, NodePackRecord, NodeSnapshot
+  NodeNameConflict, NodePackRecord, NodeSnapshot, NodeUpdateCheckResult
 } from '@shared/types'
 
 const { t } = useI18n()
 const store = useAppStore()
 const message = useMessage()
+const dialog = useDialog()
+const { nodeUpdatingPack } = useComfyUpdate()
 const loading = ref(false)
 const packs = ref<NodePackRecord[]>([])
 const conflicts = ref<NodeNameConflict[]>([])
@@ -26,6 +30,10 @@ const installedQuery = ref('')
 const showInstall = ref(false)
 const installUrl = ref('')
 const tab = ref('installed')
+const checks = ref<Record<string, NodeUpdateCheckResult>>({})
+const checking = ref(false)
+const updatingOne = ref<string | null>(null)
+const batchRunning = ref(false)
 
 const filteredPacks = computed(() => {
   const q = installedQuery.value.trim().toLowerCase()
@@ -38,6 +46,57 @@ const filteredPacks = computed(() => {
   )
 })
 
+/** True when the pack has a newer version available. Trust the check result first. */
+function hasUpdatePack(pack: NodePackRecord): boolean {
+  const c = checks.value[pack.name]
+  if (c) return Boolean(c.updatable)
+  if (pack.status === 'update-available') return true
+  // Only flag string-difference when both look like numeric versions —
+  // commit shas / 'detected' must not light up the badge.
+  const looksNumeric = (v: string): boolean => /^v?\d/i.test(String(v || '').trim())
+  if (
+    pack.latestVersion &&
+    pack.version &&
+    looksNumeric(pack.latestVersion) &&
+    looksNumeric(pack.version) &&
+    pack.latestVersion !== pack.version
+  ) {
+    return true
+  }
+  return false
+}
+
+/**
+ * Whether auto-update is supported at all (git / registry).
+ * local packs, and manager packs without a git remote, cannot be updated.
+ */
+function canUpdatePack(pack: NodePackRecord): boolean {
+  if (pack.locked) return false
+  const c = checks.value[pack.name]
+  if (c) return c.updateSource === 'git' || c.updateSource === 'registry'
+  if (pack.installSource === 'git') return true
+  if (pack.installSource === 'registry' && pack.registryId) return true
+  // manager packs only when they look like a git checkout
+  if (pack.installSource === 'manager') {
+    return Boolean(pack.repository && /\.git($|\s)|github\.com/i.test(pack.repository))
+  }
+  return false
+}
+
+const updatablePacks = computed(() => packs.value.filter(hasUpdatePack))
+
+function describeUpdateError(err: unknown, pack?: NodePackRecord): string {
+  const msg = err instanceof Error ? err.message : String(err)
+  const backup = /backup at (.+)$/i.exec(msg)
+  if (/rollback (also failed|FAILED)/i.test(msg) && backup) {
+    return t('nodes.rollbackFailed', { path: backup[1].trim() })
+  }
+  if (pack?.installSource === 'registry' || /rolled back/i.test(msg)) {
+    return t('nodes.rolledBack')
+  }
+  return t('nodes.updateFailed', { error: msg })
+}
+
 async function refresh(): Promise<void> {
   loading.value = true
   try {
@@ -49,6 +108,73 @@ async function refresh(): Promise<void> {
     message.error(err instanceof Error ? err.message : String(err))
   } finally {
     loading.value = false
+  }
+}
+
+async function checkUpdates(): Promise<void> {
+  checking.value = true
+  try {
+    const results = await ipc('node.checkUpdates', store.activeInstanceId || undefined)
+    const map: Record<string, NodeUpdateCheckResult> = {}
+    for (const r of results) {
+      map[r.name] = r
+      const pack = packs.value.find((p) => p.name === r.name || p.id === r.id)
+      if (pack) {
+        if (r.latestVersion) pack.latestVersion = r.latestVersion
+        if (r.updatable) pack.status = 'update-available'
+      }
+    }
+    checks.value = map
+    if (!results.some((r) => r.updatable)) {
+      message.info(t('nodes.upToDate'))
+    }
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    checking.value = false
+  }
+}
+
+async function updatePack(pack: NodePackRecord): Promise<void> {
+  updatingOne.value = pack.name
+  try {
+    await ipc('node.update', pack.name, undefined, store.activeInstanceId || undefined)
+    message.success(t('nodes.updateDone', { name: pack.displayName || pack.name }))
+    // Drop the stale check result so the "has update" badge clears.
+    delete checks.value[pack.name]
+    await refresh()
+  } catch (err) {
+    message.error(describeUpdateError(err, pack))
+  } finally {
+    updatingOne.value = null
+  }
+}
+
+async function updateAllPacks(): Promise<void> {
+  batchRunning.value = true
+  try {
+    const results = await ipc('node.updateAll', store.activeInstanceId || undefined)
+    const ok = results.filter((r) => r.ok && !r.skipped).length
+    const fail = results.filter((r) => !r.ok).length
+    const skip = results.filter((r) => r.skipped).length
+    const summary = t('nodes.batchDone', { ok, fail, skip })
+    const failures = results.filter((r) => !r.ok)
+    dialog.info({
+      title: t('nodes.batchSummary'),
+      content: failures.length
+        ? `${summary} — ${failures.map((f) => `${f.name}: ${f.error || ''}`).join(' · ')}`
+        : summary,
+      positiveText: t('common.confirm')
+    })
+    if (fail > 0) message.warning(summary)
+    else message.success(summary)
+    // Drop stale check results so the "has update" badges refresh.
+    checks.value = {}
+    await refresh()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    batchRunning.value = false
   }
 }
 
@@ -152,6 +278,17 @@ onMounted(() => {
         <p class="page-subtitle">{{ $t('nodes.subtitle') }}</p>
       </div>
       <NSpace>
+        <NButton secondary :loading="checking" @click="checkUpdates">
+          <template #icon><NIcon :component="CloudDownloadOutline" /></template>{{ $t('nodes.checkUpdates') }}
+        </NButton>
+        <NPopconfirm @positive-click="updateAllPacks">
+          <template #trigger>
+            <NButton secondary type="primary" :disabled="!updatablePacks.length" :loading="batchRunning">
+              <template #icon><NIcon :component="ArrowUpCircleOutline" /></template>{{ $t('nodes.updateAll') }}
+            </NButton>
+          </template>
+          {{ $t('nodes.confirmUpdateAll', { n: updatablePacks.length }) }}
+        </NPopconfirm>
         <NButton secondary @click="refresh">
           <template #icon><NIcon :component="RefreshOutline" /></template>{{ $t('nodes.refresh') }}
         </NButton>
@@ -173,6 +310,10 @@ onMounted(() => {
           </NInput>
           <span class="meta">{{ filteredPacks.length }} / {{ packs.length }}</span>
         </NSpace>
+        <div v-if="nodeUpdatingPack" class="updating-banner">
+          <NTag size="small" type="info" round>{{ $t('nodes.updating') }}</NTag>
+          <span class="mono">{{ nodeUpdatingPack }}</span>
+        </div>
         <NSpin :show="loading">
           <div v-if="filteredPacks.length" class="grid cards">
             <article v-for="pack in filteredPacks" :key="pack.id" class="card card-interactive pack">
@@ -202,9 +343,34 @@ onMounted(() => {
                 </NTag>
                 <NTag size="tiny" round>{{ pack.installSource }}</NTag>
                 <NTag v-if="pack.locked" size="tiny" round type="warning">locked</NTag>
+                <NTag v-if="hasUpdatePack(pack)" size="tiny" round type="warning">
+                  {{ $t('nodes.hasUpdate', { version: pack.latestVersion || pack.version }) }}
+                </NTag>
+                <NTag v-if="!canUpdatePack(pack)" size="tiny" round>{{ $t('nodes.notUpdatable') }}</NTag>
               </div>
               <div class="pack-actions">
-                <NButton size="tiny" secondary @click="smoke(pack)">{{ $t('nodes.smokeTest') }}</NButton>
+                <NSpace>
+                  <NButton size="tiny" secondary @click="smoke(pack)">{{ $t('nodes.smokeTest') }}</NButton>
+                  <NPopconfirm v-if="canUpdatePack(pack)" @positive-click="updatePack(pack)">
+                    <template #trigger>
+                      <NButton
+                        size="tiny"
+                        type="primary"
+                        secondary
+                        :loading="updatingOne === pack.name || nodeUpdatingPack === pack.name"
+                      >
+                        {{ $t('nodes.update') }}
+                      </NButton>
+                    </template>
+                    {{ $t('nodes.confirmUpdate', { name: pack.displayName || pack.name, version: pack.latestVersion || pack.version }) }}
+                  </NPopconfirm>
+                  <NTooltip v-else trigger="hover">
+                    <template #trigger>
+                      <NButton size="tiny" secondary disabled>{{ $t('nodes.update') }}</NButton>
+                    </template>
+                    {{ pack.locked ? $t('nodes.locked') : $t('nodes.notUpdatable') }}
+                  </NTooltip>
+                </NSpace>
               </div>
               <NCollapse v-if="pack.issues?.length" class="issues" :arrow="false">
                 <NCollapseItem :title="$t('nodes.healthIssues', { n: pack.issues.length })" name="1">
@@ -247,7 +413,12 @@ onMounted(() => {
               <div class="pack-meta">{{ new Date(s.createdAt).toLocaleString() }} · {{ s.packs.length }} packs</div>
             </div>
             <NSpace>
-              <NButton size="small" secondary @click="restoreSnapshot(s.id)">{{ $t('nodes.restore') }}</NButton>
+              <NPopconfirm @positive-click="restoreSnapshot(s.id)">
+                <template #trigger>
+                  <NButton size="small" secondary>{{ $t('nodes.restore') }}</NButton>
+                </template>
+                {{ $t('nodes.restoreHint') }}
+              </NPopconfirm>
               <NPopconfirm @positive-click="removeSnapshot(s.id)">
                 <template #trigger>
                   <NButton size="small" type="error" secondary>{{ $t('nodes.delete') }}</NButton>
@@ -286,6 +457,17 @@ onMounted(() => {
 .pack-desc { font-size: 13px; color: $color-text-secondary; line-height: 1.55; min-height: 36px; margin: 0 0 10px; }
 .pack-tags { display: flex; flex-wrap: wrap; gap: 6px; }
 .pack-actions { margin-top: 10px; }
+.updating-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(79, 110, 247, 0.08);
+  font-size: 12.5px;
+  color: $color-text-secondary;
+}
 .issues { margin-top: 10px; }
 .issue { display: flex; gap: 8px; padding: 8px 0; font-size: 12.5px; color: $color-text-secondary; }
 .issue-msg { color: $color-text; font-weight: 600; }

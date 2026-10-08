@@ -103,6 +103,20 @@ function isAllowedEmbedUrl(raw: string): boolean {
   return isSafeEmbedUrl(raw) && isTrustedComfyUrl(raw)
 }
 
+/**
+ * Renderer-supplied instance id. MUST be a sanitized opaque id — never a
+ * filesystem path. nodePack.detectCustomNodesRoot accepts path-form input for
+ * internal callers; allowing that from IPC would be a path-injection surface.
+ */
+function safeInstanceId(instanceId?: string): string | undefined {
+  if (instanceId == null || instanceId === '') return undefined
+  const raw = String(instanceId)
+  if (raw.includes('/') || raw.includes('\\') || raw.includes('\0') || raw.includes('..')) {
+    throw new Error('Invalid instance id')
+  }
+  return sanitizeId(raw)
+}
+
 const READ_DATA_EXTS = new Set(['.json', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.yaml', '.yml', '.txt'])
 
 function isSafeReadPath(path: string): boolean {
@@ -235,6 +249,52 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     clipboard.writeText(path)
     return path
   }))
+  ipcMain.handle('instance.checkComfyUpdate', wrap(async (id: string) => {
+    const { comfyUpdaterService } = await import('../services/updater')
+    return comfyUpdaterService.check(sanitizeId(id))
+  }))
+  ipcMain.handle('instance.updateComfy', wrap(async (id: string, opts?: import('@shared/types').ComfyUpdateOptions) => {
+    const { comfyUpdaterService } = await import('../services/updater')
+    const safeId = sanitizeId(id)
+    // start() is fire-and-forget (events stream interim progress); we wait here
+    // so `await ipc('instance.updateComfy')` resolves only when the run settles.
+    const initial = await comfyUpdaterService.start(safeId, opts)
+    const final = await comfyUpdaterService.waitUntilSettled()
+    const result = final || initial
+    // Invalidate version cache so list() shows the post-update version.
+    try {
+      const configs = loadInstanceConfigs()
+      const cfg = configs.find((c) => c.id === safeId)
+      if (cfg?.path) instanceService.invalidateVersionCache(cfg.path)
+      else instanceService.invalidateVersionCache()
+    } catch {
+      /* ignore */
+    }
+    return result
+  }))
+  ipcMain.handle('instance.updateStatus', wrap(async () => {
+    const { comfyUpdaterService } = await import('../services/updater')
+    return comfyUpdaterService.getStatus()
+  }))
+  ipcMain.handle('instance.cancelUpdate', wrap(async () => {
+    const { comfyUpdaterService } = await import('../services/updater')
+    return comfyUpdaterService.cancel()
+  }))
+  ipcMain.handle('instance.repairEnv', wrap(async (id: string, opts?: import('@shared/types').RepairEnvOptions) => {
+    const probe = await envService.repairEnv({
+      instanceId: sanitizeId(id),
+      torchChannel: opts?.torchChannel,
+      recreateVenv: opts?.recreateVenv
+    })
+    try {
+      const configs = loadInstanceConfigs()
+      const cfg = configs.find((c) => c.id === sanitizeId(id))
+      if (cfg?.path) instanceService.invalidateVersionCache(cfg.path)
+    } catch {
+      /* ignore */
+    }
+    return probe
+  }))
 
   // models
   ipcMain.handle(
@@ -273,8 +333,8 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   }))
 
   // node packs
-  ipcMain.handle('node.list', wrap((instanceId?: string) => nodePackService.list(instanceId)))
-  ipcMain.handle('node.refresh', wrap((instanceId?: string) => nodePackService.refresh(instanceId)))
+  ipcMain.handle('node.list', wrap((instanceId?: string) => nodePackService.list(safeInstanceId(instanceId))))
+  ipcMain.handle('node.refresh', wrap((instanceId?: string) => nodePackService.refresh(safeInstanceId(instanceId))))
   ipcMain.handle('node.registrySearch', wrap((opts?: { query?: string; limit?: number; page?: number; scanPages?: number }) => nodePackService.registrySearch(opts)))
   ipcMain.handle('registry.indexStatus', wrap(async () => {
     const { registryIndex } = await import('../services/registryIndex')
@@ -289,18 +349,22 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     return registryIndex.ensure()
   }))
   ipcMain.handle('node.managerChannel', wrap(() => nodePackService.managerChannelList()))
-  ipcMain.handle('node.install', wrap((opts: { id: string; version?: string; source: 'registry' | 'git' | 'manager'; url?: string; instanceId?: string }) => nodePackService.install(opts)))
-  ipcMain.handle('node.uninstall', wrap((id: string, instanceId?: string) => nodePackService.uninstall(id, instanceId)))
-  ipcMain.handle('node.update', wrap((id: string, version?: string, instanceId?: string) => nodePackService.update(id, version, instanceId)))
-  ipcMain.handle('node.toggle', wrap((id: string, enabled: boolean, instanceId?: string) => nodePackService.toggle(id, enabled, instanceId)))
+  ipcMain.handle('node.install', wrap((opts: { id: string; version?: string; source: 'registry' | 'git' | 'manager'; url?: string; instanceId?: string }) =>
+    nodePackService.install({ ...opts, instanceId: safeInstanceId(opts.instanceId) })
+  ))
+  ipcMain.handle('node.uninstall', wrap((id: string, instanceId?: string) => nodePackService.uninstall(id, safeInstanceId(instanceId))))
+  ipcMain.handle('node.update', wrap((id: string, version?: string, instanceId?: string) => nodePackService.update(id, version, safeInstanceId(instanceId))))
+  ipcMain.handle('node.toggle', wrap((id: string, enabled: boolean, instanceId?: string) => nodePackService.toggle(id, enabled, safeInstanceId(instanceId))))
   ipcMain.handle('node.lock', wrap((id: string, locked: boolean) => nodePackService.lock(id, locked)))
-  ipcMain.handle('node.checkIssues', wrap((id: string, instanceId?: string) => nodePackService.checkIssues(id, instanceId)))
-  ipcMain.handle('node.conflicts', wrap((instanceId?: string) => nodePackService.conflicts(instanceId)))
-  ipcMain.handle('node.smokeTest', wrap((id: string, instanceId?: string) => nodePackService.smokeTest(id, instanceId)))
+  ipcMain.handle('node.checkIssues', wrap((id: string, instanceId?: string) => nodePackService.checkIssues(id, safeInstanceId(instanceId))))
+  ipcMain.handle('node.conflicts', wrap((instanceId?: string) => nodePackService.conflicts(safeInstanceId(instanceId))))
+  ipcMain.handle('node.smokeTest', wrap((id: string, instanceId?: string) => nodePackService.smokeTest(id, safeInstanceId(instanceId))))
   ipcMain.handle('node.snapshots', wrap(() => nodePackService.snapshots()))
   ipcMain.handle('node.createSnapshot', wrap((name?: string) => nodePackService.createSnapshot(name)))
   ipcMain.handle('node.deleteSnapshot', wrap((id: string) => nodePackService.deleteSnapshot(sanitizeId(id))))
   ipcMain.handle('node.restoreSnapshot', wrap((id: string) => nodePackService.restoreSnapshot(sanitizeId(id))))
+  ipcMain.handle('node.checkUpdates', wrap((instanceId?: string) => nodePackService.checkUpdates(safeInstanceId(instanceId))))
+  ipcMain.handle('node.updateAll', wrap((instanceId?: string) => nodePackService.updateAll(safeInstanceId(instanceId))))
 
   // workflows
   ipcMain.handle('workflow.list', wrap(() => workflowService.list()))

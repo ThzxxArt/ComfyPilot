@@ -185,6 +185,107 @@ export class EnvService {
     }
     return true
   }
+
+  /**
+   * Repair / complete the Python environment for an already-registered instance.
+   * - creates the venv when missing (or when recreateVenv is set)
+   * - optionally (re)installs torch for a channel
+   * - installs ComfyUI's requirements.txt into the venv
+   * Returns a fresh EnvProbe of the resulting environment.
+   */
+  async repairEnv(opts: {
+    instanceId: string
+    torchChannel?: string
+    recreateVenv?: boolean
+  }): Promise<EnvProbe> {
+    const { loadInstanceConfigs } = await import('./db')
+    const { join } = await import('path')
+    const { existsSync, mkdirSync, rmSync } = await import('fs')
+    const config = loadInstanceConfigs().find((c) => c.id === opts.instanceId)
+    if (!config) throw new Error(`Instance not found: ${opts.instanceId}`)
+    const comfyDir = config.path
+    if (!comfyDir || !existsSync(join(comfyDir, 'main.py'))) {
+      throw new Error(`Not a ComfyUI install: ${comfyDir}`)
+    }
+
+    let venvPath = config.venvPath || ''
+    if (!venvPath) {
+      const { dirname } = await import('path')
+      venvPath = join(dirname(comfyDir), '.venv')
+    }
+    const pythonInVenv = existsSync(join(venvPath, 'Scripts', 'python.exe'))
+      ? join(venvPath, 'Scripts', 'python.exe')
+      : join(venvPath, 'bin', 'python')
+
+    if (opts.recreateVenv && existsSync(venvPath)) {
+      rmSync(venvPath, { recursive: true, force: true })
+    }
+
+    if (!existsSync(pythonInVenv)) {
+      // Create the venv using the same resolution order as the installer.
+      const { bootstrapService } = await import('./bootstrap')
+      const bootstrap = await bootstrapService.ensure({ kinds: ['uv', 'python'], downloadIfMissing: true })
+      const uvComp = bootstrap.components.find((c) => c.kind === 'uv' && c.installed)
+      mkdirSync(venvPath, { recursive: true })
+      mkdirSync(join(venvPath, '..'), { recursive: true })
+      if (uvComp?.path) {
+        try {
+          await safeExec(uvComp.path, ['python', 'install', '3.13'], undefined, 180000)
+        } catch {
+          /* interpreter may already be present */
+        }
+        await safeExec(uvComp.path, ['venv', venvPath, '--python', '3.13'], undefined, 180000)
+      } else {
+        const basePython = bootstrap.pythonPath && bootstrap.pythonPath !== 'python' ? bootstrap.pythonPath : 'python'
+        await safeExec(basePython, ['-m', 'venv', venvPath], undefined, 180000)
+      }
+      if (!existsSync(pythonInVenv)) {
+        throw new Error(`venv creation failed — no interpreter at ${pythonInVenv}`)
+      }
+    }
+
+    // Optional torch
+    if (opts.torchChannel) {
+      const { resolveTorchIndex, officialTorchIndex } = await import('./installer')
+      const channel = opts.torchChannel as Parameters<typeof resolveTorchIndex>[0]
+      const index = resolveTorchIndex(channel)
+      const official = officialTorchIndex(channel)
+      const tryInstall = async (idx: string): Promise<boolean> => {
+        const out = await safeExec(
+          pythonInVenv,
+          ['-m', 'pip', 'install', '--upgrade', 'torch', 'torchvision', 'torchaudio', '--index-url', idx],
+          undefined,
+          LONG_TIMEOUT_MS
+        )
+        return /Successfully installed|already satisfied|Requirement already satisfied/i.test(out)
+      }
+      let ok = await tryInstall(index)
+      if (!ok && index !== official) ok = await tryInstall(official)
+      if (!ok) throw new Error(`torch install failed for channel ${opts.torchChannel}`)
+    }
+
+    // requirements
+    const reqFile = join(comfyDir, 'requirements.txt')
+    if (existsSync(reqFile)) {
+      const settings = loadSettings()
+      const args = ['-m', 'pip', 'install', '-r', reqFile]
+      const pipIndex = String(settings.pipIndex || '').trim()
+      if (pipIndex) {
+        args.push('-i', pipIndex)
+        try {
+          args.push('--trusted-host', new URL(pipIndex).hostname)
+        } catch {
+          /* skip */
+        }
+      }
+      const out = await safeExec(pythonInVenv, args, undefined, LONG_TIMEOUT_MS)
+      if (/ERROR:|error: failed/i.test(out) && !/Successfully installed|Requirement already satisfied/i.test(out)) {
+        throw new Error(`requirements install reported errors: ${out.slice(0, 300)}`)
+      }
+    }
+
+    return this.probe({ pythonPath: pythonInVenv, venvPath })
+  }
 }
 
 export const envService = new EnvService()

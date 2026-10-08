@@ -1,7 +1,7 @@
 # ComfyPilot
 
 > **ComfyUI 全能管理器** — 本机 ComfyUI 生产线的控制塔  
-> TypeScript · Vue 3 · Electron · Naive UI · MIT · v0.1.3
+> TypeScript · Vue 3 · Electron · Naive UI · MIT · v0.1.4
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-4f6ef7)](./LICENSE)
 
@@ -35,9 +35,9 @@ ComfyPilot **不替代** ComfyUI 节点工作台，而是管理它的整套生�
 |------|------|
 | **总览 Dashboard** | 空态三步引导、启动器大卡（一键启动并打开 Frontend）、启动中阶段与日志、实例 / 模型 / 节点 / CPU·内存·显存一屏掌握 |
 | **一键装机 Install** | **无需预装 Python / Git**：自动下载便携运行时、zip 获取 ComfyUI、按 GPU 推荐 torch、镜像测速、细粒度进度、完成后一键启动 + 推荐基础模型 |
-| **实例 Instances** | 发现候选、启动并打开、就绪探测、端口冲突自愈、启动命令预览与导出脚本、热编辑、置顶/搜索、批量启停、环境探测、诊断包 |
+| **实例 Instances** | 发现候选、启动并打开、就绪探测、端口冲突自愈、启动命令预览与导出脚本、热编辑、置顶/搜索、批量启停、环境探测、诊断包、**检查/更新 ComfyUI 本体（备份-回滚）**、**一键修复环境** |
 | **模型库 Models** | 多根扫描、safetensors 元数据、SHA256 去重、断点下载与校验、推荐模型包一键下载、移动/软链/改名、存储分析、真缩略图 |
-| **节点 Node Packs** | Registry / Manager / Git 安装、依赖真实安装、启用禁用、锁定、冲突检测、冒烟导入、快照对齐 |
+| **节点 Node Packs** | Registry / Manager / Git 安装、依赖真实安装、启用禁用、锁定、冲突检测、冒烟导入、快照对齐、**检查更新、一键/批量更新、失败回滚上报** |
 | **市场 Market** | Comfy Registry 精选浏览与一键安装 |
 | **工作流 Workflows** | JSON / PNG 元数据解析、标签、UI→API 转换、按实例排队 |
 | **批跑 Batch** | 多工作流 × 多张批量提交队列，进度与失败统计 |
@@ -54,6 +54,8 @@ ComfyPilot **不替代** ComfyUI 节点工作台，而是管理它的整套生�
 ## 零门槛装机
 
 **0.1.3 核心目标：装完 ComfyPilot 这一个包，就能在应用内把 ComfyUI 装好、启动、出图——不需要自己提前安装 Python、Git、uv 或任何前置软件。**
+
+**0.1.4 核心目标：装完之后管得住升级——实例 ComfyUI 可检查/更新/回滚，节点包可检查/一键/批量更新，环境可一键修复。**
 
 ### 自动准备的运行时（下载到 `userData/runtimes/`）
 
@@ -159,11 +161,12 @@ npm run test:all
 
 ### 节点包
 
-- 来源：Comfy Registry API、Manager channel、Git URL、本地扫描
-- Git 安装校验：仅 https / ssh / git@，拦截 `ext::`、注入型主机/分支
+- 来源：Comfy Registry API、Manager channel、Git URL、本地扫描（支持指定 branch）
+- Git 安装校验：仅 https / ssh / git@，拦截 `ext::`、注入型主机/分支；**自动使用便携 MinGit**
 - 依赖安装：`pip install -r requirements.txt` **真实等待完成**，失败写入 issue
 - 健康：requirements 提示、节点名冲突、`__init__.py` 真实导入冒烟
-- 快照：安装前自动快照；恢复为**启用状态对齐**（不回滚版本，UI 已明示）
+- **更新**：检查更新（Registry 版本 / git behind）、一键更新、批量更新；registry 包失败自动回滚到 `.bak`，回滚失败必报备份路径
+- 快照：安装/更新/卸载前自动快照；恢复为**启用状态对齐**（不回滚版本，UI 已明示）
 
 ### 工作流与批跑
 
@@ -240,7 +243,7 @@ Python 版本、Torch / CUDA、`extra_model_paths.yaml`、端口、磁盘、Regi
 
 ```text
 ComfyPilot/
-├── package.json                 # v0.1.3 · MIT · ThzxxArt
+├── package.json                 # v0.1.4 · MIT · ThzxxArt
 ├── electron.vite.config.ts
 ├── electron-builder.yml         # Win NSIS / macOS DMG / Linux AppImage·deb
 ├── vitest.config.ts             # 覆盖率阈值 85%（逐文件）
@@ -363,6 +366,10 @@ ComfyUI 本身采用 GPL-3.0；本项目独立发布，采用 **MIT**。
 - [x] **0.1.1 多实例上下文**：节点/市场/模型绑定当前实例
 - [x] **0.1.3 零门槛装机**：便携 Python / uv / MinGit 自举，zip 装 ComfyUI，镜像测速，推荐基础模型
 - [x] **0.1.3 启动器/管理器 UX**：三步引导、装机真一键、实例卡收敛、产物参数面板、完整 i18n、覆盖率 ≥85%
+- [x] **0.1.4 实例 ComfyUI 更新**：版本探测（git describe / 安装戳）、备份-拉取-依赖-验证-回滚全管线、保留 custom_nodes/models/user
+- [x] **0.1.4 节点安装/更新产品化**：检查更新、一键/批量更新、回滚上报、MinGit 便携链、嵌套残留清理
+- [x] **0.1.4 环境修复**：实例级 repairEnv（补 venv / torch / requirements）
+- [x] **0.1.4 质量门禁**：preflight i18n 键根治、CI 接 i18n/硬编码门禁、nodePack/updater 进覆盖率 ≥85%
 - [ ] 自动更新通道（GitHub Releases）
 - [ ] 工作流版本对照与打包分享
 - [ ] 更细的 GPU 多卡 / 共享显存展示

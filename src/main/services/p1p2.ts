@@ -365,13 +365,27 @@ export class MarketService {
         page: opts?.page,
         scanPages: opts?.scanPages
       })
-      // Installed detection must target the selected instance's custom_nodes
+      // Installed detection must target the selected instance's custom_nodes.
+      // Match on directory name AND pack metadata name/registryId — registry
+      // `name` often differs from the folder the zip extracted to.
       let instancePath = settings.defaultInstancePath
       if (opts?.instanceId) {
         const inst = loadInstanceConfigs().find((c) => c.id === opts.instanceId)
         if (inst?.path) instancePath = inst.path
       }
-      const installed = new Set(readdirSafe(instancePath))
+      const installed = collectInstalledKeys(instancePath, opts?.instanceId)
+      try {
+        const { nodePackService } = await import('./nodePack')
+        for (const p of nodePackService.list(opts?.instanceId)) {
+          if (p.name) {
+            installed.add(p.name)
+            installed.add(p.name.toLowerCase())
+          }
+          if (p.registryId) installed.add(p.registryId)
+        }
+      } catch {
+        /* nodePack unavailable — directory keys still apply */
+      }
       return toPageResult(result, (n) => mapMarketItem(n, installed, opts?.category || 'tools'))
     } catch (err) {
       if (settings.networkMode === 'offline') {
@@ -399,6 +413,22 @@ function readdirSafe(instancePath: string): string[] {
   } catch {
     return []
   }
+}
+
+/**
+ * Keys that mark a registry item as already installed: directory basenames
+ * plus common folder↔name drift normalizations. Metadata names / registryIds
+ * are merged in by the caller once nodePack is loaded.
+ */
+function collectInstalledKeys(instancePath: string, _instanceId?: string): Set<string> {
+  const keys = new Set<string>()
+  for (const n of readdirSafe(instancePath)) {
+    if (n.startsWith('.') || n === '__pycache__' || n === '__MACOSX' || n === 'node_modules') continue
+    keys.add(n)
+    keys.add(n.toLowerCase())
+    keys.add(n.replace(/^ComfyUI[-_]/i, '').toLowerCase())
+  }
+  return keys
 }
 
 export const marketService = new MarketService()

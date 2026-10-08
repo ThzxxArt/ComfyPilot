@@ -399,3 +399,51 @@ export function listConfigFiles(): string[] {
     return []
   }
 }
+
+// ---------- Install run persistence (0.1.4) ----------
+/**
+ * Persist the latest install/update run so the UI can restore progress after
+ * an app restart. File shape: `{ runs: InstallProgress[] }` with newest first,
+ * capped so the file never grows unbounded.
+ */
+const INSTALL_RUNS_HEADER = `ComfyPilot install runs (JSONC)
+// Latest one-click installer runs — written automatically. Safe to delete.`
+
+export function saveInstallRun(progress: {
+  runId: string
+  status: string
+  [k: string]: unknown
+}): void {
+  try {
+    const file = readJsonc<{ runs: Array<Record<string, unknown>> }>('install-runs', { runs: [] })
+    const runs = file.runs || []
+    const idx = runs.findIndex((r) => r.runId === progress.runId)
+    if (idx >= 0) runs[idx] = progress
+    else runs.unshift(progress)
+    writeJsonc('install-runs', { runs: runs.slice(0, 20) }, INSTALL_RUNS_HEADER)
+  } catch {
+    /* persistence is best-effort — never fail the install because of it */
+  }
+}
+
+export function loadInstallRuns(): Array<Record<string, unknown>> {
+  try {
+    return readJsonc<{ runs: Array<Record<string, unknown>> }>('install-runs', { runs: [] }).runs || []
+  } catch {
+    return []
+  }
+}
+
+/** Most recent run (in-flight preferred: status === 'running'). */
+export function loadLatestInstallRun(): Record<string, unknown> | null {
+  const runs = loadInstallRuns()
+  return runs.find((r) => r.status === 'running') || runs[0] || null
+}
+
+export function clearInstallRuns(): void {
+  try {
+    writeJsonc('install-runs', { runs: [] }, INSTALL_RUNS_HEADER)
+  } catch {
+    /* ignore */
+  }
+}

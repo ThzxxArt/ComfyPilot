@@ -105,8 +105,16 @@ export function mapRegistryPack(n: RawNode): RegistryNodePack {
 
 export function mapMarketItem(n: RawNode, installed: Set<string>, categoryFallback = 'tools'): MarketItem {
   const name = String(n.name || '')
+  const id = String(n.id || name)
+  // Match against several key forms — folder basenames, registry names and ids
+  // drift apart in the wild (ComfyUI-Foo vs comfyui_foo).
+  const isInstalled =
+    installed.has(name) ||
+    installed.has(name.toLowerCase()) ||
+    installed.has(id) ||
+    installed.has(String(n.displayName || '').toLowerCase())
   return {
-    id: String(n.id || name),
+    id,
     name,
     displayName: String(n.displayName || n.title || name),
     description: String(n.description || ''),
@@ -116,7 +124,7 @@ export function mapMarketItem(n: RawNode, installed: Set<string>, categoryFallba
     tags: Array.isArray(n.tags) ? (n.tags as unknown[]).map(String) : [],
     downloads: Number(n.downloads || 0),
     stars: Number(n.github_stars || n.stars || n.score || 0),
-    installed: installed.has(name),
+    installed: isInstalled,
     repository: String(n.repository || n.html_url || ''),
     icon: n.icon ? String(n.icon) : undefined,
     rating: Number(n.rating || 0)

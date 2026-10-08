@@ -21,7 +21,7 @@ import {
   TORCH_DISK_GB,
   TORCH_INDEX_PRESETS
 } from '@shared/constants'
-import { loadInstanceConfigs, upsertInstanceConfig, loadSettings, userDataDir } from './db'
+import { loadInstanceConfigs, upsertInstanceConfig, loadSettings, userDataDir, saveInstallRun, loadLatestInstallRun } from './db'
 import { hasParentHop, normalizePathEverySegment, isPathInside, isSafeExternalUrl } from './security'
 import { proxyEnv } from './proxy'
 import { bootstrapService } from './bootstrap'
@@ -158,7 +158,18 @@ export class InstallerService extends EventEmitter {
   private runRejects = new Set<(err: Error) => void>()
 
   getStatus(): InstallProgress | null {
-    return this.progress
+    if (this.progress) return this.progress
+    // Restore the latest persisted run so the UI can show what happened
+    // (or is still marked running) after an app restart.
+    try {
+      const last = loadLatestInstallRun()
+      if (last && typeof last === 'object') {
+        return last as unknown as InstallProgress
+      }
+    } catch {
+      /* ignore */
+    }
+    return null
   }
 
   cancel(): boolean {
@@ -263,6 +274,8 @@ export class InstallerService extends EventEmitter {
     this.progress.percent = Math.round((done / total) * 100)
     this.progress.message = message
     this.emit('progress', { ...this.progress })
+    // Persist so a restart can restore the run (status/percent/steps/logs).
+    saveInstallRun(this.progress as unknown as { runId: string; status: string } & Record<string, unknown>)
   }
 
   private setBytes(bytes?: InstallStepByteProgress): void {
@@ -844,7 +857,8 @@ export class InstallerService extends EventEmitter {
             python,
             createdAt: Date.now(),
             isolated: true,
-            comfySource
+            comfySource,
+            comfyFetchedAt: Date.now()
           },
           null,
           2
@@ -872,7 +886,23 @@ export class InstallerService extends EventEmitter {
         this.setStep('starter', 'skipped', 'Skipped starter model', undefined, 'stepMsg.starterSkip')
       } else {
         this.setStep('starter', 'running', 'Preparing starter models…', undefined, 'stepMsg.starterRun')
-        this.log('starter', 'One-click SD1.5 / SDXL / Flux packs available in Models → Download')
+        if (plan.fullAuto) {
+          // Batteries-included: kick off the recommended starter pack so the
+          // user can generate right after install. Download is async (model
+          // service owns progress/retry); failures are logged, never fatal.
+          const recommended = STARTER_MODELS.find((s) => s.recommended) || STARTER_MODELS[0]
+          if (recommended) {
+            try {
+              this.log('starter', `Auto-downloading starter model: ${recommended.name}`)
+              await this.installStarter({ id: recommended.id, instanceId: config.id })
+              this.log('starter', `Starter download started: ${recommended.name}`)
+            } catch (e) {
+              this.log('starter', `Starter auto-download failed: ${e instanceof Error ? e.message : String(e)}`)
+            }
+          }
+        } else {
+          this.log('starter', 'One-click SD1.5 / SDXL / Flux packs available in Models → Download')
+        }
         this.setStep('starter', 'done', 'Starter models ready', undefined, 'stepMsg.starterDone')
       }
 

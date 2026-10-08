@@ -276,7 +276,25 @@ export default {
     basicInfo: 'Basic info',
     launchCmdTitle: 'Launch command (copyable)',
     liveLogs: 'Live logs',
-    logEmptyHint: 'Start an instance and logs will stream here.'
+    logEmptyHint: 'Start an instance and logs will stream here.',
+    checkUpdate: 'Check for updates',
+    updating: 'Updating…',
+    updateComfy: 'Update ComfyUI',
+    repairEnv: 'Repair environment',
+    updateAvailable: 'Update available {latest} (current {current})',
+    updateNone: 'Already up to date',
+    updateCheckFailed: 'Update check failed: {error}',
+    confirmUpdateComfy: 'Update ComfyUI?',
+    confirmUpdateComfyBody:
+      'This updates the ComfyUI core and dependencies. custom_nodes, models, user, input, output and other user data are fully preserved. A running instance is stopped first. Continue?',
+    preserveNote: 'custom_nodes / models / user / input / output will be preserved',
+    repairDone: 'Environment repaired',
+    repairFailed: 'Environment repair failed: {error}',
+    versionLabel: 'Version',
+    behindCount: '{n} commit(s) behind',
+    sourceGit: 'Git',
+    sourceZip: 'ZIP',
+    sourceUnknown: 'Unknown'
   },
   install: {
     title: 'One-click install',
@@ -295,6 +313,13 @@ export default {
     autoStart: 'Auto-start when finished',
     shortcut: 'Create desktop shortcut',
     skipStarter: 'Skip starter model step',
+    pythonPath: 'Python interpreter (optional)',
+    pythonPathHint: 'Leave empty to auto-detect or use the portable Python',
+    repairSection: 'Repair existing instance environment',
+    repairHint: 'For registered instances missing a venv or deps — create the env (venv + torch + requirements) in one click',
+    repairAction: 'Repair env',
+    repairEmpty: 'No registered instances yet',
+    repairConfirm: 'Repair the Python environment for "{name}"? This creates the venv and installs requirements.',
     probeMirrors: 'Probe & recommend mirrors',
     preflightBlocked: 'Preflight has hard failures — fix them before installing',
     preflight: 'Run preflight',
@@ -425,7 +450,24 @@ export default {
     smokePassed: 'Smoke test passed',
     snapshotCreated: 'Snapshot: {name}',
     snapshotRestored: 'Enabled/disabled states aligned to snapshot (versions not rolled back, missing packs not reinstalled)',
-    uninstalled: 'Uninstalled'
+    uninstalled: 'Uninstalled',
+    checkUpdates: 'Check updates',
+    checking: 'Checking for updates…',
+    update: 'Update',
+    updateAll: 'Update all',
+    updating: 'Updating…',
+    updateDone: 'Updated: {name}',
+    updateFailed: 'Update failed: {error}',
+    upToDate: 'Up to date',
+    hasUpdate: 'Update available {version}',
+    notUpdatable: 'Auto-update not supported',
+    rolledBack: 'Update failed — rolled back to previous version',
+    rollbackFailed: 'Update failed and rollback failed — backup at {path}',
+    confirmUpdate: 'Update {name} to {version}?',
+    confirmUpdateAll: 'Update {n} packs one by one? Failures will be skipped. Continue?',
+    batchDone: 'Batch update done: ok {ok} · fail {fail} · skip {skip}',
+    batchSummary: 'Batch update results',
+    restoreHint: 'Restoring a snapshot only aligns enable/disable state — versions are not rolled back and missing packs are not reinstalled'
   },
   market: {
     title: 'Plugin market',
@@ -598,9 +640,9 @@ export default {
     flux: {
       desc: '~12GB single file, next-gen model with 4-step sampling. 12GB+ VRAM recommended.'
     }
-  }
-,
-  preflightKeys: {
+  },
+  // detailKey namespace MUST match what main emits (`preflight.*`) so t(detailKey) resolves.
+  preflight: {
     rootOk: 'Install root {root}',
     rootBad: 'Invalid install root (contains .. or empty)',
     disk: 'Free {free} GB / need ~{need} GB (torch + deps)',
@@ -647,5 +689,41 @@ export default {
     doneStarted: 'Installed and started',
     doneStartFail: 'Installed (auto-start failed)',
     done: 'Installed — ready to launch'
+  },
+  // detailKey namespace for ComfyUI update flow (`update.*`) — matches what main emits.
+  update: {
+    stepPreflight: 'Preflight',
+    stepStop: 'Stop instance',
+    stepBackup: 'Back up core files',
+    stepFetch: 'Fetch latest source',
+    stepRequirements: 'Install dependencies',
+    stepTorch: 'Install PyTorch',
+    stepVerify: 'Verify update',
+    stepRollback: 'Roll back',
+    stepDone: 'Done',
+    msgRun: 'Updating ComfyUI…',
+    msgDone: 'Update complete',
+    msgBackup: 'Backed up to {path}',
+    msgBackupRun: 'Backing up core files…',
+    msgFetchGit: 'Pulling latest source…',
+    msgFetchGitDone: 'Updated to {sha}',
+    msgFetchZip: 'Downloading and overlaying archive…',
+    msgFetchZipDone: 'Archive overlaid',
+    msgReqRun: 'Installing requirements…',
+    msgReqDone: 'requirements installed',
+    msgReqSkip: 'No requirements.txt — skipped',
+    msgTorchRun: 'Installing PyTorch ({channel})…',
+    msgTorchDone: 'PyTorch installed',
+    msgVerifyRun: 'Verifying…',
+    msgVerifyOk: 'Verification passed',
+    msgPreflightRun: 'Checking install…',
+    msgPreflightDone: 'Preflight passed ({source})',
+    msgStopRun: 'Stopping instance…',
+    msgStopDone: 'Instance stopped',
+    msgRollback: 'Rolling back…',
+    msgRollbackSkip: 'Source tree unchanged — no rollback needed',
+    msgRollbackFail: 'Rollback failed — backup at {path}',
+    msgDoneStarted: 'Updated and started',
+    msgDoneStartFail: 'Updated (auto-start failed)'
   }
 }

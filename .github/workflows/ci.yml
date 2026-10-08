@@ -28,6 +28,12 @@ jobs:
       - name: Typecheck (web)
         run: npx vue-tsc --noEmit -p tsconfig.web.json
 
+      - name: i18n key parity & dynamic domains
+        run: node scripts/check-i18n.cjs
+
+      - name: Hardcoded Chinese gate
+        run: node scripts/check-hardcoded-zh.cjs
+
       - name: Unit & integration tests
         run: npx vitest run --coverage
 
