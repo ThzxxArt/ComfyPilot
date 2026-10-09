@@ -3,6 +3,7 @@
  * child_process, zip and desktop/instance hooks. No real git/pip/uv runs.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
+import { pathKey } from '../helpers/pathKey'
 import { mkdirSync, writeFileSync, existsSync, rmSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'

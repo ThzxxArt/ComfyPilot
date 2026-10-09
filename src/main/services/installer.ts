@@ -22,7 +22,7 @@ import {
   TORCH_INDEX_PRESETS
 } from '@shared/constants'
 import { loadInstanceConfigs, upsertInstanceConfig, loadSettings, userDataDir, saveInstallRun, loadLatestInstallRun } from './db'
-import { hasParentHop, normalizePathEverySegment, isPathInside, isSafeExternalUrl } from './security'
+import { hasParentHop, normalizePathEverySegment, isPathInside, isSafeExternalUrl, normalizeForCompare } from './security'
 import { proxyEnv } from './proxy'
 import { bootstrapService } from './bootstrap'
 
@@ -824,7 +824,7 @@ export class InstallerService extends EventEmitter {
       this.setStep('register', 'running', 'Writing instance config…', undefined, 'stepMsg.regRun')
       const existing = loadInstanceConfigs()
       const samePath = existing.find(
-        (c) => resolve(normalizePathEverySegment(c.path)) === resolve(comfyDir)
+        (c) => normalizeForCompare(c.path) === normalizeForCompare(comfyDir)
       )
       const config: ComfyInstanceConfig = {
         id: samePath?.id || randomUUID(),

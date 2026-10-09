@@ -3,6 +3,7 @@
  * These cover the new branches introduced by the hardening pass.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { pathKey } from '../helpers/pathKey'
 
 const h = vi.hoisted(() => ({
   state: {
@@ -18,7 +19,7 @@ const h = vi.hoisted(() => ({
 }))
 
 vi.mock('fs', () => {
-  const norm = (p: unknown): string => String(p).replace(/\\/g, '/')
+  const norm = (p: unknown): string => pathKey(p)
   const { state } = h
   return {
     existsSync: (p: unknown) => {

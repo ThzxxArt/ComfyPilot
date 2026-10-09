@@ -1,4 +1,4 @@
-import { isAbsolute, normalize, resolve, sep, dirname, basename, extname, join } from 'path'
+import { isAbsolute, normalize, resolve, dirname, basename, extname, join } from 'path'
 import { randomUUID } from 'crypto'
 
 /** Path traversal + allowlist helpers used across main-process services. */
@@ -91,9 +91,24 @@ export function hasParentHop(pathStr: string): boolean {
   return normalizePathEverySegment(pathStr).split(/[\\/]+/).some((s) => s === '..')
 }
 
+/**
+ * Normalize a path for equality/containment comparison.
+ * Windows drive-absolute paths must NOT go through POSIX `resolve()` — on
+ * Linux `resolve('C:\\x')` prepends the cwd and the comparison always fails.
+ */
+export function normalizeForCompare(p: string): string {
+  const s = String(p ?? '')
+  const slashed = s.replace(/\\/g, '/')
+  if (/^[A-Za-z]:\//.test(slashed)) {
+    // Drive-absolute: compare on the raw normalized form.
+    return slashed.replace(/\/+/g, '/')
+  }
+  return resolve(s).replace(/\\/g, '/')
+}
+
 export function isPathInside(child: string, parent: string): boolean {
-  let resolvedChild = resolve(child)
-  let resolvedParent = resolve(parent)
+  let resolvedChild = normalizeForCompare(child)
+  let resolvedParent = normalizeForCompare(parent)
   // Win32 paths are case-insensitive; without folding, `C:\Out` vs `c:\out\img`
   // fails containment (fail-closed) and breaks media thumbnails.
   if (process.platform === 'win32') {
@@ -101,7 +116,7 @@ export function isPathInside(child: string, parent: string): boolean {
     resolvedParent = resolvedParent.toLowerCase()
   }
   if (resolvedChild === resolvedParent) return true
-  return resolvedChild.startsWith(resolvedParent.endsWith(sep) ? resolvedParent : resolvedParent + sep)
+  return resolvedChild.startsWith(resolvedParent.endsWith('/') ? resolvedParent : resolvedParent + '/')
 }
 
 export function safeJoin(root: string, ...parts: string[]): string {

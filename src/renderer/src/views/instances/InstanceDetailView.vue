@@ -321,11 +321,13 @@ onUnmounted(() => {
               {{ $t('common.refresh') }}
             </NButton>
           </div>
-          <NScrollbar class="log-scroll">
-            <div v-if="!logs.length" class="log-empty">{{ $t('instance.logEmptyHint') }}</div>
-            <div v-for="(line, idx) in logs" :key="idx" class="log-line" :class="line.level">
-              <span class="log-time">{{ new Date(line.ts).toLocaleTimeString() }}</span>
-              <span class="log-msg">{{ line.message }}</span>
+          <NScrollbar class="log-scroll" style="height: 420px">
+            <div class="log-inner">
+              <div v-if="!logs.length" class="log-empty">{{ $t('instance.logEmptyHint') }}</div>
+              <div v-for="(line, idx) in logs" :key="idx" class="log-line" :class="line.level">
+                <span class="log-time">{{ new Date(line.ts).toLocaleTimeString() }}</span>
+                <span class="log-msg">{{ line.message }}</span>
+              </div>
             </div>
           </NScrollbar>
         </section>
@@ -441,6 +443,12 @@ onUnmounted(() => {
   background: $color-bg-soft;
   border: 1px solid $color-border;
   border-radius: 14px;
+  /* no padding here — padding on NScrollbar breaks its own height calc
+     and the outer page ends up scrolling instead of the log */
+  overflow: hidden;
+}
+
+.log-inner {
   padding: 12px;
 }
 

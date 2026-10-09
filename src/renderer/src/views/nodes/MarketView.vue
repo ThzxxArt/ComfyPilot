@@ -338,8 +338,8 @@ onUnmounted(() => offProgress?.())
         </NButton>
       </div>
     </div>
+    <ComfyUpdateProgressModal v-model:show="showOpModal" :title="opModalTitle" />
   </div>
-  <ComfyUpdateProgressModal v-model:show="showOpModal" :title="opModalTitle" />
 </template>
 
 <style lang="scss" scoped>

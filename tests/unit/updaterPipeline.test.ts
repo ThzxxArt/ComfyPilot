@@ -4,6 +4,7 @@
  * copyCoreTree/overlayTree, stampInstallMeta, venvPython and pipArgs.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { pathKey } from '../helpers/pathKey'
 import { join, dirname } from 'path'
 
 type ExecCb = (err: Error | null, stdout: string, stderr: string) => void
@@ -40,11 +41,12 @@ const h = vi.hoisted(() => {
   }
 
   function fsKey(p: unknown): string {
-    return String(p).replace(/\\/g, '/')
+    // Strip any cwd prefix POSIX resolve() prepends to C:/... paths.
+    return pathKey(p)
   }
   function parentOf(p: string): string {
     const d = dirname(p)
-    return d === p ? '' : d.replace(/\\/g, '/')
+    return d === p ? '' : pathKey(d)
   }
   function baseOf(p: string): string {
     const parts = p.split(/[\\/]/)

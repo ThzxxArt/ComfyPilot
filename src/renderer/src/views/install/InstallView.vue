@@ -988,8 +988,8 @@ onUnmounted(() => {
         </div>
       </section>
     </div>
+    <ComfyUpdateProgressModal v-model:show="showRepairModal" :title="$t('instance.repairEnv')" />
   </div>
-  <ComfyUpdateProgressModal v-model:show="showRepairModal" :title="$t('instance.repairEnv')" />
 </template>
 
 <style lang="scss" scoped>

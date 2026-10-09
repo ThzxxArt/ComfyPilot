@@ -7,6 +7,7 @@
  * update is still running.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { pathKey } from '../helpers/pathKey'
 
 const h = vi.hoisted(() => ({
   instance: {
@@ -47,7 +48,7 @@ vi.mock('electron', () => ({
 vi.mock('fs', () => {
   const dirs = new Set<string>()
   const files = new Map<string, string>()
-  const norm = (p: unknown): string => String(p).replace(/\\/g, '/')
+  const norm = (p: unknown): string => pathKey(p)
   const mk = (p: string): void => {
     dirs.add(norm(p))
   }
