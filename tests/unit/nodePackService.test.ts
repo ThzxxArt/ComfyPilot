@@ -232,6 +232,22 @@ vi.mock('fs', () => {
 })
 
 // ---------- crypto ----------
+// ---------- electron (session.fetch routes through the same handler) ----------
+vi.mock('electron', () => ({
+  session: {
+    defaultSession: {
+      fetch: (url: unknown, _opts?: unknown) => {
+        const g = globalThis as Record<string, unknown>
+        const f = g.fetch as ((u: unknown) => Promise<unknown>) | undefined
+        if (f) return f(url)
+        return Promise.reject(new Error(`no fetch handler for ${String(url)}`))
+      },
+      setProxy: async () => undefined
+    }
+  },
+  app: { getPath: () => 'C:/fake/userData', getName: () => 'ComfyPilot' }
+}))
+
 vi.mock('crypto', () => {
   const hashOf = (s: string): string => {
     let h1 = 0x811c9dc5

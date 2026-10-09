@@ -57,6 +57,20 @@ export function resolveGitBinary(): string {
   return portable || 'git'
 }
 
+/** True when a usable git binary answers --version. */
+export async function gitAvailable(): Promise<boolean> {
+  try {
+    const gitBin = resolveGitBinary()
+    const { execFile } = await import('child_process')
+    const { promisify } = await import('util')
+    const run = promisify(execFile)
+    await run(gitBin, ['--version'], { timeout: 8000, windowsHide: true })
+    return true
+  } catch {
+    return false
+  }
+}
+
 /**
  * Minimal version comparator for node packs.
  * - numeric dotted versions (1.2.3, 1.2.3.4) compare segment-wise
@@ -394,8 +408,20 @@ export class NodePackService extends EventEmitter {
     p.step = opts.step
     p.message = opts.message
     p.status = opts.status === 'failed' ? 'failed' : opts.step === 'done' && opts.status === 'done' ? 'done' : 'running'
-    const doneCount = p.steps.filter((x) => x.status === 'done' || x.status === 'skipped').length
-    p.percent = Math.round((doneCount / p.steps.length) * 100)
+    // On terminal success every remaining pending step is closed out so the
+    // bar actually reaches 100% instead of stalling on an untouched "verify".
+    if (p.status === 'done') {
+      for (const x of p.steps) {
+        if (x.status === 'pending') x.status = 'skipped'
+      }
+      p.percent = 100
+    } else if (p.status === 'failed') {
+      const doneCount = p.steps.filter((x) => x.status === 'done' || x.status === 'skipped').length
+      p.percent = Math.round((doneCount / p.steps.length) * 100)
+    } else {
+      const doneCount = p.steps.filter((x) => x.status === 'done' || x.status === 'skipped').length
+      p.percent = Math.round((doneCount / p.steps.length) * 100)
+    }
     this.emit('op-progress', { ...p })
   }
 
@@ -504,8 +530,10 @@ export class NodePackService extends EventEmitter {
     const seen = new Set<string>()
     for (const url of endpoints) {
       try {
-        const res = await fetch(url, {
-          signal: AbortSignal.timeout(8000),
+        // session.fetch honors the app proxy — bare fetch() times out behind it.
+        const { session } = await import('electron')
+        const res = await session.defaultSession.fetch(url, {
+          signal: AbortSignal.timeout(15000),
           headers: { 'User-Agent': 'ComfyPilot/0.1' }
         })
         if (!res.ok) continue
@@ -720,14 +748,24 @@ export class NodePackService extends EventEmitter {
       return await this.afterInstall(resolveNestedPackDir(dest), opts.source, opts.id, opts.instanceId)
     }
 
+    // ---- registry zip path (below) ----
+
     const versionPart = opts.version ? `/${encodeURIComponent(opts.version)}` : ''
     const apiUrl = `${REGISTRY_API}/nodes/${encodeURIComponent(opts.id)}/install${versionPart}`
-    const res = await fetch(apiUrl, {
+    // Electron session.fetch honors the app proxy — bare fetch() does NOT,
+    // which is why market installs time out behind a proxy.
+    const { session } = await import('electron')
+    const res = await session.defaultSession.fetch(apiUrl, {
       headers: { 'User-Agent': 'ComfyPilot/0.1' },
-      signal: AbortSignal.timeout(15000)
+      signal: AbortSignal.timeout(30000)
     })
     if (!res.ok) throw new Error(`Registry install failed: HTTP ${res.status}`)
-    const data = (await res.json()) as { url?: string; downloadUrl?: string; status?: string }
+    const data = (await res.json()) as {
+      url?: string
+      downloadUrl?: string
+      status?: string
+      repository?: string
+    }
     const downloadUrl = data.url || data.downloadUrl
     if (data.status === 'banned') throw new Error('Node pack is banned on Registry')
     if (!downloadUrl) throw new Error('Registry did not return a download URL')
@@ -736,9 +774,55 @@ export class NodePackService extends EventEmitter {
       throw new Error('Blocked registry download URL scheme')
     }
 
-    const zipRes = await fetch(downloadUrl, { signal: AbortSignal.timeout(180000) })
+    // Prefer git clone when the pack has a repository and git works — a clone
+    // is resumable-ish, updateable via `git pull`, and matches how the pack is
+    // developed. Fall back to the zip when git is unavailable or the URL is unsafe.
+    const repoUrl = String(data.repository || '').trim()
+    if (repoUrl && (await gitAvailable())) {
+      try {
+        this.emitOpProgress({
+          instanceId: opts.instanceId || 'default',
+          step: 'download',
+          status: 'running',
+          message: `Cloning ${repoUrl}…`
+        })
+        const rec = await this.install({
+          id: repoUrl,
+          source: 'git',
+          url: repoUrl,
+          instanceId: opts.instanceId
+        })
+        this.emitOpProgress({
+          instanceId: opts.instanceId || 'default',
+          step: 'verify',
+          status: 'done',
+          message: 'Installed via git'
+        })
+        return rec
+      } catch (e) {
+        // Git path failed (proxy, auth, missing repo) — fall back to zip.
+        this.opLog?.(`git clone failed (${e instanceof Error ? e.message : String(e)}) — falling back to zip`)
+      }
+    }
+
+    this.emitOpProgress({
+      instanceId: opts.instanceId || 'default',
+      step: 'download',
+      status: 'running',
+      message: 'Downloading package…'
+    })
+    const zipRes = await session.defaultSession.fetch(downloadUrl, {
+      signal: AbortSignal.timeout(30 * 60 * 1000)
+    })
     if (!zipRes.ok) throw new Error(`Download failed: HTTP ${zipRes.status}`)
+    const total = Number(zipRes.headers.get('content-length') || 0)
     const buf = Buffer.from(await zipRes.arrayBuffer())
+    this.emitOpProgress({
+      instanceId: opts.instanceId || 'default',
+      step: 'download',
+      status: 'done',
+      message: total ? `Downloaded ${(buf.byteLength / 1024 / 1024).toFixed(1)} MB` : 'Download complete'
+    })
     const tmpZip = join(root, `._install_${Date.now()}.zip`)
     writeFileSync(tmpZip, buf)
     const destName = sanitizeInstallName(opts.id)
@@ -809,7 +893,15 @@ export class NodePackService extends EventEmitter {
     } catch {
       /* ignore */
     }
-    return await this.afterInstall(resolveNestedPackDir(dest), 'registry', opts.id, opts.instanceId)
+    const packed = resolveNestedPackDir(dest)
+    const rec = await this.afterInstall(packed, 'registry', opts.id, opts.instanceId)
+    this.emitOpProgress({
+      instanceId: opts.instanceId || 'default',
+      step: 'verify',
+      status: 'done',
+      message: 'Installed'
+    })
+    return rec
   }
 
   private async afterInstall(
@@ -838,6 +930,12 @@ export class NodePackService extends EventEmitter {
           phase: 'pip',
           packName: meta.name || dir,
           op: 'install',
+          message: 'Dependencies skipped (allow_pip_install is off)'
+        })
+        this.emitOpProgress({
+          instanceId: instanceId || 'default',
+          step: 'requirements',
+          status: 'skipped',
           message: 'Dependencies skipped (allow_pip_install is off)'
         })
       } else {
@@ -908,6 +1006,13 @@ export class NodePackService extends EventEmitter {
           })
         }
       }
+    } else {
+      this.emitOpProgress({
+        instanceId: instanceId || 'default',
+        step: 'requirements',
+        status: 'skipped',
+        message: 'No requirements.txt'
+      })
     }
     const rec: NodePackRecord = {
       id: createHash('sha1').update(dir).digest('hex').slice(0, 16),
