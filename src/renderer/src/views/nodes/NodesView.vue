@@ -11,7 +11,7 @@ import {
   NCollapse, NCollapseItem, NInput, NModal, NPopconfirm, NTabs, NTabPane, NTooltip
 } from 'naive-ui'
 import { ipc } from '@/composables/useIpc'
-import { useComfyUpdate } from '@/composables/useComfyUpdate'
+import { useComfyUpdate, describeNodeError, hasDepsSkippedIssue } from '@/composables/useComfyUpdate'
 import { useAppStore } from '@/stores/app'
 import type {
   NodeNameConflict, NodePackRecord, NodeSnapshot, NodeUpdateCheckResult
@@ -192,17 +192,25 @@ async function updateAllPacks(): Promise<void> {
 async function installGit(): Promise<void> {
   if (!installUrl.value.trim()) return
   try {
-    await ipc('node.install', {
+    const rec = await ipc('node.install', {
       id: installUrl.value.trim(),
       source: 'git',
       url: installUrl.value.trim(),
       instanceId: store.activeInstanceId || undefined
     })
     showInstall.value = false
-    message.success(t('nodes.gitInstallDone'))
+    if (hasDepsSkippedIssue(rec?.issues)) {
+      dialog.warning({
+        title: t('nodes.depsNotInstalled'),
+        content: `${t('nodes.depsNotInstalledBody', { name: rec?.name || installUrl.value })}\n${t('nodes.depsNotInstalledFix')}`,
+        positiveText: t('common.confirm')
+      })
+    } else {
+      message.success(t('nodes.gitInstallDone'))
+    }
     await refresh()
   } catch (err) {
-    message.error(err instanceof Error ? err.message : String(err))
+    message.error(describeNodeError(t, err))
   }
 }
 

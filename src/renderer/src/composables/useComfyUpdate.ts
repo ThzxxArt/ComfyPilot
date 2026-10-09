@@ -202,6 +202,26 @@ export function useComfyUpdate() {
   }
 }
 
+/**
+ * Translate a main-process error into an actionable user message.
+ * Setting-blocked errors carry `code` so we can say exactly which switch to
+ * flip — never show a raw English stack line when we know better.
+ */
+export function describeNodeError(t: TranslateFn, err: unknown): string {
+  const e = err as Error & { code?: string }
+  const msg = e?.message || String(err)
+  const code = e?.code
+  if (code === 'SETTING_OFFLINE') return t('nodes.blockedOffline')
+  if (code === 'SETTING_GIT_INSTALL') return t('nodes.blockedGitInstall')
+  if (code === 'SETTING_SECURITY_STRONG') return t('nodes.blockedSecurityStrong')
+  return msg
+}
+
+/** True when a just-installed pack skipped its deps because of a setting. */
+export function hasDepsSkippedIssue(issues?: Array<{ code?: string }>): boolean {
+  return Boolean(issues?.some((i) => i.code === 'pip-disabled'))
+}
+
 /** Dispose event subscriptions (used by tests / HMR teardown). */
 export function disposeComfyUpdateSubscriptions(): void {
   offProgress?.()

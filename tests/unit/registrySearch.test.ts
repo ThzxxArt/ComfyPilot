@@ -44,13 +44,19 @@ describe('registry search matching', () => {
 })
 
 describe('packKeyVariants / installed detection (field bug)', () => {
-  it('normalizes ComfyUI- prefix, case and separators on both sides', () => {
+  it('matches on the COMPLETE name, case-insensitive — no prefix stripping', () => {
     // folder: ComfyUI-KJNodes  vs  registry name: comfyui-kjnodes
+    // These share the same complete name modulo case → must match.
     const folderKeys = new Set(packKeyVariants('ComfyUI-KJNodes'))
     expect(folderKeys.has('comfyui-kjnodes')).toBe(true)
-    expect(folderKeys.has('kjnodes')).toBe(true)
+    // But a DIFFERENT pack named just "KJNodes" must NOT match — over-
+    // normalization (stripping ComfyUI-) would cause that false positive.
+    expect(folderKeys.has('kjnodes')).toBe(false)
     const registryKeys = packKeyVariants('comfyui-kjnodes')
     expect(registryKeys.some((k) => folderKeys.has(k))).toBe(true)
+    // Foo vs ComfyUI-Foo are different packs
+    const fooKeys = new Set(packKeyVariants('Foo'))
+    expect(packKeyVariants('ComfyUI-Foo').some((k) => fooKeys.has(k))).toBe(false)
   })
 
   it('mapMarketItem marks installed when any normalized form matches', () => {

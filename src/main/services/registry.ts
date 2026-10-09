@@ -104,19 +104,18 @@ export function mapRegistryPack(n: RawNode): RegistryNodePack {
 }
 
 /**
- * All comparable identity forms for a pack name/id.
- * Registry `name`, folder basenames and local metadata drift apart in the wild
- * (ComfyUI-KJNodes / comfyui-kjnodes / kjnodes / ComfyUI_KJNodes). Matching
- * must compare the same normalized forms on BOTH sides or installs show as
- * "not installed" and the Install button stays clickable.
+ * Identity forms for matching a pack name/id.
+ *
+ * PRIMARY is the complete name (case-insensitive). We deliberately do NOT
+ * strip a `ComfyUI-` prefix — that over-normalizes and would mark a pack
+ * named `Foo` as installed just because `ComfyUI-Foo` exists. Folder↔registry
+ * drift is handled by also matching the pack's metadata name (pyproject /
+ * package.json) and registryId, which are collected separately.
  */
 export function packKeyVariants(s: string): string[] {
   const raw = String(s || '').trim()
   if (!raw) return []
-  const lower = raw.toLowerCase()
-  const stripped = lower.replace(/^comfyui[-_]/, '')
-  const noSep = stripped.replace(/[-_\s]/g, '')
-  return [...new Set([raw, lower, stripped, noSep].filter(Boolean))]
+  return [...new Set([raw, raw.toLowerCase()])]
 }
 
 export function mapMarketItem(n: RawNode, installed: Set<string>, categoryFallback = 'tools'): MarketItem {

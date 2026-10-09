@@ -335,6 +335,7 @@ onMounted(async () => {
                 { label: 'personal_cloud', value: 'personal_cloud' }
               ]"
             />
+            <div class="hint">{{ t('settings.networkModeHint') }}</div>
           </NFormItem>
         </NForm>
       </NCard>
@@ -351,12 +352,15 @@ onMounted(async () => {
                 { label: 'weak', value: 'weak' }
               ]"
             />
+            <div class="hint">{{ t('settings.securityLevelHint') }}</div>
           </NFormItem>
           <NFormItem label="allow_git_url_install">
             <NSwitch v-model:value="form.allowGitUrlInstall" />
+            <div class="hint">{{ t('settings.allowGitHint') }}</div>
           </NFormItem>
           <NFormItem label="allow_pip_install">
             <NSwitch v-model:value="form.allowPipInstall" />
+            <div class="hint">{{ t('settings.allowPipHint') }}</div>
           </NFormItem>
           <NFormItem :label="t('settings.useAria2')">
             <NSwitch v-model:value="form.useAria2" />

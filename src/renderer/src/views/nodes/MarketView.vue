@@ -2,15 +2,16 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { SearchOutline, DownloadOutline, StarOutline, RefreshOutline, ArrowUpCircleOutline } from '@vicons/ionicons5'
-import { NButton, NIcon, NInput, NList, NListItem, NPopconfirm, NSpace, NSpin, NTag, NEmpty, NProgress, useMessage } from 'naive-ui'
+import { NButton, NIcon, NInput, NList, NListItem, NPopconfirm, NSpace, NSpin, NTag, NEmpty, NProgress, useMessage, useDialog } from 'naive-ui'
 import { ipc, onIpc, IPC_EVENTS } from '@/composables/useIpc'
-import { useComfyUpdate } from '@/composables/useComfyUpdate'
+import { useComfyUpdate, describeNodeError, hasDepsSkippedIssue } from '@/composables/useComfyUpdate'
 import { useAppStore } from '@/stores/app'
 import type { MarketItem, RegistryPageResult } from '@shared/types'
 
 const { t } = useI18n()
 const store = useAppStore()
 const message = useMessage()
+const dialog = useDialog()
 const loading = ref(false)
 const loadingMore = ref(false)
 const indexing = ref(false)
@@ -130,11 +131,20 @@ async function install(item: MarketItem): Promise<void> {
   if (installingItem.value) return
   installingItem.value = item.id
   try {
-    await ipc('market.install', item.id, store.activeInstanceId || undefined)
-    message.success(t('market.installedItem', { name: item.name }))
+    const rec = await ipc('market.install', item.id, store.activeInstanceId || undefined)
+    // A setting may have silently skipped a step — surface it, never hide it.
+    if (hasDepsSkippedIssue(rec?.issues)) {
+      dialog.warning({
+        title: t('nodes.depsNotInstalled'),
+        content: `${t('nodes.depsNotInstalledBody', { name: item.name })}\n${t('nodes.depsNotInstalledFix')}`,
+        positiveText: t('common.confirm')
+      })
+    } else {
+      message.success(t('market.installedItem', { name: item.name }))
+    }
     await load(true)
   } catch (err) {
-    message.error(err instanceof Error ? err.message : String(err))
+    message.error(describeNodeError(t, err))
   } finally {
     installingItem.value = null
   }
@@ -179,7 +189,7 @@ async function updateItem(item: MarketItem): Promise<void> {
     message.success(t('nodes.updateDone', { name: local.name }))
     await load(true)
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
+    const msg = describeNodeError(t, err)
     const backup = /backup at (.+)$/i.exec(msg)
     if (/rollback (also failed|FAILED)/i.test(msg) && backup) {
       message.error(t('nodes.rollbackFailed', { path: backup[1].trim() }))

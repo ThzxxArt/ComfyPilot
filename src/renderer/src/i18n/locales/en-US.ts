@@ -130,7 +130,11 @@ export default {
     pipMirrorHint: 'In mainland China, Tsinghua/Aliyun mirrors greatly speed up torch and dependency installs.',
     torchIndexLabel: 'Torch mirror (optional)',
     networkMode: 'Network mode',
+    networkModeHint: 'Offline blocks every remote install (Market / Git / node updates). Blocked actions are reported, never skipped silently.',
     security: 'Security policy (Manager semantics)',
+    securityLevelHint: 'strong forbids all remote node installs — attempts are blocked and reported. normal and below are for regular use.',
+    allowGitHint: 'When off, installing nodes via a Git URL is blocked and the install tells you where to turn it on.',
+    allowPipHint: 'When off, a node pack\u2019s Python dependencies are NOT installed automatically — you get a warning dialog after install. Keep this on unless you manage deps yourself.',
     useAria2: 'Download with aria2',
     aria2Path: 'aria2 path',
     proxy: 'Network proxy',
@@ -468,7 +472,14 @@ export default {
     confirmUpdateAll: 'Update {n} packs one by one? Failures will be skipped. Continue?',
     batchDone: 'Batch update done: ok {ok} · fail {fail} · skip {skip}',
     batchSummary: 'Batch update results',
-    restoreHint: 'Restoring a snapshot only aligns enable/disable state — versions are not rolled back and missing packs are not reinstalled'
+    restoreHint: 'Restoring a snapshot only aligns enable/disable state — versions are not rolled back and missing packs are not reinstalled',
+    blockedOffline: 'Network mode is Offline — remote installs are blocked. Go to Settings → Network → Network mode and switch to public or private, then retry.',
+    blockedGitInstall: 'Git URL install is disabled, so nothing was installed. Go to Settings → Security → allow_git_url_install and turn it on, then retry.',
+    blockedSecurityStrong: 'Security level is strong — remote installs are blocked. Go to Settings → Security → security_level and switch to normal, then retry.',
+    depsNotInstalled: 'Dependencies not installed',
+    depsNotInstalledBody: '"{name}" ships a requirements.txt, but allow_pip_install is off in Settings, so its Python dependencies were NOT installed. The pack may not work.',
+    depsNotInstalledFix: 'Go to Settings → Security → turn on allow_pip_install, then hit "Repair env" on the Nodes page. Or run pip install -r requirements.txt manually.',
+    installWarnTitle: 'Installed, but there are things to note'
   },
   market: {
     title: 'Plugin market',

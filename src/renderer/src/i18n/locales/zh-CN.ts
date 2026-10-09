@@ -129,7 +129,11 @@ export default {
     pipMirrorHint: '国内网络建议清华/阿里云，可显著加快 torch 与依赖安装',
     torchIndexLabel: 'Torch 镜像（可选）',
     networkMode: '网络模式',
+    networkModeHint: '选 offline 会禁止所有远程安装（市场 / Git / 节点更新），操作会被阻止并提示。',
     security: '安全策略（对齐 Manager 语义）',
+    securityLevelHint: '选 strong 会禁止一切远程节点安装，操作会被阻止并提示；normal 起为常规使用。',
+    allowGitHint: '关闭后通过 Git URL 安装节点会被阻止，安装时会明确提示去哪打开。',
+    allowPipHint: '关闭后节点的 Python 依赖不会自动安装，装完会弹窗提醒；建议保持打开。',
     useAria2: '使用 aria2 下载',
     aria2Path: 'aria2 路径',
     proxy: '网络代理',
@@ -466,7 +470,14 @@ export default {
     confirmUpdateAll: '将逐个更新 {n} 个有新版本的节点包，失败的会跳过。继续？',
     batchDone: '批量更新完成：成功 {ok} · 失败 {fail} · 跳过 {skip}',
     batchSummary: '批量更新结果',
-    restoreHint: '恢复快照仅对齐启用/禁用状态，不回滚版本、不重装缺失包'
+    restoreHint: '恢复快照仅对齐启用/禁用状态，不回滚版本、不重装缺失包',
+    blockedOffline: '网络模式为「离线」，远程安装已被阻止。请到 设置 → 网络 → 网络模式 改为 public 或 private 后重试。',
+    blockedGitInstall: 'Git URL 安装已被禁用，本次安装未执行。请到 设置 → 安全 → allow_git_url_install 打开后重试。',
+    blockedSecurityStrong: '安全级别为 strong，远程安装已被阻止。请到 设置 → 安全 → security_level 调为 normal 后重试。',
+    depsNotInstalled: '依赖未安装',
+    depsNotInstalledBody: '「{name}」带有 requirements.txt，但设置里 allow_pip_install 已关闭，所以 Python 依赖没有安装。节点可能无法正常工作。',
+    depsNotInstalledFix: '请到 设置 → 安全 → 打开 allow_pip_install，然后在节点页点「修复环境」；或手动执行 pip install -r requirements.txt。',
+    installWarnTitle: '安装完成，但有需要注意的事项'
   },
   market: {
     title: '插件市场',

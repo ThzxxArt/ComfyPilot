@@ -492,23 +492,33 @@ export class NodePackService extends EventEmitter {
     }
   }
 
+  /**
+   * Gate remote installs against the user's security / network settings.
+   * Throws an Error with a machine-readable `code` so the renderer can show a
+   * localized, actionable prompt ("go to Settings → X and turn it on") instead
+   * of a silent skip or a raw English stack line.
+   */
   private assertInstallAllowed(source: 'registry' | 'git' | 'manager'): void {
     const settings = loadSettings()
-    // Mirror Manager security semantics (PLAN)
+    const blocked = (code: string, fallback: string): Error => {
+      const e = new Error(fallback)
+      ;(e as Error & { code?: string }).code = code
+      return e
+    }
     if (settings.networkMode === 'offline') {
-      throw new Error('Offline mode forbids remote installs')
+      throw blocked('SETTING_OFFLINE', 'Offline mode forbids remote installs')
     }
     if (source === 'git') {
       if (!settings.allowGitUrlInstall) {
-        throw new Error('Git URL install is disabled (allow_git_url_install=false)')
+        throw blocked('SETTING_GIT_INSTALL', 'Git URL install is disabled (allow_git_url_install=false)')
       }
       if (settings.securityLevel === 'strong') {
-        throw new Error('security_level=strong forbids git installs')
+        throw blocked('SETTING_SECURITY_STRONG', 'security_level=strong forbids git installs')
       }
     }
     if (source === 'registry' || source === 'manager') {
       if (settings.securityLevel === 'strong') {
-        throw new Error('security_level=strong forbids remote node installs')
+        throw blocked('SETTING_SECURITY_STRONG', 'security_level=strong forbids remote node installs')
       }
     }
   }
@@ -713,8 +723,8 @@ export class NodePackService extends EventEmitter {
         issues.push({
           code: 'pip-disabled',
           severity: 'warning',
-          message: 'requirements.txt present but allow_pip_install is off — install deps manually',
-          suggestion: 'Enable allow_pip_install in Settings, or pip install -r requirements.txt in the instance venv.',
+          message: 'requirements.txt present but allow_pip_install is off — dependencies NOT installed',
+          suggestion: 'Enable allow_pip_install in Settings, or run pip install -r requirements.txt manually.',
           fixable: false
         })
         this.emitInstallProgress({
