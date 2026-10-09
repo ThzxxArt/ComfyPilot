@@ -676,6 +676,9 @@ export class ComfyUpdaterService extends EventEmitter {
               }
               await this.run(uvComp.path, uvArgs, { timeout: EXEC_OPTS.timeout })
             } else {
+              // uv-created venvs have no pip — seed it first.
+              const { ensurePip } = await import('./env')
+              await ensurePip(vpy2, (c, a, o) => this.run(c, a, o))
               const args = ['-m', 'pip', 'install', '-r', reqFile]
               if (pipIndex) {
                 args.push('-i', pipIndex)
@@ -738,6 +741,9 @@ export class ComfyUpdaterService extends EventEmitter {
           const index = resolveTorchIndex(opts.torchChannel)
           const official = officialTorchIndex(opts.torchChannel)
           const installTorchWith = async (idx: string): Promise<void> => {
+            // uv-created venvs have no pip — seed it before the pip fallback.
+            const { ensurePip } = await import('./env')
+            await ensurePip(vpy3, (c, a, o) => this.run(c, a, o))
             await this.run(vpy3, pipArgs(['-m', 'pip', 'install', '--upgrade', 'torch', 'torchvision', 'torchaudio', '--index-url', idx]), {
               timeout: EXEC_OPTS.timeout
             })

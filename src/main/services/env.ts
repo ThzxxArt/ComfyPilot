@@ -27,6 +27,100 @@ async function safeExec(cmd: string, args: string[], cwd?: string, timeoutMs = 2
 
 const LONG_TIMEOUT_MS = 30 * 60 * 1000
 
+type ExecLike = (cmd: string, args: string[], opts?: { cwd?: string; timeout?: number }) => Promise<string>
+
+/**
+ * Make sure `python -m pip` works inside a venv.
+ *
+ * `uv venv` does NOT seed pip by default, so a ComfyPilot-created venv can
+ * happily exist without pip — and every `python -m pip install` then dies with
+ * "No module named pip". We prefer uv for installs (it needs no pip), but any
+ * code path that falls back to `python -m pip` must call this first.
+ */
+export async function ensurePip(pythonPath: string, exec: ExecLike): Promise<void> {
+  const probe = async (): Promise<boolean> => {
+    try {
+      await exec(pythonPath, ['-m', 'pip', '--version'], { timeout: 15000 })
+      return true
+    } catch {
+      return false
+    }
+  }
+  if (await probe()) return
+  // Seed pip via the stdlib bootstrap — works on every CPython venv.
+  try {
+    await exec(pythonPath, ['-m', 'ensurepip', '--upgrade'], { timeout: 120000 })
+  } catch {
+    /* fall through to verification — some embeds disable ensurepip */
+  }
+  if (await probe()) return
+  throw new Error(
+    `pip is not available in ${pythonPath} and ensurepip could not install it. Recreate the venv or run: ${pythonPath} -m ensurepip --upgrade`
+  )
+}
+
+/**
+ * Install requirements.txt into a venv.
+ * 1. uv (when present) — works even without pip in the venv
+ * 2. ensurepip + python -m pip
+ * 3. retry against official PyPI when the configured mirror cannot resolve a package
+ */
+export async function installRequirements(
+  pythonPath: string,
+  reqFile: string,
+  exec: ExecLike,
+  opts?: { uvPath?: string; pipIndex?: string }
+): Promise<void> {
+  const OFFICIAL_PYPI = 'https://pypi.org/simple'
+  const pipIndex = String(opts?.pipIndex || '').trim()
+  const uvPath = opts?.uvPath
+
+  const uvInstall = async (index?: string): Promise<void> => {
+    if (!uvPath) throw new Error('uv not available')
+    const args = ['pip', 'install', '--python', pythonPath, '-r', reqFile]
+    if (index) {
+      args.push('--index-url', index)
+      if (index !== OFFICIAL_PYPI) args.push('--extra-index-url', OFFICIAL_PYPI)
+    }
+    await exec(uvPath, args, { timeout: LONG_TIMEOUT_MS })
+  }
+  const pipInstall = async (index?: string): Promise<void> => {
+    await ensurePip(pythonPath, exec)
+    const args = ['-m', 'pip', 'install', '-r', reqFile]
+    if (index) {
+      args.push('-i', index)
+      try {
+        args.push('--trusted-host', new URL(index).hostname)
+      } catch {
+        /* skip */
+      }
+      if (index !== OFFICIAL_PYPI) args.push('--extra-index-url', OFFICIAL_PYPI)
+    }
+    await exec(pythonPath, args, { timeout: LONG_TIMEOUT_MS })
+  }
+  const tryOnce = async (index?: string): Promise<void> => {
+    if (uvPath) await uvInstall(index)
+    else await pipInstall(index)
+  }
+
+  try {
+    await tryOnce(pipIndex || undefined)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    // Mirror gap must not be fatal — retry against official PyPI only.
+    if (pipIndex && pipIndex !== OFFICIAL_PYPI) {
+      try {
+        await tryOnce(OFFICIAL_PYPI)
+        return
+      } catch (err2) {
+        const msg2 = err2 instanceof Error ? err2.message : String(err2)
+        throw new Error(`requirements install failed (mirror and official): ${msg2.slice(0, 400)}`)
+      }
+    }
+    throw new Error(`requirements install failed: ${msg.slice(0, 400)}`)
+  }
+}
+
 export class EnvService {
   async probe(opts: { pythonPath: string; venvPath?: string }): Promise<EnvProbe> {
     const pythonPath =
@@ -107,7 +201,8 @@ export class EnvService {
       throw new Error(`Invalid venv name: ${req.name}`)
     }
     if (req.useUv) {
-      await safeExec('uv', ['venv', venvPath, '--python', req.pythonPath], undefined, LONG_TIMEOUT_MS)
+      // --seed installs pip into the venv so `python -m pip` works later.
+      await safeExec('uv', ['venv', venvPath, '--python', req.pythonPath, '--seed'], undefined, LONG_TIMEOUT_MS)
     } else {
       await safeExec(req.pythonPath, ['-m', 'venv', venvPath], undefined, LONG_TIMEOUT_MS)
     }
@@ -234,7 +329,8 @@ export class EnvService {
         } catch {
           /* interpreter may already be present */
         }
-        await safeExec(uvComp.path, ['venv', venvPath, '--python', '3.13'], undefined, 180000)
+        // --seed installs pip/setuptools/wheel — without it `python -m pip` dies.
+        await safeExec(uvComp.path, ['venv', venvPath, '--python', '3.13', '--seed'], undefined, 180000)
       } else {
         const basePython = bootstrap.pythonPath && bootstrap.pythonPath !== 'python' ? bootstrap.pythonPath : 'python'
         await safeExec(basePython, ['-m', 'venv', venvPath], undefined, 180000)
@@ -250,6 +346,9 @@ export class EnvService {
       const channel = opts.torchChannel as Parameters<typeof resolveTorchIndex>[0]
       const index = resolveTorchIndex(channel)
       const official = officialTorchIndex(channel)
+      const { bootstrapService } = await import('./bootstrap')
+      const bootstrap = await bootstrapService.ensure({ kinds: ['uv'], downloadIfMissing: false })
+      const uvComp = bootstrap.components.find((c) => c.kind === 'uv' && c.installed)
       const tryInstall = async (idx: string): Promise<boolean> => {
         const out = await safeExec(
           pythonInVenv,
@@ -259,48 +358,46 @@ export class EnvService {
         )
         return /Successfully installed|already satisfied|Requirement already satisfied/i.test(out)
       }
-      let ok = await tryInstall(index)
-      if (!ok && index !== official) ok = await tryInstall(official)
-      if (!ok) throw new Error(`torch install failed for channel ${opts.torchChannel}`)
+      // Prefer uv (works even when the venv has no pip), fall back to pip.
+      if (uvComp?.path) {
+        try {
+          await safeExec(
+            uvComp.path,
+            ['pip', 'install', '--python', pythonInVenv, '--upgrade', 'torch', 'torchvision', 'torchaudio', '--index-url', index],
+            undefined,
+            LONG_TIMEOUT_MS
+          )
+        } catch {
+          if (index !== official) {
+            await safeExec(
+              uvComp.path,
+              ['pip', 'install', '--python', pythonInVenv, '--upgrade', 'torch', 'torchvision', 'torchaudio', '--index-url', official],
+              undefined,
+              LONG_TIMEOUT_MS
+            )
+          } else {
+            throw new Error(`torch install failed for channel ${opts.torchChannel}`)
+          }
+        }
+      } else {
+        await ensurePip(pythonInVenv, async (c, a, o) => safeExec(c, a, o?.cwd, o?.timeout))
+        let ok = await tryInstall(index)
+        if (!ok && index !== official) ok = await tryInstall(official)
+        if (!ok) throw new Error(`torch install failed for channel ${opts.torchChannel}`)
+      }
     }
 
     // requirements
     const reqFile = join(comfyDir, 'requirements.txt')
     if (existsSync(reqFile)) {
       const settings = loadSettings()
-      const OFFICIAL_PYPI = 'https://pypi.org/simple'
-      const pipIndex = String(settings.pipIndex || '').trim()
-      const buildArgs = (extra: boolean): string[] => {
-        const args = ['-m', 'pip', 'install', '-r', reqFile]
-        if (pipIndex) {
-          args.push('-i', pipIndex)
-          try {
-            args.push('--trusted-host', new URL(pipIndex).hostname)
-          } catch {
-            /* skip */
-          }
-          if (extra && pipIndex !== OFFICIAL_PYPI) args.push('--extra-index-url', OFFICIAL_PYPI)
-        }
-        return args
-      }
-      const looksOk = (out: string): boolean =>
-        /Successfully installed|Requirement already satisfied/i.test(out) &&
-        !/ERROR:|error: failed/i.test(out)
-      let out = await safeExec(pythonInVenv, buildArgs(true), undefined, LONG_TIMEOUT_MS)
-      if (!looksOk(out)) {
-        // Mirror gap must not be fatal — retry against official PyPI only.
-        if (pipIndex && pipIndex !== OFFICIAL_PYPI) {
-          out = await safeExec(
-            pythonInVenv,
-            ['-m', 'pip', 'install', '-r', reqFile, '-i', OFFICIAL_PYPI, '--trusted-host', 'pypi.org'],
-            undefined,
-            LONG_TIMEOUT_MS
-          )
-        }
-        if (!looksOk(out)) {
-          throw new Error(`requirements install reported errors: ${out.slice(0, 400)}`)
-        }
-      }
+      const { bootstrapService } = await import('./bootstrap')
+      const bootstrap = await bootstrapService.ensure({ kinds: ['uv'], downloadIfMissing: false })
+      const uvComp = bootstrap.components.find((c) => c.kind === 'uv' && c.installed)
+      await installRequirements(pythonInVenv, reqFile, async (c, a, o) => safeExec(c, a, o?.cwd, o?.timeout), {
+        uvPath: uvComp?.path,
+        pipIndex: String(settings.pipIndex || '').trim()
+      })
     }
 
     return this.probe({ pythonPath: pythonInVenv, venvPath })

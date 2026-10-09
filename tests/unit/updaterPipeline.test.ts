@@ -1029,13 +1029,17 @@ describe('runUpdate pipeline', () => {
     h.state.execHandler = (cmd, args) => {
       if (args.includes('pull')) return { stdout: 'ok\n' }
       if (args.includes('rev-parse')) return { stdout: 'sha\n' }
-      if (args.includes('pip') || cmd.includes('uv')) {
+      // let the ensurePip probe succeed; fail the actual install
+      if (args.includes('--version') || args.includes('ensurepip')) return { stdout: 'pip 24.0\n' }
+      if (args.includes('install') || args.includes('-r') || cmd.includes('uv')) {
         return { error: new Error('No matching distribution'), stderr: 'No matching distribution' }
       }
       return { stdout: '' }
     }
     const p = await runUpdate({})
     expect(p.status).toBe('failed')
+    // Deps failure is wrapped so the source is kept — the root cause is in the message.
+    expect(p.error).toMatch(/requirements install failed/i)
     expect(p.error).toMatch(/No matching distribution/)
   })
 
@@ -1547,7 +1551,7 @@ describe('venvPython / pipArgs (via pipeline)', () => {
     h.state.execHandler = (cmd, args) => {
       if (args.includes('pull')) return { stdout: 'ok\n' }
       if (args.includes('rev-parse')) return { stdout: 'sha\n' }
-      if (args.includes('pip')) {
+      if (args.includes('pip') || args.includes('ensurepip')) {
         pipArgs.push([...args])
         return { stdout: 'ok\n' }
       }
@@ -1555,10 +1559,14 @@ describe('venvPython / pipArgs (via pipeline)', () => {
     }
     const p = await runUpdate({})
     expect(p.status).toBe('done')
-    expect(pipArgs[0]).toContain('-i')
-    expect(pipArgs[0]).toContain('https://mirror.example/simple/')
-    expect(pipArgs[0]).toContain('--trusted-host')
-    expect(pipArgs[0]).toContain('mirror.example')
+    // First pip call is the ensurePip probe (-m pip --version); the install
+    // invocation is the one carrying -r requirements.txt.
+    const installArgs = pipArgs.find((a) => a.includes('-r') || a.includes('install'))
+    expect(installArgs).toBeTruthy()
+    expect(installArgs).toContain('-i')
+    expect(installArgs).toContain('https://mirror.example/simple/')
+    expect(installArgs).toContain('--trusted-host')
+    expect(installArgs).toContain('mirror.example')
   })
 
   it('skips trusted-host for a malformed mirror URL', async () => {
