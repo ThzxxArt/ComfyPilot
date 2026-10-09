@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { SearchOutline, DownloadOutline, StarOutline, RefreshOutline, ArrowUpCircleOutline } from '@vicons/ionicons5'
 import { NButton, NIcon, NInput, NList, NListItem, NPopconfirm, NSpace, NSpin, NTag, NEmpty, NProgress, useMessage } from 'naive-ui'
 import { ipc, onIpc, IPC_EVENTS } from '@/composables/useIpc'
+import { useComfyUpdate } from '@/composables/useComfyUpdate'
 import { useAppStore } from '@/stores/app'
 import type { MarketItem, RegistryPageResult } from '@shared/types'
 
@@ -121,17 +122,23 @@ async function loadMore(): Promise<void> {
   await load(false)
 }
 
+const installingItem = ref<string | null>(null)
+const updatingItem = ref<string | null>(null)
+const { nodeInstallingPack, nodeUpdatingPack, nodeInstallMessage, nodeUpdateMessage } = useComfyUpdate()
+
 async function install(item: MarketItem): Promise<void> {
+  if (installingItem.value) return
+  installingItem.value = item.id
   try {
     await ipc('market.install', item.id, store.activeInstanceId || undefined)
     message.success(t('market.installedItem', { name: item.name }))
     await load(true)
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    installingItem.value = null
   }
 }
-
-const updatingItem = ref<string | null>(null)
 
 /**
  * Resolve the LOCAL pack record for a market item. Registry `name` often
@@ -236,6 +243,18 @@ onUnmounted(() => offProgress?.())
     </div>
 
     <div class="page-body">
+      <div v-if="nodeInstallingPack || nodeUpdatingPack" class="index-banner">
+        <div class="meta">
+          <template v-if="nodeInstallingPack">
+            {{ $t('nodes.installing') }} <span class="mono">{{ nodeInstallingPack }}</span>
+            <span v-if="nodeInstallMessage"> — {{ nodeInstallMessage }}</span>
+          </template>
+          <template v-else>
+            {{ $t('nodes.updating') }} <span class="mono">{{ nodeUpdatingPack }}</span>
+            <span v-if="nodeUpdateMessage"> — {{ nodeUpdateMessage }}</span>
+          </template>
+        </div>
+      </div>
       <div v-if="indexing && indexProgress" class="index-banner">
         <NProgress
           type="line"
@@ -271,7 +290,7 @@ onUnmounted(() => offProgress?.())
                     <NButton
                       size="small"
                       secondary
-                      :loading="updatingItem === item.id"
+                      :loading="updatingItem === item.id || (nodeUpdatingPack !== null && nodeUpdatingPack === item.name)"
                     >
                       <template #icon><NIcon :component="ArrowUpCircleOutline" /></template>
                       {{ $t('nodes.update') }}
@@ -279,7 +298,13 @@ onUnmounted(() => offProgress?.())
                   </template>
                   {{ $t('nodes.confirmUpdate', { name: item.name, version: item.version }) }}
                 </NPopconfirm>
-                <NButton type="primary" secondary :disabled="item.installed" @click="install(item)">
+                <NButton
+                  type="primary"
+                  secondary
+                  :disabled="item.installed"
+                  :loading="installingItem === item.id || (nodeInstallingPack !== null && (nodeInstallingPack === item.id || nodeInstallingPack === item.name))"
+                  @click="install(item)"
+                >
                   <template #icon><NIcon :component="DownloadOutline" /></template>
                   {{ item.installed ? $t('market.installedTag') : $t('market.install') }}
                 </NButton>

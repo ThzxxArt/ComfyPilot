@@ -454,6 +454,7 @@ export default {
     update: '更新',
     updateAll: '全部更新',
     updating: '更新中…',
+    installing: '安装中…',
     updateDone: '更新完成：{name}',
     updateFailed: '更新失败：{error}',
     upToDate: '已是最新',

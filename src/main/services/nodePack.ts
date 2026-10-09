@@ -338,8 +338,10 @@ export class NodePackService extends EventEmitter {
     phase: 'start' | 'download' | 'unzip' | 'pip' | 'done' | 'error'
     packName: string
     message?: string
+    /** What kind of operation this is — the UI labels install vs update differently. */
+    op?: 'install' | 'update' | 'uninstall'
   }): void {
-    this.emit('install-progress', { ...payload, ts: Date.now() })
+    this.emit('install-progress', { ...payload, op: payload.op || 'install', ts: Date.now() })
   }
 
   list(instancePathOrId?: string): NodePackRecord[] {
@@ -520,7 +522,41 @@ export class NodePackService extends EventEmitter {
     instanceId?: string
   }): Promise<NodePackRecord> {
     this.assertInstallAllowed(opts.source)
-    this.emitInstallProgress({ phase: 'start', packName: opts.id, message: `Installing ${opts.id}…` })
+    this.emitInstallProgress({
+      phase: 'start',
+      packName: opts.id,
+      op: 'install',
+      message: `Installing ${opts.id}…`
+    })
+    try {
+      const rec = await this.installInner(opts)
+      // Must emit 'done' — the UI hangs on the spinner/banner until it arrives.
+      this.emitInstallProgress({
+        phase: 'done',
+        packName: rec.name || opts.id,
+        op: 'install',
+        message: `Installed ${rec.name || opts.id}`
+      })
+      return rec
+    } catch (e) {
+      this.emitInstallProgress({
+        phase: 'error',
+        packName: opts.id,
+        op: 'install',
+        message: e instanceof Error ? e.message : String(e)
+      })
+      throw e
+    }
+  }
+
+  private async installInner(opts: {
+    id: string
+    version?: string
+    source: 'registry' | 'git' | 'manager'
+    url?: string
+    branch?: string
+    instanceId?: string
+  }): Promise<NodePackRecord> {
     // PLAN: 安装前自动快照
     try {
       this.createSnapshot(`auto-pre-install-${sanitizeInstallName(opts.id)}`)
@@ -579,11 +615,7 @@ export class NodePackService extends EventEmitter {
         } catch {
           /* cleanup is best-effort */
         }
-        this.emitInstallProgress({
-          phase: 'error',
-          packName: opts.id,
-          message: e instanceof Error ? e.message : String(e)
-        })
+        // error is reported by the install() wrapper
         throw e
       }
       return await this.afterInstall(resolveNestedPackDir(dest), opts.source, opts.id, opts.instanceId)
@@ -969,14 +1001,14 @@ export class NodePackService extends EventEmitter {
         out.push({ name: c.name, ok: true, skipped: true })
         continue
       }
-      this.emitInstallProgress({ phase: 'start', packName: c.name, message: `Updating ${c.name}…` })
+      this.emitInstallProgress({ phase: 'start', packName: c.name, op: 'update', message: `Updating ${c.name}…` })
       try {
         await this.update(c.name, undefined, instancePathOrId)
-        this.emitInstallProgress({ phase: 'done', packName: c.name, message: `Updated ${c.name}` })
+        this.emitInstallProgress({ phase: 'done', packName: c.name, op: 'update', message: `Updated ${c.name}` })
         out.push({ name: c.name, ok: true })
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
-        this.emitInstallProgress({ phase: 'error', packName: c.name, message: msg })
+        this.emitInstallProgress({ phase: 'error', packName: c.name, op: 'update', message: msg })
         out.push({ name: c.name, ok: false, error: msg })
       }
     }
@@ -984,6 +1016,28 @@ export class NodePackService extends EventEmitter {
   }
 
   async update(idOrName: string, version?: string, instanceId?: string): Promise<NodePackRecord> {
+    this.emitInstallProgress({ phase: 'start', packName: idOrName, op: 'update', message: `Updating ${idOrName}…` })
+    try {
+      const rec = await this.updateInner(idOrName, version, instanceId)
+      this.emitInstallProgress({
+        phase: 'done',
+        packName: rec.name || idOrName,
+        op: 'update',
+        message: `Updated ${rec.name || idOrName}`
+      })
+      return rec
+    } catch (e) {
+      this.emitInstallProgress({
+        phase: 'error',
+        packName: idOrName,
+        op: 'update',
+        message: e instanceof Error ? e.message : String(e)
+      })
+      throw e
+    }
+  }
+
+  private async updateInner(idOrName: string, version?: string, instanceId?: string): Promise<NodePackRecord> {
     const packs = this.list(instanceId)
     const pack = packs.find((p) => p.id === idOrName || p.name === idOrName)
     if (!pack) throw new Error('Pack not found')
@@ -1006,7 +1060,6 @@ export class NodePackService extends EventEmitter {
         })
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
-        this.emitInstallProgress({ phase: 'error', packName: pack.name, message: msg })
         throw new Error(`git pull failed for ${pack.name}: ${msg}`)
       }
       return await this.afterInstall(

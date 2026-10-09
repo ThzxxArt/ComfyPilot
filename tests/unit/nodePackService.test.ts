@@ -2621,3 +2621,78 @@ describe('edge branches', () => {
     expect(compareVersions('2.0', 'v2.0.0')).toBe(0)
   })
 })
+
+// =====================================================================
+// 0.1.4 market UX: install must emit start AND done (field bug)
+// =====================================================================
+describe('install progress lifecycle', () => {
+  it('install() emits start, then done — the UI hangs without done', async () => {
+    resetState()
+    const phases: Array<{ phase: string; op?: string }> = []
+    nodePackService.on('install-progress', (e: { phase: string; op?: string }) => {
+      phases.push({ phase: e.phase, op: e.op })
+    })
+    h.state.execHandler = (_cmd, args) => {
+      if (args.includes('clone')) {
+        const dest = String(args[args.length - 1]).replace(/\\/g, '/')
+        h.state.dirs.add(dest)
+        h.state.files.set(dest + '/__init__.py', 'x')
+        h.state.files.set(dest + '/pyproject.toml', 'name = "DonePack2"\nversion = "1.0.0"\n')
+      }
+      return { stdout: '' }
+    }
+    try {
+      await nodePackService.install({
+        id: 'https://github.com/u/DonePack2.git',
+        source: 'git',
+        instanceId: 'inst-1'
+      })
+    } finally {
+      nodePackService.removeAllListeners('install-progress')
+    }
+    expect(phases[0]?.phase).toBe('start')
+    expect(phases[0]?.op).toBe('install')
+    expect(phases[phases.length - 1]?.phase).toBe('done')
+    expect(phases[phases.length - 1]?.op).toBe('install')
+  })
+
+  it('update() emits start/done with op=update', async () => {
+    resetState()
+    const { join } = require('path') as typeof import('path')
+    const packPath = join('C:/fake/ComfyUI', 'custom_nodes', 'UpPack')
+    h.state.isDir.add(packPath)
+    h.state.isDir.add(join(packPath, '.git'))
+    h.state.dirs.set(join('C:/fake/ComfyUI', 'custom_nodes'), ['UpPack'])
+    h.state.dirs.set(packPath, ['__init__.py'])
+    h.state.files.set(join(packPath, '__init__.py'), 'x')
+    h.state.files.set(join(packPath, 'pyproject.toml'), 'name = "UpPack"\nversion = "1.0.0"\n')
+    h.state.nodePacks = [
+      {
+        id: 'abcdef0123456789',
+        name: 'UpPack',
+        locked: false,
+        installSource: 'git',
+        path: packPath,
+        version: '1.0.0',
+        issues: [],
+        tags: [],
+        nodeList: []
+      }
+    ]
+    const phases: Array<{ phase: string; op?: string }> = []
+    nodePackService.on('install-progress', (e: { phase: string; op?: string }) => {
+      phases.push({ phase: e.phase, op: e.op })
+    })
+    h.state.execHandler = (_cmd, args) => {
+      if (args.includes('pull')) return { stdout: 'ok' }
+      return { stdout: '' }
+    }
+    try {
+      await nodePackService.update('UpPack', undefined, 'inst-1')
+    } finally {
+      nodePackService.removeAllListeners('install-progress')
+    }
+    expect(phases.some((p) => p.phase === 'start' && p.op === 'update')).toBe(true)
+    expect(phases.some((p) => p.phase === 'done' && p.op === 'update')).toBe(true)
+  })
+})

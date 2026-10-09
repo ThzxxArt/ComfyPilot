@@ -456,6 +456,7 @@ export default {
     update: 'Update',
     updateAll: 'Update all',
     updating: 'Updating…',
+    installing: 'Installing…',
     updateDone: 'Updated: {name}',
     updateFailed: 'Update failed: {error}',
     upToDate: 'Up to date',

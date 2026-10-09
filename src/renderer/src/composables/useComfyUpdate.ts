@@ -64,6 +64,7 @@ const cancelling = ref(false)
 let offProgress: (() => void) | null = null
 let offRepair: (() => void) | null = null
 let offNode: (() => void) | null = null
+let offInstall: (() => void) | null = null
 
 function ensureSubscribed(): void {
   if (offProgress) return
@@ -80,32 +81,50 @@ function ensureRepairSubscribed(): void {
   })
 }
 
-/** Node-update event payload (same shape as node install progress). */
+/** Node-install/update event payload (shared shape). */
 export interface NodeUpdateProgressEvent {
   phase: 'start' | 'download' | 'unzip' | 'pip' | 'done' | 'error'
   packName: string
   message?: string
   ts: number
+  op?: 'install' | 'update' | 'uninstall'
 }
 
 const nodeUpdatingPack = ref<string | null>(null)
+const nodeInstallingPack = ref<string | null>(null)
 const nodeUpdateMessage = ref('')
+const nodeInstallMessage = ref('')
+const lastNodeOpAt = ref(0)
 
 function ensureNodeSubscribed(): void {
-  if (offNode) return
-  offNode = onIpc(IPC_EVENTS.nodeUpdateProgress, (payload) => {
-    const p = payload as NodeUpdateProgressEvent
-    if (!p) return
-    if (p.phase === 'done' || p.phase === 'error') {
-      if (nodeUpdatingPack.value === p.packName) {
+  if (!offNode) {
+    offNode = onIpc(IPC_EVENTS.nodeUpdateProgress, (payload) => {
+      const p = payload as NodeUpdateProgressEvent
+      if (!p) return
+      lastNodeOpAt.value = Date.now()
+      if (p.phase === 'done' || p.phase === 'error') {
         nodeUpdatingPack.value = null
         nodeUpdateMessage.value = ''
+      } else {
+        nodeUpdatingPack.value = p.packName
+        nodeUpdateMessage.value = p.message || ''
       }
-    } else {
-      nodeUpdatingPack.value = p.packName
-      nodeUpdateMessage.value = p.message || ''
-    }
-  })
+    })
+  }
+  if (!offInstall) {
+    offInstall = onIpc(IPC_EVENTS.nodeInstallProgress, (payload) => {
+      const p = payload as NodeUpdateProgressEvent
+      if (!p) return
+      lastNodeOpAt.value = Date.now()
+      if (p.phase === 'done' || p.phase === 'error') {
+        nodeInstallingPack.value = null
+        nodeInstallMessage.value = ''
+      } else {
+        nodeInstallingPack.value = p.packName
+        nodeInstallMessage.value = p.message || ''
+      }
+    })
+  }
 }
 
 export function useComfyUpdate() {
@@ -173,6 +192,8 @@ export function useComfyUpdate() {
     cancelling,
     nodeUpdatingPack,
     nodeUpdateMessage,
+    nodeInstallingPack,
+    nodeInstallMessage,
     checkComfyUpdate,
     startUpdate,
     cancelUpdate,
@@ -189,4 +210,6 @@ export function disposeComfyUpdateSubscriptions(): void {
   offRepair = null
   offNode?.()
   offNode = null
+  offInstall?.()
+  offInstall = null
 }

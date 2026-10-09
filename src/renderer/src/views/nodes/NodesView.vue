@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   ExtensionPuzzleOutline, RefreshOutline, WarningOutline, CheckmarkCircleOutline,
@@ -21,7 +21,18 @@ const { t } = useI18n()
 const store = useAppStore()
 const message = useMessage()
 const dialog = useDialog()
-const { nodeUpdatingPack } = useComfyUpdate()
+const { nodeUpdatingPack, nodeInstallingPack, nodeUpdateMessage, nodeInstallMessage } = useComfyUpdate()
+
+// Auto-refresh when a background install/update finishes — the user should not
+// have to hit Refresh to see a pack that just landed.
+watch(
+  () => [nodeUpdatingPack.value, nodeInstallingPack.value],
+  ([wasUpdating, wasInstalling], [prevUpdating, prevInstalling]) => {
+    const finished =
+      (prevUpdating && !wasUpdating) || (prevInstalling && !wasInstalling)
+    if (finished) void refresh()
+  }
+)
 const loading = ref(false)
 const packs = ref<NodePackRecord[]>([])
 const conflicts = ref<NodeNameConflict[]>([])
@@ -310,9 +321,14 @@ onMounted(() => {
           </NInput>
           <span class="meta">{{ filteredPacks.length }} / {{ packs.length }}</span>
         </NSpace>
-        <div v-if="nodeUpdatingPack" class="updating-banner">
-          <NTag size="small" type="info" round>{{ $t('nodes.updating') }}</NTag>
-          <span class="mono">{{ nodeUpdatingPack }}</span>
+        <div v-if="nodeUpdatingPack || nodeInstallingPack" class="updating-banner">
+          <NTag size="small" type="info" round>
+            {{ nodeInstallingPack ? $t('nodes.installing') : $t('nodes.updating') }}
+          </NTag>
+          <span class="mono">{{ nodeInstallingPack || nodeUpdatingPack }}</span>
+          <span v-if="nodeInstallMessage || nodeUpdateMessage" class="hint">
+            {{ nodeInstallingPack ? nodeInstallMessage : nodeUpdateMessage }}
+          </span>
         </div>
         <NSpin :show="loading">
           <div v-if="filteredPacks.length" class="grid cards">
@@ -357,7 +373,7 @@ onMounted(() => {
                         size="tiny"
                         type="primary"
                         secondary
-                        :loading="updatingOne === pack.name || nodeUpdatingPack === pack.name"
+                        :loading="updatingOne === pack.name || nodeUpdatingPack === pack.name || nodeInstallingPack === pack.name"
                       >
                         {{ $t('nodes.update') }}
                       </NButton>
