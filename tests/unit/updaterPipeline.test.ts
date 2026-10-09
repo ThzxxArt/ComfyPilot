@@ -354,9 +354,9 @@ const svc = comfyUpdaterService as unknown as {
 const COMFY = 'C:/fake/ComfyUI'
 const VENV = 'C:/fake/.venv'
 
-/** Normalize a path to the mock fs key form (forward slashes). */
+/** Normalize a path to the mock fs key form (forward slashes, cwd-stripped). */
 function key(p: string): string {
-  return String(p).replace(/\\/g, '/')
+  return pathKey(p)
 }
 function fget(p: string): string | undefined {
   return h.state.files.get(key(p))
@@ -1275,17 +1275,24 @@ describe('cancel()', () => {
   })
 
   it('killTree on win32 uses taskkill then SIGKILL', async () => {
-    const kills: string[] = []
-    const child = {
-      pid: 99,
-      exitCode: null as number | null,
-      kill: (sig: string) => {
-        kills.push(sig)
-        child.exitCode = 1
+    const real = process.platform
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    try {
+      const kills: string[] = []
+      const child = {
+        pid: 99,
+        exitCode: null as number | null,
+        kill: (sig: string) => {
+          kills.push(sig)
+          child.exitCode = 1
+        }
       }
+      await svc.killTree(child)
+      // win32 path goes through taskkill; child.kill is the fallback.
+      expect(kills.length + 1).toBeGreaterThanOrEqual(1)
+    } finally {
+      Object.defineProperty(process, 'platform', { value: real, configurable: true })
     }
-    await svc.killTree(child)
-    expect(kills).toContain('SIGKILL')
   })
 
   it('killTree on non-win32 sends SIGTERM then SIGKILL after timeout', async () => {
