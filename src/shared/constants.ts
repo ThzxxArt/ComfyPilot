@@ -23,7 +23,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   embedFrontend: true,
   securityLevel: 'normal',
   allowGitUrlInstall: false,
-  allowPipInstall: false,
+  // Node packs ship their own requirements.txt — installing them is the
+  // expected behaviour for a zero-threshold tool. Turn off in Settings if you
+  // prefer to manage deps manually (ComfyUI-Manager "weak/strong" semantics).
+  allowPipInstall: true,
   networkMode: 'public',
   aria2Path: '',
   useAria2: false,

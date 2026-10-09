@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { matchesQuery, mapRegistryPack } from '../../src/main/services/registry'
+import { matchesQuery, mapRegistryPack, mapMarketItem, packKeyVariants } from '../../src/main/services/registry'
 
 describe('registry search matching', () => {
   const node = {
@@ -40,5 +40,40 @@ describe('registry search matching', () => {
     expect(pack.latestVersion).toBe('2.2.2')
     expect(pack.author).toBe('Dever')
     expect(pack.latestVersion).not.toContain('object')
+  })
+})
+
+describe('packKeyVariants / installed detection (field bug)', () => {
+  it('normalizes ComfyUI- prefix, case and separators on both sides', () => {
+    // folder: ComfyUI-KJNodes  vs  registry name: comfyui-kjnodes
+    const folderKeys = new Set(packKeyVariants('ComfyUI-KJNodes'))
+    expect(folderKeys.has('comfyui-kjnodes')).toBe(true)
+    expect(folderKeys.has('kjnodes')).toBe(true)
+    const registryKeys = packKeyVariants('comfyui-kjnodes')
+    expect(registryKeys.some((k) => folderKeys.has(k))).toBe(true)
+  })
+
+  it('mapMarketItem marks installed when any normalized form matches', () => {
+    const installed = new Set(packKeyVariants('ComfyUI-KJNodes'))
+    const item = mapMarketItem(
+      {
+        id: 'comfyui-kjnodes',
+        name: 'comfyui-kjnodes',
+        displayName: 'KJNodes',
+        latest_version: '1.0.0',
+        downloads: 1
+      },
+      installed
+    )
+    expect(item.installed).toBe(true)
+  })
+
+  it('mapMarketItem stays false for a genuinely missing pack', () => {
+    const installed = new Set(packKeyVariants('ComfyUI-KJNodes'))
+    const item = mapMarketItem(
+      { id: 'other-pack', name: 'other-pack', displayName: 'Other', latest_version: '1.0.0' },
+      installed
+    )
+    expect(item.installed).toBe(false)
   })
 })

@@ -103,20 +103,35 @@ export function mapRegistryPack(n: RawNode): RegistryNodePack {
   }
 }
 
+/**
+ * All comparable identity forms for a pack name/id.
+ * Registry `name`, folder basenames and local metadata drift apart in the wild
+ * (ComfyUI-KJNodes / comfyui-kjnodes / kjnodes / ComfyUI_KJNodes). Matching
+ * must compare the same normalized forms on BOTH sides or installs show as
+ * "not installed" and the Install button stays clickable.
+ */
+export function packKeyVariants(s: string): string[] {
+  const raw = String(s || '').trim()
+  if (!raw) return []
+  const lower = raw.toLowerCase()
+  const stripped = lower.replace(/^comfyui[-_]/, '')
+  const noSep = stripped.replace(/[-_\s]/g, '')
+  return [...new Set([raw, lower, stripped, noSep].filter(Boolean))]
+}
+
 export function mapMarketItem(n: RawNode, installed: Set<string>, categoryFallback = 'tools'): MarketItem {
   const name = String(n.name || '')
   const id = String(n.id || name)
-  // Match against several key forms — folder basenames, registry names and ids
-  // drift apart in the wild (ComfyUI-Foo vs comfyui_foo).
+  const display = String(n.displayName || n.title || name)
+  // Match against every normalized form of name / id / displayName.
   const isInstalled =
-    installed.has(name) ||
-    installed.has(name.toLowerCase()) ||
-    installed.has(id) ||
-    installed.has(String(n.displayName || '').toLowerCase())
+    [...packKeyVariants(name), ...packKeyVariants(id), ...packKeyVariants(display)].some((k) =>
+      installed.has(k)
+    )
   return {
     id,
     name,
-    displayName: String(n.displayName || n.title || name),
+    displayName: display,
     description: String(n.description || ''),
     author: asName((n.publisher as unknown) || n.author),
     version: asVersion(n.latest_version) || asVersion(n.version),

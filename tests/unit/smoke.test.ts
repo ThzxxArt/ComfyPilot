@@ -16,7 +16,7 @@ describe('shared constants', () => {
     expect(DEFAULT_SETTINGS.theme).toBe('light')
     expect(DEFAULT_SETTINGS.securityLevel).toBe('normal')
     expect(DEFAULT_SETTINGS.allowGitUrlInstall).toBe(false)
-    expect(DEFAULT_SETTINGS.allowPipInstall).toBe(false)
+    expect(DEFAULT_SETTINGS.allowPipInstall).toBe(true)
     expect(DEFAULT_SETTINGS.embedFrontend).toBe(true)
     expect(DEFAULT_SETTINGS.networkMode).toBe('public')
   })

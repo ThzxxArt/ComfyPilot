@@ -358,7 +358,7 @@ export class MarketService {
   }) {
     const settings = loadSettings()
     try {
-      const { searchRegistry, toPageResult, mapMarketItem } = await import('./registry')
+      const { searchRegistry, toPageResult, mapMarketItem, packKeyVariants } = await import('./registry')
       const result = await searchRegistry({
         query: opts?.query,
         limit: opts?.limit,
@@ -373,15 +373,12 @@ export class MarketService {
         const inst = loadInstanceConfigs().find((c) => c.id === opts.instanceId)
         if (inst?.path) instancePath = inst.path
       }
-      const installed = collectInstalledKeys(instancePath, opts?.instanceId)
+      const installed = collectInstalledKeys(instancePath, packKeyVariants)
       try {
         const { nodePackService } = await import('./nodePack')
         for (const p of nodePackService.list(opts?.instanceId)) {
-          if (p.name) {
-            installed.add(p.name)
-            installed.add(p.name.toLowerCase())
-          }
-          if (p.registryId) installed.add(p.registryId)
+          if (p.name) for (const v of packKeyVariants(p.name)) installed.add(v)
+          if (p.registryId) for (const v of packKeyVariants(p.registryId)) installed.add(v)
         }
       } catch {
         /* nodePack unavailable — directory keys still apply */
@@ -416,17 +413,15 @@ function readdirSafe(instancePath: string): string[] {
 }
 
 /**
- * Keys that mark a registry item as already installed: directory basenames
- * plus common folder↔name drift normalizations. Metadata names / registryIds
- * are merged in by the caller once nodePack is loaded.
+ * Keys that mark a registry item as already installed: every normalized form
+ * of the directory basename. Metadata names / registryIds are merged in by the
+ * caller once nodePack is loaded.
  */
-function collectInstalledKeys(instancePath: string, _instanceId?: string): Set<string> {
+function collectInstalledKeys(instancePath: string, variants: (s: string) => string[]): Set<string> {
   const keys = new Set<string>()
   for (const n of readdirSafe(instancePath)) {
     if (n.startsWith('.') || n === '__pycache__' || n === '__MACOSX' || n === 'node_modules') continue
-    keys.add(n)
-    keys.add(n.toLowerCase())
-    keys.add(n.replace(/^ComfyUI[-_]/i, '').toLowerCase())
+    for (const v of variants(n)) keys.add(v)
   }
   return keys
 }

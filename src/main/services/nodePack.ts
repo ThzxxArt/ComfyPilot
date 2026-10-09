@@ -703,7 +703,9 @@ export class NodePackService extends EventEmitter {
   ): Promise<NodePackRecord> {
     const meta = readPackMeta(dir)
     const issues = collectIssues(dir, meta)
-    // Optional pip deps — only when Settings.allowPipInstall is on (Manager semantics)
+    // Pack deps (requirements.txt). ON by default — a node pack without its
+    // deps is a broken install. Settings.allowPipInstall turns this off for
+    // users who want ComfyUI-Manager "manual deps" semantics.
     const reqFile = join(dir, 'requirements.txt')
     if (existsSync(reqFile)) {
       const settings = loadSettings()
@@ -714,6 +716,12 @@ export class NodePackService extends EventEmitter {
           message: 'requirements.txt present but allow_pip_install is off — install deps manually',
           suggestion: 'Enable allow_pip_install in Settings, or pip install -r requirements.txt in the instance venv.',
           fixable: false
+        })
+        this.emitInstallProgress({
+          phase: 'pip',
+          packName: meta.name || dir,
+          op: 'install',
+          message: 'Dependencies skipped (allow_pip_install is off)'
         })
       } else {
         // Must AWAIT: fire-and-forget meant "install done" while pip was still running,
