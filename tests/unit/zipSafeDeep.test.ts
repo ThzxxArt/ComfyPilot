@@ -267,10 +267,15 @@ describe('safeUnzip post-check containment', () => {
 
 describe('joinInside', () => {
   it('returns a normalized path under root', () => {
+    // Use a root form that is absolute on BOTH host platforms so the test
+    // does not depend on how path.resolve treats drive letters on POSIX.
     const root = process.platform === 'win32' ? 'C:\\tmp\\root' : '/tmp/root'
     const target = joinInside(root, 'a', 'b.txt')
     expect(target.toLowerCase()).toContain('b.txt')
-    expect(target.toLowerCase()).toContain('root')
+    // The joined path must sit under the root — compare on the same
+    // normalization isPathInside uses.
+    const norm = (s: string): string => s.replace(/\\/g, '/').toLowerCase()
+    expect(norm(target).startsWith(norm(root).replace(/\/+$/, '') + '/')).toBe(true)
   })
 
   it('throws when parts escape root', () => {

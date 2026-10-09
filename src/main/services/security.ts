@@ -93,17 +93,19 @@ export function hasParentHop(pathStr: string): boolean {
 
 /**
  * Normalize a path for equality/containment comparison.
- * Windows drive-absolute paths must NOT go through POSIX `resolve()` — on
- * Linux `resolve('C:\\x')` prepends the cwd and the comparison always fails.
+ *
+ * Deliberately does NOT call `path.resolve()` — on POSIX, `resolve('C:\\x')`
+ * prepends the cwd (Windows drive paths look relative), and on Windows
+ * `resolve('/tmp/x')` prepends the drive of the cwd. Both make cross-platform
+ * containment checks fail-closed. We compare normalized string forms instead.
  */
 export function normalizeForCompare(p: string): string {
-  const s = String(p ?? '')
-  const slashed = s.replace(/\\/g, '/')
-  if (/^[A-Za-z]:\//.test(slashed)) {
-    // Drive-absolute: compare on the raw normalized form.
-    return slashed.replace(/\/+/g, '/')
-  }
-  return resolve(s).replace(/\\/g, '/')
+  let s = String(p ?? '').replace(/\\/g, '/')
+  // Collapse duplicate separators but keep a leading slash / drive.
+  s = s.replace(/\/+/g, '/')
+  // Drop trailing slash (except for a bare root like "/" or "C:/")
+  if (s.length > 1 && s.endsWith('/')) s = s.replace(/\/+$/, '')
+  return s
 }
 
 export function isPathInside(child: string, parent: string): boolean {
