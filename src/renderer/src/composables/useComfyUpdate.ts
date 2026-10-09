@@ -18,6 +18,7 @@ export const UPDATE_STEP_KEY: Record<UpdateStepId, string> = {
   backup: 'update.stepBackup',
   fetch: 'update.stepFetch',
   download: 'update.stepDownload',
+  clone: 'update.stepClone',
   unpack: 'update.stepUnpack',
   requirements: 'update.stepRequirements',
   torch: 'update.stepTorch',

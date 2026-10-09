@@ -146,6 +146,35 @@ export async function fetchThroughProxy(
   }) as unknown as Promise<Response>
 }
 
+/**
+ * Proxy-aware HTTP fetch for EXTERNAL requests.
+ *
+ * This is the one entry point every outbound network call should use.
+ * `session.defaultSession.fetch` routes through the Electron session proxy
+ * (set by applyProxyToElectron), while Node's global `fetch` does NOT —
+ * which is how "I configured a proxy but downloads still time out" happens.
+ *
+ * Localhost probes (ComfyUI health, /system_stats) must keep using plain
+ * fetch so they bypass the proxy by design.
+ */
+export async function proxyFetch(
+  url: string,
+  init?: {
+    method?: string
+    headers?: Record<string, string>
+    body?: string | Uint8Array
+    timeoutMs?: number
+    signal?: AbortSignal
+  }
+): Promise<Response> {
+  return session.defaultSession.fetch(url, {
+    method: init?.method || 'GET',
+    headers: init?.headers,
+    body: init?.body as never,
+    signal: init?.signal ?? AbortSignal.timeout(init?.timeoutMs ?? 30000)
+  }) as unknown as Promise<Response>
+}
+
 export async function testProxy(opts?: {
   url?: string
 }): Promise<{ ok: boolean; via: string; ms: number; error?: string }> {

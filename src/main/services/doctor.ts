@@ -317,9 +317,8 @@ export class DoctorService extends EventEmitter {
     emitProgress(checks.length, 13, 'Checking network…')
     let registryOk = false
     try {
-      const res = await fetch(`${REGISTRY_API}/nodes?limit=1`, {
-        signal: AbortSignal.timeout(5000)
-      })
+      const { proxyFetch } = await import('./proxy')
+      const res = await proxyFetch(`${REGISTRY_API}/nodes?limit=1`, { timeoutMs: 8000 })
       registryOk = res.ok
     } catch {
       registryOk = false

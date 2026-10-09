@@ -703,6 +703,7 @@ export default {
     stepBackup: '备份核心文件',
     stepFetch: '获取最新源码',
     stepDownload: '下载',
+    stepClone: 'Git 克隆',
     stepUnpack: '解压',
     stepRequirements: '安装依赖',
     stepTorch: '安装 PyTorch',

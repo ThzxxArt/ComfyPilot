@@ -793,7 +793,11 @@ export class ModelService extends EventEmitter {
             headers,
             signal: controller.signal
           } as never)) as unknown as Response)
-        : await fetch(task.url, { headers, signal: controller.signal })
+        : await (await import('./proxy')).proxyFetch(task.url, {
+            headers,
+            timeoutMs: 30 * 60 * 1000,
+            signal: controller.signal
+          })
       // 416 Range Not Satisfiable → file already fully downloaded — MUST verify.
       if (resume && res.status === 416 && existsSync(task.destPath)) {
         const ok = await this.verifyDownload(task)
@@ -976,9 +980,8 @@ export class ModelService extends EventEmitter {
       let id = modelIdOrUrl
       const m = modelIdOrUrl.match(/models\/(\d+)/)
       if (m) id = m[1]
-      const res = await fetch(`${base}/api/v1/models/${id}`, {
-        signal: AbortSignal.timeout(8000)
-      })
+      const { proxyFetch } = await import('./proxy')
+      const res = await proxyFetch(`${base}/api/v1/models/${id}`, { timeoutMs: 15000 })
       if (!res.ok) return null
       return (await res.json()) as Record<string, unknown>
     } catch {

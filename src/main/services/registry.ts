@@ -1,6 +1,7 @@
 import type { MarketItem, RegistryNodePack, RegistryPageResult } from '@shared/types'
 import { REGISTRY_API } from '@shared/constants'
 import { loadSettings } from './db'
+import { proxyFetch } from './proxy'
 
 type RawNode = Record<string, unknown>
 
@@ -20,9 +21,9 @@ export async function fetchRegistryPage(page: number, limit: number): Promise<Re
   const safePage = Math.max(1, Math.floor(page) || 1)
   const safeLimit = Math.min(100, Math.max(1, Math.floor(limit) || 50))
   const url = `${REGISTRY_API}/nodes?limit=${safeLimit}&page=${safePage}&sort_by=downloads`
-  const res = await fetch(url, {
+  const res = await proxyFetch(url, {
     headers: { 'User-Agent': 'ComfyPilot/0.1', Accept: 'application/json' },
-    signal: AbortSignal.timeout(15000)
+    timeoutMs: 30000
   })
   if (!res.ok) throw new Error(`Registry HTTP ${res.status}`)
   const data = (await res.json()) as {

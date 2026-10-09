@@ -41,7 +41,19 @@ vi.mock('fs', async (importOriginal) => {
 
 vi.mock('electron', () => ({
   app: { getPath: () => join(tmpdir(), 'cp-media-svc') },
-  session: { defaultSession: { fetch: globalThis.fetch, setProxy: async () => undefined } }
+  session: {
+    defaultSession: {
+      // Delegate to the CURRENT global fetch so vi.stubGlobal('fetch', …)
+      // after module load is still honored (proxyFetch routes through here).
+      fetch: (url: unknown, init?: unknown) => {
+        const f = (globalThis as Record<string, unknown>).fetch as
+          | ((u: unknown, i?: unknown) => Promise<unknown>)
+          | undefined
+        return f ? f(url, init) : Promise.reject(new Error('no fetch'))
+      },
+      setProxy: async () => undefined
+    }
+  }
 }))
 
 vi.mock('child_process', () => ({

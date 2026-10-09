@@ -52,7 +52,8 @@ export class ThumbnailService {
       const url = meta?.images?.[0]?.url
       if (url) {
         try {
-          const res = await fetch(url, { signal: AbortSignal.timeout(8000) })
+          const { proxyFetch } = await import('./proxy')
+          const res = await proxyFetch(url, { timeoutMs: 15000 })
           if (res.ok) {
             writeFileSync(out, Buffer.from(await res.arrayBuffer()))
             this.mark(rec, out)

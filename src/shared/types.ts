@@ -654,6 +654,7 @@ export type UpdateStepId =
   | 'backup'
   | 'fetch'
   | 'download'
+  | 'clone'
   | 'unpack'
   | 'requirements'
   | 'torch'

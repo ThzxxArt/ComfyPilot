@@ -385,6 +385,7 @@ export class NodePackService extends EventEmitter {
         status: 'running',
         steps: [
           { id: 'download', title: 'Download', status: 'pending', detail: '', log: [] },
+          { id: 'clone', title: 'Git clone', status: 'pending', detail: '', log: [] },
           { id: 'unpack', title: 'Unpack', status: 'pending', detail: '', log: [] },
           { id: 'requirements', title: 'Dependencies', status: 'pending', detail: '', log: [] },
           { id: 'verify', title: 'Finalize', status: 'pending', detail: '', log: [] },
@@ -637,11 +638,15 @@ export class NodePackService extends EventEmitter {
     })
     // Fresh op-progress stream for the shared modal.
     this.opProgress = null
+    // Pick the first step by source so the modal never shows "Download"
+    // when the user actually asked for a git install.
+    const firstStep: UpdateStepId = opts.source === 'git' || opts.source === 'manager' ? 'clone' : 'download'
     this.emitOpProgress({
       instanceId: opts.instanceId || 'default',
-      step: 'download',
+      step: firstStep,
       status: 'running',
-      message: `Downloading ${opts.id}…`
+      message:
+        firstStep === 'clone' ? `Cloning ${opts.id}…` : `Downloading ${opts.id}…`
     })
     try {
       const rec = await this.installInner(opts)
@@ -733,6 +738,24 @@ export class NodePackService extends EventEmitter {
           throw new Error(`Destination already exists: ${destName}`)
         }
         renameSync(tmpDest, dest)
+        this.emitOpProgress({
+          instanceId: opts.instanceId || 'default',
+          step: 'clone',
+          status: 'done',
+          message: 'Cloned'
+        })
+        this.emitOpProgress({
+          instanceId: opts.instanceId || 'default',
+          step: 'download',
+          status: 'skipped',
+          message: 'Used git clone'
+        })
+        this.emitOpProgress({
+          instanceId: opts.instanceId || 'default',
+          step: 'unpack',
+          status: 'skipped',
+          message: 'Used git clone'
+        })
       } catch (e) {
         // Clean ONLY the temp clone we created — never a pre-existing dest.
         try {
@@ -780,9 +803,23 @@ export class NodePackService extends EventEmitter {
     const repoUrl = String(data.repository || '').trim()
     if (repoUrl && (await gitAvailable())) {
       try {
+        // Mark the zip-only steps as skipped so the modal shows "Git clone"
+        // instead of a phantom "Download / Unpack".
         this.emitOpProgress({
           instanceId: opts.instanceId || 'default',
           step: 'download',
+          status: 'skipped',
+          message: 'Using git clone'
+        })
+        this.emitOpProgress({
+          instanceId: opts.instanceId || 'default',
+          step: 'unpack',
+          status: 'skipped',
+          message: 'Using git clone'
+        })
+        this.emitOpProgress({
+          instanceId: opts.instanceId || 'default',
+          step: 'clone',
           status: 'running',
           message: `Cloning ${repoUrl}…`
         })
@@ -791,6 +828,12 @@ export class NodePackService extends EventEmitter {
           source: 'git',
           url: repoUrl,
           instanceId: opts.instanceId
+        })
+        this.emitOpProgress({
+          instanceId: opts.instanceId || 'default',
+          step: 'clone',
+          status: 'done',
+          message: 'Cloned'
         })
         this.emitOpProgress({
           instanceId: opts.instanceId || 'default',
@@ -805,6 +848,12 @@ export class NodePackService extends EventEmitter {
       }
     }
 
+    this.emitOpProgress({
+      instanceId: opts.instanceId || 'default',
+      step: 'clone',
+      status: 'skipped',
+      message: 'Using zip download'
+    })
     this.emitOpProgress({
       instanceId: opts.instanceId || 'default',
       step: 'download',

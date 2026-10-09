@@ -710,6 +710,7 @@ export default {
     stepBackup: 'Back up core files',
     stepFetch: 'Fetch latest source',
     stepDownload: 'Download',
+    stepClone: 'Git clone',
     stepUnpack: 'Unpack',
     stepRequirements: 'Install dependencies',
     stepTorch: 'Install PyTorch',
