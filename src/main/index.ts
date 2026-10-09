@@ -435,6 +435,8 @@ app.whenReady().then(async () => {
           broadcast(IPC_EVENTS.nodeInstallProgress, p)
         }
       })
+      // UpdateProgress-shaped stream — feeds the shared progress modal.
+      nodePackService.on('op-progress', (p) => broadcast(IPC_EVENTS.nodeOperationProgress, p))
     })
     .catch(() => undefined)
   import('./services/updater')

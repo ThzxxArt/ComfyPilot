@@ -709,6 +709,8 @@ export default {
     stepStop: 'Stop instance',
     stepBackup: 'Back up core files',
     stepFetch: 'Fetch latest source',
+    stepDownload: 'Download',
+    stepUnpack: 'Unpack',
     stepRequirements: 'Install dependencies',
     stepTorch: 'Install PyTorch',
     stepVerify: 'Verify update',

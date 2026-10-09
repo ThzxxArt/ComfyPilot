@@ -138,7 +138,13 @@ export async function installRequirements(
   const uvPath = opts?.uvPath
   const onLine = opts?.onLine
   const run = (c: string, a: string[], o?: { cwd?: string; timeout?: number }): Promise<string> =>
-    runStreaming(c, a, { ...o, onLine }, exec)
+    runStreaming(c, a, { ...o, onLine }, exec).then((out) => {
+      // pip/uv can print ERROR: and still exit 0 — treat that as failure too.
+      if (/ERROR:|error: failed/i.test(out) && !/Successfully installed|Requirement already satisfied/i.test(out)) {
+        throw new Error(out.slice(0, 400))
+      }
+      return out
+    })
 
   const uvInstall = async (index?: string): Promise<void> => {
     if (!uvPath) throw new Error('uv not available')

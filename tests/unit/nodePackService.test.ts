@@ -300,8 +300,40 @@ vi.mock('child_process', () => {
         })
       })
   })
+  // spawn is used by env.runStreaming for live pip/uv output — must route
+  // through the same handler so tests can assert on the actual commands.
+  const spawn = (cmd: string, args: string[], _opts?: unknown): unknown => {
+    const { EventEmitter } = require('events') as typeof import('events')
+    const child = new EventEmitter() as unknown as {
+      stdout: InstanceType<typeof EventEmitter>
+      stderr: InstanceType<typeof EventEmitter>
+      kill: () => void
+    }
+    child.stdout = new EventEmitter()
+    child.stderr = new EventEmitter()
+    child.kill = () => undefined
+    queueMicrotask(() => {
+      try {
+        const result = handler
+          ? handler(cmd, args, undefined)
+          : { stdout: 'ok', stderr: '' }
+        if (result.error) {
+          child.stderr.emit('data', Buffer.from(result.stderr || result.error.message))
+          child.emit('close', result.code ?? 1)
+        } else {
+          if (result.stdout) child.stdout.emit('data', Buffer.from(result.stdout))
+          if (result.stderr) child.stderr.emit('data', Buffer.from(result.stderr))
+          child.emit('close', 0)
+        }
+      } catch (e) {
+        child.emit('error', e)
+      }
+    })
+    return child
+  }
   return {
     execFile,
+    spawn,
     execFileSync: () => {
       if (h.state.execSyncErr) throw h.state.execSyncErr
       return h.state.execSyncOut
@@ -378,7 +410,16 @@ vi.mock('../../src/main/services/installer', () => ({
 
 vi.mock('../../src/main/services/bootstrap', () => ({
   findInRuntimes: () => null,
-  bootstrapService: { ensure: vi.fn(), cancelAll: vi.fn() }
+  bootstrapService: {
+    ensure: vi.fn(async () => ({
+      runtimesDir: 'C:/fake/runtimes',
+      components: [],
+      pythonPath: 'python',
+      pythonOrigin: 'system',
+      zipInstallReady: true
+    })),
+    cancelAll: vi.fn()
+  }
 }))
 
 vi.mock('../../src/main/services/instance', () => ({
@@ -1250,10 +1291,13 @@ describe('afterInstall pip handling', () => {
       return { stdout: '' }
     })
     const rec = await nodePackService.install({ id: 'https://github.com/u/PipPack.git', source: 'git', instanceId: 'inst-1' })
-    expect(pipCalls.length).toBe(1)
-    expect(pipCalls[0].cmd).toContain('python')
-    expect(pipCalls[0].args).toContain('-m')
-    expect(pipCalls[0].args).toContain('pip')
+    // ensurePip probes with `-m pip --version` first — the INSTALL call is the
+    // one carrying `-r requirements.txt`.
+    const installCalls = pipCalls.filter((c) => c.args.includes('-r') || c.args.includes('install'))
+    expect(installCalls.length).toBeGreaterThanOrEqual(1)
+    expect(installCalls[0].cmd).toContain('python')
+    expect(installCalls[0].args).toContain('-m')
+    expect(installCalls[0].args).toContain('pip')
     expect(rec.issues.map((i) => i.code)).not.toContain('pip-failed')
   })
 
@@ -1270,6 +1314,8 @@ describe('afterInstall pip handling', () => {
         return { stdout: '' }
       }
       if (args.includes('pip')) {
+        // Let the ensurePip probe (--version) succeed; fail the actual install.
+        if (args.includes('--version') || args.includes('ensurepip')) return { stdout: 'pip 24.0' }
         return { error: new Error('pip crashed'), stderr: 'pip crashed' }
       }
       return { stdout: '' }
@@ -1321,10 +1367,12 @@ describe('afterInstall pip handling', () => {
       return { stdout: '' }
     })
     await nodePackService.install({ id: 'https://github.com/u/PipPack.git', source: 'git', instanceId: 'inst-1' })
-    expect(pipCalls[0]).toContain('-i')
-    expect(pipCalls[0]).toContain('https://mirror.example/simple/')
-    expect(pipCalls[0]).toContain('--trusted-host')
-    expect(pipCalls[0]).toContain('mirror.example')
+    const installArgs = pipCalls.find((a) => a.includes('-r') || a.includes('install')) || pipCalls[pipCalls.length - 1]
+    expect(installArgs).toContain('-i')
+    expect(installArgs).toContain('https://mirror.example/simple/')
+    const installArgs2 = pipCalls.find((a) => a.includes('-r') || a.includes('install')) || pipCalls[pipCalls.length - 1]
+    expect(installArgs2).toContain('--trusted-host')
+    expect(installArgs2).toContain('mirror.example')
   })
 
   it('skips trusted-host for a scheme-less mirror', async () => {
@@ -1348,8 +1396,9 @@ describe('afterInstall pip handling', () => {
       return { stdout: '' }
     })
     await nodePackService.install({ id: 'https://github.com/u/PipPack.git', source: 'git', instanceId: 'inst-1' })
-    expect(pipCalls[0]).toContain('-i')
-    expect(pipCalls[0]).not.toContain('--trusted-host')
+    const installArgs = pipCalls.find((a) => a.includes('-r') || a.includes('install')) || pipCalls[pipCalls.length - 1]
+    expect(installArgs).toContain('-i')
+    expect(installArgs).not.toContain('--trusted-host')
   })
 
   it('uses pythonPath then runtimes python then bare python', async () => {

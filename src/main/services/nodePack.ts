@@ -21,7 +21,10 @@ import type {
   NodeSnapshot,
   NodeUpdateAllResult,
   NodeUpdateCheckResult,
-  RegistryNodePack
+  RegistryNodePack,
+  UpdateProgress,
+  UpdateStep,
+  UpdateStepId
 } from '@shared/types'
 import {
   deleteNodePack,
@@ -344,6 +347,72 @@ export class NodePackService extends EventEmitter {
     this.emit('install-progress', { ...payload, op: payload.op || 'install', ts: Date.now() })
   }
 
+  // ---- UpdateProgress-shaped stream (feeds the shared progress modal) ----
+  private opProgress: UpdateProgress | null = null
+
+  /**
+   * Emit an UpdateProgress-shaped snapshot so the renderer can reuse
+   * ComfyUpdateProgressModal for node installs — the same step list + live
+   * pip/uv log the ComfyUI update flow has.
+   */
+  private emitOpProgress(opts: {
+    instanceId: string
+    step: UpdateStepId
+    status: 'pending' | 'running' | 'done' | 'failed' | 'skipped'
+    message: string
+    logLine?: string
+    detailKey?: string
+  }): void {
+    if (!this.opProgress || this.opProgress.instanceId !== opts.instanceId) {
+      this.opProgress = {
+        runId: randomUUID(),
+        instanceId: opts.instanceId,
+        step: 'download',
+        status: 'running',
+        steps: [
+          { id: 'download', title: 'Download', status: 'pending', detail: '', log: [] },
+          { id: 'unpack', title: 'Unpack', status: 'pending', detail: '', log: [] },
+          { id: 'requirements', title: 'Dependencies', status: 'pending', detail: '', log: [] },
+          { id: 'verify', title: 'Finalize', status: 'pending', detail: '', log: [] },
+          { id: 'done', title: 'Done', status: 'pending', detail: '', log: [] }
+        ] as UpdateStep[],
+        message: opts.message,
+        percent: 0
+      }
+    }
+    const p = this.opProgress
+    const s = p.steps.find((x) => x.id === opts.step)
+    if (s) {
+      s.status = opts.status
+      if (opts.message) s.detail = opts.message
+      if (opts.detailKey) s.detailKey = opts.detailKey
+      if (opts.logLine) {
+        s.log.push(opts.logLine)
+        if (s.log.length > 400) s.log.splice(0, s.log.length - 400)
+      }
+    }
+    p.step = opts.step
+    p.message = opts.message
+    p.status = opts.status === 'failed' ? 'failed' : opts.step === 'done' && opts.status === 'done' ? 'done' : 'running'
+    const doneCount = p.steps.filter((x) => x.status === 'done' || x.status === 'skipped').length
+    p.percent = Math.round((doneCount / p.steps.length) * 100)
+    this.emit('op-progress', { ...p })
+  }
+
+  private opLog(line: string): void {
+    if (!this.opProgress) return
+    const s = this.opProgress.steps.find((x) => x.id === this.opProgress!.step)
+    if (s) {
+      s.log.push(line)
+      if (s.log.length > 400) s.log.splice(0, s.log.length - 400)
+    }
+    this.emit('op-progress', { ...this.opProgress })
+  }
+
+  getOpProgress(): UpdateProgress | null {
+    return this.opProgress
+  }
+
   list(instancePathOrId?: string): NodePackRecord[] {
     const root = detectCustomNodesRoot(instancePathOrId)
     if (!root || !existsSync(root)) return []
@@ -538,6 +607,14 @@ export class NodePackService extends EventEmitter {
       op: 'install',
       message: `Installing ${opts.id}…`
     })
+    // Fresh op-progress stream for the shared modal.
+    this.opProgress = null
+    this.emitOpProgress({
+      instanceId: opts.instanceId || 'default',
+      step: 'download',
+      status: 'running',
+      message: `Downloading ${opts.id}…`
+    })
     try {
       const rec = await this.installInner(opts)
       // Must emit 'done' — the UI hangs on the spinner/banner until it arrives.
@@ -547,12 +624,24 @@ export class NodePackService extends EventEmitter {
         op: 'install',
         message: `Installed ${rec.name || opts.id}`
       })
+      this.emitOpProgress({
+        instanceId: opts.instanceId || 'default',
+        step: 'done',
+        status: 'done',
+        message: `Installed ${rec.name || opts.id}`
+      })
       return rec
     } catch (e) {
       this.emitInstallProgress({
         phase: 'error',
         packName: opts.id,
         op: 'install',
+        message: e instanceof Error ? e.message : String(e)
+      })
+      this.emitOpProgress({
+        instanceId: opts.instanceId || 'default',
+        step: 'done',
+        status: 'failed',
         message: e instanceof Error ? e.message : String(e)
       })
       throw e
@@ -673,6 +762,18 @@ export class NodePackService extends EventEmitter {
       }
       throw new Error('Refusing unsafe temp unzip path')
     }
+    this.emitOpProgress({
+      instanceId: opts.instanceId || 'default',
+      step: 'download',
+      status: 'done',
+      message: 'Download complete'
+    })
+    this.emitOpProgress({
+      instanceId: opts.instanceId || 'default',
+      step: 'unpack',
+      status: 'running',
+      message: 'Unpacking…'
+    })
     try {
       const { safeUnzip } = await import('./zipSafe')
       await safeUnzip(tmpZip, tmpDest)
@@ -681,6 +782,12 @@ export class NodePackService extends EventEmitter {
         throw new Error(`Destination already exists: ${destName}`)
       }
       renameSync(tmpDest, dest)
+      this.emitOpProgress({
+        instanceId: opts.instanceId || 'default',
+        step: 'unpack',
+        status: 'done',
+        message: 'Unpacked'
+      })
     } catch (e) {
       try {
         unlinkSync(tmpZip)
@@ -742,36 +849,56 @@ export class NodePackService extends EventEmitter {
             this.emitInstallProgress({
               phase: 'pip',
               packName: meta.name || dir,
+              op: 'install',
               message: 'Installing Python dependencies…'
             })
-            const pipArgs = ['-m', 'pip', 'install', '-r', reqFile]
-            const pipIndex = String(settings.pipIndex || '').trim()
-            if (pipIndex) {
-              pipArgs.push('-i', pipIndex)
-              try {
-                pipArgs.push('--trusted-host', new URL(pipIndex).hostname)
-              } catch {
-                // Scheme-less mirror — still pass -i, skip trusted-host
-              }
-            }
-            const { stdout, stderr } = await execFileAsync(vpy, pipArgs, {
-              timeout: 10 * 60 * 1000,
-              maxBuffer: 10 * 1024 * 1024,
-              windowsHide: true,
-              env: proxyEnv(loadSettings().proxy)
+            this.emitOpProgress({
+              instanceId: instanceId || 'default',
+              step: 'requirements',
+              status: 'running',
+              message: 'Installing Python dependencies…'
             })
-            const pipOut = `${stdout || ''}\n${stderr || ''}`
-            if (/ERROR:|error: failed/i.test(pipOut) && !/Successfully installed|Requirement already satisfied/i.test(pipOut)) {
-              issues.push({
-                code: 'pip-failed',
-                severity: 'error',
-                message: 'pip install of pack requirements reported errors',
-                suggestion: 'Install requirements.txt manually in the instance environment.',
-                fixable: false
-              })
-            }
+            // Stream pip/uv output into the progress modal line by line.
+            const { runStreaming, installRequirements } = await import('./env')
+            const { bootstrapService } = await import('./bootstrap')
+            const bootstrap = await bootstrapService.ensure({ kinds: ['uv'], downloadIfMissing: false })
+            const uvComp = bootstrap.components.find((c) => c.kind === 'uv' && c.installed)
+            await installRequirements(vpy, reqFile, async (c, a, o) => {
+              // fall back to a buffered run if streaming is not wired
+              return execFileAsync(c, a, {
+                timeout: o?.timeout ?? 10 * 60 * 1000,
+                maxBuffer: 10 * 1024 * 1024,
+                windowsHide: true,
+                env: proxyEnv(loadSettings().proxy)
+              }).then((r) => r.stdout)
+            }, {
+              uvPath: uvComp?.path,
+              pipIndex: String(settings.pipIndex || '').trim(),
+              onLine: (line) => {
+                this.opLog(line)
+                this.emitInstallProgress({
+                  phase: 'pip',
+                  packName: meta.name || dir,
+                  op: 'install',
+                  message: line.slice(0, 120)
+                })
+              }
+            })
+            void runStreaming
+            this.emitOpProgress({
+              instanceId: instanceId || 'default',
+              step: 'requirements',
+              status: 'done',
+              message: 'Dependencies installed'
+            })
           }
         } catch (err) {
+          this.emitOpProgress({
+            instanceId: instanceId || 'default',
+            step: 'requirements',
+            status: 'failed',
+            message: err instanceof Error ? err.message : String(err)
+          })
           issues.push({
             code: 'pip-failed',
             severity: 'error',

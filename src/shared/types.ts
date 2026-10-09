@@ -653,6 +653,8 @@ export type UpdateStepId =
   | 'stop'
   | 'backup'
   | 'fetch'
+  | 'download'
+  | 'unpack'
   | 'requirements'
   | 'torch'
   | 'verify'
@@ -973,7 +975,8 @@ export const IPC_EVENTS = {
   runtimeProgress: 'event:runtime-progress',
   comfyUpdateProgress: 'event:comfy-update-progress',
   nodeUpdateProgress: 'event:node-update-progress',
-  repairProgress: 'event:repair-progress'
+  repairProgress: 'event:repair-progress',
+  nodeOperationProgress: 'event:node-operation-progress'
 } as const
 
 export interface AppNotification {

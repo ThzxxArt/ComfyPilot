@@ -5,6 +5,7 @@ import { SearchOutline, DownloadOutline, StarOutline, RefreshOutline, ArrowUpCir
 import { NButton, NIcon, NInput, NList, NListItem, NPopconfirm, NSpace, NSpin, NTag, NEmpty, NProgress, useMessage, useDialog } from 'naive-ui'
 import { ipc, onIpc, IPC_EVENTS } from '@/composables/useIpc'
 import { useComfyUpdate, describeNodeError, hasDepsSkippedIssue } from '@/composables/useComfyUpdate'
+import ComfyUpdateProgressModal from '@/components/ComfyUpdateProgressModal.vue'
 import { useAppStore } from '@/stores/app'
 import type { MarketItem, RegistryPageResult } from '@shared/types'
 
@@ -125,11 +126,15 @@ async function loadMore(): Promise<void> {
 
 const installingItem = ref<string | null>(null)
 const updatingItem = ref<string | null>(null)
+const showOpModal = ref(false)
+const opModalTitle = ref('')
 const { nodeInstallingPack, nodeUpdatingPack, nodeInstallMessage, nodeUpdateMessage } = useComfyUpdate()
 
 async function install(item: MarketItem): Promise<void> {
   if (installingItem.value) return
   installingItem.value = item.id
+  opModalTitle.value = t('nodes.installing')
+  showOpModal.value = true
   try {
     const rec = await ipc('market.install', item.id, store.activeInstanceId || undefined)
     // A setting may have silently skipped a step — surface it, never hide it.
@@ -175,6 +180,8 @@ async function resolveLocalPack(item: MarketItem): Promise<{ name: string; locke
 /** Update an already-installed pack via node.update (git pull / registry reinstall). */
 async function updateItem(item: MarketItem): Promise<void> {
   updatingItem.value = item.id
+  opModalTitle.value = t('nodes.updating')
+  showOpModal.value = true
   try {
     const local = await resolveLocalPack(item)
     if (!local) {
@@ -332,6 +339,7 @@ onUnmounted(() => offProgress?.())
       </div>
     </div>
   </div>
+  <ComfyUpdateProgressModal v-model:show="showOpModal" :title="opModalTitle" />
 </template>
 
 <style lang="scss" scoped>

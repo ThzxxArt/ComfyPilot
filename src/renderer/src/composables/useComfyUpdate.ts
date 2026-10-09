@@ -17,6 +17,8 @@ export const UPDATE_STEP_KEY: Record<UpdateStepId, string> = {
   stop: 'update.stepStop',
   backup: 'update.stepBackup',
   fetch: 'update.stepFetch',
+  download: 'update.stepDownload',
+  unpack: 'update.stepUnpack',
   requirements: 'update.stepRequirements',
   torch: 'update.stepTorch',
   verify: 'update.stepVerify',
@@ -65,6 +67,7 @@ let offProgress: (() => void) | null = null
 let offRepair: (() => void) | null = null
 let offNode: (() => void) | null = null
 let offInstall: (() => void) | null = null
+let offNodeOp: (() => void) | null = null
 
 function ensureSubscribed(): void {
   if (offProgress) return
@@ -123,6 +126,13 @@ function ensureNodeSubscribed(): void {
         nodeInstallingPack.value = p.packName
         nodeInstallMessage.value = p.message || ''
       }
+    })
+  }
+  if (!offNodeOp) {
+    offNodeOp = onIpc(IPC_EVENTS.nodeOperationProgress, (payload) => {
+      // Node install/update streams into the SAME progress ref the shared
+      // ComfyUpdateProgressModal renders — live steps + pip log lines.
+      progress.value = payload as UpdateProgress
     })
   }
 }
@@ -232,4 +242,6 @@ export function disposeComfyUpdateSubscriptions(): void {
   offNode = null
   offInstall?.()
   offInstall = null
+  offNodeOp?.()
+  offNodeOp = null
 }

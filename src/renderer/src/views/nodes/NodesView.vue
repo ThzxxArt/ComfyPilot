@@ -12,6 +12,7 @@ import {
 } from 'naive-ui'
 import { ipc } from '@/composables/useIpc'
 import { useComfyUpdate, describeNodeError, hasDepsSkippedIssue } from '@/composables/useComfyUpdate'
+import ComfyUpdateProgressModal from '@/components/ComfyUpdateProgressModal.vue'
 import { useAppStore } from '@/stores/app'
 import type {
   NodeNameConflict, NodePackRecord, NodeSnapshot, NodeUpdateCheckResult
@@ -39,6 +40,8 @@ const conflicts = ref<NodeNameConflict[]>([])
 const snapshots = ref<NodeSnapshot[]>([])
 const installedQuery = ref('')
 const showInstall = ref(false)
+const showOpModal = ref(false)
+const opModalTitle = ref('')
 const installUrl = ref('')
 const tab = ref('installed')
 const checks = ref<Record<string, NodeUpdateCheckResult>>({})
@@ -148,6 +151,8 @@ async function checkUpdates(): Promise<void> {
 
 async function updatePack(pack: NodePackRecord): Promise<void> {
   updatingOne.value = pack.name
+  opModalTitle.value = t('nodes.updating')
+  showOpModal.value = true
   try {
     await ipc('node.update', pack.name, undefined, store.activeInstanceId || undefined)
     message.success(t('nodes.updateDone', { name: pack.displayName || pack.name }))
@@ -191,6 +196,8 @@ async function updateAllPacks(): Promise<void> {
 
 async function installGit(): Promise<void> {
   if (!installUrl.value.trim()) return
+  opModalTitle.value = t('nodes.installing')
+  showOpModal.value = true
   try {
     const rec = await ipc('node.install', {
       id: installUrl.value.trim(),
@@ -468,6 +475,7 @@ onMounted(() => {
       </template>
     </NModal>
   </div>
+  <ComfyUpdateProgressModal v-model:show="showOpModal" :title="opModalTitle" />
 </template>
 
 <style lang="scss" scoped>
