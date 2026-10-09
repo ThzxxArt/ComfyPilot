@@ -13,6 +13,7 @@ import { ipc, onIpc, IPC_EVENTS } from '@/composables/useIpc'
 /** UpdateStepId → i18n key for the step title. */
 export const UPDATE_STEP_KEY: Record<UpdateStepId, string> = {
   preflight: 'update.stepPreflight',
+  venv: 'update.stepVenv',
   stop: 'update.stepStop',
   backup: 'update.stepBackup',
   fetch: 'update.stepFetch',
@@ -61,11 +62,20 @@ const progress = ref<UpdateProgress | null>(null)
 const updating = ref(false)
 const cancelling = ref(false)
 let offProgress: (() => void) | null = null
+let offRepair: (() => void) | null = null
 let offNode: (() => void) | null = null
 
 function ensureSubscribed(): void {
   if (offProgress) return
   offProgress = onIpc(IPC_EVENTS.comfyUpdateProgress, (payload) => {
+    progress.value = payload as UpdateProgress
+  })
+}
+
+function ensureRepairSubscribed(): void {
+  if (offRepair) return
+  offRepair = onIpc(IPC_EVENTS.repairProgress, (payload) => {
+    // Repair runs reuse the same progress stream / modal as ComfyUI updates.
     progress.value = payload as UpdateProgress
   })
 }
@@ -100,6 +110,7 @@ function ensureNodeSubscribed(): void {
 
 export function useComfyUpdate() {
   ensureSubscribed()
+  ensureRepairSubscribed()
   ensureNodeSubscribed()
 
   async function checkComfyUpdate(instanceId: string): Promise<ComfyUpdateInfo> {
@@ -143,7 +154,13 @@ export function useComfyUpdate() {
   }
 
   async function repairEnv(instanceId: string, opts?: RepairEnvOptions): Promise<EnvProbe> {
-    return ipc('instance.repairEnv', instanceId, opts)
+    ensureRepairSubscribed()
+    updating.value = true
+    try {
+      return await ipc('instance.repairEnv', instanceId, opts)
+    } finally {
+      updating.value = false
+    }
   }
 
   function clearProgress(): void {
@@ -168,6 +185,8 @@ export function useComfyUpdate() {
 export function disposeComfyUpdateSubscriptions(): void {
   offProgress?.()
   offProgress = null
+  offRepair?.()
+  offRepair = null
   offNode?.()
   offNode = null
 }

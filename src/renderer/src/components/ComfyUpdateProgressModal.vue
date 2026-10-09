@@ -9,11 +9,13 @@ import { NButton, NIcon, NModal, NProgress, NScrollbar, NSpace, NTag } from 'nai
 import type { InstallStepStatus, UpdateStep } from '@shared/types'
 import { updateDetailOf, updateStepTitle, useComfyUpdate } from '@/composables/useComfyUpdate'
 
-const props = defineProps<{ show: boolean }>()
+const props = defineProps<{ show: boolean; title?: string }>()
 const emit = defineEmits<{ (e: 'update:show', v: boolean): void }>()
 
 const { t } = useI18n()
 const { progress, updating, cancelling, cancelUpdate, clearProgress } = useComfyUpdate()
+
+const modalTitle = computed(() => props.title || t('instance.updateComfy'))
 
 const visible = computed({
   get: () => props.show,
@@ -76,7 +78,7 @@ async function onCancel(): Promise<void> {
   <NModal
     v-model:show="visible"
     preset="card"
-    :title="t('instance.updateComfy')"
+    :title="modalTitle"
     style="width: 640px; border-radius: 20px"
     :mask-closable="!updating"
     :closable="!updating"

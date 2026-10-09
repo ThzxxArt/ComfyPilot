@@ -32,6 +32,8 @@ import {
 } from 'naive-ui'
 import { ipc, onIpc, IPC_EVENTS } from '@/composables/useIpc'
 import { useLaunch } from '@/composables/useLaunch'
+import { useComfyUpdate } from '@/composables/useComfyUpdate'
+import ComfyUpdateProgressModal from '@/components/ComfyUpdateProgressModal.vue'
 import { useAppStore } from '@/stores/app'
 import { clampPercent, formatBytes } from '@/utils/format'
 import { severityColor } from '@/styles/tokens'
@@ -119,6 +121,8 @@ const suggestFreeGb = ref(0)
 const starterModels = ref<StarterModel[]>([...STARTER_MODELS])
 const starterBusy = ref<string | null>(null)
 const repairingId = ref<string | null>(null)
+const showRepairModal = ref(false)
+const { repairEnv } = useComfyUpdate()
 
 const repairTargets = computed(() => {
   const list = store.instances || []
@@ -141,8 +145,9 @@ async function pickPythonPath(): Promise<void> {
 
 async function repairInstance(inst: { id: string; name: string }): Promise<void> {
   repairingId.value = inst.id
+  showRepairModal.value = true
   try {
-    await ipc('instance.repairEnv', inst.id, {})
+    await repairEnv(inst.id, {})
     message.success(t('instance.repairDone'))
     await store.refreshInstances()
   } catch (err) {
@@ -984,6 +989,7 @@ onUnmounted(() => {
       </section>
     </div>
   </div>
+  <ComfyUpdateProgressModal v-model:show="showRepairModal" :title="$t('instance.repairEnv')" />
 </template>
 
 <style lang="scss" scoped>

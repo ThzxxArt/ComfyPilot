@@ -79,6 +79,25 @@ describe('installRequirements', () => {
     expect(calls[0]).toContain('pip install')
   })
 
+  it('streams output lines to onLine', async () => {
+    const lines: string[] = []
+    // runStreaming falls back to exec when spawn is not used — but with onLine
+    // it goes through spawn. In this unit test we exercise the fallback path
+    // by passing an exec that resolves and an onLine that gets called from
+    // runStreaming's spawn path. To keep the test hermetic we verify the
+    // wrapper wires onLine through: simulate via the error-retry message.
+    const exec = async (_c: string, a: string[]): Promise<string> => {
+      if (a.includes('--version')) return 'pip 24.0'
+      throw new Error('mirror missing pkg')
+    }
+    await installRequirements('C:/venv/python.exe', 'C:/req.txt', exec, {
+      pipIndex: 'https://pypi.tuna.tsinghua.edu.cn/simple',
+      onLine: (l) => lines.push(l)
+    }).catch(() => undefined)
+    // The mirror-failure notice is pushed to onLine.
+    expect(lines.some((l) => l.includes('retrying official'))).toBe(true)
+  })
+
   it('falls back to ensurepip + pip when uv is unavailable', async () => {
     const calls: string[] = []
     let pipWorks = false

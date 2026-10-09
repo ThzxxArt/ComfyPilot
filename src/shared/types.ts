@@ -649,6 +649,7 @@ export interface ComfyUpdateInfo {
 
 export type UpdateStepId =
   | 'preflight'
+  | 'venv'
   | 'stop'
   | 'backup'
   | 'fetch'
@@ -971,7 +972,8 @@ export const IPC_EVENTS = {
   notification: 'event:notification',
   runtimeProgress: 'event:runtime-progress',
   comfyUpdateProgress: 'event:comfy-update-progress',
-  nodeUpdateProgress: 'event:node-update-progress'
+  nodeUpdateProgress: 'event:node-update-progress',
+  repairProgress: 'event:repair-progress'
 } as const
 
 export interface AppNotification {

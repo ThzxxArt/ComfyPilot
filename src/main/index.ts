@@ -436,6 +436,11 @@ app.whenReady().then(async () => {
       comfyUpdaterService.on('progress', (p) => broadcast(IPC_EVENTS.comfyUpdateProgress, p))
     })
     .catch(() => undefined)
+  import('./services/env')
+    .then(({ envService }) => {
+      envService.on('progress', (p) => broadcast(IPC_EVENTS.repairProgress, p))
+    })
+    .catch(() => undefined)
   import('./services/doctor')
     .then(({ doctorService }) => {
       // doctorProgress is emitted as 'progress' from DoctorService when running

@@ -1,8 +1,10 @@
 import { existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
-import { execFile } from 'child_process'
+import { execFile, spawn } from 'child_process'
 import { promisify } from 'util'
-import type { EnvCreateRequest, EnvProbe } from '@shared/types'
+import { EventEmitter } from 'events'
+import { randomUUID } from 'crypto'
+import type { EnvCreateRequest, EnvProbe, UpdateProgress, UpdateStep, UpdateStepId } from '@shared/types'
 import { loadSettings } from './db'
 import { proxyEnv } from './proxy'
 
@@ -28,6 +30,66 @@ async function safeExec(cmd: string, args: string[], cwd?: string, timeoutMs = 2
 const LONG_TIMEOUT_MS = 30 * 60 * 1000
 
 type ExecLike = (cmd: string, args: string[], opts?: { cwd?: string; timeout?: number }) => Promise<string>
+
+/** Optional streaming hook so long pip/uv runs can surface output lines live. */
+type LineSink = (line: string) => void
+
+/**
+ * Run a command and stream stdout/stderr lines to `onLine`.
+ * Falls back to a buffered run when spawn is unavailable.
+ */
+export async function runStreaming(
+  cmd: string,
+  args: string[],
+  opts: { cwd?: string; timeout?: number; onLine?: LineSink },
+  fallback: ExecLike
+): Promise<string> {
+  if (!opts.onLine) return fallback(cmd, args, opts)
+  return new Promise<string>((resolveP, reject) => {
+    let out = ''
+    let errOut = ''
+    let settled = false
+    const child = spawn(cmd, args, {
+      cwd: opts.cwd,
+      windowsHide: true,
+      env: proxyEnv(loadSettings().proxy)
+    })
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true
+        try {
+          child.kill('SIGKILL')
+        } catch {
+          /* ignore */
+        }
+        reject(new Error(`timeout after ${opts.timeout || 0}ms`))
+      }
+    }, opts.timeout || 30 * 60 * 1000)
+    const feed = (buf: Buffer, isErr: boolean): void => {
+      const text = buf.toString('utf-8')
+      if (isErr) errOut += text
+      else out += text
+      for (const line of text.split(/\r?\n/)) {
+        if (line.trim()) opts.onLine?.(line)
+      }
+    }
+    child.stdout?.on('data', (b: Buffer) => feed(b, false))
+    child.stderr?.on('data', (b: Buffer) => feed(b, true))
+    child.on('error', (e) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      reject(e)
+    })
+    child.on('close', (code) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (code === 0) resolveP(out)
+      else reject(new Error(errOut || out || `exit ${code}`))
+    })
+  })
+}
 
 /**
  * Make sure `python -m pip` works inside a venv.
@@ -69,11 +131,14 @@ export async function installRequirements(
   pythonPath: string,
   reqFile: string,
   exec: ExecLike,
-  opts?: { uvPath?: string; pipIndex?: string }
+  opts?: { uvPath?: string; pipIndex?: string; onLine?: LineSink }
 ): Promise<void> {
   const OFFICIAL_PYPI = 'https://pypi.org/simple'
   const pipIndex = String(opts?.pipIndex || '').trim()
   const uvPath = opts?.uvPath
+  const onLine = opts?.onLine
+  const run = (c: string, a: string[], o?: { cwd?: string; timeout?: number }): Promise<string> =>
+    runStreaming(c, a, { ...o, onLine }, exec)
 
   const uvInstall = async (index?: string): Promise<void> => {
     if (!uvPath) throw new Error('uv not available')
@@ -82,10 +147,10 @@ export async function installRequirements(
       args.push('--index-url', index)
       if (index !== OFFICIAL_PYPI) args.push('--extra-index-url', OFFICIAL_PYPI)
     }
-    await exec(uvPath, args, { timeout: LONG_TIMEOUT_MS })
+    await run(uvPath, args, { timeout: LONG_TIMEOUT_MS })
   }
   const pipInstall = async (index?: string): Promise<void> => {
-    await ensurePip(pythonPath, exec)
+    await ensurePip(pythonPath, run)
     const args = ['-m', 'pip', 'install', '-r', reqFile]
     if (index) {
       args.push('-i', index)
@@ -96,7 +161,7 @@ export async function installRequirements(
       }
       if (index !== OFFICIAL_PYPI) args.push('--extra-index-url', OFFICIAL_PYPI)
     }
-    await exec(pythonPath, args, { timeout: LONG_TIMEOUT_MS })
+    await run(pythonPath, args, { timeout: LONG_TIMEOUT_MS })
   }
   const tryOnce = async (index?: string): Promise<void> => {
     if (uvPath) await uvInstall(index)
@@ -109,6 +174,7 @@ export async function installRequirements(
     const msg = err instanceof Error ? err.message : String(err)
     // Mirror gap must not be fatal — retry against official PyPI only.
     if (pipIndex && pipIndex !== OFFICIAL_PYPI) {
+      onLine?.(`index ${pipIndex} failed — retrying official PyPI`)
       try {
         await tryOnce(OFFICIAL_PYPI)
         return
@@ -121,7 +187,71 @@ export async function installRequirements(
   }
 }
 
-export class EnvService {
+export class EnvService extends EventEmitter {
+  private repairProgress: UpdateProgress | null = null
+
+  /**
+   * Emit an UpdateProgress-shaped snapshot so the renderer can reuse the
+   * ComfyUpdateProgressModal for repair runs (same steps/log rendering).
+   */
+  private emitRepair(
+    instanceId: string,
+    step: UpdateStepId,
+    status: UpdateProgress['status'],
+    message: string,
+    logLine?: string,
+    detailKey?: string,
+    detailParams?: Record<string, string | number>
+  ): void {
+    if (!this.repairProgress || this.repairProgress.instanceId !== instanceId) {
+      this.repairProgress = {
+        runId: randomUUID(),
+        instanceId,
+        step: 'preflight',
+        status: 'running',
+        steps: [
+          { id: 'preflight', title: 'Locate Python', status: 'pending', detail: '', log: [] },
+          { id: 'venv', title: 'Virtual env', status: 'pending', detail: '', log: [] },
+          { id: 'torch', title: 'PyTorch', status: 'pending', detail: '', log: [] },
+          { id: 'requirements', title: 'Requirements', status: 'pending', detail: '', log: [] },
+          { id: 'done', title: 'Done', status: 'pending', detail: '', log: [] }
+        ] as UpdateStep[],
+        message,
+        percent: 0
+      }
+    }
+    const p = this.repairProgress
+    const s = p.steps.find((x) => x.id === step)
+    if (s) {
+      s.status = status === 'failed' && step === 'done' ? 'failed' : status
+      if (message) s.detail = message
+      if (detailKey) s.detailKey = detailKey
+      if (detailParams) s.detailParams = detailParams
+      if (logLine) s.log.push(logLine)
+    }
+    p.step = step
+    p.message = message
+    p.status = status === 'done' && step === 'done' ? 'done' : status === 'failed' ? 'failed' : 'running'
+    const doneCount = p.steps.filter((x) => x.status === 'done' || x.status === 'skipped').length
+    p.percent = Math.round((doneCount / p.steps.length) * 100)
+    this.emit('progress', { ...p })
+  }
+
+  private repairLog(line: string): void {
+    if (!this.repairProgress) return
+    const s = this.repairProgress.steps.find((x) => x.id === this.repairProgress!.step)
+    if (s) {
+      s.log.push(line)
+      // Keep the step log bounded — pip can print hundreds of lines.
+      if (s.log.length > 400) s.log.splice(0, s.log.length - 400)
+    }
+    this.emit('progress', { ...this.repairProgress })
+  }
+
+  getRepairProgress(): UpdateProgress | null {
+    return this.repairProgress
+  }
+
   async probe(opts: { pythonPath: string; venvPath?: string }): Promise<EnvProbe> {
     const pythonPath =
       opts.venvPath && existsSync(join(opts.venvPath, 'Scripts', 'python.exe'))
@@ -296,111 +426,130 @@ export class EnvService {
     const { loadInstanceConfigs } = await import('./db')
     const { join } = await import('path')
     const { existsSync, mkdirSync, rmSync } = await import('fs')
-    const config = loadInstanceConfigs().find((c) => c.id === opts.instanceId)
-    if (!config) throw new Error(`Instance not found: ${opts.instanceId}`)
-    const comfyDir = config.path
-    if (!comfyDir || !existsSync(join(comfyDir, 'main.py'))) {
-      throw new Error(`Not a ComfyUI install: ${comfyDir}`)
-    }
+    const id = opts.instanceId
+    // Reset any stale run so the UI gets a fresh progress stream.
+    this.repairProgress = null
+    this.emitRepair(id, 'preflight', 'running', 'Locating Python…', undefined, 'update.msgPreflightRun')
 
-    let venvPath = config.venvPath || ''
-    if (!venvPath) {
-      const { dirname } = await import('path')
-      venvPath = join(dirname(comfyDir), '.venv')
-    }
-    const pythonInVenv = existsSync(join(venvPath, 'Scripts', 'python.exe'))
-      ? join(venvPath, 'Scripts', 'python.exe')
-      : join(venvPath, 'bin', 'python')
-
-    if (opts.recreateVenv && existsSync(venvPath)) {
-      rmSync(venvPath, { recursive: true, force: true })
-    }
-
-    if (!existsSync(pythonInVenv)) {
-      // Create the venv using the same resolution order as the installer.
-      const { bootstrapService } = await import('./bootstrap')
-      const bootstrap = await bootstrapService.ensure({ kinds: ['uv', 'python'], downloadIfMissing: true })
-      const uvComp = bootstrap.components.find((c) => c.kind === 'uv' && c.installed)
-      mkdirSync(venvPath, { recursive: true })
-      mkdirSync(join(venvPath, '..'), { recursive: true })
-      if (uvComp?.path) {
-        try {
-          await safeExec(uvComp.path, ['python', 'install', '3.13'], undefined, 180000)
-        } catch {
-          /* interpreter may already be present */
-        }
-        // --seed installs pip/setuptools/wheel — without it `python -m pip` dies.
-        await safeExec(uvComp.path, ['venv', venvPath, '--python', '3.13', '--seed'], undefined, 180000)
-      } else {
-        const basePython = bootstrap.pythonPath && bootstrap.pythonPath !== 'python' ? bootstrap.pythonPath : 'python'
-        await safeExec(basePython, ['-m', 'venv', venvPath], undefined, 180000)
+    try {
+      const config = loadInstanceConfigs().find((c) => c.id === id)
+      if (!config) throw new Error(`Instance not found: ${id}`)
+      const comfyDir = config.path
+      if (!comfyDir || !existsSync(join(comfyDir, 'main.py'))) {
+        throw new Error(`Not a ComfyUI install: ${comfyDir}`)
       }
+
+      let venvPath = config.venvPath || ''
+      if (!venvPath) {
+        const { dirname } = await import('path')
+        venvPath = join(dirname(comfyDir), '.venv')
+      }
+      const pythonInVenv = existsSync(join(venvPath, 'Scripts', 'python.exe'))
+        ? join(venvPath, 'Scripts', 'python.exe')
+        : join(venvPath, 'bin', 'python')
+      this.emitRepair(id, 'preflight', 'done', `Python: ${pythonInVenv}`)
+
+      if (opts.recreateVenv && existsSync(venvPath)) {
+        this.emitRepair(id, 'venv', 'running', 'Recreating virtual env…')
+        rmSync(venvPath, { recursive: true, force: true })
+      }
+
       if (!existsSync(pythonInVenv)) {
-        throw new Error(`venv creation failed — no interpreter at ${pythonInVenv}`)
+        this.emitRepair(id, 'venv', 'running', 'Creating virtual env…')
+        const { bootstrapService } = await import('./bootstrap')
+        const bootstrap = await bootstrapService.ensure({ kinds: ['uv', 'python'], downloadIfMissing: true })
+        const uvComp = bootstrap.components.find((c) => c.kind === 'uv' && c.installed)
+        mkdirSync(venvPath, { recursive: true })
+        mkdirSync(join(venvPath, '..'), { recursive: true })
+        if (uvComp?.path) {
+          try {
+            await safeExec(uvComp.path, ['python', 'install', '3.13'], undefined, 180000)
+          } catch {
+            /* interpreter may already be present */
+          }
+          // --seed installs pip/setuptools/wheel — without it `python -m pip` dies.
+          await safeExec(uvComp.path, ['venv', venvPath, '--python', '3.13', '--seed'], undefined, 180000)
+        } else {
+          const basePython = bootstrap.pythonPath && bootstrap.pythonPath !== 'python' ? bootstrap.pythonPath : 'python'
+          await safeExec(basePython, ['-m', 'venv', venvPath], undefined, 180000)
+        }
+        if (!existsSync(pythonInVenv)) {
+          throw new Error(`venv creation failed — no interpreter at ${pythonInVenv}`)
+        }
+        this.emitRepair(id, 'venv', 'done', venvPath)
+      } else {
+        this.emitRepair(id, 'venv', 'skipped', 'venv already present')
       }
-    }
 
-    // Optional torch
-    if (opts.torchChannel) {
-      const { resolveTorchIndex, officialTorchIndex } = await import('./installer')
-      const channel = opts.torchChannel as Parameters<typeof resolveTorchIndex>[0]
-      const index = resolveTorchIndex(channel)
-      const official = officialTorchIndex(channel)
-      const { bootstrapService } = await import('./bootstrap')
-      const bootstrap = await bootstrapService.ensure({ kinds: ['uv'], downloadIfMissing: false })
-      const uvComp = bootstrap.components.find((c) => c.kind === 'uv' && c.installed)
-      const tryInstall = async (idx: string): Promise<boolean> => {
-        const out = await safeExec(
-          pythonInVenv,
-          ['-m', 'pip', 'install', '--upgrade', 'torch', 'torchvision', 'torchaudio', '--index-url', idx],
-          undefined,
-          LONG_TIMEOUT_MS
-        )
-        return /Successfully installed|already satisfied|Requirement already satisfied/i.test(out)
-      }
-      // Prefer uv (works even when the venv has no pip), fall back to pip.
-      if (uvComp?.path) {
-        try {
-          await safeExec(
-            uvComp.path,
-            ['pip', 'install', '--python', pythonInVenv, '--upgrade', 'torch', 'torchvision', 'torchaudio', '--index-url', index],
-            undefined,
-            LONG_TIMEOUT_MS
-          )
-        } catch {
-          if (index !== official) {
-            await safeExec(
+      // Optional torch
+      if (opts.torchChannel) {
+        this.emitRepair(id, 'torch', 'running', `Installing PyTorch (${opts.torchChannel})…`, undefined, 'update.msgTorchRun', {
+          channel: opts.torchChannel
+        })
+        const { resolveTorchIndex, officialTorchIndex } = await import('./installer')
+        const channel = opts.torchChannel as Parameters<typeof resolveTorchIndex>[0]
+        const index = resolveTorchIndex(channel)
+        const official = officialTorchIndex(channel)
+        const { bootstrapService } = await import('./bootstrap')
+        const bootstrap = await bootstrapService.ensure({ kinds: ['uv'], downloadIfMissing: false })
+        const uvComp = bootstrap.components.find((c) => c.kind === 'uv' && c.installed)
+        const sink: LineSink = (line) => this.repairLog(line)
+        const tryInstall = async (idx: string): Promise<void> => {
+          if (uvComp?.path) {
+            await runStreaming(
               uvComp.path,
-              ['pip', 'install', '--python', pythonInVenv, '--upgrade', 'torch', 'torchvision', 'torchaudio', '--index-url', official],
-              undefined,
-              LONG_TIMEOUT_MS
+              ['pip', 'install', '--python', pythonInVenv, '--upgrade', 'torch', 'torchvision', 'torchaudio', '--index-url', idx],
+              { timeout: LONG_TIMEOUT_MS, onLine: sink },
+              async (c, a, o) => safeExec(c, a, o?.cwd, o?.timeout)
             )
           } else {
-            throw new Error(`torch install failed for channel ${opts.torchChannel}`)
+            await ensurePip(pythonInVenv, async (c, a, o) => safeExec(c, a, o?.cwd, o?.timeout))
+            await runStreaming(
+              pythonInVenv,
+              ['-m', 'pip', 'install', '--upgrade', 'torch', 'torchvision', 'torchaudio', '--index-url', idx],
+              { timeout: LONG_TIMEOUT_MS, onLine: sink },
+              async (c, a, o) => safeExec(c, a, o?.cwd, o?.timeout)
+            )
           }
         }
+        try {
+          await tryInstall(index)
+        } catch (err) {
+          if (index === official) throw err
+          this.repairLog(`index ${index} failed — retrying official`)
+          await tryInstall(official)
+        }
+        this.emitRepair(id, 'torch', 'done', opts.torchChannel, undefined, 'update.msgTorchDone')
       } else {
-        await ensurePip(pythonInVenv, async (c, a, o) => safeExec(c, a, o?.cwd, o?.timeout))
-        let ok = await tryInstall(index)
-        if (!ok && index !== official) ok = await tryInstall(official)
-        if (!ok) throw new Error(`torch install failed for channel ${opts.torchChannel}`)
+        this.emitRepair(id, 'torch', 'skipped', 'No torch channel requested')
       }
-    }
 
-    // requirements
-    const reqFile = join(comfyDir, 'requirements.txt')
-    if (existsSync(reqFile)) {
-      const settings = loadSettings()
-      const { bootstrapService } = await import('./bootstrap')
-      const bootstrap = await bootstrapService.ensure({ kinds: ['uv'], downloadIfMissing: false })
-      const uvComp = bootstrap.components.find((c) => c.kind === 'uv' && c.installed)
-      await installRequirements(pythonInVenv, reqFile, async (c, a, o) => safeExec(c, a, o?.cwd, o?.timeout), {
-        uvPath: uvComp?.path,
-        pipIndex: String(settings.pipIndex || '').trim()
-      })
-    }
+      // requirements
+      const reqFile = join(comfyDir, 'requirements.txt')
+      if (existsSync(reqFile)) {
+        this.emitRepair(id, 'requirements', 'running', 'Installing requirements…', undefined, 'update.msgReqRun')
+        const settings = loadSettings()
+        const { bootstrapService } = await import('./bootstrap')
+        const bootstrap = await bootstrapService.ensure({ kinds: ['uv'], downloadIfMissing: false })
+        const uvComp = bootstrap.components.find((c) => c.kind === 'uv' && c.installed)
+        await installRequirements(pythonInVenv, reqFile, async (c, a, o) => safeExec(c, a, o?.cwd, o?.timeout), {
+          uvPath: uvComp?.path,
+          pipIndex: String(settings.pipIndex || '').trim(),
+          onLine: (line) => this.repairLog(line)
+        })
+        this.emitRepair(id, 'requirements', 'done', 'requirements installed', undefined, 'update.msgReqDone')
+      } else {
+        this.emitRepair(id, 'requirements', 'skipped', 'No requirements.txt', undefined, 'update.msgReqSkip')
+      }
 
-    return this.probe({ pythonPath: pythonInVenv, venvPath })
+      const probe = await this.probe({ pythonPath: pythonInVenv, venvPath })
+      this.emitRepair(id, 'done', 'done', 'Environment ready', undefined, 'update.msgDone')
+      return probe
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      this.emitRepair(id, 'done', 'failed', msg)
+      throw err
+    }
   }
 }
 

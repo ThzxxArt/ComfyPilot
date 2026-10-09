@@ -73,6 +73,7 @@ async function copyCommand(): Promise<void> {
 // ---------- ComfyUI update / repair (0.1.4) ----------
 const { startUpdate, checkComfyUpdate, repairEnv, updating } = useComfyUpdate()
 const showUpdateModal = ref(false)
+const updateModalTitle = ref('')
 const updateInfo = ref<ComfyUpdateInfo | null>(null)
 const checkingUpdate = ref(false)
 const repairing = ref(false)
@@ -99,6 +100,7 @@ async function doCheckUpdate(): Promise<void> {
 
 async function runUpdateComfy(): Promise<void> {
   if (!instance.value) return
+  updateModalTitle.value = t('instance.updateComfy')
   showUpdateModal.value = true
   try {
     const result = await startUpdate(instance.value.id, { updateDeps: true })
@@ -116,6 +118,9 @@ async function runUpdateComfy(): Promise<void> {
 async function runRepairEnv(): Promise<void> {
   if (!instance.value) return
   repairing.value = true
+  // Show the shared progress modal so the user can watch venv/torch/requirements.
+  updateModalTitle.value = t('instance.repairEnv')
+  showUpdateModal.value = true
   try {
     await repairEnv(instance.value.id)
     message.success(t('instance.repairDone'))
@@ -329,7 +334,7 @@ onUnmounted(() => {
     </div>
 
     <!-- ComfyUI update progress -->
-    <ComfyUpdateProgressModal v-model:show="showUpdateModal" />
+    <ComfyUpdateProgressModal v-model:show="showUpdateModal" :title="updateModalTitle" />
   </div>
 </template>
 

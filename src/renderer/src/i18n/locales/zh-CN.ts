@@ -686,6 +686,7 @@ export default {
   // detailKey namespace for ComfyUI update flow (`update.*`) — matches what main emits.
   update: {
     stepPreflight: '环境预检',
+    stepVenv: '虚拟环境',
     stepStop: '停止实例',
     stepBackup: '备份核心文件',
     stepFetch: '获取最新源码',

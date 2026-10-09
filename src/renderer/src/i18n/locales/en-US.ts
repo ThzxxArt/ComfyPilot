@@ -693,6 +693,7 @@ export default {
   // detailKey namespace for ComfyUI update flow (`update.*`) — matches what main emits.
   update: {
     stepPreflight: 'Preflight',
+    stepVenv: 'Virtual env',
     stepStop: 'Stop instance',
     stepBackup: 'Back up core files',
     stepFetch: 'Fetch latest source',

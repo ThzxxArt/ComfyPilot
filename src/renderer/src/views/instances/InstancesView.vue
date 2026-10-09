@@ -356,6 +356,7 @@ async function probeEnv(info: ComfyInstanceInfo): Promise<void> {
 // ---------- ComfyUI update / repair (0.1.4) ----------
 const { startUpdate, checkComfyUpdate, repairEnv } = useComfyUpdate()
 const showUpdateModal = ref(false)
+const updateModalTitle = ref('')
 const updateInfos = ref<Record<string, ComfyUpdateInfo>>({})
 
 function sourceLabel(source: ComfyUpdateInfo['source']): string {
@@ -411,6 +412,7 @@ function confirmUpdateComfy(item: ComfyInstanceInfo): void {
 }
 
 async function runUpdateComfy(item: ComfyInstanceInfo): Promise<void> {
+  updateModalTitle.value = t('instance.updateComfy')
   showUpdateModal.value = true
   try {
     const result = await startUpdate(item.id, { updateDeps: true })
@@ -438,6 +440,9 @@ function confirmRepairEnv(item: ComfyInstanceInfo): void {
 }
 
 async function runRepairEnv(item: ComfyInstanceInfo): Promise<void> {
+  // Show the shared progress modal so the user can watch venv/torch/requirements.
+  updateModalTitle.value = t('instance.repairEnv')
+  showUpdateModal.value = true
   try {
     envProbes.value[item.id] = await repairEnv(item.id)
     message.success(t('instance.repairDone'))
@@ -936,7 +941,7 @@ function statusClass(s: string): string {
     </NModal>
 
     <!-- ComfyUI update progress -->
-    <ComfyUpdateProgressModal v-model:show="showUpdateModal" />
+    <ComfyUpdateProgressModal v-model:show="showUpdateModal" :title="updateModalTitle" />
   </div>
 </template>
 
