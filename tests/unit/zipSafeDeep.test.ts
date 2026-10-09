@@ -267,19 +267,22 @@ describe('safeUnzip post-check containment', () => {
 
 describe('joinInside', () => {
   it('returns a normalized path under root', () => {
-    // Use a root form that is absolute on BOTH host platforms so the test
-    // does not depend on how path.resolve treats drive letters on POSIX.
-    const root = process.platform === 'win32' ? 'C:\\tmp\\root' : '/tmp/root'
+    // Build the root from tmpdir() so path.resolve treats it as absolute on
+    // every host — hardcoding /tmp/root or C:\tmp\root breaks when the host
+    // resolve() interprets the other platform's absolute form as relative.
+    const { tmpdir } = require('os') as typeof import('os')
+    const { join } = require('path') as typeof import('path')
+    const root = join(tmpdir(), 'cp-joininside-root')
     const target = joinInside(root, 'a', 'b.txt')
     expect(target.toLowerCase()).toContain('b.txt')
-    // The joined path must sit under the root — compare on the same
-    // normalization isPathInside uses.
-    const norm = (s: string): string => s.replace(/\\/g, '/').toLowerCase()
-    expect(norm(target).startsWith(norm(root).replace(/\/+$/, '') + '/')).toBe(true)
+    const norm = (s: string): string => s.replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '')
+    expect(norm(target).startsWith(norm(root) + '/')).toBe(true)
   })
 
   it('throws when parts escape root', () => {
-    const root = process.platform === 'win32' ? 'C:\\tmp\\root' : '/tmp/root'
+    const { tmpdir } = require('os') as typeof import('os')
+    const { join } = require('path') as typeof import('path')
+    const root = join(tmpdir(), 'cp-joininside-root')
     expect(() => joinInside(root, '..', 'etc')).toThrow(/escapes/i)
     expect(() => joinInside(root, 'x/../../etc')).toThrow(/escapes/i)
   })
