@@ -319,6 +319,31 @@ export function upsertWorkflow(w: WorkflowRecord): void {
   upsertInList('workflows', w, (a, b) => a.path === b.path || a.id === b.id)
 }
 
+export function updateWorkflow(id: string, patch: Partial<WorkflowRecord>): WorkflowRecord | null {
+  const list = listWorkflows()
+  const i = list.findIndex((w) => w.id === id)
+  if (i < 0) return null
+  list[i] = { ...list[i], ...patch, id: list[i].id }
+  writeJsonc('workflows', list)
+  return list[i]
+}
+
+export function deleteWorkflow(id: string): boolean {
+  const list = listWorkflows()
+  const next = list.filter((w) => w.id !== id)
+  writeJsonc('workflows', next)
+  return next.length !== list.length
+}
+
+/**
+ * Legacy ComfyPilot workflow folder (`<userData>/data/workflows`).
+ * Imports now land in the instance's `user/default/workflows`; this directory
+ * is still scanned so files from older releases stay visible.
+ */
+export function workflowLibraryDir(): string {
+  return ensureDir(join(userDataDir(), 'workflows'))
+}
+
 // ---------- Downloads ----------
 export function listDownloadTasks(): DownloadTask[] {
   return readJsonc<DownloadTask[]>('downloads', [])
@@ -367,8 +392,69 @@ export function upsertOutputAsset(a: OutputAsset): void {
   upsertInList('output_assets', a, (x, y) => x.path === y.path || x.id === y.id)
 }
 
-export function listOutputAssets(limit = 200): OutputAsset[] {
-  return readJsonc<OutputAsset[]>('output_assets', []).slice(0, limit)
+/**
+ * Field-level merge upsert: a disk walk must never wipe linkage written by the
+ * batch indexer (batchJobId / workflowId / thumbnail / size).
+ */
+export function mergeUpsertOutputAsset(a: OutputAsset): void {
+  const list = readJsonc<OutputAsset[]>('output_assets', [])
+  const i = list.findIndex((x) => x.path === a.path || x.id === a.id)
+  if (i < 0) {
+    list.push(a)
+  } else {
+    list[i] = {
+      ...list[i],
+      ...a,
+      // Keep the earlier non-empty value whenever the incoming one is blank.
+      thumbnail: a.thumbnail || list[i].thumbnail,
+      width: a.width ?? list[i].width,
+      height: a.height ?? list[i].height,
+      batchJobId: a.batchJobId || list[i].batchJobId,
+      workflowId: a.workflowId || list[i].workflowId,
+      workflowName: a.workflowName || list[i].workflowName,
+      favorite: a.favorite ?? list[i].favorite,
+      promptId: a.promptId || list[i].promptId,
+      seed: a.seed ?? list[i].seed,
+      params: { ...(list[i].params || {}), ...(a.params || {}) }
+    }
+  }
+  writeJsonc('output_assets', list)
+}
+
+/**
+ * Newest-first by default. The previous `slice(0, limit)` dropped the newest
+ * files once the index grew past the limit — always sort before slicing.
+ */
+export function listOutputAssets(opts?: {
+  limit?: number
+  offset?: number
+  sort?: 'createdAt' | 'size' | 'name'
+  order?: 'asc' | 'desc'
+}): OutputAsset[] {
+  const all = readJsonc<OutputAsset[]>('output_assets', [])
+  const sort = opts?.sort || 'createdAt'
+  const order = opts?.order === 'asc' ? 1 : -1
+  const sorted = [...all].sort((a, b) => {
+    if (sort === 'name') return order * a.fileName.localeCompare(b.fileName)
+    if (sort === 'size') return order * (a.size - b.size)
+    return order * (a.createdAt - b.createdAt)
+  })
+  const offset = Math.max(0, opts?.offset || 0)
+  const limit = opts?.limit ?? 200
+  return sorted.slice(offset, offset + limit)
+}
+
+export function listOutputAssetsAll(): OutputAsset[] {
+  return readJsonc<OutputAsset[]>('output_assets', [])
+}
+
+export function updateOutputAsset(id: string, patch: Partial<OutputAsset>): OutputAsset | null {
+  const list = readJsonc<OutputAsset[]>('output_assets', [])
+  const i = list.findIndex((a) => a.id === id)
+  if (i < 0) return null
+  list[i] = { ...list[i], ...patch, id: list[i].id }
+  writeJsonc('output_assets', list)
+  return list[i]
 }
 
 // ---------- Remote ----------

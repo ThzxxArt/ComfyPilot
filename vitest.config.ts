@@ -20,7 +20,10 @@ export default defineConfig({
       include: [
         'src/main/services/security.ts',
         'src/main/services/zipSafe.ts',
+        'src/main/services/zipWrite.ts',
         'src/main/services/workflowConvert.ts',
+        'src/main/services/workflow.ts',
+        'src/main/services/p1p2.ts',
         'src/main/services/proxy.ts',
         'src/main/services/installer.ts',
         'src/main/services/media.ts',
@@ -39,6 +42,24 @@ export default defineConfig({
           branches: 85
         },
         'src/main/services/workflowConvert.ts': {
+          statements: 85,
+          lines: 85,
+          functions: 85,
+          branches: 85
+        },
+        'src/main/services/workflow.ts': {
+          statements: 85,
+          lines: 85,
+          functions: 85,
+          branches: 85
+        },
+        'src/main/services/p1p2.ts': {
+          statements: 85,
+          lines: 85,
+          functions: 85,
+          branches: 85
+        },
+        'src/main/services/zipWrite.ts': {
           statements: 85,
           lines: 85,
           functions: 85,

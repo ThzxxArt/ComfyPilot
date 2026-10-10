@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, writeFileSync, readFileSync, renameSync } from '
 import { join, basename, dirname, extname, resolve } from 'path'
 import { createHash } from 'crypto'
 import { execFile } from 'child_process'
-import { cacheDir, loadSettings, listModels, upsertModel, loadInstanceConfigs, deleteModel as dbDeleteModel } from './db'
+import { cacheDir, loadSettings, listModels, upsertModel, loadInstanceConfigs, deleteModel as dbDeleteModel, workflowLibraryDir } from './db'
 import { assertSafeRelativeFilename, isSafeExternalUrl, isPathInside } from './security'
 import type { ModelRecord } from '@shared/types'
 
@@ -134,13 +134,21 @@ function mediaOutputRoots(): string[] {
   try {
     const s = loadSettings()
     if (s.outputIndexRoot) roots.push(s.outputIndexRoot)
+    try {
+      roots.push(workflowLibraryDir())
+    } catch {
+      /* ignore */
+    }
     for (const c of loadInstanceConfigs()) {
-      if (c.path) roots.push(join(c.path, 'output'))
+      if (c.path) {
+        roots.push(join(c.path, 'output'))
+        roots.push(join(c.path, 'user', 'default', 'workflows'))
+      }
     }
   } catch {
     /* ignore */
   }
-  return roots
+  return [...new Set(roots.filter(Boolean))]
 }
 
 /** Convert an absolute local media path into a safe `comfy-pilot-media:` URL. */

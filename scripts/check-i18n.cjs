@@ -84,7 +84,9 @@ const dynamicDomains = {
   ],
   'gpu.*': [
     'nvidiaDefault', 'nvidiaRtx', 'amdLinux', 'amdWindows', 'intel', 'apple', 'none', 'failed'
-  ]
+  ],
+  // Must match BatchJobStatus in src/shared/types.ts
+  'batch.status.*': ['queued', 'submitting', 'running', 'done', 'error', 'cancelled']
 }
 let dynBad = 0
 for (const [pattern, leafs] of Object.entries(dynamicDomains)) {

@@ -281,6 +281,9 @@ export interface NodeNameConflict {
 }
 
 // ---------- Workflow ----------
+/** Where a workflow file physically lives. */
+export type WorkflowOrigin = 'library' | 'instance' | 'external'
+
 export interface WorkflowRecord {
   id: string
   name: string
@@ -296,6 +299,14 @@ export interface WorkflowRecord {
   seed?: number
   modelUsed?: string
   params: Record<string, unknown>
+  /** library = ComfyPilot workflow library; instance = ComfyUI user workflows; external = scanned elsewhere */
+  origin: WorkflowOrigin
+  /** Original path before import-copy (library records only) */
+  sourcePath?: string
+  /** Set when the file is no longer on disk */
+  missing?: boolean
+  favorite?: boolean
+  importedAt?: number
 }
 
 // ---------- Monitor ----------
@@ -361,8 +372,11 @@ export interface OutputAsset {
   width?: number
   height?: number
   workflowId?: string
+  workflowName?: string
+  batchJobId?: string
   promptId?: string
   seed?: number
+  favorite?: boolean
   params: Record<string, unknown>
   thumbnail?: string
 }
@@ -431,19 +445,56 @@ export interface EnvCreateRequest {
 }
 
 // ---------- Batch ----------
+export type BatchJobStatus = 'queued' | 'submitting' | 'running' | 'done' | 'error' | 'cancelled'
+export type SeedMode = 'random' | 'increment' | 'fixed'
+
+/** One workflow leg inside a multi-workflow batch job. */
+export interface BatchJobItem {
+  workflowId?: string
+  workflowName: string
+  workflowPath: string
+  count: number
+  submitted: number
+  completed: number
+  failed: number
+  promptIds: string[]
+  seeds: number[]
+  /** Absolute output file paths linked after generation. */
+  outputPaths: string[]
+}
+
+export interface BatchParamOverrides {
+  seedMode?: SeedMode
+  baseSeed?: number
+  width?: number
+  height?: number
+  steps?: number
+  cfg?: number
+}
+
 export interface BatchJob {
   id: string
   name: string
-  workflowPath: string
   instanceId: string
+  /** Multi-workflow legs. Legacy single-path jobs migrate into items[0]. */
+  items: BatchJobItem[]
+  status: BatchJobStatus
+  /** Sum of item counts — total prompts this job should submit. */
   count: number
-  status: 'queued' | 'running' | 'done' | 'error' | 'cancelled'
+  /** Prompts successfully handed to ComfyUI (sum of item.submitted). */
+  submitted: number
+  /** Prompts that settled successfully (sum of item.completed). */
   completed: number
+  /** Submit + exec failures (sum of item.failed). */
   failed: number
+  /** Images linked from history for successful prompts. */
+  produced: number
   createdAt: number
   finishedAt?: number
-  promptIds: string[]
   notes: string
+  params: BatchParamOverrides
+  /** Display path of the primary workflow (items[0]). */
+  workflowPath: string
 }
 
 // ---------- Remote ----------
@@ -830,10 +881,36 @@ export type IpcChannelMap = {
   'node.updateAll': { args: [string?]; result: NodeUpdateAllResult[] }
 
   // workflows
-  'workflow.list': { args: []; result: WorkflowRecord[] }
-  'workflow.import': { args: [string]; result: WorkflowRecord }
+  'workflow.list': { args: [{ includeMissing?: boolean }?]; result: WorkflowRecord[] }
+  'workflow.import': { args: [string, string?]; result: WorkflowRecord }
+  'workflow.importMany': { args: [string[], string?]; result: WorkflowRecord[] }
   'workflow.launch': { args: [string, string?]; result: boolean }
   'workflow.tag': { args: [string, string[]]; result: WorkflowRecord }
+  'workflow.favorite': { args: [string, boolean]; result: WorkflowRecord }
+  'workflow.rename': { args: [string, string]; result: WorkflowRecord }
+  'workflow.delete': { args: [string, { deleteSource?: boolean }?]; result: boolean }
+  'workflow.exportZip': { args: [string, string?]; result: { path: string } }
+  'workflow.copyToInstance': { args: [string, string]; result: { path: string } }
+  'workflow.openInFrontend': {
+    args: [string, string?]
+    result: {
+      opened: boolean
+      mode: 'embed' | 'browser'
+      instanceName: string
+      url: string
+    }
+  }
+  'workflow.reveal': { args: [string]; result: boolean }
+  'workflow.libraryInfo': {
+    args: [string?]
+    result: {
+      /** Instance workflows folder — where imports land. */
+      root: string
+      instanceName: string
+      count: number
+      missing: number
+    }
+  }
   'workflow.queue': { args: [{ workflowPath: string; instanceId: string; seed?: number }]; result: string | null }
   'workflow.parsePngMeta': { args: [string]; result: Record<string, unknown> | null }
 
@@ -921,15 +998,49 @@ export type IpcChannelMap = {
 
   // batch
   'batch.list': { args: []; result: BatchJob[] }
-  'batch.create': { args: [Omit<BatchJob, 'id' | 'status' | 'completed' | 'failed' | 'createdAt' | 'promptIds'>]; result: BatchJob }
+  'batch.create': {
+    args: [
+      {
+        name: string
+        instanceId: string
+        items: Array<{
+          workflowId?: string
+          workflowName?: string
+          workflowPath: string
+          count: number
+        }>
+        notes?: string
+        params?: BatchParamOverrides
+      }
+    ]
+    result: BatchJob
+  }
   'batch.start': { args: [string]; result: BatchJob }
   'batch.cancel': { args: [string]; result: BatchJob }
   'batch.remove': { args: [string]; result: boolean }
 
   // output
-  'output.list': { args: [{ root?: string; type?: string; limit?: number }?]; result: OutputAsset[] }
+  'output.list': {
+    args: [
+      {
+        root?: string
+        type?: string
+        limit?: number
+        offset?: number
+        favorite?: boolean
+        batchJobId?: string
+        workflowId?: string
+        sort?: 'createdAt' | 'size' | 'name'
+        order?: 'asc' | 'desc'
+      }?
+    ]
+    result: { items: OutputAsset[]; total: number; truncated: boolean }
+  }
   'output.open': { args: [string]; result: boolean }
-  'output.importToWorkflow': { args: [string]; result: WorkflowRecord | null }
+  'output.reveal': { args: [string]; result: boolean }
+  'output.favorite': { args: [string, boolean]; result: boolean }
+  'output.importToWorkflow': { args: [string, string?]; result: WorkflowRecord | null }
+  'output.exportZip': { args: [string[], string?]; result: { path: string } }
 
   // remote
   'remote.list': { args: []; result: RemoteInstanceConfig[] }
@@ -948,8 +1059,10 @@ export type IpcChannelMap = {
   // shell
   'shell.openExternal': { args: [string]; result: boolean }
   'shell.openPath': { args: [string]; result: boolean }
+  'shell.reveal': { args: [string]; result: boolean }
   'shell.pickDirectory': { args: []; result: string | null }
   'shell.pickFile': { args: [{ filters?: Array<{ name: string; extensions: string[] }> }?]; result: string | null }
+  'shell.pickFiles': { args: [{ filters?: Array<{ name: string; extensions: string[] }> }?]; result: string[] }
   'shell.writeClipboard': { args: [string]; result: boolean }
 
   // frontend embed

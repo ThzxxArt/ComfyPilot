@@ -1,7 +1,7 @@
 # ComfyPilot
 
 > **ComfyUI 全能管理器** — 本机 ComfyUI 生产线的控制塔  
-> TypeScript · Vue 3 · Electron · Naive UI · MIT · v0.1.4
+> TypeScript · Vue 3 · Electron · Naive UI · MIT · v0.1.5
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-4f6ef7)](./LICENSE)
 
@@ -39,9 +39,9 @@ ComfyPilot **不替代** ComfyUI 节点工作台，而是管理它的整套生�
 | **模型库 Models** | 多根扫描、safetensors 元数据、SHA256 去重、断点下载与校验、推荐模型包一键下载、移动/软链/改名、存储分析、真缩略图 |
 | **节点 Node Packs** | Registry / Manager / Git 安装、依赖真实安装、启用禁用、锁定、冲突检测、冒烟导入、快照对齐、**检查更新、一键/批量更新、失败回滚上报** |
 | **市场 Market** | Comfy Registry 精选浏览与一键安装 |
-| **工作流 Workflows** | JSON / PNG 元数据解析、标签、UI→API 转换、按实例排队 |
-| **批跑 Batch** | 多工作流 × 多张批量提交队列，进度与失败统计 |
-| **产物 Output** | output 目录索引、真缩略图、PNG 参数还原、一键还原为工作流 |
+| **工作流 Workflows** | **真·工作流库**：JSON / PNG 元数据解析（PNG 抽出 .json）、导入拷贝入库、来源徽章、标签/收藏/改名/删除、ZIP 导出、同步到实例、Frontend 打开、按实例排队 |
+| **批跑 Batch** | 从工作流库**多选**多工作流 × 次数；种子策略（随机/递增/固定）+ 尺寸/steps/cfg 矩阵；入队后跟踪真实出图；取消可撤队；产物关联批次 |
+| **产物 Output** | output 目录索引、真缩略图、时间/大小/名称排序 + 分页、收藏、多选导出 PNG 参数还原、**还原为工作流真正入库**、批次/工作流回溯 |
 | **监控 Monitor** | CPU / 内存 / 磁盘 / GPU（显存真实采样）、队列、WebSocket 实时进度 |
 | **诊断 Doctor** | 一键体检（Python / torch·CUDA / 端口 / 节点 / 路径 / 磁盘 / 网络）+ 可修复项 |
 | **备份 Backup** | 配置 / 实例 / 节点清单 / 模型清单快照，原子恢复 |
@@ -170,15 +170,19 @@ npm run test:all
 
 ### 工作流与批跑
 
-- `.json` 工作流与 PNG 内嵌 workflow / prompt
+- **工作流库**：默认 `userData/data/workflows`（设置可改）。导入 = **拷贝入库**，可感知落点
+- `.json` 工作流与 PNG 内嵌 workflow / prompt；PNG 导入同时抽出可排队的 `.json`
 - UI 格式 → API prompt 转换（KSampler 动态 widget、ControlNetLoader 等）
+- 标签 / 收藏 / 重命名 / 删除（库文件真删，实例侧只取消登记）/ ZIP 打包分享
+- 同步到实例 `user/default/workflows` 并打开 Frontend
 - 按实例提交队列，可注入 seed
-- 批量任务：指定工作流、数量、实例；取消立即生效
+- **批量任务**：从库多选工作流、次数、种子策略、尺寸/steps/cfg 矩阵；入队后等待真实出图；取消立即生效并尝试撤队
 
 ### 产物
 
-- output 目录索引、类型筛选、真缩略图
-- PNG 参数面板（seed / 元数据）+ **还原为工作流**
+- output 目录索引、类型筛选、真缩略图、排序 + 分页
+- PNG 参数面板（seed / 元数据）+ **还原为工作流（真入库）**
+- 收藏、多选导出 ZIP、按批次 / 工作流过滤、回溯跳转
 
 ### 监控
 
@@ -213,6 +217,7 @@ Python 版本、Torch / CUDA、`extra_model_paths.yaml`、端口、磁盘、Regi
 - **存储格式：JSONC**（带注释的 JSON），无原生模块、无 SQLite
 - 位置：`%APPDATA%/ComfyPilot/data/`（macOS/Linux 为对应 userData）
 - 主要文件：`settings.jsonc`、`instances.jsonc`、`models.jsonc`、`node_packs.jsonc`、`workflows.jsonc`、`download_tasks.jsonc`、`batch_jobs.jsonc`、`backups.jsonc` 等
+- **工作流落盘**：导入进当前实例的 `user/default/workflows/`（1 份 `.json`），ComfyUI Frontend 直接可见；`data/workflows/` 仅作旧版本遗留扫描
 - 解析失败的文件改名为 `*.jsonc.bad-<时间戳>`，不覆盖用户数据
 - 运行时：`userData/runtimes/`（便携 Python / uv / MinGit + `checksums.json`）
 - 缩略图与缓存：`userData/cache/`
@@ -370,8 +375,11 @@ ComfyUI 本身采用 GPL-3.0；本项目独立发布，采用 **MIT**。
 - [x] **0.1.4 节点安装/更新产品化**：检查更新、一键/批量更新、回滚上报、MinGit 便携链、嵌套残留清理
 - [x] **0.1.4 环境修复**：实例级 repairEnv（补 venv / torch / requirements）
 - [x] **0.1.4 质量门禁**：preflight i18n 键根治、CI 接 i18n/硬编码门禁、nodePack/updater 进覆盖率 ≥85%
+- [x] **0.1.5 工作流真库**：导入拷贝入库、list 合并 DB、PNG 抽 JSON、来源徽章、缺失可见
+- [x] **0.1.5 生产闭环**：批跑库选多工作流 + 参数矩阵 + 出图跟踪；产物排序分页收藏导出；批次/工作流回溯
+- [x] **0.1.5 工作流操作**：标签/收藏/改名/删除/ZIP 导出/同步实例/Frontend 打开
 - [ ] 自动更新通道（GitHub Releases）
-- [ ] 工作流版本对照与打包分享
+- [ ] 工作流版本对照与打包分享（0.1.5 已含 ZIP 分享）
 - [ ] 更细的 GPU 多卡 / 共享显存展示
 
 ---

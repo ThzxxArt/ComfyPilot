@@ -32,6 +32,26 @@ const instance = ref<ComfyInstanceInfo | null>(null)
 const preview = ref<LaunchCommandPreview | null>(null)
 
 const id = computed(() => String(route.params.id || ''))
+const instanceRunning = computed(() => instance.value?.status === 'running')
+const needInstanceHint = t('common.needRunningInstance')
+
+function openExternalIfRunning(): void {
+  if (!instanceRunning.value) {
+    message.warning(needInstanceHint)
+    return
+  }
+  if (instance.value?.url) void ipc('shell.openExternal', instance.value.url)
+}
+
+function openEmbedIfRunning(): void {
+  if (!instanceRunning.value) {
+    message.warning(needInstanceHint)
+    return
+  }
+  if (instance.value?.url) {
+    void router.push({ path: '/embed', query: { url: instance.value.url } })
+  }
+}
 
 async function doLaunch(open: 'embed' | 'browser' | 'none' = 'none'): Promise<void> {
   if (!instance.value) return
@@ -193,7 +213,12 @@ onUnmounted(() => {
           </template>
           {{ $t('instance.startOnly') }}
         </NButton>
-        <NButton secondary :disabled="!instance?.url" @click="instance?.url && ipc('shell.openExternal', instance.url)">
+        <NButton
+          secondary
+          :disabled="!instanceRunning"
+          :title="instanceRunning ? '' : needInstanceHint"
+          @click="openExternalIfRunning"
+        >
           <template #icon>
             <NIcon :component="OpenOutline" />
           </template>
@@ -202,8 +227,9 @@ onUnmounted(() => {
         <NButton
           type="primary"
           secondary
-          :disabled="!instance?.url"
-          @click="instance?.url && router.push({ path: '/embed', query: { url: instance.url } })"
+          :disabled="!instanceRunning"
+          :title="instanceRunning ? '' : needInstanceHint"
+          @click="openEmbedIfRunning"
         >
           <template #icon>
             <NIcon :component="PulseOutline" />

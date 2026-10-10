@@ -64,8 +64,86 @@ export class ComfyApiClient {
     }
   }
 
+  /** Point lookup — keeps prompts visible after they fall out of the rolling window. */
+  async historyItem(promptId: string): Promise<{
+    promptId: string
+    status: string
+    completedAt?: number
+    outputs: Array<{ filename: string; subfolder: string; type: string }>
+  } | null> {
+    if (!promptId) return null
+    try {
+      const res = await fetch(this.url(`/history/${encodeURIComponent(promptId)}`), {
+        signal: AbortSignal.timeout(3000)
+      })
+      if (!res.ok) return null
+      const data = (await res.json()) as Record<string, Record<string, unknown>>
+      const entry = data[promptId]
+      if (!entry) return null
+      const list = this.parseHistoryEntries({ [promptId]: entry })
+      return list[0] || null
+    } catch {
+      return null
+    }
+  }
+
+  private parseHistoryEntries(data: Record<string, Record<string, unknown>>): Array<{
+    promptId: string
+    status: string
+    completedAt?: number
+    outputs: Array<{ filename: string; subfolder: string; type: string }>
+  }> {
+    return Object.entries(data).map(([promptId, v]) => {
+      // ComfyUI history has no completed_at; use status_str + last exec message timestamp.
+      const st = v?.status as
+        | {
+            status_str?: string
+            completed?: boolean
+            messages?: Array<[string, Record<string, unknown>?]>
+          }
+        | undefined
+      const statusStr = typeof st?.status_str === 'string' ? st.status_str : undefined
+      const status = statusStr || (st?.completed ? 'success' : 'unknown')
+      let completedAt: number | undefined
+      for (const msg of st?.messages || []) {
+        const [type, payload] = Array.isArray(msg) ? msg : [String(msg), undefined]
+        if (type === 'execution_success' || type === 'execution_error') {
+          const ts = Number(payload?.timestamp)
+          if (Number.isFinite(ts) && ts > 0) completedAt = ts
+        }
+      }
+      // Collect SaveImage / SaveVideo style outputs for batch→output linking.
+      const outputs: Array<{ filename: string; subfolder: string; type: string }> = []
+      const outMap = v?.outputs as Record<string, Record<string, unknown>> | undefined
+      if (outMap && typeof outMap === 'object') {
+        for (const nodeOut of Object.values(outMap)) {
+          for (const key of ['images', 'gifs', 'videos', 'audio']) {
+            const arr = nodeOut?.[key]
+            if (!Array.isArray(arr)) continue
+            for (const item of arr) {
+              const o = item as { filename?: string; subfolder?: string; type?: string }
+              if (o?.filename) {
+                outputs.push({
+                  filename: String(o.filename),
+                  subfolder: String(o.subfolder || ''),
+                  type: String(o.type || 'output')
+                })
+              }
+            }
+          }
+        }
+      }
+      return { promptId, status, completedAt, outputs }
+    })
+  }
+
   async history(limit = 20): Promise<
-    Array<{ promptId: string; status: string; completedAt?: number }>
+    Array<{
+      promptId: string
+      status: string
+      completedAt?: number
+      outputs: Array<{ filename: string; subfolder: string; type: string }>
+    }>
   > {
     try {
       const res = await fetch(this.url('/history?max_items=' + limit), {
@@ -73,29 +151,25 @@ export class ComfyApiClient {
       })
       if (!res.ok) return []
       const data = (await res.json()) as Record<string, Record<string, unknown>>
-      return Object.entries(data).map(([promptId, v]) => {
-        // ComfyUI history has no completed_at; use status_str + last exec message timestamp.
-        const st = v?.status as
-          | {
-              status_str?: string
-              completed?: boolean
-              messages?: Array<[string, Record<string, unknown>?]>
-            }
-          | undefined
-        const statusStr = typeof st?.status_str === 'string' ? st.status_str : undefined
-        const status = statusStr || (st?.completed ? 'success' : 'unknown')
-        let completedAt: number | undefined
-        for (const msg of st?.messages || []) {
-          const [type, payload] = Array.isArray(msg) ? msg : [String(msg), undefined]
-          if (type === 'execution_success' || type === 'execution_error') {
-            const ts = Number(payload?.timestamp)
-            if (Number.isFinite(ts) && ts > 0) completedAt = ts
-          }
-        }
-        return { promptId, status, completedAt }
-      })
+      return this.parseHistoryEntries(data)
     } catch {
       return []
+    }
+  }
+
+  /** Drop still-pending prompts from the ComfyUI queue (cancel support). */
+  async deleteQueueItems(promptIds: string[]): Promise<boolean> {
+    if (!promptIds.length) return true
+    try {
+      const res = await fetch(this.url('/queue'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ delete: promptIds }),
+        signal: AbortSignal.timeout(3000)
+      })
+      return res.ok
+    } catch {
+      return false
     }
   }
 

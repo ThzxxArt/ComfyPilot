@@ -552,6 +552,10 @@ function onMoreSelect(key: string | number, item: ComfyInstanceInfo): void {
       confirmForceKill(item)
       break
     case 'openBrowser':
+      if (item.status !== 'running') {
+        message.warning(t('common.needRunningInstance'))
+        break
+      }
       if (item.url) void ipc('shell.openExternal', item.url)
       break
     case 'probeEnv':
@@ -704,8 +708,9 @@ function statusClass(s: string): string {
                   v-else
                   size="small"
                   tertiary
-                  :disabled="!item.url"
-                  @click="item.url && router.push({ path: '/embed', query: { url: item.url } })"
+                  :disabled="item.status !== 'running' || !item.url"
+                  :title="item.status === 'running' ? '' : t('common.needRunningInstance')"
+                  @click="item.status === 'running' && item.url && router.push({ path: '/embed', query: { url: item.url } })"
                 >
                   <template #icon><NIcon :component="OpenOutline" /></template>
                   {{ $t('instance.openFrontend') }}

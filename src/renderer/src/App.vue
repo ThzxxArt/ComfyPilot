@@ -27,9 +27,13 @@ import {
 import { useAppStore } from '@/stores/app'
 import { ipc } from '@/composables/useIpc'
 import { useLaunch } from '@/composables/useLaunch'
+import { createDiscreteApi } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { APP_VERSION } from '@shared/constants'
 import { COLORS } from '@/styles/tokens'
+
+// App.vue sits outside NMessageProvider — use a discrete message API.
+const discreteMessage = createDiscreteApi(['message']).message
 import type { ComfyInstanceInfo } from '@shared/types'
 
 const router = useRouter()
@@ -116,6 +120,9 @@ const selectedInstanceId = computed({
 })
 
 const activeStatus = computed(() => store.activeInstance?.status || 'unknown')
+/** ComfyPilot never auto-starts an instance — every Frontend open is gated on this. */
+const instanceRunning = computed(() => activeStatus.value === 'running')
+const needInstanceHint = t('common.needRunningInstance')
 const activeStatusLabel = computed(() => {
   const s = activeStatus.value
   try {
@@ -199,6 +206,10 @@ function go(path: string): void {
 }
 
 function openComfy(): void {
+  if (!instanceRunning.value) {
+    discreteMessage.warning(needInstanceHint)
+    return
+  }
   const inst = store.activeInstance
   if (inst?.url) {
     void ipc('shell.openExternal', inst.url)
@@ -206,6 +217,10 @@ function openComfy(): void {
 }
 
 function openEmbed(): void {
+  if (!instanceRunning.value) {
+    discreteMessage.warning(needInstanceHint)
+    return
+  }
   const inst = store.activeInstance
   if (inst?.url) void router.push({ path: '/embed', query: { url: inst.url } })
 }
@@ -315,13 +330,24 @@ async function toggleInstanceRun(): Promise<void> {
                 </div>
                 <NTooltip trigger="hover">
                   <template #trigger>
-                    <NButton secondary type="primary" :disabled="!store.activeInstance?.url" @click="openEmbed">
+                    <NButton
+                      secondary
+                      type="primary"
+                      :disabled="!instanceRunning"
+                      :title="instanceRunning ? '' : needInstanceHint"
+                      @click="openEmbed"
+                    >
                       {{ t('header.embed') }}
                     </NButton>
                   </template>
-                  {{ t('header.embedTip') }}
+                  {{ instanceRunning ? t('header.embedTip') : needInstanceHint }}
                 </NTooltip>
-                <NButton secondary :disabled="!store.activeInstance?.url" @click="openComfy">
+                <NButton
+                  secondary
+                  :disabled="!instanceRunning"
+                  :title="instanceRunning ? '' : needInstanceHint"
+                  @click="openComfy"
+                >
                   <template #icon>
                     <NIcon :component="OpenOutline" />
                   </template>

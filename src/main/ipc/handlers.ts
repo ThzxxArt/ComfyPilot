@@ -1,7 +1,7 @@
 import { ipcMain, dialog, shell, BrowserWindow, WebContentsView, clipboard } from 'electron'
 import { existsSync } from 'fs'
-import { basename, extname } from 'path'
-import type { IpcResult, ComfyInstanceConfig, RemoteInstanceConfig, NodePackRecord, BatchJob, EnvCreateRequest, WorkflowRecord, AppSettings, InstallPlan, LaunchOptions } from '@shared/types'
+import { basename, extname, join } from 'path'
+import type { IpcResult, ComfyInstanceConfig, RemoteInstanceConfig, NodePackRecord, EnvCreateRequest, WorkflowRecord, AppSettings, InstallPlan, LaunchOptions } from '@shared/types'
 import { isSafeExternalUrl, isSafeEmbedUrl, sanitizeId, isSafeOpenPath, isLocalhostUrl } from '../services/security'
 import { loadSettings, saveSettings, loadInstanceConfigs, upsertInstanceConfig, deleteInstanceConfig } from '../services/db'
 import { LAUNCH_TEMPLATES } from '@shared/constants'
@@ -44,8 +44,12 @@ function toPlainIpcData<T>(data: T): T {
   if (t === 'string' || t === 'number' || t === 'boolean') return data
   try {
     return JSON.parse(JSON.stringify(data)) as T
-  } catch {
-    return null as unknown as T
+  } catch (e) {
+    // Never hand a fake success with `data: null` — surface the serialisation
+    // failure so the caller sees a real error.
+    throw new Error(
+      `IPC payload is not serialisable: ${e instanceof Error ? e.message : String(e)}`
+    )
   }
 }
 
@@ -179,6 +183,15 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   // settings
   ipcMain.handle('settings.get', wrap(() => loadSettings()))
   ipcMain.handle('settings.set', wrap(async (patch: Partial<AppSettings>) => {
+    // outputIndexRoot enters the media-protocol allow-list — only accept
+    // concrete directories that already exist (the picker returns real paths).
+    for (const key of ['outputIndexRoot'] as const) {
+      const v = patch[key]
+      if (v !== undefined && v !== null && v !== '') {
+        if (typeof v !== 'string' || v.includes('\0')) throw new Error(`Invalid ${key}`)
+        if (!existsSync(v)) throw new Error(`${key} must be an existing directory`)
+      }
+    }
     const next = saveSettings(patch)
     // Re-apply proxy whenever settings change
     syncProxyFromSettings()
@@ -367,10 +380,17 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle('node.updateAll', wrap((instanceId?: string) => nodePackService.updateAll(safeInstanceId(instanceId))))
 
   // workflows
-  ipcMain.handle('workflow.list', wrap(() => workflowService.list()))
-  ipcMain.handle('workflow.import', wrap((path: string) => {
+  ipcMain.handle('workflow.list', wrap((opts?: { includeMissing?: boolean }) => workflowService.list(opts)))
+  ipcMain.handle('workflow.import', wrap((path: string, instanceId?: string) => {
     if (!isSafeReadPath(path)) throw new Error('Blocked unsafe workflow path')
-    return workflowService.importFile(path)
+    return workflowService.importFile(path, safeInstanceId(instanceId))
+  }))
+  ipcMain.handle('workflow.importMany', wrap(async (paths: string[], instanceId?: string) => {
+    if (!Array.isArray(paths) || !paths.length) return []
+    for (const p of paths) {
+      if (!isSafeReadPath(p)) throw new Error(`Blocked unsafe workflow path: ${basename(p)}`)
+    }
+    return workflowService.importMany(paths, safeInstanceId(instanceId))
   }))
   ipcMain.handle('workflow.launch', wrap(async (path: string, baseUrl?: string) => {
     if (baseUrl) {
@@ -382,7 +402,94 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     return shell.openPath(path).then((r) => r === '')
   }))
   ipcMain.handle('workflow.tag', wrap((id: string, tags: string[]) => workflowService.tag(id, tags)))
-  ipcMain.handle('workflow.queue', wrap((opts: { workflowPath: string; instanceId: string; seed?: number }) => workflowService.queue(opts)))
+  ipcMain.handle('workflow.favorite', wrap((id: string, favorite: boolean) => workflowService.favorite(id, favorite)))
+  ipcMain.handle('workflow.rename', wrap((id: string, name: string) => workflowService.rename(id, name)))
+  ipcMain.handle('workflow.delete', wrap((id: string, opts?: { deleteSource?: boolean }) =>
+    workflowService.remove(sanitizeId(id), opts)
+  ))
+  ipcMain.handle('workflow.exportZip', wrap(async (id: string, destDir?: string) => {
+    if (destDir) {
+      if (!existsSync(destDir)) throw new Error('Export directory does not exist')
+      const { isPathInside } = await import('../services/security')
+      const { loadSettings, workflowLibraryDir, cacheDir } = await import('../services/db')
+      const s = loadSettings()
+      const allowed = [
+        s.downloadDir,
+        s.outputIndexRoot,
+        workflowLibraryDir(),
+        cacheDir(),
+        ...loadInstanceConfigs().map((i) => i.path)
+      ].filter(Boolean) as string[]
+      const okDir = allowed.some((r) => destDir === r || isPathInside(destDir, r))
+      if (!okDir) throw new Error('Export directory is outside the allowed roots')
+    }
+    return workflowService.exportZip(sanitizeId(id), destDir)
+  }))
+  ipcMain.handle('workflow.copyToInstance', wrap((id: string, instanceId: string) =>
+    workflowService.copyToInstance(sanitizeId(id), safeInstanceId(instanceId) || instanceId)
+  ))
+  /**
+   * ComfyUI must already be up. ComfyPilot NEVER starts an instance on its
+   * own — the user starts it from the Instances page. Anything that needs a
+   * live backend gets a clear refusal instead of a silent auto-launch.
+   */
+  async function requireRunningInstance(instanceId?: string): Promise<{
+    id: string
+    name: string
+    url: string
+  }> {
+    const instances = loadInstanceConfigs()
+    const inst =
+      instances.find((i) => i.id === safeInstanceId(instanceId)) ||
+      instances.find((i) => i.id === safeInstanceId(instanceId || '')) ||
+      instances[0]
+    if (!inst) throw new Error('No instance configured')
+    const host =
+      inst.listen === '0.0.0.0' || inst.listen === '::' || inst.listen === '[::]'
+        ? '127.0.0.1'
+        : inst.listen
+    const url = `http://${host}:${inst.port}`
+    const { ComfyApiClient } = await import('../services/comfyApi')
+    const stats = await new ComfyApiClient(url).systemStats()
+    if (!stats) {
+      throw new Error('Instance is not running — start it on the Instances page first')
+    }
+    return { id: inst.id, name: inst.name, url }
+  }
+
+  ipcMain.handle('workflow.openInFrontend', wrap(async (id: string, instanceId?: string) => {
+    // Refuse BEFORE copying anything when the backend is down.
+    await requireRunningInstance(instanceId)
+    const prepared = await workflowService.prepareFrontend(sanitizeId(id), safeInstanceId(instanceId))
+    const settings = loadSettings()
+    const mode: 'embed' | 'browser' = settings.embedFrontend === false ? 'browser' : 'embed'
+    if (!isSafeExternalUrl(prepared.url)) throw new Error('Blocked unsafe URL')
+    if (mode === 'embed') {
+      await openEmbedInternal(prepared.url, prepared.instanceName)
+    } else {
+      await shell.openExternal(prepared.url)
+    }
+    return {
+      opened: true,
+      mode,
+      instanceName: prepared.instanceName,
+      url: prepared.url
+    }
+  }))
+  ipcMain.handle('workflow.reveal', wrap((id: string) => workflowService.reveal(sanitizeId(id))))
+  ipcMain.handle('workflow.libraryInfo', wrap((instanceId?: string) =>
+    workflowService.libraryInfo(safeInstanceId(instanceId))
+  ))
+  ipcMain.handle('workflow.queue', wrap(async (opts: { workflowPath: string; instanceId: string; seed?: number }) => {
+    if (!isSafeReadPath(opts?.workflowPath)) throw new Error('Blocked unsafe workflow path')
+    // Queueing needs a live backend — never auto-start one.
+    await requireRunningInstance(opts.instanceId)
+    return workflowService.queue({
+      workflowPath: opts.workflowPath,
+      instanceId: safeInstanceId(opts.instanceId) || opts.instanceId,
+      seed: opts.seed
+    })
+  }))
   ipcMain.handle('workflow.parsePngMeta', wrap((path: string) => {
     if (!isSafeReadPath(path)) throw new Error('Blocked unsafe image path')
     return workflowService.parsePngMeta(path)
@@ -475,47 +582,125 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
   // batch
   ipcMain.handle('batch.list', wrap(() => batchService.list()))
-  ipcMain.handle('batch.create', wrap((job: Omit<BatchJob, 'id' | 'status' | 'completed' | 'failed' | 'createdAt' | 'promptIds'>) => batchService.create(job)))
-  ipcMain.handle('batch.start', wrap((id: string) => batchService.start(id)))
-  ipcMain.handle('batch.cancel', wrap((id: string) => batchService.cancel(id)))
-  ipcMain.handle('batch.remove', wrap((id: string) => batchService.remove(id)))
+  ipcMain.handle('batch.create', wrap((input: {
+    name: string
+    instanceId: string
+    items: Array<{ workflowId?: string; workflowName?: string; workflowPath: string; count: number }>
+    notes?: string
+    params?: import('@shared/types').BatchParamOverrides
+  }) => {
+    for (const it of input.items || []) {
+      if (!it.workflowPath || !isSafeReadPath(it.workflowPath)) {
+        throw new Error(`Blocked unsafe workflow path: ${basename(it.workflowPath || '(empty)')}`)
+      }
+    }
+    return batchService.create({ ...input, instanceId: safeInstanceId(input.instanceId) || input.instanceId })
+  }))
+  ipcMain.handle('batch.start', wrap(async (id: string) => {
+    const job = batchService.list().find((j) => j.id === sanitizeId(id))
+    // Batch submission needs a live backend — never auto-start one.
+    await requireRunningInstance(job?.instanceId)
+    return batchService.start(sanitizeId(id))
+  }))
+  ipcMain.handle('batch.cancel', wrap((id: string) => batchService.cancel(sanitizeId(id))))
+  ipcMain.handle('batch.remove', wrap((id: string) => batchService.remove(sanitizeId(id))))
 
   // output
   ipcMain.handle(
     'output.list',
-    wrap(async (opts?: { root?: string; type?: string; limit?: number }) => {
+    wrap(async (opts?: {
+      root?: string
+      type?: string
+      limit?: number
+      offset?: number
+      favorite?: boolean
+      batchJobId?: string
+      workflowId?: string
+      sort?: 'createdAt' | 'size' | 'name'
+      order?: 'asc' | 'desc'
+    }) => {
+      // Renderer-supplied root must sit inside an allow-listed output area.
+      if (opts?.root) {
+        const { isPathInside } = await import('../services/security')
+        const { loadSettings, workflowLibraryDir } = await import('../services/db')
+        const s = loadSettings()
+        const allowed = [
+          s.outputIndexRoot,
+          workflowLibraryDir(),
+          ...loadInstanceConfigs().map((i) => join(i.path, 'output')),
+          ...loadInstanceConfigs().map((i) => join(i.path, 'user', 'default', 'workflows'))
+        ].filter(Boolean) as string[]
+        const root = opts.root
+        // root must sit INSIDE an allow-listed area (or be one). Never the
+        // reverse — `isPathInside(allowed, root)` would accept `C:\`.
+        const okRoot = allowed.some((r) => root === r || isPathInside(root, r))
+        if (!okRoot) throw new Error('Output root is outside the allowed areas')
+      }
       const { thumbnailDisplayUrl, toMediaUrl } = await import('../services/media')
-      const list = await outputService.list(opts)
-      return list.map((a) => ({
-        ...a,
-        thumbnail: thumbnailDisplayUrl(a.thumbnail) || toMediaUrl(a.path) || undefined
-      }))
+      const result = outputService.list(opts)
+      return {
+        ...result,
+        items: result.items.map((a) => ({
+          ...a,
+          thumbnail: thumbnailDisplayUrl(a.thumbnail) || toMediaUrl(a.path) || undefined
+        }))
+      }
     })
   )
   ipcMain.handle('output.open', wrap(async (path: string) => {
     if (!isSafeOpenPath(path)) throw new Error('Blocked opening executable/script file')
     return shell.openPath(path).then((r) => r === '')
   }))
-  ipcMain.handle('output.importToWorkflow', wrap(async (path: string): Promise<WorkflowRecord | null> => {
+  ipcMain.handle('output.reveal', wrap(async (path: string) => {
+    if (!isSafeReadPath(path) && !isSafeOpenPath(path)) throw new Error('Blocked unsafe path')
+    shell.showItemInFolder(path)
+    return true
+  }))
+  ipcMain.handle('output.favorite', wrap((id: string, favorite: boolean) => outputService.favorite(id, favorite)))
+  ipcMain.handle('output.importToWorkflow', wrap(async (path: string, instanceId?: string): Promise<WorkflowRecord | null> => {
     if (!isSafeReadPath(path)) throw new Error('Blocked unsafe image path')
-    const meta = await workflowService.parsePngMeta(path)
-    if (meta?.workflow) {
-      return workflowService.importFile(path)
+    return outputService.importToWorkflow(path, safeInstanceId(instanceId))
+  }))
+  ipcMain.handle('output.exportZip', wrap(async (paths: string[], destDir?: string) => {
+    if (!Array.isArray(paths) || !paths.length) throw new Error('No files selected')
+    for (const p of paths) {
+      if (!isSafeReadPath(p) && !isSafeOpenPath(p)) throw new Error(`Blocked unsafe path: ${basename(p)}`)
     }
-    return null
+    if (destDir) {
+      if (!existsSync(destDir)) throw new Error('Export directory does not exist')
+      const { isPathInside } = await import('../services/security')
+      const { loadSettings, workflowLibraryDir, cacheDir } = await import('../services/db')
+      const s = loadSettings()
+      const allowed = [
+        s.downloadDir,
+        s.outputIndexRoot,
+        workflowLibraryDir(),
+        cacheDir(),
+        ...(loadInstanceConfigs().map((i) => i.path))
+      ].filter(Boolean) as string[]
+      const okDir = allowed.some((r) => destDir === r || isPathInside(destDir, r))
+      if (!okDir) throw new Error('Export directory is outside the allowed roots')
+    }
+    return outputService.exportZip(paths, destDir)
   }))
 
   // remote
   ipcMain.handle('remote.list', wrap(() => remoteService.list()))
-  ipcMain.handle('remote.save', wrap((config: RemoteInstanceConfig) => remoteService.save(config)))
+  ipcMain.handle('remote.save', wrap((config: RemoteInstanceConfig) => {
+    if (!config?.baseUrl || !isSafeExternalUrl(config.baseUrl)) {
+      throw new Error('Remote baseUrl must be a valid http(s) URL')
+    }
+    if (config.apiKey && /[\r\n\0]/.test(config.apiKey)) throw new Error('Invalid apiKey')
+    return remoteService.save(config)
+  }))
   ipcMain.handle('remote.remove', wrap((id: string) => remoteService.remove(id)))
   ipcMain.handle('remote.test', wrap((id: string) => remoteService.test(id)))
   ipcMain.handle('remote.listStatus', wrap(() => remoteService.listStatus()))
 
   // market
-  ipcMain.handle('market.list', wrap((opts?: { query?: string; category?: string; limit?: number; page?: number; scanPages?: number; instanceId?: string }) => marketService.list(opts)))
+  ipcMain.handle('market.list', wrap((opts?: { query?: string; category?: string; limit?: number; page?: number; scanPages?: number; instanceId?: string }) => marketService.list({ ...opts, instanceId: safeInstanceId(opts?.instanceId) })))
   ipcMain.handle('market.install', wrap(async (id: string, instanceId?: string): Promise<NodePackRecord> => {
-    return nodePackService.install({ id, source: 'registry', instanceId })
+    return nodePackService.install({ id, source: 'registry', instanceId: safeInstanceId(instanceId) })
   }))
 
   // shell
@@ -529,6 +714,11 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     const result = await shell.openPath(path)
     return result === ''
   }))
+  ipcMain.handle('shell.reveal', wrap(async (path: string) => {
+    if (!path || path.includes('\0')) throw new Error('Blocked unsafe path')
+    shell.showItemInFolder(path)
+    return true
+  }))
   ipcMain.handle('shell.pickDirectory', wrap(async () => {
     const win = getWindow()
     const res = win
@@ -541,6 +731,15 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     const options = { properties: ['openFile' as const], filters: opts?.filters }
     const res = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options)
     return res.canceled ? null : res.filePaths[0]
+  }))
+  ipcMain.handle('shell.pickFiles', wrap(async (opts?: { filters?: Array<{ name: string; extensions: string[] }> }) => {
+    const win = getWindow()
+    const options = {
+      properties: ['openFile' as const, 'multiSelections' as const],
+      filters: opts?.filters
+    }
+    const res = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options)
+    return res.canceled ? [] : res.filePaths
   }))
   ipcMain.handle('shell.writeClipboard', wrap((text: string) => {
     clipboard.writeText(text)

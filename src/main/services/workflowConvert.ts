@@ -331,3 +331,70 @@ export function applySeedToPrompt(prompt: ApiPrompt, seed: number): ApiPrompt {
 export function applySeedForIteration(prompt: ApiPrompt, baseSeed: number, iteration: number): ApiPrompt {
   return applySeedToPrompt(prompt, (baseSeed + iteration) % 2 ** 32)
 }
+
+export interface PromptParamOverrides {
+  width?: number
+  height?: number
+  steps?: number
+  cfg?: number
+}
+
+const WIDTH_KEYS = new Set(['width'])
+const HEIGHT_KEYS = new Set(['height'])
+const STEPS_KEYS = new Set(['steps'])
+const CFG_KEYS = new Set(['cfg'])
+
+/**
+ * Apply batch parameter matrix overrides onto an API prompt.
+ * Only touches inputs whose current value is a number — never invents fields.
+ */
+export function applyParamOverrides(prompt: ApiPrompt, o: PromptParamOverrides): ApiPrompt {
+  for (const node of Object.values(prompt)) {
+    if (!node.inputs) continue
+    for (const [k, v] of Object.entries(node.inputs)) {
+      if (typeof v !== 'number') continue
+      const lk = k.toLowerCase()
+      if (o.width != null && WIDTH_KEYS.has(lk)) node.inputs[k] = o.width
+      else if (o.height != null && HEIGHT_KEYS.has(lk)) node.inputs[k] = o.height
+      else if (o.steps != null && STEPS_KEYS.has(lk)) node.inputs[k] = o.steps
+      else if (o.cfg != null && CFG_KEYS.has(lk)) node.inputs[k] = o.cfg
+    }
+  }
+  return prompt
+}
+
+/** Full batch prompt transform: seed per iteration + optional size/step/cfg matrix. */
+export function buildIterationPrompt(
+  raw: unknown,
+  opts: {
+    iteration: number
+    seedMode: 'random' | 'increment' | 'fixed'
+    baseSeed?: number
+    width?: number
+    height?: number
+    steps?: number
+    cfg?: number
+  }
+): { prompt: ApiPrompt; seed: number } {
+  let seed: number
+  if (opts.seedMode === 'fixed') {
+    seed = (opts.baseSeed ?? 0) % 2 ** 32
+  } else if (opts.seedMode === 'increment') {
+    seed = ((opts.baseSeed ?? Date.now()) + opts.iteration) % 2 ** 32
+  } else {
+    // random — Date.now mixed with iteration so parallel jobs diverge
+    seed = (Date.now() + opts.iteration * 9973) % 2 ** 32
+  }
+  let prompt = toApiPrompt(raw)
+  // Deep copy so repeated iterations (or two jobs sharing a graph) never
+  // mutate the caller's node inputs in place.
+  prompt = JSON.parse(JSON.stringify(prompt)) as ApiPrompt
+  prompt = applySeedToPrompt(prompt, seed)
+  prompt = applyParamOverrides(prompt, {
+    width: opts.width,
+    height: opts.height,
+    steps: opts.steps,
+    cfg: opts.cfg
+  })
+  return { prompt, seed }
+}
