@@ -105,25 +105,46 @@ const activeKey = computed(() => {
 
 const runningCount = computed(() => store.instances.filter((i) => i.status === 'running').length)
 
-const instanceOptions = computed(() =>
-  store.instances.map((i: ComfyInstanceInfo) => ({
+const instanceOptions = computed(() => {
+  const local = store.instances.map((i: ComfyInstanceInfo) => ({
     label: `${i.name} · ${i.port} · ${i.status}`,
     value: i.id
   }))
-)
+  const remote = store.remotes.map((r) => ({
+    label: `☁ ${r.name} · ${r.label || r.baseUrl}`,
+    value: `remote:${r.id}`
+  }))
+  return [...local, ...remote]
+})
 
 const selectedInstanceId = computed({
-  get: () => store.activeInstanceId || store.instances[0]?.id || null,
+  get: () => {
+    if (store.activeRemoteId) return `remote:${store.activeRemoteId}`
+    return store.activeInstanceId || store.instances[0]?.id || null
+  },
   set: (v: string | null) => {
-    store.activeInstanceId = v
+    if (v && v.startsWith('remote:')) {
+      store.activeRemoteId = v.slice(7)
+      store.activeInstanceId = null
+    } else {
+      store.activeRemoteId = null
+      store.activeInstanceId = v
+    }
   }
 })
 
-const activeStatus = computed(() => store.activeInstance?.status || 'unknown')
+const activeStatus = computed(() => {
+  if (store.isRemoteActive) return 'running' // remotes are always "reachable" when selected
+  return store.activeInstance?.status || 'unknown'
+})
 /** ComfyPilot never auto-starts an instance — every Frontend open is gated on this. */
-const instanceRunning = computed(() => activeStatus.value === 'running')
+const instanceRunning = computed(() => {
+  if (store.isRemoteActive) return true
+  return activeStatus.value === 'running'
+})
 const needInstanceHint = t('common.needRunningInstance')
 const activeStatusLabel = computed(() => {
+  if (store.isRemoteActive) return t('status.remote')
   const s = activeStatus.value
   try {
     return t(`status.${s}`)
@@ -153,15 +174,25 @@ function onLayoutRequest(): void {
 watch([collapsed, sidebarWidth], () => notifyEmbedLayout())
 
 let dispose: (() => void) | null = null
-let notifiedCount = 0
+/**
+ * Cursor driven by `notificationSeq` (monotonic). The notifications array is
+ * capped at 20 entries — watching `length` silently dies after the 20th toast.
+ */
+let notifiedSeq = 0
 
 // Surface main-process notifications as global toasts (task done / failed).
 watch(
-  () => store.notifications.length,
-  (len) => {
-    while (notifiedCount < len) {
-      const n = store.notifications[notifiedCount++]
-      if (!n) break
+  () => store.notificationSeq,
+  (seq) => {
+    const newCount = seq - notifiedSeq
+    if (newCount <= 0) return
+    notifiedSeq = seq
+    const items = store.notifications
+    // Array holds the last 20; show everything new from the tail.
+    const start = Math.max(0, items.length - newCount)
+    for (let i = start; i < items.length; i++) {
+      const n = items[i]
+      if (!n) continue
       // Prefer i18n keys from main; fall back to the literal strings.
       const title = n.titleKey ? t(n.titleKey, n.params || {}) : n.title
       const msg = n.messageKey ? t(n.messageKey, n.params || {}) : n.message

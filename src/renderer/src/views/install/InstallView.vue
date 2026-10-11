@@ -26,6 +26,7 @@ import {
   NRadioGroup,
   NSelect,
   NSpace,
+  NSpin,
   NSwitch,
   NTag,
   useMessage
@@ -44,6 +45,7 @@ import {
   TORCH_INDEX_PRESETS
 } from '@shared/constants'
 import type {
+  BootstrapStatus,
   GpuCapability,
   InstallPlan,
   InstallProgress,
@@ -154,6 +156,66 @@ async function repairInstance(inst: { id: string; name: string }): Promise<void>
     message.error(errText(err))
   } finally {
     repairingId.value = null
+  }
+}
+
+// ---------- Runtime bootstrap status (bootstrap.status / bootstrap.ensure) ----------
+const runtimeStatus = ref<BootstrapStatus | null>(null)
+const runtimeStatusLoading = ref(false)
+const runtimeEnsureLoading = ref(false)
+
+function runtimeKindLabel(kind: RuntimeKind): string {
+  switch (kind) {
+    case 'uv':
+      return t('install.runtimeKindUv')
+    case 'python':
+      return t('install.runtimeKindPython')
+    case 'mingit':
+      return t('install.runtimeKindMingit')
+    case 'aria2':
+      return t('install.runtimeKindAria2')
+    default:
+      return kind
+  }
+}
+
+function runtimeOriginLabel(origin: 'system' | 'runtimes' | 'missing'): string {
+  switch (origin) {
+    case 'system':
+      return t('install.runtimeOriginSystem')
+    case 'runtimes':
+      return t('install.runtimeOriginRuntimes')
+    default:
+      return t('install.runtimeOriginMissing')
+  }
+}
+
+const missingRuntimeKinds = computed(() =>
+  (runtimeStatus.value?.components || []).filter((c) => !c.installed).map((c) => c.kind)
+)
+
+async function loadRuntimeStatus(): Promise<void> {
+  runtimeStatusLoading.value = true
+  try {
+    runtimeStatus.value = await ipc('bootstrap.status')
+  } catch (err) {
+    message.error(t('install.runtimeStatusFailed', { error: errText(err) }))
+  } finally {
+    runtimeStatusLoading.value = false
+  }
+}
+
+async function ensureMissingRuntimes(): Promise<void> {
+  const kinds = missingRuntimeKinds.value
+  if (!kinds.length) return
+  runtimeEnsureLoading.value = true
+  try {
+    runtimeStatus.value = await ipc('bootstrap.ensure', { kinds, downloadIfMissing: true })
+    message.success(t('install.runtimeEnsureDone'))
+  } catch (err) {
+    message.error(t('install.runtimeEnsureFailed', { error: errText(err) }))
+  } finally {
+    runtimeEnsureLoading.value = false
   }
 }
 
@@ -401,11 +463,11 @@ async function startInstall(overrides: Partial<InstallPlan>): Promise<void> {
   }
 }
 
-/** Primary CTA: one-click defaults; still honors the form's comfySource & skipStarter. */
+/** Primary CTA: one-click defaults; still honors the form's comfySource & skipStarter & useUv. */
 function startFullAuto(): void {
   void startInstall({
     comfySource: plan.value.comfySource || 'zip',
-    useUv: true,
+    useUv: plan.value.useUv !== false,
     autoStart: true,
     skipStarter: Boolean(plan.value.skipStarter),
     fullAuto: true
@@ -464,6 +526,7 @@ function logExpandedNames(stepId: string): string[] {
 
 async function savePipIndex(v: string): Promise<void> {
   pipIndex.value = v
+  userChoseMirror.value = true
   try {
     await ipc('settings.set', { pipIndex: v })
   } catch (err) {
@@ -574,12 +637,15 @@ onMounted(async () => {
     const settings = await ipc('settings.get')
     pipIndex.value = settings.pipIndex || ''
     torchIndexMirror.value = settings.torchIndexMirror || ''
+    // If the user previously saved any pipIndex (including empty = official),
+    // treat that as an explicit choice and do NOT auto-overwrite it.
+    userChoseMirror.value = settings.pipIndex !== undefined && settings.pipIndex !== null
   } catch {
     /* defaults stay empty */
   }
 
-  // Auto-recommend mirrors when the user has not chosen any yet.
-  if (!pipIndex.value) {
+  // Auto-recommend mirrors ONLY when the user has never chosen any.
+  if (!userChoseMirror.value) {
     void probeAndRecommendMirrors(true)
   }
 
@@ -592,10 +658,13 @@ onMounted(async () => {
 
   await detectGpu()
   schedulePreflight(120)
+  void loadRuntimeStatus()
 })
 
 const probingMirrors = ref(false)
 const mirrorProbeHint = ref('')
+/** True when the user explicitly picked a mirror (including "official" = empty). */
+const userChoseMirror = ref(false)
 
 async function probeAndRecommendMirrors(auto = false): Promise<void> {
   probingMirrors.value = true
@@ -603,7 +672,9 @@ async function probeAndRecommendMirrors(auto = false): Promise<void> {
   try {
     const rec = await ipc('net.recommendMirrors')
     if (rec?.pipIndex || rec?.pipLabel) {
-      if (!pipIndex.value || !auto) {
+      // Only overwrite when the user has not explicitly chosen, or when they
+      // clicked "recommend" manually. Never clobber an explicit "official".
+      if (!userChoseMirror.value || !auto) {
         pipIndex.value = rec.pipIndex || ''
         torchIndexMirror.value = rec.torchIndexMirror || ''
         await ipc('settings.set', { pipIndex: pipIndex.value, torchIndexMirror: torchIndexMirror.value })
@@ -848,6 +919,52 @@ onUnmounted(() => {
           </div>
           <NEmpty v-else :description="$t('install.repairEmpty')" style="padding: 12px 0" />
         </section>
+      </section>
+
+      <!-- Runtime components (bootstrap.status / bootstrap.ensure) -->
+      <section class="card panel runtime-card">
+        <div class="panel-head">
+          <div>
+            <div class="panel-title">{{ $t('install.runtimeStatus') }}</div>
+            <div class="hint">{{ $t('install.runtimeHint') }}</div>
+          </div>
+          <NSpace>
+            <NButton size="small" secondary :loading="runtimeStatusLoading" @click="loadRuntimeStatus">
+              {{ $t('install.runtimeRefresh') }}
+            </NButton>
+            <NButton
+              size="small"
+              type="primary"
+              secondary
+              :disabled="!missingRuntimeKinds.length"
+              :loading="runtimeEnsureLoading"
+              @click="ensureMissingRuntimes"
+            >
+              {{ $t('install.runtimeEnsure') }}
+            </NButton>
+          </NSpace>
+        </div>
+        <NSpin :show="runtimeStatusLoading || runtimeEnsureLoading">
+          <div v-if="runtimeStatus?.components?.length" class="runtime-list">
+            <div v-for="c in runtimeStatus.components" :key="c.kind" class="runtime-row">
+              <NTag size="small" round :type="c.installed ? 'success' : 'warning'">
+                {{ c.installed ? $t('install.runtimeInstalled') : $t('install.runtimeMissing') }}
+              </NTag>
+              <div class="runtime-info">
+                <div class="runtime-kind">{{ runtimeKindLabel(c.kind) }}</div>
+                <div class="hint mono runtime-detail">
+                  <span>{{ $t('install.runtimeVersion') }}: {{ c.version || '—' }}</span>
+                  <span>{{ $t('install.runtimeOrigin') }}: {{ runtimeOriginLabel(c.origin) }}</span>
+                  <span v-if="c.path" class="runtime-path">{{ $t('install.runtimePath') }}: {{ c.path }}</span>
+                </div>
+              </div>
+            </div>
+            <div v-if="!missingRuntimeKinds.length" class="hint runtime-all-ok">
+              {{ $t('install.runtimeNoMissing') }}
+            </div>
+          </div>
+          <NEmpty v-else-if="!runtimeStatusLoading" :description="$t('install.runtimeNoMissing')" />
+        </NSpin>
       </section>
 
       <div class="grid layout">
@@ -1380,5 +1497,51 @@ onUnmounted(() => {
   gap: 10px;
   margin-top: 12px;
   flex-wrap: wrap;
+}
+
+.runtime-card {
+  margin-top: 16px;
+}
+
+.runtime-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.runtime-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid $color-border;
+  border-radius: 12px;
+}
+
+.runtime-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.runtime-kind {
+  font-size: 14px;
+  font-weight: 600;
+  color: $color-text;
+}
+
+.runtime-detail {
+  margin-top: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.runtime-path {
+  word-break: break-all;
+}
+
+.runtime-all-ok {
+  margin-top: 8px;
 }
 </style>

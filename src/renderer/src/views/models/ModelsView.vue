@@ -7,7 +7,8 @@ import {
 } from '@vicons/ionicons5'
 import {
   NButton, NDataTable, NIcon, NInput, NSpace, NSpin, NTag, NModal, NEmpty,
-  useMessage, useDialog, NTabs, NTabPane, NGrid, NGi, type DataTableColumns
+  useMessage, useDialog, NTabs, NTabPane, NGrid, NGi, NDynamicTags,
+  type DataTableColumns
 } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 import { ipc, onDownloadProgress, onModelScanProgress } from '@/composables/useIpc'
@@ -35,6 +36,23 @@ const duplicates = ref<DuplicateGroup[]>([])
 const tab = ref('all')
 const starterModels = ref<StarterModel[]>(STARTER_MODELS)
 const starterBusy = ref<string | null>(null)
+
+// Single-file rename (model.rename)
+const showRenameOne = ref(false)
+const renameOneTarget = ref<ModelRecord | null>(null)
+const renameOneValue = ref('')
+
+// Detail panel (tags + civitai)
+const showDetail = ref(false)
+const detailTarget = ref<ModelRecord | null>(null)
+const tagsValue = ref<string[]>([])
+const civitaiLoading = ref(false)
+const civitaiResult = ref<Record<string, unknown> | null>(null)
+
+// extra_model_paths.yaml parse
+const extraPathsFile = ref('')
+const extraPathsResult = ref<string[]>([])
+const extraPathsLoading = ref(false)
 
 /** Real category set — matches ModelCategory / scan categorize(). */
 const CATEGORY_KEYS: ModelCategory[] = [
@@ -118,6 +136,107 @@ function confirmDelete(row: ModelRecord): void {
   })
 }
 
+function openRenameOne(row: ModelRecord): void {
+  renameOneTarget.value = row
+  renameOneValue.value = row.name
+  showRenameOne.value = true
+}
+
+async function doRenameOne(): Promise<void> {
+  if (!renameOneTarget.value) return
+  const newName = renameOneValue.value.trim()
+  if (!newName) return
+  try {
+    await ipc('model.rename', renameOneTarget.value.id, newName)
+    showRenameOne.value = false
+    message.success(t('models.renameOneDone'))
+    await refresh()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function doSymlink(row: ModelRecord): Promise<void> {
+  try {
+    const dir = await ipc('shell.pickDirectory')
+    if (dir) {
+      await ipc('model.symlink', row.id, dir)
+      await refresh()
+      message.success(t('models.symlinkDone'))
+    }
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+function openDetail(row: ModelRecord): void {
+  detailTarget.value = row
+  tagsValue.value = [...(row.tags || [])]
+  civitaiResult.value = null
+  showDetail.value = true
+}
+
+async function saveTags(): Promise<void> {
+  if (!detailTarget.value) return
+  try {
+    await ipc('model.tag', detailTarget.value.id, tagsValue.value)
+    detailTarget.value = { ...detailTarget.value, tags: [...tagsValue.value] }
+    message.success(t('models.tagsSaved'))
+    await refresh()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+const civitaiJson = computed(() =>
+  civitaiResult.value ? JSON.stringify(civitaiResult.value, null, 2) : ''
+)
+
+async function fetchCivitai(): Promise<void> {
+  if (!detailTarget.value) return
+  civitaiLoading.value = true
+  try {
+    civitaiResult.value = await ipc('model.fetchCivitaiMeta', detailTarget.value.id)
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    civitaiLoading.value = false
+  }
+}
+
+function defaultExtraPathsFile(): string {
+  const path = store.activeInstance?.path
+  return path ? `${path.replace(/[\\/]+$/, '')}/extra_model_paths.yaml` : ''
+}
+
+async function pickExtraFile(): Promise<void> {
+  try {
+    const p = await ipc('shell.pickFile', {
+      filters: [{ name: 'YAML', extensions: ['yaml', 'yml'] }]
+    })
+    if (p) {
+      extraPathsFile.value = p
+      await parseExtraPaths()
+    }
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function parseExtraPaths(): Promise<void> {
+  const file = extraPathsFile.value.trim()
+  if (!file) return
+  extraPathsLoading.value = true
+  try {
+    extraPathsResult.value = await ipc('model.parseExtraPaths', file)
+    message.success(t('models.parseExtraCount', { n: extraPathsResult.value.length }))
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    extraPathsLoading.value = false
+  }
+}
+
 const columns = computed<DataTableColumns<ModelRecord>>(() => [
   {
     title: t('models.colName'),
@@ -135,7 +254,15 @@ const columns = computed<DataTableColumns<ModelRecord>>(() => [
               style:
                 'width:36px;height:36px;border-radius:8px;background:rgba(79,110,247,0.12);flex:none'
             }),
-        h('span', { style: 'overflow:hidden;text-overflow:ellipsis' }, row.name)
+        h(
+          'span',
+          {
+            style: 'overflow:hidden;text-overflow:ellipsis;cursor:pointer',
+            title: t('models.detailAction'),
+            onClick: () => openDetail(row)
+          },
+          row.name
+        )
       ])
   },
   { title: t('models.colCategory'), key: 'category', width: 130, render: (row) => hTag(catLabel(row.category)) },
@@ -156,9 +283,36 @@ const columns = computed<DataTableColumns<ModelRecord>>(() => [
   {
     title: t('models.colActions'),
     key: 'actions',
-    width: 180,
+    width: 320,
     render: (row) =>
-      h('div', { style: 'display:flex;gap:6px' }, [
+      h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap' }, [
+        h(
+          NButton,
+          {
+            size: 'tiny',
+            secondary: true,
+            onClick: () => openDetail(row)
+          },
+          { default: () => t('models.detailAction') }
+        ),
+        h(
+          NButton,
+          {
+            size: 'tiny',
+            secondary: true,
+            onClick: () => openRenameOne(row)
+          },
+          { default: () => t('models.renameOneAction') }
+        ),
+        h(
+          NButton,
+          {
+            size: 'tiny',
+            secondary: true,
+            onClick: () => doSymlink(row)
+          },
+          { default: () => t('models.symlinkAction') }
+        ),
         h(
           NButton,
           {
@@ -234,6 +388,7 @@ watch(
   () => {
     void refresh()
     if (!scanning.value) void scan(false)
+    extraPathsFile.value = defaultExtraPathsFile()
   }
 )
 
@@ -328,6 +483,7 @@ let offScan: (() => void) | null = null
 let offDl: (() => void) | null = null
 
 onMounted(async () => {
+  extraPathsFile.value = defaultExtraPathsFile()
   await refresh()
   downloads.value = await ipc('model.downloads')
   offScan = onModelScanProgress((p) => {
@@ -432,6 +588,30 @@ onUnmounted(() => {
       </NSpin>
     </div>
 
+    <div class="card scan-settings-card">
+      <div class="dup-head">
+        <div>
+          <div class="panel-title">{{ $t('models.parseExtraTitle') }}</div>
+          <div class="panel-sub">{{ $t('models.parseExtraFileLabel') }}</div>
+        </div>
+        <NSpace>
+          <NButton secondary @click="pickExtraFile">{{ $t('models.parseExtraBrowse') }}</NButton>
+          <NButton type="primary" :loading="extraPathsLoading" :disabled="!extraPathsFile.trim()" @click="parseExtraPaths">
+            {{ $t('models.parseExtraRun') }}
+          </NButton>
+        </NSpace>
+      </div>
+      <NInput
+        v-model:value="extraPathsFile"
+        :placeholder="$t('models.parseExtraFilePlaceholder')"
+        class="mono"
+      />
+      <div v-if="extraPathsResult.length" class="extra-paths">
+        <div v-for="p in extraPathsResult" :key="p" class="mono extra-path">{{ p }}</div>
+      </div>
+      <div v-else class="panel-sub">{{ $t('models.parseExtraEmpty') }}</div>
+    </div>
+
     <div class="card dup-card">
       <div class="dup-head">
         <div>
@@ -500,6 +680,59 @@ onUnmounted(() => {
         <NSpace justify="end">
           <NButton @click="showDownload = false">{{ $t('models.cancel') }}</NButton>
           <NButton type="primary" @click="startDownload">{{ $t('models.startDownload') }}</NButton>
+        </NSpace>
+      </template>
+    </NModal>
+
+    <NModal v-model:show="showRenameOne" preset="card" :title="$t('models.renameOneTitle')" style="width: 480px; border-radius: 20px">
+      <NInput
+        v-model:value="renameOneValue"
+        :placeholder="$t('models.renameOnePlaceholder')"
+        @keyup.enter="doRenameOne"
+      />
+      <template #footer>
+        <NSpace justify="end">
+          <NButton @click="showRenameOne = false">{{ $t('models.cancel') }}</NButton>
+          <NButton type="primary" :disabled="!renameOneValue.trim()" @click="doRenameOne">
+            {{ $t('models.renameExec') }}
+          </NButton>
+        </NSpace>
+      </template>
+    </NModal>
+
+    <NModal v-model:show="showDetail" preset="card" :title="$t('models.detailTitle')" style="width: 640px; border-radius: 20px">
+      <div v-if="detailTarget" class="detail-body">
+        <div class="detail-grid">
+          <div class="detail-label">{{ $t('models.colName') }}</div>
+          <div class="detail-val">{{ detailTarget.name }}</div>
+          <div class="detail-label">{{ $t('models.colCategory') }}</div>
+          <div class="detail-val">{{ catLabel(detailTarget.category) }}</div>
+          <div class="detail-label">{{ $t('models.colArchitecture') }}</div>
+          <div class="detail-val">{{ detailTarget.architecture || '—' }}</div>
+          <div class="detail-label">{{ $t('models.colSize') }}</div>
+          <div class="detail-val">{{ formatBytes(detailTarget.size) }}</div>
+          <div class="detail-label">{{ $t('models.colPath') }}</div>
+          <div class="detail-val mono">{{ detailTarget.path }}</div>
+        </div>
+
+        <div class="detail-section">
+          <div class="panel-title">{{ $t('models.tagsTitle') }}</div>
+          <NDynamicTags v-model:value="tagsValue" />
+          <NButton type="primary" size="small" @click="saveTags">{{ $t('models.tagsSave') }}</NButton>
+        </div>
+
+        <div class="detail-section">
+          <div class="panel-title">{{ $t('models.civitaiTitle') }}</div>
+          <NButton secondary :loading="civitaiLoading" @click="fetchCivitai">
+            {{ $t('models.civitaiFetch') }}
+          </NButton>
+          <pre v-if="civitaiJson" class="civitai-json">{{ civitaiJson }}</pre>
+          <div v-else class="panel-sub">{{ $t('models.civitaiEmpty') }}</div>
+        </div>
+      </div>
+      <template #footer>
+        <NSpace justify="end">
+          <NButton @click="showDetail = false">{{ $t('models.cancel') }}</NButton>
         </NSpace>
       </template>
     </NModal>
@@ -586,5 +819,65 @@ onUnmounted(() => {
   font-size: 12px;
   color: $color-text-muted;
   margin-top: 4px;
+}
+.scan-settings-card {
+  padding: 18px;
+  margin-bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.extra-paths {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 180px;
+  overflow: auto;
+  background: $color-surface-2;
+  border-radius: 10px;
+  padding: 10px;
+}
+.extra-path {
+  font-size: 11.5px;
+  color: $color-text-secondary;
+  word-break: break-all;
+}
+.detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.detail-grid {
+  display: grid;
+  grid-template-columns: 100px 1fr;
+  gap: 8px 12px;
+  font-size: 13px;
+}
+.detail-label {
+  color: $color-text-muted;
+  font-size: 12px;
+}
+.detail-val {
+  color: $color-text;
+  word-break: break-all;
+  min-width: 0;
+}
+.detail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+.civitai-json {
+  width: 100%;
+  max-height: 240px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  background: $color-surface-2;
+  border-radius: 10px;
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 </style>

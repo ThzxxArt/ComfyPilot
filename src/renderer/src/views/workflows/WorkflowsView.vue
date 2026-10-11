@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, h, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import {
@@ -112,7 +112,29 @@ async function importFile(): Promise<void> {
     const names = result.ok.map((r: { name: string }) => r.name).join(', ')
     if (result.errors.length) {
       message.warning(t('workflows.importedWithErrors', { ok: result.ok.length, failed: result.errors.length }))
-      for (const e of result.errors) console.warn('import failed:', e.path, e.message)
+      // Surface every failure with its reason — console.warn is invisible to users.
+      const lines = result.errors.map((e: { path: string; message: string }) => {
+        const base = e.path.split(/[\\/]/).pop() || e.path
+        return `${base}: ${e.message}`
+      })
+      dialog.error({
+        title: t('workflows.importFailedTitle'),
+        content: () =>
+          h('div', { style: 'max-height:320px;overflow:auto;display:flex;flex-direction:column;gap:6px' }, [
+            h('p', t('workflows.importedWithErrors', { ok: result.ok.length, failed: result.errors.length })),
+            ...lines.map((l: string) =>
+              h(
+                'div',
+                {
+                  style:
+                    'font-family:monospace;font-size:12px;word-break:break-all;padding:4px 8px;border-radius:6px;background:rgba(226,85,122,0.10);border:1px solid rgba(226,85,122,0.30)'
+                },
+                l
+              )
+            )
+          ]),
+        positiveText: t('common.confirm')
+      })
     } else {
       message.success(t('workflows.importedToInstance', { name: names, root: libraryRoot.value }))
     }
@@ -393,7 +415,7 @@ onMounted(async () => {
               <div class="wf-title">
                 <div class="wf-name">{{ wf.name }}</div>
                 <div class="wf-meta">
-                  {{ wf.nodeCount }} nodes ·{{ wf.format }} ·v{{ wf.version }}
+                  {{ wf.nodeCount }} nodes ·{{ wf.format }} ·{{ $t('workflows.formatVersion', { version: wf.version }) }}
                 </div>
               </div>
               <NButton text @click="toggleFavorite(wf)">
@@ -552,7 +574,18 @@ onMounted(async () => {
         <div v-if="detail.sourcePath"><b>{{ $t('workflows.sourcePath') }}</b> <NText code>{{ detail.sourcePath }}</NText></div>
         <div><b>{{ $t('workflows.origin') }}</b> {{ originLabel(detail.origin) }}</div>
         <div><b>{{ $t('workflows.nodeCount') }}</b> {{ detail.nodeCount }}</div>
-        <div v-if="detail.modelUsed"><b>{{ $t('workflows.modelUsed') }}</b> {{ detail.modelUsed }}</div>
+        <div v-if="detail.modelUsed">
+          <b>{{ $t('workflows.modelUsed') }}</b>
+          <NTag
+            size="tiny"
+            round
+            type="info"
+            style="cursor: pointer; margin-left: 6px"
+            @click="router.push({ path: '/models', query: { q: detail.modelUsed } })"
+          >
+            {{ detail.modelUsed }} →
+          </NTag>
+        </div>
         <div v-if="detail.seed != null"><b>{{ $t('workflows.seed') }}</b> {{ detail.seed }}</div>
         <div v-if="detail.description"><b>{{ $t('workflows.description') }}</b> {{ detail.description }}</div>
         <div v-if="detail.missingNodes.length">

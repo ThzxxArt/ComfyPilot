@@ -54,7 +54,11 @@ export class DoctorService extends EventEmitter {
   async run(instanceId: string): Promise<DoctorReport> {
     const started = Date.now()
     const configs = loadInstanceConfigs()
-    const config = configs.find((c) => c.id === instanceId) || configs[0]
+    // Explicit id must resolve — never silently fall back to configs[0].
+    const config = configs.find((c) => c.id === instanceId)
+    if (!config) {
+      throw new Error(`Instance not found: ${instanceId}`)
+    }
     const settings = loadSettings()
     const checks: DoctorCheck[] = []
     const emitProgress = (done: number, total: number, title: string): void => {
@@ -385,8 +389,10 @@ export class DoctorService extends EventEmitter {
 
   async fix(instanceId: string, fixId: string): Promise<{ ok: boolean; message: string }> {
     const configs = loadInstanceConfigs()
-    const config = configs.find((c) => c.id === instanceId) || configs[0]
-    const installPath = config?.path || ''
+    // Explicit id must resolve — never silently fall back to configs[0].
+    const config = configs.find((c) => c.id === instanceId)
+    if (!config) return { ok: false, message: `Instance not found: ${instanceId}` }
+    const installPath = config.path || ''
     if (!installPath) return { ok: false, message: 'No instance path' }
 
     switch (fixId) {

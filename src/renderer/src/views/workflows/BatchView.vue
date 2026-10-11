@@ -11,17 +11,19 @@ import {
   FolderOpenOutline
 } from '@vicons/ionicons5'
 import {
-  NButton, NIcon, NInput, NInputNumber, NSpace, NSpin, NTag, NEmpty, useMessage,
+  NButton, NIcon, NInput, NInputNumber, NSpace, NSpin, NTag, NEmpty, useMessage, useDialog,
   NModal, NSelect, NPopconfirm, NCard, NText
 } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 import { ipc, onIpc, IPC_EVENTS } from '@/composables/useIpc'
+import { useLaunch } from '@/composables/useLaunch'
 import { clampPercent } from '@/utils/format'
 import type { BatchJob, WorkflowRecord, SeedMode } from '@shared/types'
 
 const { t } = useI18n()
 const store = useAppStore()
 const message = useMessage()
+const dialog = useDialog()
 const router = useRouter()
 const route = useRoute()
 const loading = ref(false)
@@ -209,7 +211,30 @@ async function start(id: string): Promise<void> {
     }
     await refresh()
   } catch (err) {
-    message.error(err instanceof Error ? err.message : String(err))
+    const msg = err instanceof Error ? err.message : String(err)
+    // Instance not running — offer a one-click start instead of a dead-end toast.
+    if (/not running|is not running/i.test(msg)) {
+      dialog.warning({
+        title: t('batch.instanceNotRunning'),
+        content: msg,
+        positiveText: t('batch.startInstance'),
+        negativeText: t('common.cancel'),
+        onPositiveClick: () => {
+          void (async () => {
+            try {
+              const inst = store.activeInstance
+              if (!inst) return
+              const { launch } = useLaunch()
+              await launch(inst, { open: 'none' })
+            } catch (e) {
+              message.error(e instanceof Error ? e.message : String(e))
+            }
+          })()
+        }
+      })
+    } else {
+      message.error(msg)
+    }
     await refresh()
   } finally {
     startingId.value = ''
@@ -221,6 +246,17 @@ async function cancelJob(id: string): Promise<void> {
     await ipc('batch.cancel', id)
     message.info(t('batch.cancelled'))
     await refresh()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+/** Per-item cancel - dequeue just this workflow leg's pending prompts. */
+async function cancelItem(job: BatchJob, workflowPath: string): Promise<void> {
+  try {
+    await ipc('batch.cancelItem', job.id, workflowPath)
+    message.info(t('batch.itemCancelled'))
+    await refreshJobs()
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   }
@@ -353,14 +389,40 @@ onUnmounted(() => offBatch?.())
               </div>
             </div>
 
-            <!-- per-item legs -->
-            <div v-if="job.items.length > 1" class="job-items">
-              <div v-for="(it, idx) in job.items" :key="idx" class="job-item mono">
-                {{ it.workflowName }} · {{ it.completed }}/{{ it.count }}
-                <span v-if="it.failed" class="item-fail"> · {{ $t('batch.itemFailed', { n: it.failed }) }}</span>
-                <span v-if="it.submitted && it.completed + it.failed < it.submitted" class="item-pending">
-                  · {{ $t('batch.itemPending', { n: it.submitted - it.completed - it.failed }) }}
-                </span>
+            <!-- per-item legs: always visible so each workflow row shows its own progress -->
+            <div v-if="job.items.length" class="job-items">
+              <div v-for="(it, idx) in job.items" :key="idx" class="job-item">
+                <div class="job-item-line">
+                  <span class="mono job-item-name">{{ it.workflowName }}</span>
+                  <span class="mono">
+                    {{ $t('batch.itemProgress', {
+                      submitted: it.submitted,
+                      count: it.count,
+                      completed: it.completed,
+                      failed: it.failed
+                    }) }}
+                  </span>
+                  <span v-if="it.failed" class="item-fail"> · {{ $t('batch.itemFailed', { n: it.failed }) }}</span>
+                  <span v-if="it.submitted && it.completed + it.failed < it.submitted && !it.cancelled" class="item-pending">
+                    · {{ $t('batch.itemPending', { n: it.submitted - it.completed - it.failed }) }}
+                  </span>
+                  <NTag v-if="it.cancelled" size="tiny" round type="warning">{{ $t('batch.itemCancelled') }}</NTag>
+                  <NButton
+                    v-if="isBusy(job.status) && !it.cancelled"
+                    size="tiny"
+                    quaternary
+                    type="error"
+                    @click.stop="cancelItem(job, it.workflowPath)"
+                  >
+                    {{ $t('batch.cancelItem') }}
+                  </NButton>
+                </div>
+                <div class="bar item-bar">
+                  <div
+                    class="bar-in"
+                    :style="{ width: `${it.count ? clampPercent(((it.completed + it.failed) / it.count) * 100) : 0}%` }"
+                  />
+                </div>
               </div>
             </div>
 
@@ -558,6 +620,18 @@ onUnmounted(() => offBatch?.())
 }
 .item-pending {
   color: #c9a227;
+}
+.job-item-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.job-item-name {
+  font-weight: 600;
+}
+.item-bar {
+  margin-top: 6px;
 }
 .job-error {
   margin: 8px 0 4px;

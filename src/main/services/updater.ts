@@ -28,7 +28,8 @@ import {
   writeFileSync,
   readFileSync,
   copyFileSync,
-  cpSync
+  cpSync,
+  createWriteStream
 } from 'fs'
 import { join, resolve, dirname } from 'path'
 import { execFile, execFileSync, type ChildProcess } from 'child_process'
@@ -358,7 +359,10 @@ export class ComfyUpdaterService extends EventEmitter {
     if (detail != null) step.detail = detail
     if (detailKey) step.detailKey = detailKey
     if (detailParams) step.detailParams = detailParams
-    if (logLine) step.log.push(logLine)
+    if (logLine) {
+      step.log.push(logLine)
+      if (step.log.length > 400) step.log.splice(0, step.log.length - 400)
+    }
     this.progress.step = id
     this.emitProgress(detail || '')
   }
@@ -366,7 +370,10 @@ export class ComfyUpdaterService extends EventEmitter {
   private log(id: UpdateStepId, line: string): void {
     if (!this.progress) return
     const step = this.progress.steps.find((s) => s.id === id)
-    if (step) step.log.push(line)
+    if (step) {
+      step.log.push(line)
+      if (step.log.length > 400) step.log.splice(0, step.log.length - 400)
+    }
     this.emitProgress(line)
   }
 
@@ -813,6 +820,9 @@ export class ComfyUpdaterService extends EventEmitter {
         this.progress.bytes = undefined
       }
       this.emitProgress('Update complete')
+      // Post-update node compatibility check — a source update can break
+      // custom_nodes. Surface a summary notification (non-blocking).
+      void this.postUpdateNodeCheck(config.id).catch(() => undefined)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       const cancelled = this.cancelled || /cancelled/i.test(message)
@@ -832,7 +842,11 @@ export class ComfyUpdaterService extends EventEmitter {
         )
         if (this.progress) {
           this.progress.status = 'failed'
-          this.progress.error = cancelled ? 'Update cancelled' : message
+          this.progress.error = cancelled
+            ? 'Update cancelled'
+            : depsFailed
+              ? `${message} — source kept, run Repair env to fix dependencies`
+              : message
           this.progress.message = this.progress.error
           this.progress.bytes = undefined
           const running = this.progress.steps.find((s) => s.status === 'running')
@@ -920,6 +934,44 @@ export class ComfyUpdaterService extends EventEmitter {
   }
 
   /**
+   * Stream the response body to disk so a multi-hundred-MB archive never
+   * lands in one Buffer. Falls back to buffering when the fetch
+   * implementation exposes no readable body.
+   */
+  private async streamBodyToFile(res: Response, dest: string): Promise<number> {
+    const reader = res.body?.getReader()
+    if (!reader) {
+      const buf = Buffer.from(await res.arrayBuffer())
+      writeFileSync(dest, buf)
+      return buf.byteLength
+    }
+    const file = createWriteStream(dest)
+    let received = 0
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (value) {
+          const chunk = Buffer.from(value)
+          await new Promise<void>((resolve, reject) => {
+            file.write(chunk, (err) => (err ? reject(err) : resolve()))
+          })
+          received += chunk.byteLength
+        }
+      }
+    } finally {
+      await new Promise<void>((resolve) => {
+        try {
+          file.end(() => resolve())
+        } catch {
+          resolve()
+        }
+      })
+    }
+    return received
+  }
+
+  /**
    * Overlay a fresh GitHub archive onto comfyDir WITHOUT touching preserved
    * user dirs. Files present in the archive replace their local counterparts;
    * files absent from the archive are left alone (we never delete unknown user
@@ -936,14 +988,13 @@ export class ComfyUpdaterService extends EventEmitter {
     })
     if (!res.ok) throw new Error(`ComfyUI archive download failed: HTTP ${res.status}`)
     const total = Number(res.headers.get('content-length') || 0)
-    const buf = Buffer.from(await res.arrayBuffer())
+    const received = await this.streamBodyToFile(res, tmpZip)
     this.setBytes({
-      receivedBytes: buf.byteLength,
-      totalBytes: total || buf.byteLength,
+      receivedBytes: received,
+      totalBytes: total || received,
       speedBps: 0,
       label: 'ComfyUI archive'
     })
-    writeFileSync(tmpZip, buf)
 
     // Extract to a staging dir first, then overlay.
     const staging = join(dirname(comfyDir), `._comfyui_staging_${Date.now()}`)
@@ -1064,6 +1115,40 @@ export class ComfyUpdaterService extends EventEmitter {
     }
     this.log('rollback', 'core files restored from backup')
     return true
+  }
+
+  /** Post-update node compatibility check — surfaces issues as a notification. */
+  private async postUpdateNodeCheck(instanceId: string): Promise<void> {
+    try {
+      const { nodePackService } = await import('./nodePack')
+      const packs = nodePackService.list(instanceId)
+      if (!packs.length) return
+      let errorCount = 0
+      let warnCount = 0
+      for (const p of packs) {
+        try {
+          const issues = await nodePackService.checkIssues(p.name, instanceId)
+          for (const i of issues) {
+            if (i.severity === 'error') errorCount++
+            else if (i.severity === 'warning') warnCount++
+          }
+        } catch {
+          /* per-pack check is best-effort */
+        }
+      }
+      if (errorCount > 0 || warnCount > 0) {
+        const { broadcastNotification } = await import('../ipc/handlers')
+        broadcastNotification({
+          type: errorCount > 0 ? 'warning' : 'info',
+          title: 'Node compatibility after update',
+          titleKey: 'notify.postUpdateNodeCheck',
+          message: `${errorCount} error(s), ${warnCount} warning(s) across ${packs.length} node pack(s)`,
+          duration: 8000
+        })
+      }
+    } catch {
+      /* non-fatal */
+    }
   }
 }
 

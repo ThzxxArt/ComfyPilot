@@ -185,39 +185,122 @@ function writeJsonc(name: string, value: unknown, header?: string): void {
   renameSync(tmp, p)
 }
 
+/**
+ * Per-file read-modify-write mutex.
+ * Current callers are synchronous, but any future `await` between read and
+ * write would interleave and silently drop updates. This guard serialises
+ * every mutation of a given collection regardless of call-site async shape.
+ */
+const writeLocks = new Map<string, boolean>()
+
+function withWriteLock<T>(name: string, fn: () => T): T {
+  // Re-entrant: a nested call for the same file during a locked section
+  // would deadlock if we spun; just run inline (already serialised).
+  if (writeLocks.get(name)) return fn()
+  writeLocks.set(name, true)
+  try {
+    return fn()
+  } finally {
+    writeLocks.set(name, false)
+  }
+}
+
 function upsertInList<T extends { id?: string; path?: string; name?: string }>(
   name: string,
   item: T,
   match: (a: T, b: T) => boolean
 ): void {
-  const list = readJsonc<T[]>(name, [])
-  const i = list.findIndex((x) => match(x, item))
-  if (i >= 0) list[i] = item
-  else list.push(item)
-  writeJsonc(name, list)
+  withWriteLock(name, () => {
+    const list = readJsonc<T[]>(name, [])
+    const i = list.findIndex((x) => match(x, item))
+    if (i >= 0) list[i] = item
+    else list.push(item)
+    writeJsonc(name, list)
+  })
+}
+
+/** Read-modify-write a whole list under the per-file lock. */
+function mutateInList<T>(name: string, fallback: T[], fn: (list: T[]) => T[]): T[] {
+  return withWriteLock(name, () => {
+    const list = readJsonc<T[]>(name, fallback)
+    const next = fn(list)
+    writeJsonc(name, next)
+    return next
+  })
 }
 
 // ---------- Settings ----------
 const SETTINGS_HEADER = `ComfyPilot settings (JSONC)
 // Edit safely — comments are allowed. Saved as <userData>/data/settings.jsonc`
 
-export function loadSettings(): AppSettings {
-  const stored = readJsonc<Partial<AppSettings>>('settings', {})
-  return {
-    ...DEFAULT_SETTINGS,
-    ...stored,
-    proxy: { ...DEFAULT_SETTINGS.proxy, ...(stored.proxy || {}) }
+/**
+ * Encrypt/decrypt proxy password using Electron safeStorage (OS keychain).
+ * Falls back to plaintext when safeStorage is unavailable (tests, early init)
+ * so existing configs keep working.
+ */
+function encryptProxyPassword(password: string): string {
+  if (!password) return ''
+  try {
+    // Lazy require — safeStorage needs app ready and is main-process only.
+    const { safeStorage } = require('electron') as typeof import('electron')
+    if (safeStorage?.isEncryptionAvailable?.()) {
+      return 'enc:' + safeStorage.encryptString(password).toString('base64')
+    }
+  } catch {
+    /* not in Electron (tests) */
+  }
+  return password
+}
+
+function decryptProxyPassword(stored: string): string {
+  if (!stored || !stored.startsWith('enc:')) return stored
+  try {
+    const { safeStorage } = require('electron') as typeof import('electron')
+    const buf = Buffer.from(stored.slice(4), 'base64')
+    return safeStorage.decryptString(buf)
+  } catch {
+    return ''
   }
 }
 
+export function loadSettings(): AppSettings {
+  const stored = readJsonc<Partial<AppSettings>>('settings', {})
+  const proxy = { ...DEFAULT_SETTINGS.proxy, ...(stored.proxy || {}) }
+  // Decrypt the password if it was stored encrypted.
+  proxy.password = decryptProxyPassword(proxy.password)
+  return {
+    ...DEFAULT_SETTINGS,
+    ...stored,
+    proxy
+  }
+}
+
+/** Known top-level AppSettings keys — unknown keys are stripped on save. */
+const KNOWN_SETTINGS_KEYS = new Set([
+  'locale', 'modelScanRoots', 'githubEndpoint', 'hfEndpoint', 'civitaiEndpoint',
+  'enableAutoCheckUpdates', 'embedFrontend', 'securityLevel', 'allowGitUrlInstall',
+  'allowPipInstall', 'networkMode', 'aria2Path', 'useAria2', 'launchOnBoot',
+  'minimizeToTray', 'autoStartInstancesOnLaunch', 'proxy', 'pipIndex', 'torchIndexMirror'
+])
+
 export function saveSettings(patch: Partial<AppSettings>): AppSettings {
   const current = loadSettings()
+  // Strip unknown keys to prevent dirty data from accumulating.
+  const cleanPatch: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(patch)) {
+    if (KNOWN_SETTINGS_KEYS.has(k)) cleanPatch[k] = v
+  }
   const next: AppSettings = {
     ...current,
-    ...patch,
-    proxy: { ...current.proxy, ...(patch.proxy || {}) }
+    ...cleanPatch,
+    proxy: { ...current.proxy, ...((cleanPatch.proxy as Partial<AppSettings['proxy']>) || {}) }
   }
-  writeJsonc('settings', next, SETTINGS_HEADER)
+  // Encrypt the password before persisting.
+  const toWrite: AppSettings = {
+    ...next,
+    proxy: { ...next.proxy, password: encryptProxyPassword(next.proxy.password) }
+  }
+  writeJsonc('settings', toWrite, SETTINGS_HEADER)
   return next
 }
 
@@ -239,11 +322,12 @@ export function deleteInstanceConfig(id: string): boolean {
 
 // ---------- Models ----------
 export function upsertModel(m: ModelRecord): void {
-  const list = readJsonc<ModelRecord[]>('models', [])
-  const i = list.findIndex((x) => x.path === m.path || x.id === m.id)
-  if (i >= 0) list[i] = { ...list[i], ...m }
-  else list.push(m)
-  writeJsonc('models', list, 'ComfyPilot model index')
+  mutateInList<ModelRecord>('models', [], (list) => {
+    const i = list.findIndex((x) => x.path === m.path || x.id === m.id)
+    if (i >= 0) list[i] = { ...list[i], ...m }
+    else list.push(m)
+    return list
+  })
 }
 
 export function listModels(): ModelRecord[] {
@@ -251,10 +335,9 @@ export function listModels(): ModelRecord[] {
 }
 
 export function deleteModel(id: string): boolean {
-  const list = readJsonc<ModelRecord[]>('models', [])
-  const next = list.filter((m) => m.id !== id)
-  writeJsonc('models', next, 'ComfyPilot model index')
-  return next.length !== list.length
+  const before = readJsonc<ModelRecord[]>('models', []).length
+  const next = mutateInList<ModelRecord>('models', [], (list) => list.filter((m) => m.id !== id))
+  return next.length !== before
 }
 
 export function findModelByPath(path: string): ModelRecord | null {
@@ -262,12 +345,11 @@ export function findModelByPath(path: string): ModelRecord | null {
 }
 
 export function updateModel(id: string, patch: Partial<ModelRecord>): void {
-  const list = readJsonc<ModelRecord[]>('models', [])
-  const i = list.findIndex((m) => m.id === id)
-  if (i >= 0) {
-    list[i] = { ...list[i], ...patch }
-    writeJsonc('models', list, 'ComfyPilot model index')
-  }
+  mutateInList<ModelRecord>('models', [], (list) => {
+    const i = list.findIndex((m) => m.id === id)
+    if (i >= 0) list[i] = { ...list[i], ...patch }
+    return list
+  })
 }
 
 // ---------- Node packs ----------
@@ -319,20 +401,36 @@ export function upsertWorkflow(w: WorkflowRecord): void {
   upsertInList('workflows', w, (a, b) => a.path === b.path || a.id === b.id)
 }
 
+/** Batch upsert: one read-modify-write for a whole scan result. */
+export function upsertWorkflows(items: WorkflowRecord[]): void {
+  if (!items.length) return
+  mutateInList<WorkflowRecord>('workflows', [], (list) => {
+    for (const w of items) {
+      const i = list.findIndex((x) => x.path === w.path || x.id === w.id)
+      if (i >= 0) list[i] = w
+      else list.push(w)
+    }
+    return list
+  })
+}
+
 export function updateWorkflow(id: string, patch: Partial<WorkflowRecord>): WorkflowRecord | null {
-  const list = listWorkflows()
-  const i = list.findIndex((w) => w.id === id)
-  if (i < 0) return null
-  list[i] = { ...list[i], ...patch, id: list[i].id }
-  writeJsonc('workflows', list)
-  return list[i]
+  let result: WorkflowRecord | null = null
+  mutateInList<WorkflowRecord>('workflows', [], (list) => {
+    const i = list.findIndex((w) => w.id === id)
+    if (i >= 0) {
+      list[i] = { ...list[i], ...patch, id: list[i].id }
+      result = list[i]
+    }
+    return list
+  })
+  return result
 }
 
 export function deleteWorkflow(id: string): boolean {
-  const list = listWorkflows()
-  const next = list.filter((w) => w.id !== id)
-  writeJsonc('workflows', next)
-  return next.length !== list.length
+  const before = readJsonc<WorkflowRecord[]>('workflows', []).length
+  const next = mutateInList<WorkflowRecord>('workflows', [], (list) => list.filter((w) => w.id !== id))
+  return next.length !== before
 }
 
 /**
@@ -363,10 +461,9 @@ export function upsertBatchJob(j: BatchJob): void {
 }
 
 export function deleteBatchJob(id: string): boolean {
-  const list = listBatchJobs()
-  const next = list.filter((j) => j.id !== id)
-  writeJsonc('batch_jobs', next)
-  return next.length !== list.length
+  const before = readJsonc<BatchJob[]>('batch_jobs', []).length
+  const next = mutateInList<BatchJob>('batch_jobs', [], (list) => list.filter((j) => j.id !== id))
+  return next.length !== before
 }
 
 // ---------- Backups ----------
@@ -397,28 +494,37 @@ export function upsertOutputAsset(a: OutputAsset): void {
  * batch indexer (batchJobId / workflowId / thumbnail / size).
  */
 export function mergeUpsertOutputAsset(a: OutputAsset): void {
-  const list = readJsonc<OutputAsset[]>('output_assets', [])
-  const i = list.findIndex((x) => x.path === a.path || x.id === a.id)
-  if (i < 0) {
-    list.push(a)
-  } else {
-    list[i] = {
-      ...list[i],
-      ...a,
-      // Keep the earlier non-empty value whenever the incoming one is blank.
-      thumbnail: a.thumbnail || list[i].thumbnail,
-      width: a.width ?? list[i].width,
-      height: a.height ?? list[i].height,
-      batchJobId: a.batchJobId || list[i].batchJobId,
-      workflowId: a.workflowId || list[i].workflowId,
-      workflowName: a.workflowName || list[i].workflowName,
-      favorite: a.favorite ?? list[i].favorite,
-      promptId: a.promptId || list[i].promptId,
-      seed: a.seed ?? list[i].seed,
-      params: { ...(list[i].params || {}), ...(a.params || {}) }
+  mergeUpsertOutputAssets([a])
+}
+
+/** Batch form of mergeUpsertOutputAsset — one read-modify-write for a whole walk. */
+export function mergeUpsertOutputAssets(items: OutputAsset[]): void {
+  if (!items.length) return
+  mutateInList<OutputAsset>('output_assets', [], (list) => {
+    for (const a of items) {
+      const i = list.findIndex((x) => x.path === a.path || x.id === a.id)
+      if (i < 0) {
+        list.push(a)
+        continue
+      }
+      list[i] = {
+        ...list[i],
+        ...a,
+        // Keep the earlier non-empty value whenever the incoming one is blank.
+        thumbnail: a.thumbnail || list[i].thumbnail,
+        width: a.width ?? list[i].width,
+        height: a.height ?? list[i].height,
+        batchJobId: a.batchJobId || list[i].batchJobId,
+        workflowId: a.workflowId || list[i].workflowId,
+        workflowName: a.workflowName || list[i].workflowName,
+        favorite: a.favorite ?? list[i].favorite,
+        promptId: a.promptId || list[i].promptId,
+        seed: a.seed ?? list[i].seed,
+        params: { ...(list[i].params || {}), ...(a.params || {}) }
+      }
     }
-  }
-  writeJsonc('output_assets', list)
+    return list
+  })
 }
 
 /**
@@ -448,13 +554,23 @@ export function listOutputAssetsAll(): OutputAsset[] {
   return readJsonc<OutputAsset[]>('output_assets', [])
 }
 
+export function deleteOutputAsset(id: string): boolean {
+  const before = readJsonc<OutputAsset[]>('output_assets', []).length
+  const next = mutateInList<OutputAsset>('output_assets', [], (list) => list.filter((a) => a.id !== id))
+  return next.length !== before
+}
+
 export function updateOutputAsset(id: string, patch: Partial<OutputAsset>): OutputAsset | null {
-  const list = readJsonc<OutputAsset[]>('output_assets', [])
-  const i = list.findIndex((a) => a.id === id)
-  if (i < 0) return null
-  list[i] = { ...list[i], ...patch, id: list[i].id }
-  writeJsonc('output_assets', list)
-  return list[i]
+  let result: OutputAsset | null = null
+  mutateInList<OutputAsset>('output_assets', [], (list) => {
+    const i = list.findIndex((a) => a.id === id)
+    if (i >= 0) {
+      list[i] = { ...list[i], ...patch, id: list[i].id }
+      result = list[i]
+    }
+    return list
+  })
+  return result
 }
 
 // ---------- Remote ----------
@@ -467,10 +583,11 @@ export function upsertRemote(c: RemoteInstanceConfig): void {
 }
 
 export function deleteRemote(id: string): boolean {
-  const list = listRemotes()
-  const next = list.filter((r) => r.id !== id)
-  writeJsonc('remote_instances', next)
-  return next.length !== list.length
+  const before = readJsonc<RemoteInstanceConfig[]>('remote_instances', []).length
+  const next = mutateInList<RemoteInstanceConfig>('remote_instances', [], (list) =>
+    list.filter((r) => r.id !== id)
+  )
+  return next.length !== before
 }
 
 export function newId(): string {

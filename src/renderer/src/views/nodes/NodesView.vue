@@ -16,7 +16,7 @@ import { useComfyUpdate, describeNodeError, hasDepsSkippedIssue } from '@/compos
 import ComfyUpdateProgressModal from '@/components/ComfyUpdateProgressModal.vue'
 import { useAppStore } from '@/stores/app'
 import type {
-  NodeNameConflict, NodePackRecord, NodeSnapshot, NodeUpdateCheckResult
+  NodeNameConflict, NodePackIssue, NodePackRecord, NodeSnapshot, NodeUpdateCheckResult
 } from '@shared/types'
 
 const { t } = useI18n()
@@ -45,12 +45,18 @@ const showInstall = ref(false)
 const showOpModal = ref(false)
 const opModalTitle = ref('')
 const installUrl = ref('')
+const installBranch = ref('')
 const tab = ref('installed')
 const checks = ref<Record<string, NodeUpdateCheckResult>>({})
 const checking = ref(false)
 const updatingOne = ref<string | null>(null)
 const lockingOne = ref<string | null>(null)
 const batchRunning = ref(false)
+// node.checkIssues modal state
+const showIssues = ref(false)
+const issuesLoading = ref(false)
+const issuesPackName = ref('')
+const issuesList = ref<NodePackIssue[]>([])
 
 const filteredPacks = computed(() => {
   const q = installedQuery.value.trim().toLowerCase()
@@ -213,13 +219,16 @@ async function installGit(): Promise<void> {
   opModalTitle.value = t('nodes.installing')
   showOpModal.value = true
   try {
+    const branch = installBranch.value.trim()
     const rec = await ipc('node.install', {
       id: installUrl.value.trim(),
       source: 'git',
       url: installUrl.value.trim(),
+      branch: branch || undefined,
       instanceId: store.activeInstanceId || undefined
     })
     showInstall.value = false
+    installBranch.value = ''
     if (hasDepsSkippedIssue(rec?.issues)) {
       dialog.warning({
         title: t('nodes.depsNotInstalled'),
@@ -277,6 +286,30 @@ async function smoke(pack: NodePackRecord): Promise<void> {
   }
 }
 
+/** Run node.checkIssues and surface the full NodePackIssue[] in a modal. */
+async function checkIssues(pack: NodePackRecord): Promise<void> {
+  issuesPackName.value = pack.displayName || pack.name
+  issuesList.value = []
+  showIssues.value = true
+  issuesLoading.value = true
+  try {
+    issuesList.value = await ipc('node.checkIssues', pack.name, store.activeInstanceId || undefined)
+  } catch (err) {
+    showIssues.value = false
+    message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    issuesLoading.value = false
+  }
+}
+
+function issueSeverityType(sev: NodePackIssue['severity']): 'error' | 'warning' | 'info' {
+  return sev === 'error' ? 'error' : sev === 'warning' ? 'warning' : 'info'
+}
+
+function issueSeverityLabel(sev: NodePackIssue['severity']): string {
+  return sev === 'error' ? t('nodes.sevError') : sev === 'warning' ? t('nodes.sevWarning') : t('nodes.sevInfo')
+}
+
 async function createSnapshot(): Promise<void> {
   try {
     const s = await ipc('node.createSnapshot', undefined, store.activeInstanceId || undefined)
@@ -299,9 +332,38 @@ async function restoreSnapshot(id: string): Promise<void> {
 
 async function uninstall(pack: NodePackRecord): Promise<void> {
   try {
-    await ipc('node.uninstall', pack.name, store.activeInstanceId || undefined)
-    message.success(t('nodes.uninstalled'))
-    await refresh()
+    // List residual pip deps recorded at install time and let the user opt in
+    // to removing them alongside the pack directory.
+    let deps: string[] = []
+    try {
+      deps = await ipc('node.uninstallDeps', pack.name, store.activeInstanceId || undefined)
+    } catch {
+      deps = []
+    }
+    const run = (removePipDeps: boolean) =>
+      ipc('node.uninstall', pack.name, store.activeInstanceId || undefined, { removePipDeps })
+        .then(async () => {
+          message.success(
+            removePipDeps && deps.length
+              ? t('nodes.uninstalledWithDeps')
+              : t('nodes.uninstalled')
+          )
+          await refresh()
+        })
+        .catch((err) => message.error(err instanceof Error ? err.message : String(err)))
+
+    if (!deps.length) {
+      await run(false)
+      return
+    }
+    dialog.warning({
+      title: t('nodes.uninstallDepsTitle', { name: pack.displayName || pack.name }),
+      content: t('nodes.uninstallDepsBody', { name: pack.displayName || pack.name }),
+      positiveText: t('nodes.uninstallWithDeps'),
+      negativeText: t('nodes.uninstallKeepDeps'),
+      onPositiveClick: () => run(true),
+      onNegativeClick: () => run(false)
+    })
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   }
@@ -320,6 +382,14 @@ async function removeSnapshot(id: string): Promise<void> {
 onMounted(() => {
   void refresh()
 })
+
+// Switching the active instance must re-scan packs/conflicts/snapshots.
+watch(
+  () => store.instanceSwitchTick,
+  () => {
+    void refresh()
+  }
+)
 </script>
 
 <template>
@@ -413,6 +483,14 @@ onMounted(() => {
               <div class="pack-actions">
                 <NSpace>
                   <NButton size="tiny" secondary @click="smoke(pack)">{{ $t('nodes.smokeTest') }}</NButton>
+                  <NButton
+                    size="tiny"
+                    secondary
+                    :loading="issuesLoading && issuesPackName === (pack.displayName || pack.name)"
+                    @click="checkIssues(pack)"
+                  >
+                    {{ $t('nodes.checkIssues') }}
+                  </NButton>
                   <NPopconfirm v-if="canUpdatePack(pack)" @positive-click="updatePack(pack)">
                     <template #trigger>
                       <NButton
@@ -499,13 +577,47 @@ onMounted(() => {
     </NTabs>
 
     <NModal v-model:show="showInstall" preset="card" :title="$t('nodes.gitInstallTitle')" style="width: 520px; border-radius: 20px">
-      <NInput v-model:value="installUrl" placeholder="https://github.com/user/repo.git">
-        <template #prefix><NIcon :component="GitBranchOutline" /></template>
-      </NInput>
+      <NSpace vertical>
+        <NInput v-model:value="installUrl" placeholder="https://github.com/user/repo.git">
+          <template #prefix><NIcon :component="GitBranchOutline" /></template>
+        </NInput>
+        <NInput v-model:value="installBranch" :placeholder="$t('nodes.branchPlaceholder')" clearable>
+          <template #prefix><NIcon :component="GitBranchOutline" /></template>
+        </NInput>
+      </NSpace>
       <template #footer>
         <NSpace justify="end">
           <NButton @click="showInstall = false">{{ $t('nodes.cancel') }}</NButton>
           <NButton type="primary" @click="installGit">{{ $t('nodes.install') }}</NButton>
+        </NSpace>
+      </template>
+    </NModal>
+
+    <!-- node.checkIssues results -->
+    <NModal
+      v-model:show="showIssues"
+      preset="card"
+      :title="$t('nodes.checkIssuesTitle', { name: issuesPackName })"
+      style="width: 560px; border-radius: 20px"
+    >
+      <NSpin :show="issuesLoading">
+        <div v-if="issuesList.length" class="issues-modal">
+          <div v-for="(issue, idx) in issuesList" :key="idx" class="issue">
+            <NTag size="small" round :type="issueSeverityType(issue.severity)">
+              {{ issueSeverityLabel(issue.severity) }}
+            </NTag>
+            <div class="issue-body">
+              <div class="issue-msg">{{ issue.message }}</div>
+              <div v-if="issue.code" class="issue-code">{{ $t('nodes.issueCode') }}: {{ issue.code }}</div>
+              <div v-if="issue.suggestion" class="issue-fix">{{ issue.suggestion }}</div>
+            </div>
+          </div>
+        </div>
+        <NEmpty v-else-if="!issuesLoading" :description="$t('nodes.checkIssuesEmpty')" />
+      </NSpin>
+      <template #footer>
+        <NSpace justify="end">
+          <NButton @click="showIssues = false">{{ $t('common.close') }}</NButton>
         </NSpace>
       </template>
     </NModal>
@@ -536,8 +648,11 @@ onMounted(() => {
   color: $color-text-secondary;
 }
 .issues { margin-top: 10px; }
+.issues-modal { display: flex; flex-direction: column; gap: 4px; }
 .issue { display: flex; gap: 8px; padding: 8px 0; font-size: 12.5px; color: $color-text-secondary; }
+.issue-body { flex: 1; min-width: 0; }
 .issue-msg { color: $color-text; font-weight: 600; }
+.issue-code { margin-top: 2px; font-size: 11.5px; color: $color-text-muted; font-family: monospace; }
 .issue-fix { margin-top: 2px; color: $color-text-muted; }
 .reg-row { display: flex; justify-content: space-between; gap: 16px; align-items: center; width: 100%; }
 .conflict-row, .snap-row { display: flex; justify-content: space-between; align-items: center; padding: 12px 4px; border-bottom: 1px solid $color-border; }

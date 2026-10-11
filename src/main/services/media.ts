@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, writeFileSync, readFileSync, renameSync } from '
 import { join, basename, dirname, extname, resolve } from 'path'
 import { createHash } from 'crypto'
 import { execFile } from 'child_process'
-import { cacheDir, loadSettings, listModels, upsertModel, loadInstanceConfigs, deleteModel as dbDeleteModel, workflowLibraryDir } from './db'
+import { cacheDir, loadSettings, listModels, upsertModel, loadInstanceConfigs, deleteModel as dbDeleteModel, workflowLibraryDir, listOutputAssetsAll, mergeUpsertOutputAsset } from './db'
 import { assertSafeRelativeFilename, isSafeExternalUrl, isPathInside } from './security'
 import type { ModelRecord } from '@shared/types'
 
@@ -124,6 +124,7 @@ export class ThumbnailService {
   /**
    * Generate a downscaled thumbnail for an output image so the grid does not
    * load full-size PNGs. Returns the thumb path, or null when not applicable.
+   * Persists the result on the asset row so later list() calls skip decoding.
    */
   async ensureOutputThumb(assetPath: string): Promise<string | null> {
     try {
@@ -134,7 +135,10 @@ export class ThumbnailService {
       mkdirSync(root, { recursive: true })
       const key = createHash('sha1').update(assetPath).digest('hex').slice(0, 16)
       const out = join(root, `${key}.png`)
-      if (existsSync(out)) return out
+      if (existsSync(out)) {
+        this.persistOutputThumb(assetPath, out)
+        return out
+      }
       // Electron nativeImage can decode + resize without external deps.
       const { nativeImage } = await import('electron')
       const img = nativeImage.createFromPath(assetPath)
@@ -147,9 +151,21 @@ export class ThumbnailService {
           ? img.resize({ width: Math.max(1, Math.round(size.width * scale)) })
           : img
       writeFileSync(out, resized.toPNG())
+      this.persistOutputThumb(assetPath, out)
       return out
     } catch {
       return null
+    }
+  }
+
+  /** Write the generated thumb back onto the asset row (best-effort). */
+  private persistOutputThumb(assetPath: string, thumbPath: string): void {
+    try {
+      const row = listOutputAssetsAll().find((x) => x.path === assetPath)
+      if (!row || row.thumbnail === thumbPath) return
+      mergeUpsertOutputAsset({ ...row, thumbnail: thumbPath })
+    } catch {
+      /* index write is best-effort */
     }
   }
 }

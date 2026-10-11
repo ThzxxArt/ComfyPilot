@@ -221,7 +221,6 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle('instance.discover', wrap((root?: string) => instanceService.discover(root)))
   ipcMain.handle('instance.save', wrap((config: ComfyInstanceConfig) => instanceService.save({ ...config, id: config.id ? sanitizeId(config.id) : '' })))
   ipcMain.handle('instance.remove', wrap((id: string) => instanceService.remove(sanitizeId(id))))
-  ipcMain.handle('instance.start', wrap((id: string, opts?: LaunchOptions) => instanceService.start(sanitizeId(id), opts)))
   ipcMain.handle('instance.launch', wrap(async (id: string, opts?: LaunchOptions) => {
     const safeId = sanitizeId(id)
     const info = await instanceService.launch(safeId, opts)
@@ -237,7 +236,6 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     }
     return info
   }))
-  ipcMain.handle('instance.waitReady', wrap((id: string, timeoutMs?: number) => instanceService.waitReady(sanitizeId(id), timeoutMs)))
   ipcMain.handle('instance.previewLaunch', wrap((id: string) => instanceService.previewLaunch(sanitizeId(id))))
   ipcMain.handle('instance.stop', wrap((id: string) => instanceService.stop(sanitizeId(id))))
   ipcMain.handle('instance.restart', wrap((id: string, opts?: LaunchOptions) => instanceService.restart(sanitizeId(id), opts)))
@@ -344,7 +342,6 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   // node packs
   ipcMain.handle('node.list', wrap((instanceId?: string) => nodePackService.list(safeInstanceId(instanceId))))
   ipcMain.handle('node.refresh', wrap((instanceId?: string) => nodePackService.refresh(safeInstanceId(instanceId))))
-  ipcMain.handle('node.registrySearch', wrap((opts?: { query?: string; limit?: number; page?: number }) => nodePackService.registrySearch(opts)))
   ipcMain.handle('registry.indexStatus', wrap(async () => {
     const { registryIndex } = await import('../services/registryIndex')
     return registryIndex.status()
@@ -358,7 +355,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     return registryIndex.ensure()
   }))
   ipcMain.handle('node.managerChannel', wrap(() => nodePackService.managerChannelList()))
-  ipcMain.handle('node.install', wrap(async (opts: { id: string; version?: string; source: 'registry' | 'git' | 'manager'; url?: string; instanceId?: string }) => {
+  ipcMain.handle('node.install', wrap(async (opts: { id: string; version?: string; source: 'registry' | 'git' | 'manager'; url?: string; branch?: string; instanceId?: string }) => {
     const rec = await nodePackService.install({ ...opts, instanceId: safeInstanceId(opts.instanceId) })
     broadcastNotification({
       type: 'success',
@@ -367,10 +364,18 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       message: `${rec.displayName || rec.name || opts.id} (${rec.version || '?'})`,
       duration: 5000
     })
+    // Nodes only load at ComfyUI startup — remind the user to restart.
+    broadcastNotification({
+      type: 'info',
+      title: 'Restart required',
+      titleKey: 'notify.restartRequired',
+      message: 'Restart the instance for the new node pack to take effect.',
+      duration: 8000
+    })
     return rec
   }))
-  ipcMain.handle('node.uninstall', wrap(async (id: string, instanceId?: string) => {
-    const ok = await nodePackService.uninstall(id, safeInstanceId(instanceId))
+  ipcMain.handle('node.uninstall', wrap(async (id: string, instanceId?: string, opts?: { removePipDeps?: boolean }) => {
+    const ok = await nodePackService.uninstall(id, safeInstanceId(instanceId), opts)
     if (ok) {
       broadcastNotification({
         type: 'success',
@@ -382,6 +387,10 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     }
     return ok
   }))
+  ipcMain.handle('node.uninstallDeps', wrap((id: string, instanceId?: string) =>
+    nodePackService.pipDeps(id, safeInstanceId(instanceId))
+  ))
+  ipcMain.handle('node.cancelOp', wrap((instanceId?: string) => nodePackService.cancelOp(safeInstanceId(instanceId))))
   ipcMain.handle('node.update', wrap(async (id: string, version?: string, instanceId?: string) => {
     const rec = await nodePackService.update(id, version, safeInstanceId(instanceId))
     broadcastNotification({
@@ -407,25 +416,16 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
   // workflows
   ipcMain.handle('workflow.list', wrap((opts?: { includeMissing?: boolean }) => workflowService.list(opts)))
-  ipcMain.handle('workflow.import', wrap((path: string, instanceId?: string) => {
+  ipcMain.handle('workflow.import', wrap((path: string, instanceId?: string, target?: 'instance' | 'library') => {
     if (!isSafeReadPath(path)) throw new Error('Blocked unsafe workflow path')
-    return workflowService.importFile(path, safeInstanceId(instanceId))
+    return workflowService.importFile(path, safeInstanceId(instanceId), target || 'instance')
   }))
-  ipcMain.handle('workflow.importMany', wrap(async (paths: string[], instanceId?: string) => {
+  ipcMain.handle('workflow.importMany', wrap(async (paths: string[], instanceId?: string, target?: 'instance' | 'library') => {
     if (!Array.isArray(paths) || !paths.length) return { ok: [], errors: [] }
     for (const p of paths) {
       if (!isSafeReadPath(p)) throw new Error(`Blocked unsafe workflow path: ${basename(p)}`)
     }
-    return workflowService.importMany(paths, safeInstanceId(instanceId))
-  }))
-  ipcMain.handle('workflow.launch', wrap(async (path: string, baseUrl?: string) => {
-    if (baseUrl) {
-      if (!isSafeExternalUrl(baseUrl)) throw new Error('Blocked unsafe URL')
-      await shell.openExternal(baseUrl)
-      return true
-    }
-    if (!isSafeOpenPath(path)) throw new Error('Blocked opening executable/script file')
-    return shell.openPath(path).then((r) => r === '')
+    return workflowService.importMany(paths, safeInstanceId(instanceId), target || 'instance')
   }))
   ipcMain.handle('workflow.tag', wrap((id: string, tags: string[]) => workflowService.tag(id, tags)))
   ipcMain.handle('workflow.favorite', wrap((id: string, favorite: boolean) => workflowService.favorite(id, favorite)))
@@ -550,7 +550,19 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   // backup
   ipcMain.handle('backup.list', wrap(() => backupService.list()))
   ipcMain.handle('backup.create', wrap((opts: { name: string; notes?: string }) => backupService.create(opts)))
-  ipcMain.handle('backup.restore', wrap((id: string) => backupService.restore(sanitizeId(id))))
+  ipcMain.handle('backup.restore', wrap(async (id: string) => {
+    const ok = backupService.restore(sanitizeId(id))
+    if (ok) {
+      broadcastNotification({
+        type: 'success',
+        title: 'Backup restored',
+        titleKey: 'notify.backupRestored',
+        message: 'Settings / instances / node packs / model manifests / workflows / remotes have been restored. Reload views to see changes.',
+        duration: 6000
+      })
+    }
+    return ok
+  }))
   ipcMain.handle('backup.delete', wrap((id: string) => backupService.delete(sanitizeId(id))))
   ipcMain.handle('backup.openFolder', wrap(async (id: string) => {
     const folder = backupService.openFolder(sanitizeId(id))
@@ -675,6 +687,9 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     }
   }))
   ipcMain.handle('batch.cancel', wrap((id: string) => batchService.cancel(sanitizeId(id))))
+  ipcMain.handle('batch.cancelItem', wrap((id: string, workflowPath: string) =>
+    batchService.cancelItem(sanitizeId(id), String(workflowPath || ''))
+  ))
   ipcMain.handle('batch.remove', wrap((id: string) => batchService.remove(sanitizeId(id))))
 
   // output
@@ -690,14 +705,17 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       workflowId?: string
       sort?: 'createdAt' | 'size' | 'name'
       order?: 'asc' | 'desc'
+      createdFrom?: number
+      createdTo?: number
     }) => {
       // Renderer-supplied root must sit inside an allow-listed output area.
       if (opts?.root) {
         const { isPathInside } = await import('../services/security')
         const { workflowLibraryDir } = await import('../services/db')
+        const { resolveOutputDir } = await import('../services/p1p2')
         const allowed = [
           workflowLibraryDir(),
-          ...loadInstanceConfigs().map((i) => join(i.path, 'output')),
+          ...loadInstanceConfigs().map((i) => resolveOutputDir(i)),
           ...loadInstanceConfigs().map((i) => join(i.path, 'user', 'default', 'workflows'))
         ].filter(Boolean) as string[]
         const root = opts.root
@@ -719,7 +737,9 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
           }
           return {
             ...a,
-            thumbnail: thumb || toMediaUrl(a.path) || undefined
+            thumbnail: thumb || toMediaUrl(a.path) || undefined,
+            // Full-resolution media URL — the lightbox must never get a bare fs path.
+            mediaUrl: toMediaUrl(a.path) || undefined
           }
         })
       )
@@ -736,6 +756,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     return true
   }))
   ipcMain.handle('output.favorite', wrap((id: string, favorite: boolean) => outputService.favorite(id, favorite)))
+  ipcMain.handle('output.delete', wrap((id: string, deleteFile: boolean) => outputService.remove(sanitizeId(id), Boolean(deleteFile))))
   ipcMain.handle('output.importToWorkflow', wrap(async (path: string, instanceId?: string): Promise<WorkflowRecord | null> => {
     if (!isSafeReadPath(path)) throw new Error('Blocked unsafe image path')
     return outputService.importToWorkflow(path, safeInstanceId(instanceId))
@@ -776,13 +797,19 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
   // market
   ipcMain.handle('market.list', wrap((opts?: { query?: string; category?: string; limit?: number; page?: number; instanceId?: string }) => marketService.list({ ...opts, instanceId: safeInstanceId(opts?.instanceId) })))
-  ipcMain.handle('market.install', wrap(async (id: string, instanceId?: string): Promise<NodePackRecord> => {
-    const rec = await nodePackService.install({ id, source: 'registry', instanceId: safeInstanceId(instanceId) })
+  ipcMain.handle('market.install', wrap(async (opts: { id: string; version?: string; repository?: string; instanceId?: string }): Promise<NodePackRecord> => {
+    const rec = await nodePackService.install({
+      id: opts.id,
+      version: opts.version,
+      source: 'registry',
+      repository: opts.repository,
+      instanceId: safeInstanceId(opts.instanceId)
+    })
     broadcastNotification({
       type: 'success',
       title: 'Node pack installed',
       titleKey: 'notify.nodeInstalled',
-      message: `${rec.displayName || rec.name || id} (${rec.version || '?'})`,
+      message: `${rec.displayName || rec.name || opts.id} (${rec.version || '?'})`,
       duration: 5000
     })
     return rec

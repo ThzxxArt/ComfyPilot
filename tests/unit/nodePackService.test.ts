@@ -35,7 +35,10 @@ const h = vi.hoisted(() => {
     runtimePython: null as string | null,
     runtimePythonThrow: null as Error | null,
     execSyncOut: 'abc1234',
-    execSyncErr: null as Error | null
+    execSyncErr: null as Error | null,
+    /** Per-path size/mtime so (size,mtime) caches see real rewrites. */
+    statStamp: new Map<string, { size: number; mtimeMs: number }>(),
+    statClock: 0
   }
 
   const fetchRoutes: Array<{
@@ -89,12 +92,15 @@ const h = vi.hoisted(() => {
     state.files.delete(p)
     state.isDir.delete(p)
     state.exists.delete(p)
+    state.statStamp.delete(p)
     detachFromParent(p)
   }
 
   function copyPath(from: string, to: string): void {
     if (state.files.has(from)) {
       state.files.set(to, state.files.get(from)!)
+      const st = state.statStamp.get(from)
+      state.statStamp.set(to, st ? { ...st } : { size: 0, mtimeMs: ++state.statClock })
       return
     }
     // directory
@@ -132,6 +138,7 @@ const h = vi.hoisted(() => {
     if (parent && !state.dirs.has(parent)) mkdirPath(parent)
     state.files.set(p, content)
     state.exists.add(p)
+    state.statStamp.set(p, { size: content.length, mtimeMs: ++state.statClock })
     attachToParent(p)
   }
 
@@ -162,11 +169,12 @@ vi.mock('fs', () => {
     },
     statSync: (p: unknown) => {
       const s = fsKey(p)
+      const st = state.statStamp.get(s) || { size: 0, mtimeMs: 0 }
       return {
         isDirectory: () => state.isDir.has(s) || state.dirs.has(s),
         isFile: () => state.files.has(s),
-        size: 0,
-        mtimeMs: 0
+        size: st.size,
+        mtimeMs: st.mtimeMs
       }
     },
     readFileSync: (p: unknown) => {
@@ -178,8 +186,10 @@ vi.mock('fs', () => {
       for (const frag of state.writeFail) {
         if (s.includes(frag)) throw new Error(`write failed: ${s}`)
       }
-      state.files.set(s, String(data))
+      const text = String(data)
+      state.files.set(s, text)
       state.exists.add(s)
+      state.statStamp.set(s, { size: text.length, mtimeMs: ++state.statClock })
       h.attachToParent(s)
     },
     unlinkSync: (p: unknown) => {
@@ -192,6 +202,7 @@ vi.mock('fs', () => {
       }
       state.files.delete(s)
       state.exists.delete(s)
+      state.statStamp.delete(s)
     },
     mkdirSync: (p: unknown) => {
       mkdirPath(fsKey(p))
@@ -207,6 +218,8 @@ vi.mock('fs', () => {
       const dst = fsKey(to)
       state.files.set(dst, state.files.get(src) ?? '')
       state.exists.add(dst)
+      const st = state.statStamp.get(src)
+      state.statStamp.set(dst, st ? { ...st } : { size: 0, mtimeMs: ++state.statClock })
     },
     cpSync: (from: unknown, to: unknown) => {
       const src = fsKey(from)
@@ -1162,7 +1175,7 @@ describe('install via registry channel', () => {
     expect(leftovers).toEqual([])
   })
 
-  it('descends into a nested single-folder unzip layout', async () => {
+  it('flattens a nested single-folder unzip layout', async () => {
     seedRegistryHappy((tmpDest) => {
       const dest = (tmpDest as string) || join(ROOT, 'NestReg')
       const nested = join(dest, 'NestReg-main')
@@ -1172,7 +1185,8 @@ describe('install via registry channel', () => {
     })
     const rec = await nodePackService.install({ id: 'NestReg', source: 'registry', instanceId: 'inst-1' })
     expect(rec.name).toBe('NestReg')
-    expect(rec.path).toContain('NestReg-main')
+    // After flattening, the pack lives at dest/ directly — no nested folder.
+    expect(rec.path).not.toContain('NestReg-main')
   })
 
   it('throws when the registry reports the pack is banned', async () => {
@@ -2376,6 +2390,7 @@ describe('managerChannelList', () => {
     })
     expect(await nodePackService.managerChannelList()).toEqual([])
     expect(calls).toBe(1)
+    h.state.settings.networkMode = 'public'
   })
 })
 

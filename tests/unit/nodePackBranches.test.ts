@@ -471,8 +471,7 @@ describe('managerChannelList field fallbacks', () => {
     fetchMock.mockImplementation(async () => {
       throw new Error('net down')
     })
-    const list = await nodePackService.managerChannelList()
-    expect(list).toEqual([])
+    expect(await nodePackService.managerChannelList()).toEqual([])
     // should have attempted only the first endpoint then broken out
     expect(fetchMock.mock.calls.length).toBe(1)
     h.state.settings.networkMode = 'public'

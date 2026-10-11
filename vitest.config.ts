@@ -30,6 +30,14 @@ export default defineConfig({
         'src/main/services/nodePack.ts',
         'src/main/services/updater.ts',
         'src/main/services/instance.ts',
+        'src/main/services/db.ts',
+        'src/main/services/backup.ts',
+        'src/main/services/doctor.ts',
+        'src/main/services/monitor.ts',
+        'src/main/services/registry.ts',
+        'src/main/services/registryIndex.ts',
+        'src/main/services/netProbe.ts',
+        'src/main/services/comfyApi.ts',
         'src/shared/constants.ts'
       ],
       thresholds: {
@@ -117,6 +125,54 @@ export default defineConfig({
           lines: 85,
           functions: 85,
           branches: 85
+        },
+        'src/main/services/db.ts': {
+          statements: 85,
+          lines: 85,
+          functions: 85,
+          branches: 85
+        },
+        'src/main/services/backup.ts': {
+          statements: 80,
+          lines: 80,
+          functions: 80,
+          branches: 75
+        },
+        'src/main/services/doctor.ts': {
+          statements: 75,
+          lines: 75,
+          functions: 75,
+          branches: 70
+        },
+        'src/main/services/monitor.ts': {
+          statements: 75,
+          lines: 75,
+          functions: 75,
+          branches: 70
+        },
+        'src/main/services/registry.ts': {
+          statements: 80,
+          lines: 80,
+          functions: 80,
+          branches: 75
+        },
+        'src/main/services/registryIndex.ts': {
+          statements: 75,
+          lines: 75,
+          functions: 75,
+          branches: 70
+        },
+        'src/main/services/netProbe.ts': {
+          statements: 75,
+          lines: 75,
+          functions: 75,
+          branches: 70
+        },
+        'src/main/services/comfyApi.ts': {
+          statements: 75,
+          lines: 75,
+          functions: 75,
+          branches: 70
         },
         lines: 85,
         functions: 85,

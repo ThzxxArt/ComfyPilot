@@ -1,7 +1,7 @@
 # ComfyPilot
 
 > **ComfyUI 全能管理器** — 本机 ComfyUI 生产线的控制塔  
-> TypeScript · Vue 3 · Electron · Naive UI · MIT · v0.1.5
+> TypeScript · Vue 3 · Electron · Naive UI · MIT · v0.1.7
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-4f6ef7)](./LICENSE)
 
@@ -129,7 +129,7 @@ node node_modules/electron/install.js
 
 npm run dev          # 开发模式
 npm run typecheck    # vue-tsc + tsc
-npm run test         # 单元 + 集成（257 tests）
+npm run test         # 单元 + 集成（908 tests）
 npm run test:coverage
 npm run test:e2e     # Electron 启动冒烟（需先 build）
 npm run test:all
@@ -248,7 +248,7 @@ Python 版本、Torch / CUDA、`extra_model_paths.yaml`、端口、磁盘、Regi
 
 ```text
 ComfyPilot/
-├── package.json                 # v0.1.4 · MIT · ThzxxArt
+├── package.json                 # v0.1.7 · MIT · ThzxxArt
 ├── electron.vite.config.ts
 ├── electron-builder.yml         # Win NSIS / macOS DMG / Linux AppImage·deb
 ├── vitest.config.ts             # 覆盖率阈值 85%（逐文件）
@@ -278,7 +278,7 @@ ComfyPilot/
 │           ├── styles/tokens.ts # JS 侧设计 token
 │           └── views/           # dashboard/instances/install/models/…
 ├── tests/
-│   ├── unit/                    # 25 文件 · 覆盖率 ≥85%
+│   ├── unit/                    # 47 文件 · 覆盖率 ≥85%
 │   ├── integration/
 │   └── e2e/
 └── .github/workflows/ci.yml
@@ -292,7 +292,7 @@ ComfyPilot/
 npm run dev / typecheck / test / test:coverage / test:e2e / test:all
 ```
 
-**测试：** 257 用例（25 文件）+ e2e 冒烟。覆盖率阈值 **每文件** statements / branches / functions / lines ≥ **85%**（当前全局 96 / 93 / 98 / 96）。
+**测试：** 908 用例（47 文件）+ e2e 冒烟。覆盖率阈值 **每文件** statements / branches / functions / lines ≥ **85%**（核心服务），辅助服务 ≥75%。
 
 **门禁脚本：**
 
@@ -381,6 +381,9 @@ ComfyUI 本身采用 GPL-3.0；本项目独立发布，采用 **MIT**。
 - [x] **0.1.6 八域协同**：实例切换广播、通知总线、WS 归属、market?q 深链、batch?jobId、output?workflowId、instances?edit 深链
 - [x] **0.1.6 数据正确性**：批跑 produced 真计数、重跑清零、超时不定 done、rename 保 id、openInFrontend 去重、getLogs 回读、node 更新保留 lock/tags
 - [x] **0.1.6 UI/UX 完整**：模型删除真选项、下载取消/错误可见、产物 workflowId 筛选、灯箱翻页、批量过滤态可导出、节点空态去市场、op-modal 自动关
+- [x] **0.1.7 全功能整合**：20 个死接口全部接 UI 或删除；远程实例接入选择器/监控；extra_model_paths 真解析；模型改名/软链/标签/Civitai 接线
+- [x] **0.1.7 数据根治**：批跑四桶计数（submitFailed/execFailed 分离）、备份含工作流实体+原子恢复、DB 写串行、通知总线 seq 游标、WS 代际
+- [x] **0.1.7 性能与体验**：step.log 上限、InstallView 镜像不覆盖显式选择、startFullAuto 尊重 useUv、modelScanRoots UI、节点体检/git branch、监控历史、运行时状态
 - [ ] 自动更新通道（GitHub Releases）
 - [ ] 工作流版本对照与打包分享（0.1.5 已含 ZIP 分享）
 - [ ] 更细的 GPU 多卡 / 共享显存展示

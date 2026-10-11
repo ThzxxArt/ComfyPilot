@@ -107,6 +107,22 @@ function revealWindow(): void {
   }
 }
 
+// Monitor cadence: full rate while the window is on screen, backed off while
+// hidden (tray close / hide) so a backgrounded app stops burning CPU every 2s.
+const MONITOR_TICK_VISIBLE_MS = 2000
+const MONITOR_TICK_HIDDEN_MS = 10000
+let monitorTimer: ReturnType<typeof setInterval> | undefined
+
+function scheduleMonitorTicks(ms: number): void {
+  if (monitorTimer) clearInterval(monitorTimer)
+  monitorTimer = setInterval(() => {
+    void monitorService
+      .systemSnapshot()
+      .then((snap) => broadcast(IPC_EVENTS.monitorTick, snap))
+      .catch(() => {})
+  }, ms)
+}
+
 function createWindow(): void {
   crashLog('createWindow enter')
   const iconPath = resolveAppIcon()
@@ -175,6 +191,10 @@ function createWindow(): void {
       void refreshTray()
     }
   })
+
+  // Back off the monitor snapshot loop while the window is not on screen.
+  mainWindow.on('hide', () => scheduleMonitorTicks(MONITOR_TICK_HIDDEN_MS))
+  mainWindow.on('show', () => scheduleMonitorTicks(MONITOR_TICK_VISIBLE_MS))
 
   mainWindow.webContents.on('did-fail-load', (_e, code, desc) => {
     crashLog('did-fail-load ' + code + ' ' + desc)
@@ -478,12 +498,7 @@ app.whenReady().then(async () => {
     })
     .catch(() => undefined)
 
-  const timer = setInterval(() => {
-    void monitorService
-      .systemSnapshot()
-      .then((snap) => broadcast(IPC_EVENTS.monitorTick, snap))
-      .catch(() => {})
-  }, 2000)
+  scheduleMonitorTicks(MONITOR_TICK_VISIBLE_MS)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -491,7 +506,7 @@ app.whenReady().then(async () => {
   })
 
   app.on('before-quit', () => {
-    clearInterval(timer)
+    if (monitorTimer) clearInterval(monitorTimer)
     monitorService.disconnectWs()
     try {
       instanceService.killAllNow()

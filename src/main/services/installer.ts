@@ -299,7 +299,10 @@ export class InstallerService extends EventEmitter {
     if (detail != null) step.detail = detail
     if (detailKey) step.detailKey = detailKey
     if (detailParams) step.detailParams = detailParams
-    if (logLine) step.log.push(logLine)
+    if (logLine) {
+      step.log.push(logLine)
+      if (step.log.length > 400) step.log.splice(0, step.log.length - 400)
+    }
     this.progress.step = id
     this.emitProgress(detail || '')
   }
@@ -307,7 +310,10 @@ export class InstallerService extends EventEmitter {
   private log(id: InstallStepId, line: string): void {
     if (!this.progress) return
     const step = this.progress.steps.find((s) => s.id === id)
-    if (step) step.log.push(line)
+    if (step) {
+      step.log.push(line)
+      if (step.log.length > 400) step.log.splice(0, step.log.length - 400)
+    }
     this.emitProgress(line)
   }
 
@@ -988,14 +994,13 @@ export class InstallerService extends EventEmitter {
     })
     if (!res.ok) throw new Error(`ComfyUI archive download failed: HTTP ${res.status}`)
     const total = Number(res.headers.get('content-length') || 0)
-    const buf = Buffer.from(await res.arrayBuffer())
+    const received = await this.streamBodyToFile(res, tmpZip)
     this.setBytes({
-      receivedBytes: buf.byteLength,
-      totalBytes: total || buf.byteLength,
+      receivedBytes: received,
+      totalBytes: total || received,
       speedBps: 0,
       label: 'ComfyUI archive'
     })
-    writeFileSync(tmpZip, buf)
 
     mkdirSync(comfyDir, { recursive: true })
     const { safeUnzip } = await import('./zipSafe')
@@ -1007,6 +1012,44 @@ export class InstallerService extends EventEmitter {
     }
     await this.flattenArchiveRoot(comfyDir)
     this.setBytes(undefined)
+  }
+
+  /**
+   * Stream the response body to disk so a multi-hundred-MB archive never
+   * lands in one Buffer. Falls back to buffering when the fetch
+   * implementation exposes no readable body.
+   */
+  protected async streamBodyToFile(res: Response, dest: string): Promise<number> {
+    const reader = res.body?.getReader()
+    if (!reader) {
+      const buf = Buffer.from(await res.arrayBuffer())
+      writeFileSync(dest, buf)
+      return buf.byteLength
+    }
+    const file = createWriteStream(dest)
+    let received = 0
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (value) {
+          const chunk = Buffer.from(value)
+          await new Promise<void>((resolve, reject) => {
+            file.write(chunk, (err) => (err ? reject(err) : resolve()))
+          })
+          received += chunk.byteLength
+        }
+      }
+    } finally {
+      await new Promise<void>((resolve) => {
+        try {
+          file.end(() => resolve())
+        } catch {
+          resolve()
+        }
+      })
+    }
+    return received
   }
 
   /** GitHub zips nest under ComfyUI-master/ — move children up so main.py sits at root. */
@@ -1091,4 +1134,3 @@ export { TORCH_INDEX, COMFY_REPO, STARTER_MODELS }
 void spawn
 void basename
 void TORCH_INDEX_PRESETS
-void createWriteStream

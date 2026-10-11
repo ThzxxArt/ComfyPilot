@@ -222,8 +222,8 @@ async function importSelectedCandidates(): Promise<void> {
   for (const c of picks) {
     try {
       const port = await ipc('instance.suggestPort')
+      // Minimal payload — never spread draft.value (form residue must not leak).
       await ipc('instance.save', {
-        ...draft.value,
         id: '',
         name: c.path.split(/[\\/]/).pop() || 'ComfyUI',
         path: c.path,
@@ -528,6 +528,18 @@ async function exportDiag(info: ComfyInstanceInfo): Promise<void> {
   }
 }
 
+function confirmStartAll(): void {
+  dialog.info({
+    title: t('instance.confirmStartAllTitle'),
+    content: t('instance.confirmStartAll'),
+    positiveText: t('common.confirm'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: () => {
+      void startAll()
+    }
+  })
+}
+
 async function startAll(): Promise<void> {
   try {
     const results = await ipc('instance.startAll')
@@ -678,7 +690,7 @@ function statusClass(s: string): string {
         </NInputGroup>
         <NTooltip trigger="hover">
           <template #trigger>
-            <NButton secondary @click="startAll">
+            <NButton secondary @click="confirmStartAll">
               <template #icon><NIcon :component="PlayOutline" /></template>
               {{ $t('instance.startAll') }}
             </NButton>

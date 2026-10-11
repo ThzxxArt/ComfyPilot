@@ -8,7 +8,7 @@ import {
 } from '@vicons/ionicons5'
 import {
   NButton, NIcon, NTag, NSpace, NScrollbar, NSpin, NDescriptions, NDescriptionsItem,
-  NCollapse, NCollapseItem, NPopconfirm, useMessage
+  NCollapse, NCollapseItem, NPopconfirm, NModal, NSelect, useMessage
 } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 import { ipc, onInstanceStatus, onIpc, IPC_EVENTS } from '@/composables/useIpc'
@@ -17,7 +17,7 @@ import { useComfyUpdate } from '@/composables/useComfyUpdate'
 import ComfyUpdateProgressModal from '@/components/ComfyUpdateProgressModal.vue'
 import { useI18n } from 'vue-i18n'
 import type {
-  ComfyInstanceInfo, ComfyLogLine, ComfyUpdateInfo, LaunchCommandPreview
+  ComfyInstanceInfo, ComfyLogLine, ComfyUpdateInfo, EnvCreateRequest, LaunchCommandPreview
 } from '@shared/types'
 
 const route = useRoute()
@@ -180,6 +180,135 @@ async function runRepairEnv(): Promise<void> {
     )
   } finally {
     repairing.value = false
+  }
+}
+
+// ---------- env.createVenv / env.installTorch / instance.copyDiagnostics ----------
+const recreatingVenv = ref(false)
+const reinstallingTorch = ref(false)
+const copyingDiag = ref(false)
+
+/** Basename of a path (renderer has no Node path module). */
+function baseName(p: string): string {
+  const norm = String(p || '').replace(/[\\/]+$/, '')
+  const i = Math.max(norm.lastIndexOf('/'), norm.lastIndexOf('\\'))
+  return i >= 0 ? norm.slice(i + 1) : norm
+}
+
+/** Dirname of a path (renderer has no Node path module). Empty when there is no separator. */
+function dirName(p: string): string {
+  const norm = String(p || '').replace(/[\\/]+$/, '')
+  const i = Math.max(norm.lastIndexOf('/'), norm.lastIndexOf('\\'))
+  return i >= 0 ? norm.slice(0, i) : ''
+}
+
+/** Where this instance's venv lives — mirrors env.repairEnv's default. */
+function venvLocationOf(inst: ComfyInstanceInfo): { basePath: string; name: string } {
+  const venv = String(inst.venvPath || '').trim()
+  if (venv) return { basePath: dirName(venv) || '.', name: baseName(venv) || 'venv' }
+  return { basePath: dirName(inst.path) || '.', name: '.venv' }
+}
+
+/**
+ * env.createVenv — recreate the instance's virtualenv.
+ * basePath/name follow the instance's venvPath (or repairEnv's default sibling .venv).
+ */
+async function recreateVenv(): Promise<void> {
+  const inst = instance.value
+  if (!inst) return
+  recreatingVenv.value = true
+  try {
+    const { basePath, name } = venvLocationOf(inst)
+    // uv is optional — createVenv(useUv:true) runs `uv venv` and hard-fails without it.
+    const boot = await ipc('bootstrap.status')
+    const useUv = boot.components.some((c) => c.kind === 'uv' && c.installed)
+    const pythonPath =
+      String(inst.pythonPath || '').trim() ||
+      (boot.pythonPath && boot.pythonPath !== 'python' ? boot.pythonPath : 'python')
+    const req: EnvCreateRequest = {
+      basePath,
+      name,
+      pythonPath,
+      useUv
+    }
+    await ipc('env.createVenv', req)
+    message.success(t('instance.recreateVenvDone'))
+  } catch (err) {
+    message.error(
+      t('instance.recreateVenvFailed', { error: err instanceof Error ? err.message : String(err) })
+    )
+  } finally {
+    recreatingVenv.value = false
+  }
+}
+
+/**
+ * env.installTorch — reinstall torch/torchvision/torchaudio into the instance venv.
+ * Opens a channel picker first: the IPC needs a full PEP 503 index URL, and the
+ * correct one depends on the GPU (settings.torchIndexMirror is only a prefix).
+ */
+const showTorchModal = ref(false)
+const torchIndexChoice = ref<string>('https://download.pytorch.org/whl/cpu/')
+
+// Official per-channel indices — mirrors main TORCH_INDEX (installer.ts).
+// Labels reuse the existing install.torchChannels.* i18n keys.
+const TORCH_INDEX_OPTIONS = [
+  { labelKey: 'install.torchChannels.cu130', value: 'https://download.pytorch.org/whl/cu130/' },
+  { labelKey: 'install.torchChannels.cu126', value: 'https://download.pytorch.org/whl/cu126/' },
+  { labelKey: 'install.torchChannels.cu124', value: 'https://download.pytorch.org/whl/cu124/' },
+  { labelKey: 'install.torchChannels.rocm', value: 'https://download.pytorch.org/whl/rocm6.2/' },
+  { labelKey: 'install.torchChannels.xpu', value: 'https://download.pytorch.org/whl/xpu/' },
+  { labelKey: 'install.torchChannels.mps', value: 'https://download.pytorch.org/whl/cpu/' },
+  { labelKey: 'install.torchChannels.cpu', value: 'https://download.pytorch.org/whl/cpu/' }
+]
+
+const torchIndexSelectOptions = computed(() =>
+  TORCH_INDEX_OPTIONS.map((o) => ({ label: t(o.labelKey), value: o.value }))
+)
+
+function openTorchModal(): void {
+  torchIndexChoice.value = 'https://download.pytorch.org/whl/cpu/'
+  showTorchModal.value = true
+}
+
+async function reinstallTorch(): Promise<void> {
+  const inst = instance.value
+  if (!inst) return
+  showTorchModal.value = false
+  reinstallingTorch.value = true
+  try {
+    const probe = await ipc('env.probe', {
+      pythonPath: String(inst.pythonPath || '').trim() || 'python',
+      venvPath: String(inst.venvPath || '').trim() || undefined
+    })
+    await ipc('env.installTorch', {
+      pythonPath: probe.pythonPath,
+      index: torchIndexChoice.value
+    })
+    message.success(t('instance.reinstallTorchDone'))
+  } catch (err) {
+    message.error(
+      t('instance.reinstallTorchFailed', { error: err instanceof Error ? err.message : String(err) })
+    )
+  } finally {
+    reinstallingTorch.value = false
+  }
+}
+
+/** instance.copyDiagnostics — build a diagnostics package and copy its path. */
+async function copyDiagPath(): Promise<void> {
+  const inst = instance.value
+  if (!inst) return
+  copyingDiag.value = true
+  try {
+    const path = await ipc('instance.copyDiagnostics', inst.id)
+    message.success(t('instance.copyDiagPathDone', { path }))
+  } catch (err) {
+    message.error(
+      t('instance.copyDiagPathFailed', { error: err instanceof Error ? err.message : String(err) })
+    )
+  } finally {
+    copyingDiag.value = false
   }
 }
 
@@ -348,6 +477,26 @@ watch(
             </NSpace>
           </div>
 
+          <div class="update-actions env-actions">
+            <div class="update-result-title">{{ $t('instance.diagnostics') }}</div>
+            <NSpace>
+              <NPopconfirm @positive-click="recreateVenv">
+                <template #trigger>
+                  <NButton secondary :loading="recreatingVenv" :disabled="!instance">
+                    {{ $t('instance.recreateVenv') }}
+                  </NButton>
+                </template>
+                {{ $t('instance.recreateVenvConfirm') }}
+              </NPopconfirm>
+              <NButton secondary :loading="reinstallingTorch" :disabled="!instance" @click="openTorchModal">
+                {{ $t('instance.reinstallTorch') }}
+              </NButton>
+              <NButton secondary :loading="copyingDiag" :disabled="!instance" @click="copyDiagPath">
+                {{ $t('instance.copyDiagPath') }}
+              </NButton>
+            </NSpace>
+          </div>
+
           <div v-if="updateInfo" class="update-result">
             <div class="update-result-title">{{ $t('instance.checkUpdate') }}</div>
             <div class="update-result-line">
@@ -420,6 +569,30 @@ watch(
 
     <!-- ComfyUI update progress -->
     <ComfyUpdateProgressModal v-model:show="showUpdateModal" :title="updateModalTitle" />
+
+    <!-- env.installTorch channel picker -->
+    <NModal
+      v-model:show="showTorchModal"
+      preset="card"
+      :title="$t('instance.reinstallTorch')"
+      style="width: 480px; border-radius: 20px"
+    >
+      <div class="confirm-body">
+        <div>{{ $t('instance.reinstallTorchConfirm') }}</div>
+      </div>
+      <div class="torch-field">
+        <div class="update-result-title">{{ $t('instance.torchIndexLabel') }}</div>
+        <NSelect v-model:value="torchIndexChoice" :options="torchIndexSelectOptions" />
+      </div>
+      <template #footer>
+        <NSpace justify="end">
+          <NButton @click="showTorchModal = false">{{ $t('common.cancel') }}</NButton>
+          <NButton type="primary" :loading="reinstallingTorch" @click="reinstallTorch">
+            {{ $t('common.confirm') }}
+          </NButton>
+        </NSpace>
+      </template>
+    </NModal>
   </div>
 </template>
 
@@ -453,6 +626,23 @@ watch(
 
 .update-actions {
   margin-top: 14px;
+}
+
+.env-actions {
+  padding-top: 4px;
+  border-top: 1px dashed $color-border;
+}
+
+.env-actions .update-result-title {
+  margin-bottom: 8px;
+}
+
+.torch-field {
+  margin-top: 14px;
+}
+
+.torch-field .update-result-title {
+  margin-bottom: 6px;
 }
 
 .confirm-body {

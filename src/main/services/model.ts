@@ -91,9 +91,27 @@ function detectSourceFromPath(path: string): ModelRecord['source'] {
   return 'local'
 }
 
-/** Parse extra_model_paths.yaml and return all configured roots (including missing). */
+/**
+ * Parse extra_model_paths.yaml and return all configured roots (including missing).
+ * When `filePath` is not given, auto-discovers the yaml in every configured
+ * instance's ComfyUI root (`<instance>/extra_model_paths.yaml`).
+ */
 export function parseExtraModelPaths(filePath?: string, includeMissing = true): string[] {
-  const candidates = [filePath].filter(Boolean) as string[]
+  const candidates: string[] = []
+  if (filePath) {
+    candidates.push(filePath)
+  } else {
+    // Auto-discover: every instance may ship its own extra_model_paths.yaml
+    try {
+      for (const inst of loadInstanceConfigsSafe()) {
+        if (!inst.path) continue
+        const yaml = join(inst.path, 'extra_model_paths.yaml')
+        if (existsSync(yaml)) candidates.push(yaml)
+      }
+    } catch {
+      /* db not ready — fall through */
+    }
+  }
   const roots: string[] = []
   for (const file of candidates) {
     if (!file || !existsSync(file)) continue
@@ -136,15 +154,28 @@ function readFileSyncSafe(file: string): string {
   return readFileSync(file, 'utf-8')
 }
 
+/**
+ * (path,size,mtime) → parsed header. Model scans re-walk the same checkpoints
+ * constantly; unchanged files must not re-read their JSON header.
+ */
+const safetensorsMetaCache = new Map<
+  string,
+  { size: number; mtimeMs: number; meta: Record<string, unknown> | null }
+>()
+
 /** Read safetensors header (first 8 bytes LE u64 + JSON). */
 export function readSafetensorsMeta(filePath: string): Record<string, unknown> | null {
   let fd: number | null = null
   try {
+    const st = statSync(filePath)
+    const hit = safetensorsMetaCache.get(filePath)
+    if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.meta
     fd = openSync(filePath, 'r')
     const headerLenBuf = Buffer.alloc(8)
     readSync(fd, headerLenBuf, 0, 8, 0)
     const headerLen = Number(headerLenBuf.readBigUInt64LE(0))
     if (headerLen <= 0 || headerLen > 100 * 1024 * 1024) {
+      safetensorsMetaCache.set(filePath, { size: st.size, mtimeMs: st.mtimeMs, meta: null })
       return null
     }
     const jsonBuf = Buffer.alloc(Math.min(headerLen, 8 * 1024 * 1024))
@@ -153,7 +184,12 @@ export function readSafetensorsMeta(filePath: string): Record<string, unknown> |
     fd = null
     const json = JSON.parse(jsonBuf.toString('utf-8').replace(/\0+$/, ''))
     const meta = json.__metadata__ || {}
-    return { tensors: Object.keys(json).filter((k) => k !== '__metadata__').length, ...meta }
+    const parsed = {
+      tensors: Object.keys(json).filter((k) => k !== '__metadata__').length,
+      ...meta
+    }
+    safetensorsMetaCache.set(filePath, { size: st.size, mtimeMs: st.mtimeMs, meta: parsed })
+    return parsed
   } catch {
     return null
   } finally {
@@ -554,6 +590,11 @@ export class ModelService extends EventEmitter {
       message: ok ? task.fileName : `${task.fileName}: ${task.error || 'unknown error'}`,
       params: { name: task.fileName }
     })
+    // Auto-index: a finished download should appear in the model library
+    // without requiring a manual scan.
+    if (ok && task.destPath && existsSync(task.destPath)) {
+      void this.scan({ hash: true }).catch(() => undefined)
+    }
   }
 
   private detectDownloadSource(url: string): DownloadTask['source'] {
@@ -922,7 +963,10 @@ export class ModelService extends EventEmitter {
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
-          file.write(Buffer.from(value))
+          // Honour stream backpressure — never queue chunks faster than disk drains.
+          await new Promise<void>((resolve, reject) => {
+            file.write(Buffer.from(value), (err) => (err ? reject(err) : resolve()))
+          })
           task.receivedBytes += value.byteLength
           windowBytes += value.byteLength
           const now = Date.now()

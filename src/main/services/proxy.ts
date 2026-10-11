@@ -167,6 +167,8 @@ export async function proxyFetch(
     signal?: AbortSignal
   }
 ): Promise<Response> {
+  // Same URL safety gate as fetchThroughProxy — never fetch arbitrary schemes.
+  if (!isSafeExternalUrl(url)) throw new Error(`Blocked unsafe URL: ${url.slice(0, 60)}`)
   return session.defaultSession.fetch(url, {
     method: init?.method || 'GET',
     headers: init?.headers,

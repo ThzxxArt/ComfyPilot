@@ -7,7 +7,11 @@ import {
   copyFileSync,
   mkdirSync,
   renameSync,
-  unlinkSync
+  unlinkSync,
+  rmSync,
+  openSync,
+  readSync,
+  closeSync
 } from 'fs'
 import { join, extname, basename, dirname } from 'path'
 import { createHash } from 'crypto'
@@ -15,6 +19,7 @@ import type { WorkflowRecord, WorkflowOrigin, ComfyInstanceConfig } from '@share
 import {
   loadSettings,
   upsertWorkflow,
+  upsertWorkflows,
   listWorkflows,
   updateWorkflow,
   deleteWorkflow as dbDeleteWorkflow,
@@ -71,6 +76,36 @@ export function extractPngTextMeta(buf: Buffer): Record<string, unknown> {
     /* ignore */
   }
   return meta
+}
+
+/**
+ * tEXt/iTXt chunks sit near the head of a PNG — never slurp a full-size
+ * output image just to read its metadata. Cap at 8MB so giant IDAT payloads
+ * stay on disk while every normal ComfyUI PNG is covered.
+ */
+const PNG_META_READ_CAP = 8 * 1024 * 1024
+
+export function readPngTextMetaFromFile(filePath: string): Record<string, unknown> {
+  let fd: number | null = null
+  try {
+    fd = openSync(filePath, 'r')
+    const st = statSync(filePath)
+    if (!st.size) return {}
+    const cap = Math.min(st.size, PNG_META_READ_CAP)
+    const buf = Buffer.alloc(cap)
+    readSync(fd, buf, 0, cap, 0)
+    return extractPngTextMeta(buf)
+  } catch {
+    return {}
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd)
+      } catch {
+        /* ignore */
+      }
+    }
+  }
 }
 
 function parseWorkflowJson(raw: string): Record<string, unknown> | null {
@@ -290,8 +325,7 @@ function analyzeFile(full: string, ext: string): ParsedWorkflow {
     return analyzeParsedGraph(parsed)
   }
   // PNG: extract meta, prefer embedded workflow (UI) then prompt (API)
-  const buf = readFileSync(full)
-  const textMeta = extractPngTextMeta(buf)
+  const textMeta = readPngTextMetaFromFile(full)
   let graph: Record<string, unknown> | null = null
   if (textMeta.workflow) {
     graph = parseWorkflowJson(String(textMeta.workflow))
@@ -325,6 +359,20 @@ function analyzeFile(full: string, ext: string): ParsedWorkflow {
 
 function recordIdFor(path: string): string {
   return createHash('sha1').update(path).digest('hex').slice(0, 16)
+}
+
+/**
+ * (path,size,mtime) → analysis cache. list() rescans every file on each call;
+ * unchanged files must not re-parse JSON / re-read PNG metadata.
+ */
+const analyzeCache = new Map<string, { size: number; mtimeMs: number; analyzed: ParsedWorkflow }>()
+
+function analyzeCached(full: string, ext: string, st: { size: number; mtimeMs: number }): ParsedWorkflow {
+  const hit = analyzeCache.get(full)
+  if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.analyzed
+  const analyzed = analyzeFile(full, ext)
+  analyzeCache.set(full, { size: st.size, mtimeMs: st.mtimeMs, analyzed })
+  return analyzed
 }
 
 // ---------- Service ----------
@@ -366,11 +414,13 @@ export class WorkflowService {
     }
 
     // Preserve user metadata (tags / favorite / description / importedAt) across rescans.
-    const dbById = new Map(listWorkflows().map((w) => [w.id, w]))
-    const dbByPath = new Map(listWorkflows().map((w) => [w.path, w]))
+    const dbRows = listWorkflows()
+    const dbById = new Map(dbRows.map((w) => [w.id, w]))
+    const dbByPath = new Map(dbRows.map((w) => [w.path, w]))
 
     const out: WorkflowRecord[] = []
     const scannedPaths = new Set<string>()
+    const scannedMerges: WorkflowRecord[] = []
     for (const rec of scanned) {
       scannedPaths.add(rec.path)
       const prev = dbById.get(rec.id) || dbByPath.get(rec.path)
@@ -389,18 +439,21 @@ export class WorkflowService {
         params: { ...(prev?.params || {}), ...rec.params },
         missing: false
       }
-      upsertWorkflow(merged)
+      scannedMerges.push(merged)
       out.push(merged)
     }
+    // One read-modify-write for the whole scan instead of one per file.
+    upsertWorkflows(scannedMerges)
 
     // DB rows that no longer resolve to a file
+    const missingMerges: WorkflowRecord[] = []
     for (const prev of listWorkflows()) {
       if (scannedPaths.has(prev.path)) continue
       if (seen.has(prev.path)) continue
       const exists = existsSync(prev.path)
       if (!exists) {
         const missingRec: WorkflowRecord = { ...prev, missing: true }
-        upsertWorkflow(missingRec)
+        missingMerges.push(missingRec)
         if (opts?.includeMissing !== false) out.push(missingRec)
         continue
       }
@@ -408,9 +461,10 @@ export class WorkflowService {
       const recovered = this.buildRecord(prev.path, prev.origin || 'external', {
         ...prev
       })
-      upsertWorkflow(recovered)
+      missingMerges.push(recovered)
       out.push(recovered)
     }
+    upsertWorkflows(missingMerges)
 
     return out.sort((a, b) => b.updatedAt - a.updatedAt)
   }
@@ -455,7 +509,7 @@ export class WorkflowService {
   ): WorkflowRecord {
     const st = statSync(full)
     const ext = extname(full).toLowerCase()
-    const analyzed = analyzeFile(full, ext)
+    const analyzed = analyzeCached(full, ext, st)
     const id = recordIdFor(full)
     return {
       id,
@@ -484,17 +538,15 @@ export class WorkflowService {
   instanceWorkflowsDir(instanceId?: string): string {
     const instances = loadInstanceConfigs()
     const inst =
-      instances.find((i) => i.id === instanceId) ||
-      instances.find((i) => i.id === (loadSettings() as { activeInstance?: string }).activeInstance) ||
-      instances[0]
+      instances.find((i) => i.id === instanceId) || instances[0]
     if (!inst) throw new Error('No instance configured')
     return join(inst.path, 'user', 'default', 'workflows')
   }
 
   /**
-   * True import: materialise EXACTLY ONE `.json` into the TARGET INSTANCE's
-   * `user/default/workflows` folder — the directory ComfyUI actually loads,
-   * so the workflow shows up in Frontend immediately.
+   * True import: materialise EXACTLY ONE `.json` into the target folder.
+   * - `target: 'instance'` (default) → instance `user/default/workflows` (ComfyUI loads it)
+   * - `target: 'library'`            → ComfyPilot library root (`userData/workflows`)
    * - `.json` source → validated then written
    * - `.png` source  → embedded workflow/prompt extracted to `.json`
    *   (the PNG itself is NOT copied — one import = one JSON artifact)
@@ -502,7 +554,11 @@ export class WorkflowService {
    * Anything that is not a recognisable ComfyUI workflow is REJECTED with a
    * clear reason. There is no silent "empty card" import.
    */
-  async importFile(path: string, instanceId?: string): Promise<WorkflowRecord> {
+  async importFile(
+    path: string,
+    instanceId?: string,
+    target: 'instance' | 'library' = 'instance'
+  ): Promise<WorkflowRecord> {
     if (!existsSync(path)) throw new Error(`Workflow file not found: ${path}`)
     const st = statSync(path)
     if (!st.isFile()) throw new Error(`Not a file: ${path}`)
@@ -515,7 +571,7 @@ export class WorkflowService {
     // ---- parse + validate BEFORE touching disk ----
     let graph: Record<string, unknown>
     if (ext === '.png') {
-      const meta = extractPngTextMeta(readFileSync(path))
+      const meta = readPngTextMetaFromFile(path)
       const raw = String(meta.workflow || meta.prompt || '')
       const parsed = raw ? parseWorkflowJson(raw) : null
       if (!parsed) {
@@ -534,8 +590,10 @@ export class WorkflowService {
     // Throws with a descriptive message when the shape is wrong.
     assertComfyWorkflow(graph)
 
-    // ---- land exactly one .json in the instance workflows folder ----
-    const targetDir = this.instanceWorkflowsDir(instanceId)
+    // ---- land exactly one .json in the chosen folder ----
+    const targetDir =
+      target === 'library' ? this.libraryRoot() : this.instanceWorkflowsDir(instanceId)
+    const origin: WorkflowOrigin = target === 'library' ? 'library' : 'instance'
     mkdirSync(targetDir, { recursive: true })
     const safeBase = assertSafeRelativeFilename(basename(path, ext)).slice(0, 120)
     let dest = join(targetDir, `${safeBase}.json`)
@@ -543,11 +601,11 @@ export class WorkflowService {
     while (existsSync(dest) && !resolveSame(dest, path)) {
       dest = join(targetDir, `${safeBase}-${n}.json`)
       n += 1
-      if (n > 200) throw new Error('Too many name collisions in the instance workflows folder')
+      if (n > 200) throw new Error('Too many name collisions in the target workflows folder')
     }
     writeFileSync(dest, JSON.stringify(graph, null, 2), 'utf-8')
 
-    const rec = this.buildRecord(dest, 'instance', {
+    const rec = this.buildRecord(dest, origin, {
       sourcePath: path,
       importedAt: Date.now(),
       name: safeBase,
@@ -561,13 +619,14 @@ export class WorkflowService {
 
   async importMany(
     paths: string[],
-    instanceId?: string
+    instanceId?: string,
+    target: 'instance' | 'library' = 'instance'
   ): Promise<{ ok: WorkflowRecord[]; errors: Array<{ path: string; message: string }> }> {
     const ok: WorkflowRecord[] = []
     const errors: Array<{ path: string; message: string }> = []
     for (const p of paths) {
       try {
-        ok.push(await this.importFile(p, instanceId))
+        ok.push(await this.importFile(p, instanceId, target))
       } catch (e) {
         errors.push({ path: p, message: e instanceof Error ? e.message : String(e) })
       }
@@ -698,17 +757,21 @@ export class WorkflowService {
     // Prefer a real JSON payload for portability.
     let payloadPath = rec.path
     let payloadName = basename(rec.path)
+    let tmpJson: string | null = null
     if (rec.format === 'png') {
-      const meta = extractPngTextMeta(readFileSync(rec.path))
+      const meta = readPngTextMetaFromFile(rec.path)
       const raw = String(meta.workflow || meta.prompt || '')
       const parsed = raw ? parseWorkflowJson(raw) : null
       if (parsed) {
-        const tmp = join(targetDir, `${assertSafeRelativeFilename(rec.name)}.json`)
-        writeFileSync(tmp, JSON.stringify(parsed, null, 2), 'utf-8')
-        payloadPath = tmp
-        payloadName = basename(tmp)
-        // The temp json is also the export payload — zip it then leave it
-        // (user-visible export folder). Fine for a share bundle.
+        // Write the extracted JSON to a temp dir — NOT the export target —
+        // so the library root is never polluted with stray .json files.
+        const os = await import('os')
+        const tmpDir = join(os.tmpdir(), 'comfypilot-export-' + Date.now())
+        mkdirSync(tmpDir, { recursive: true })
+        tmpJson = join(tmpDir, `${assertSafeRelativeFilename(rec.name)}.json`)
+        writeFileSync(tmpJson, JSON.stringify(parsed, null, 2), 'utf-8')
+        payloadPath = tmpJson
+        payloadName = basename(tmpJson)
       }
     }
 
@@ -726,6 +789,14 @@ export class WorkflowService {
           (rec.sourcePath ? `Source: ${rec.sourcePath}\n` : '')
       }
     ])
+    // Clean up the temp extraction directory.
+    if (tmpJson) {
+      try {
+        rmSync(dirname(tmpJson), { recursive: true, force: true })
+      } catch {
+        /* ignore */
+      }
+    }
     return { path: zipPath }
   }
 
@@ -821,10 +892,8 @@ export class WorkflowService {
     missing: number
   } {
     const instances = loadInstanceConfigs()
-    const inst =
-      instances.find((i) => i.id === instanceId) ||
-      instances.find((i) => i.id === (loadSettings() as { activeInstance?: string }).activeInstance) ||
-      instances[0]
+    const inst = instances.find((i) => i.id === instanceId) || instances[0]
+    // root = where imports land (instance workflows dir when available)
     const root = inst
       ? join(inst.path, 'user', 'default', 'workflows')
       : this.libraryRoot()
@@ -855,7 +924,7 @@ export class WorkflowService {
     let rawJson: unknown = null
     const ext = extname(opts.workflowPath).toLowerCase()
     if (ext === '.png') {
-      const meta = extractPngTextMeta(readFileSync(opts.workflowPath))
+      const meta = readPngTextMetaFromFile(opts.workflowPath)
       if (meta.prompt) {
         try {
           rawJson = JSON.parse(String(meta.prompt))
@@ -901,19 +970,10 @@ export class WorkflowService {
     if (!existsSync(path)) return null
     // PNG only — never slurp videos/audio into memory looking for tEXt chunks.
     if (!/\.png$/i.test(path)) return null
-    const { statSync: stFn, openSync, readSync, closeSync } = await import('fs')
-    const st = stFn(path)
+    const st = statSync(path)
     if (!st.size) return null
-    // tEXt/iTXt live near the head; cap how much we read (full file only when small).
-    const cap = Math.min(st.size, 8 * 1024 * 1024)
-    const fd = openSync(path, 'r')
-    try {
-      const buf = Buffer.alloc(cap)
-      readSync(fd, buf, 0, cap, 0)
-      return extractPngTextMeta(buf)
-    } finally {
-      closeSync(fd)
-    }
+    // tEXt/iTXt live near the head; readPngTextMetaFromFile caps the read.
+    return readPngTextMetaFromFile(path)
   }
 
   listCached(): WorkflowRecord[] {

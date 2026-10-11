@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { PulseOutline, HardwareChipOutline } from '@vicons/ionicons5'
-import { NButton, NSpace, NProgress, NEmpty } from 'naive-ui'
+import { NButton, NSpace, NProgress, NEmpty, NTag, NTabs, NTabPane, NScrollbar, useMessage } from 'naive-ui'
 import StatCard from '@/components/StatCard.vue'
 import { useAppStore } from '@/stores/app'
 import { ipc, onMonitorTick } from '@/composables/useIpc'
@@ -10,8 +11,15 @@ import { COLORS } from '@/styles/tokens'
 import type { QueueSnapshot, SystemSnapshot } from '@shared/types'
 
 const store = useAppStore()
+const { t } = useI18n()
+const message = useMessage()
 const queue = ref<QueueSnapshot | null>(null)
 const history = ref<number[]>([])
+
+// monitor.history — task history for the active instance
+const historySnapshot = ref<QueueSnapshot | null>(null)
+const historyLoading = ref(false)
+const queueTab = ref<'queue' | 'history'>('queue')
 
 const cpuHistory = computed(() => history.value.slice(-40))
 
@@ -36,6 +44,41 @@ async function refreshQueue(): Promise<void> {
   }
 }
 
+/** Load monitor.history (QueueSnapshot.history) for the active instance. */
+async function refreshHistory(): Promise<void> {
+  const inst = store.activeInstance
+  if (!inst?.url) {
+    historySnapshot.value = null
+    return
+  }
+  historyLoading.value = true
+  try {
+    historySnapshot.value = await ipc('monitor.history', inst.url)
+  } catch (err) {
+    historySnapshot.value = null
+    message.error(t('monitor.historyLoadFailed', { error: err instanceof Error ? err.message : String(err) }))
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+function historyStatusLabel(status: string): string {
+  const s = String(status || '').toLowerCase()
+  if (s === 'success' || s === 'done' || s === 'completed') return t('monitor.historyStatusDone')
+  return t('monitor.historyStatusError')
+}
+
+function historyStatusType(status: string): 'success' | 'error' | 'default' {
+  const s = String(status || '').toLowerCase()
+  if (s === 'success' || s === 'done' || s === 'completed') return 'success'
+  return 'error'
+}
+
+function formatHistoryTime(ts?: number): string {
+  if (!ts) return '—'
+  return new Date(ts).toLocaleString()
+}
+
 let off: (() => void) | null = null
 let queueTimer: ReturnType<typeof setInterval> | null = null
 
@@ -55,13 +98,17 @@ onMounted(async () => {
   // WS is owned by the app store (bound to the active instance) — do not
   // connect/disconnect it here or leaving this page would kill other pages' streams.
   await refreshQueue()
+  void refreshHistory()
   queueTimer = setInterval(() => void refreshQueue(), 3000)
 })
 
 // Re-poll when the user switches the active instance in the header.
 watch(
   () => store.instanceSwitchTick,
-  () => void refreshQueue()
+  () => {
+    void refreshQueue()
+    void refreshHistory()
+  }
 )
 
 onUnmounted(() => {
@@ -147,20 +194,57 @@ onUnmounted(() => {
     </div>
 
     <section class="card panel queue-panel">
-      <div class="panel-title">{{ $t('monitor.queueTitle') }}</div>
-      <div v-if="!queue || (!queue.running.length && !queue.pending.length)" class="queue-empty">
-        {{ $t('monitor.queueEmpty') }}
-      </div>
-      <div v-else class="queue-list">
-        <div v-for="r in queue.running" :key="r.promptId" class="queue-row">
-          <span class="chip chip-success">{{ $t('status.running') }}</span>
-          <span class="mono">{{ r.promptId }}</span>
-        </div>
-        <div v-for="p in queue.pending" :key="p.promptId" class="queue-row">
-          <span class="chip chip-warning">{{ $t('monitor.pending') }}</span>
-          <span class="mono">{{ p.promptId }}</span>
-        </div>
-      </div>
+      <NTabs v-model:value="queueTab" type="line" @update:value="(v: string) => { if (v === 'history') void refreshHistory() }">
+        <NTabPane name="queue" :tab="$t('monitor.tabQueue')">
+          <div class="panel-title">{{ $t('monitor.queueTitle') }}</div>
+          <div v-if="!queue || (!queue.running.length && !queue.pending.length)" class="queue-empty">
+            {{ $t('monitor.queueEmpty') }}
+          </div>
+          <div v-else class="queue-list">
+            <div v-for="r in queue.running" :key="r.promptId" class="queue-row">
+              <span class="chip chip-success">{{ $t('status.running') }}</span>
+              <span class="mono">{{ r.promptId }}</span>
+            </div>
+            <div v-for="p in queue.pending" :key="p.promptId" class="queue-row">
+              <span class="chip chip-warning">{{ $t('monitor.pending') }}</span>
+              <span class="mono">{{ p.promptId }}</span>
+            </div>
+          </div>
+        </NTabPane>
+        <NTabPane name="history" :tab="$t('monitor.tabHistory')">
+          <div class="panel-head">
+            <div class="panel-title">{{ $t('monitor.historyTitle') }}</div>
+            <NSpace :size="8" align="center">
+              <span v-if="historySnapshot?.history?.length" class="meta">
+                {{ $t('monitor.historyCount', { n: historySnapshot.history.length }) }}
+              </span>
+              <NButton size="tiny" secondary :loading="historyLoading" @click="refreshHistory">
+                {{ $t('monitor.historyRefresh') }}
+              </NButton>
+            </NSpace>
+          </div>
+          <div v-if="!store.activeInstance?.url" class="queue-empty">
+            {{ $t('monitor.needInstanceUrl') }}
+          </div>
+          <div v-else-if="historyLoading && !historySnapshot" class="queue-empty">
+            {{ $t('monitor.historyRefresh') }}
+          </div>
+          <div v-else-if="!historySnapshot?.history?.length" class="queue-empty">
+            {{ $t('monitor.historyEmpty') }}
+          </div>
+          <NScrollbar v-else style="max-height: 320px">
+            <div class="queue-list">
+              <div v-for="h in historySnapshot.history" :key="h.promptId" class="queue-row history-row">
+                <NTag size="small" round :type="historyStatusType(h.status)">
+                  {{ historyStatusLabel(h.status) }}
+                </NTag>
+                <span class="mono history-prompt">{{ h.promptId }}</span>
+                <span class="meta history-time">{{ formatHistoryTime(h.completedAt) }}</span>
+              </div>
+            </div>
+          </NScrollbar>
+        </NTabPane>
+      </NTabs>
     </section>
     </div>
   </div>
@@ -246,5 +330,33 @@ onUnmounted(() => {
   padding: 10px 12px;
   border-radius: 12px;
   background: $color-surface-2;
+}
+
+.panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.meta {
+  font-size: 12px;
+  color: $color-text-muted;
+}
+
+.history-row {
+  justify-content: flex-start;
+}
+
+.history-prompt {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-time {
+  flex-shrink: 0;
 }
 </style>

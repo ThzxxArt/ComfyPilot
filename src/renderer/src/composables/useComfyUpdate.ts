@@ -62,7 +62,15 @@ export function updateStepTitle(t: TranslateFn, step: UpdateStep | UpdateStepId)
 }
 
 const progress = ref<UpdateProgress | null>(null)
+/**
+ * Which operation currently owns the shared progress modal.
+ * Prevents ComfyUI-update / repair / node-op streams from overwriting
+ * each other when two long tasks run concurrently.
+ */
+const progressKind = ref<'comfy-update' | 'repair' | 'node-op' | null>(null)
 const updating = ref(false)
+/** Instance id of the active update/repair — lets per-instance spinners stay correct. */
+const updatingInstanceId = ref<string | null>(null)
 const cancelling = ref(false)
 let offProgress: (() => void) | null = null
 let offRepair: (() => void) | null = null
@@ -70,10 +78,18 @@ let offNode: (() => void) | null = null
 let offInstall: (() => void) | null = null
 let offNodeOp: (() => void) | null = null
 
+/** Write into the shared progress slot only when this kind owns it (or slot is free). */
+function writeProgress(kind: 'comfy-update' | 'repair' | 'node-op', payload: unknown): void {
+  if (progressKind.value === null || progressKind.value === kind) {
+    progressKind.value = kind
+    progress.value = payload as UpdateProgress
+  }
+}
+
 function ensureSubscribed(): void {
   if (offProgress) return
   offProgress = onIpc(IPC_EVENTS.comfyUpdateProgress, (payload) => {
-    progress.value = payload as UpdateProgress
+    writeProgress('comfy-update', payload)
   })
 }
 
@@ -81,7 +97,7 @@ function ensureRepairSubscribed(): void {
   if (offRepair) return
   offRepair = onIpc(IPC_EVENTS.repairProgress, (payload) => {
     // Repair runs reuse the same progress stream / modal as ComfyUI updates.
-    progress.value = payload as UpdateProgress
+    writeProgress('repair', payload)
   })
 }
 
@@ -107,8 +123,12 @@ function ensureNodeSubscribed(): void {
       if (!p) return
       lastNodeOpAt.value = Date.now()
       if (p.phase === 'done' || p.phase === 'error') {
+        // Clear BOTH — afterInstall emits op:'install' even during updates,
+        // so nodeInstallingPack may have been set by a sub-step.
         nodeUpdatingPack.value = null
         nodeUpdateMessage.value = ''
+        nodeInstallingPack.value = null
+        nodeInstallMessage.value = ''
       } else {
         nodeUpdatingPack.value = p.packName
         nodeUpdateMessage.value = p.message || ''
@@ -123,6 +143,8 @@ function ensureNodeSubscribed(): void {
       if (p.phase === 'done' || p.phase === 'error') {
         nodeInstallingPack.value = null
         nodeInstallMessage.value = ''
+        nodeUpdatingPack.value = null
+        nodeUpdateMessage.value = ''
       } else {
         nodeInstallingPack.value = p.packName
         nodeInstallMessage.value = p.message || ''
@@ -133,7 +155,7 @@ function ensureNodeSubscribed(): void {
     offNodeOp = onIpc(IPC_EVENTS.nodeOperationProgress, (payload) => {
       // Node install/update streams into the SAME progress ref the shared
       // ComfyUpdateProgressModal renders — live steps + pip log lines.
-      progress.value = payload as UpdateProgress
+      writeProgress('node-op', payload)
     })
   }
 }
@@ -157,20 +179,27 @@ export function useComfyUpdate() {
     try {
       const running = await ipc('instance.updateStatus')
       if (running && running.status === 'running') {
+        progressKind.value = 'comfy-update'
         progress.value = running
       }
     } catch {
       /* updateStatus is best-effort */
     }
+    progressKind.value = 'comfy-update'
     updating.value = true
+    updatingInstanceId.value = instanceId
     cancelling.value = false
     try {
       const result = await ipc('instance.updateComfy', instanceId, opts)
+      progressKind.value = 'comfy-update'
       progress.value = result
       return result
     } finally {
       updating.value = false
+      updatingInstanceId.value = null
       cancelling.value = false
+      // Release the slot so a subsequent node-op can claim it.
+      if (progressKind.value === 'comfy-update') progressKind.value = null
     }
   }
 
@@ -185,21 +214,28 @@ export function useComfyUpdate() {
 
   async function repairEnv(instanceId: string, opts?: RepairEnvOptions): Promise<EnvProbe> {
     ensureRepairSubscribed()
+    progressKind.value = 'repair'
     updating.value = true
+    updatingInstanceId.value = instanceId
     try {
       return await ipc('instance.repairEnv', instanceId, opts)
     } finally {
       updating.value = false
+      updatingInstanceId.value = null
+      if (progressKind.value === 'repair') progressKind.value = null
     }
   }
 
   function clearProgress(): void {
     progress.value = null
+    progressKind.value = null
   }
 
   return {
     progress,
+    progressKind,
     updating,
+    updatingInstanceId,
     cancelling,
     nodeUpdatingPack,
     nodeUpdateMessage,

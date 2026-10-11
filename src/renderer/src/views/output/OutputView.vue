@@ -32,6 +32,7 @@ import {
   NSwitch,
   NText,
   useMessage,
+  useDialog,
   NPagination
 } from 'naive-ui'
 import { ipc, onIpc, IPC_EVENTS } from '@/composables/useIpc'
@@ -42,6 +43,7 @@ import type { OutputAsset, WorkflowRecord } from '@shared/types'
 const { t } = useI18n()
 const store = useAppStore()
 const message = useMessage()
+const dialog = useDialog()
 const route = useRoute()
 const router = useRouter()
 const loading = ref(false)
@@ -56,6 +58,8 @@ const order = ref<'asc' | 'desc'>('desc')
 const onlyFavorites = ref(false)
 const batchFilter = ref('')
 const workflowFilter = ref('')
+/** createdAt range filter (epoch ms pair). */
+const dateRange = ref<[number, number] | null>(null)
 const workflows = ref<WorkflowRecord[]>([])
 const selected = ref<Set<string>>(new Set())
 
@@ -105,7 +109,9 @@ async function refresh(): Promise<void> {
       batchJobId: batchFilter.value || undefined,
       workflowId: workflowFilter.value || undefined,
       sort: sort.value,
-      order: order.value
+      order: order.value,
+      createdFrom: dateRange.value?.[0] ?? undefined,
+      createdTo: dateRange.value?.[1] ?? undefined
     })
     // Drop stale responses so a slow old page never overwrites the new one.
     if (seq !== reqSeq) return
@@ -190,6 +196,11 @@ async function openDetail(a: OutputAsset): Promise<void> {
   }
 }
 
+/** Full-resolution display URL — never a bare fs path (renderer cannot load those). */
+function lightboxUrl(a: OutputAsset): string {
+  return a.mediaUrl || a.thumbnail || ''
+}
+
 function openLightbox(a: OutputAsset): void {
   // Video/audio open externally  -no dead lightbox.
   if (a.type === 'video' || a.type === 'audio') {
@@ -198,7 +209,7 @@ function openLightbox(a: OutputAsset): void {
   }
   if (a.type !== 'image') return
   lightboxAsset.value = a
-  lightboxSrc.value = a.thumbnail || a.path
+  lightboxSrc.value = lightboxUrl(a)
   lightbox.value = true
 }
 
@@ -216,7 +227,7 @@ function lightboxPrev(): void {
   if (cur <= 0) return
   const prev = images[cur - 1]
   lightboxAsset.value = prev
-  lightboxSrc.value = prev.thumbnail || prev.path
+  lightboxSrc.value = lightboxUrl(prev)
 }
 
 function lightboxNext(): void {
@@ -227,7 +238,7 @@ function lightboxNext(): void {
   if (cur < 0 || cur >= images.length - 1) return
   const next = images[cur + 1]
   lightboxAsset.value = next
-  lightboxSrc.value = next.thumbnail || next.path
+  lightboxSrc.value = lightboxUrl(next)
 }
 
 function onLightboxKey(e: KeyboardEvent): void {
@@ -256,6 +267,39 @@ async function restoreWorkflow(): Promise<void> {
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   }
+}
+
+/** Delete one asset. deleteFile=true removes the file; false drops the record only. */
+async function doDeleteAsset(id: string, deleteFile: boolean): Promise<void> {
+  try {
+    await ipc('output.delete', id, deleteFile)
+    if (detail.value?.id === id) {
+      showDetail.value = false
+      detail.value = null
+    }
+    if (lightboxAsset.value?.id === id) {
+      lightbox.value = false
+      lightboxAsset.value = null
+      lightboxSrc.value = ''
+    }
+    selected.value.delete(id)
+    message.success(deleteFile ? t('output.deletedWithFile') : t('output.deletedRecordOnly'))
+    await refresh()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+/** Two explicit outcomes (mirrors models): record-only vs delete file too. */
+function confirmDeleteAsset(a: OutputAsset): void {
+  dialog.warning({
+    title: t('output.deleteAction'),
+    content: t('output.deleteConfirm'),
+    positiveText: t('output.deleteFileToo'),
+    negativeText: t('output.removeRecordOnly'),
+    onPositiveClick: () => doDeleteAsset(a.id, true),
+    onNegativeClick: () => doDeleteAsset(a.id, false)
+  })
 }
 
 async function exportSelected(): Promise<void> {
@@ -287,7 +331,7 @@ function metaEntries(meta: Record<string, unknown>): Array<{ key: string; value:
   }))
 }
 
-watch([type, sort, order, onlyFavorites, batchFilter, workflowFilter], () => {
+watch([type, sort, order, onlyFavorites, batchFilter, workflowFilter, dateRange], () => {
   page.value = 1
   void refresh()
 })
@@ -373,6 +417,14 @@ onUnmounted(() => {
         <NButton secondary size="small" @click="order = order === 'desc' ? 'asc' : 'desc'">
           {{ order === 'desc' ? '↓' : '↑' }}
         </NButton>
+        <NDatePicker
+          v-model:value="dateRange"
+          type="datetimerange"
+          clearable
+          :start-placeholder="$t('output.dateFrom')"
+          :end-placeholder="$t('output.dateTo')"
+          style="width: 280px"
+        />
         <NSwitch v-model:value="onlyFavorites">
           <template #checked>{{ $t('output.favOnly') }}</template>
           <template #unchecked>{{ $t('output.favAll') }}</template>
@@ -449,6 +501,9 @@ onUnmounted(() => {
                     <template #icon><NIcon :component="FolderOpenOutline" /></template>
                   </NButton>
                   <NButton size="tiny" secondary @click.stop="openDetail(a)">{{ $t('output.params') }}</NButton>
+                  <NButton size="tiny" type="error" secondary @click.stop="confirmDeleteAsset(a)">
+                    {{ $t('output.delete') }}
+                  </NButton>
                 </NSpace>
               </div>
             </NGi>
@@ -534,6 +589,14 @@ onUnmounted(() => {
           >
             <template #icon><NIcon :component="GitBranchOutline" /></template>
             {{ $t('output.restoreWorkflow') }}
+          </NButton>
+          <NButton
+            v-if="detail"
+            type="error"
+            secondary
+            @click="confirmDeleteAsset(detail)"
+          >
+            {{ $t('output.delete') }}
           </NButton>
         </NSpace>
       </template>

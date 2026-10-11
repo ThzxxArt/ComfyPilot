@@ -248,6 +248,12 @@ export interface NodePackRecord {
   icon?: string
   /** Free-form user note kept across update / reinstall. */
   notes?: string
+  /** PEP 503 package names parsed from requirements.txt at install time. */
+  pipRequirements?: string[]
+  /** Version explicitly requested at install time — wins over on-disk meta. */
+  pinnedVersion?: string
+  /** Git HEAD sha recorded at install/snapshot time (git-managed packs). */
+  gitRev?: string
 }
 
 export interface NodePackIssue {
@@ -278,7 +284,7 @@ export interface NodeSnapshot {
   id: string
   name: string
   createdAt: number
-  packs: Array<{ name: string; version: string; path: string; source: string }>
+  packs: Array<{ name: string; version: string; path: string; source: string; gitRev?: string }>
   notes: string
   /** Instance this snapshot was taken against. */
   instanceId?: string
@@ -388,6 +394,8 @@ export interface OutputAsset {
   favorite?: boolean
   params: Record<string, unknown>
   thumbnail?: string
+  /** Full-resolution safe media URL for lightbox/detail (never a bare fs path). */
+  mediaUrl?: string
 }
 
 // ---------- Doctor ----------
@@ -426,6 +434,8 @@ export interface BackupManifest {
     nodePacks: boolean
     modelManifest: boolean
     workflows: boolean
+    workflowFiles?: boolean
+    nodeSnapshots?: boolean
   }
   notes: string
 }
@@ -465,11 +475,18 @@ export interface BatchJobItem {
   count: number
   submitted: number
   completed: number
+  /** Total failures = submitFailed + execFailed (kept for display compat). */
   failed: number
+  /** Prompts never accepted by ComfyUI (queue refused / build error). */
+  submitFailed: number
+  /** Prompts accepted but failed during execution. */
+  execFailed: number
   promptIds: string[]
   seeds: number[]
   /** Absolute output file paths linked after generation. */
   outputPaths: string[]
+  /** Per-item cancel — skip remaining submits and dequeue pending prompts. */
+  cancelled?: boolean
 }
 
 export interface BatchParamOverrides {
@@ -496,6 +513,10 @@ export interface BatchJob {
   completed: number
   /** Submit + exec failures (sum of item.failed). */
   failed: number
+  /** Prompts never accepted by ComfyUI. */
+  submitFailed: number
+  /** Prompts accepted but failed during execution. */
+  execFailed: number
   /**
    * Output FILES actually linked from history (unique paths pushed to
    * item.outputPaths). A prompt that settled "success" but whose files were
@@ -576,7 +597,7 @@ export type InstallStepId =
   | 'starter'
   | 'done'
 
-export type InstallStepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped'
+export type InstallStepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped' | 'cancelled'
 
 export interface InstallStep {
   id: InstallStepId
@@ -812,9 +833,7 @@ export type IpcChannelMap = {
   'instance.discover': { args: [string?]; result: InstanceDiscoveryCandidate[] }
   'instance.save': { args: [ComfyInstanceConfig]; result: ComfyInstanceInfo }
   'instance.remove': { args: [string]; result: boolean }
-  'instance.start': { args: [string, LaunchOptions?]; result: ComfyInstanceInfo }
   'instance.launch': { args: [string, LaunchOptions?]; result: ComfyInstanceInfo }
-  'instance.waitReady': { args: [string, number?]; result: WaitReadyResult }
   'instance.previewLaunch': { args: [string]; result: LaunchCommandPreview }
   'instance.stop': { args: [string]; result: InstanceStopResult }
   'instance.restart': { args: [string, LaunchOptions?]; result: ComfyInstanceInfo }
@@ -861,10 +880,6 @@ export type IpcChannelMap = {
   // node packs
   'node.list': { args: [string?]; result: NodePackRecord[] }
   'node.refresh': { args: [string?]; result: NodePackRecord[] }
-  'node.registrySearch': {
-    args: [{ query?: string; limit?: number; page?: number }?]
-    result: RegistryPageResult<RegistryNodePack>
-  }
   'registry.indexStatus': {
     args: []
     result: { ready: boolean; updatedAt: number; total: number; pages: number; count: number; skippedPages?: number }
@@ -879,10 +894,15 @@ export type IpcChannelMap = {
   }
   'node.managerChannel': { args: []; result: RegistryNodePack[] }
   'node.install': {
-    args: [{ id: string; version?: string; source: 'registry' | 'git' | 'manager'; url?: string; instanceId?: string }]
+    args: [{ id: string; version?: string; source: 'registry' | 'git' | 'manager'; url?: string; branch?: string; instanceId?: string }]
     result: NodePackRecord
   }
-  'node.uninstall': { args: [string, string?]; result: boolean }
+  'node.uninstall': {
+    args: [string, string?, { removePipDeps?: boolean }?]
+    result: boolean
+  }
+  'node.uninstallDeps': { args: [string, string?]; result: string[] }
+  'node.cancelOp': { args: [string?]; result: boolean }
   'node.update': { args: [string, string?, string?]; result: NodePackRecord }
   'node.toggle': { args: [string, boolean, string?]; result: NodePackRecord }
   'node.lock': { args: [string, boolean, string?]; result: NodePackRecord }
@@ -898,15 +918,14 @@ export type IpcChannelMap = {
 
   // workflows
   'workflow.list': { args: [{ includeMissing?: boolean }?]; result: WorkflowRecord[] }
-  'workflow.import': { args: [string, string?]; result: WorkflowRecord }
+  'workflow.import': { args: [string, string?, ('instance' | 'library')?]; result: WorkflowRecord }
   'workflow.importMany': {
-    args: [string[], string?]
+    args: [string[], string?, ('instance' | 'library')?]
     result: {
       ok: WorkflowRecord[]
       errors: Array<{ path: string; message: string }>
     }
   }
-  'workflow.launch': { args: [string, string?]; result: boolean }
   'workflow.tag': { args: [string, string[]]; result: WorkflowRecord }
   'workflow.favorite': { args: [string, boolean]; result: WorkflowRecord }
   'workflow.rename': { args: [string, string]; result: WorkflowRecord }
@@ -1039,6 +1058,7 @@ export type IpcChannelMap = {
   }
   'batch.start': { args: [string]; result: BatchJob }
   'batch.cancel': { args: [string]; result: BatchJob }
+  'batch.cancelItem': { args: [string, string]; result: BatchJob }
   'batch.remove': { args: [string]; result: boolean }
 
   // output
@@ -1054,6 +1074,8 @@ export type IpcChannelMap = {
         workflowId?: string
         sort?: 'createdAt' | 'size' | 'name'
         order?: 'asc' | 'desc'
+        createdFrom?: number
+        createdTo?: number
       }?
     ]
     result: { items: OutputAsset[]; total: number; truncated: boolean }
@@ -1061,6 +1083,7 @@ export type IpcChannelMap = {
   'output.open': { args: [string]; result: boolean }
   'output.reveal': { args: [string]; result: boolean }
   'output.favorite': { args: [string, boolean]; result: boolean }
+  'output.delete': { args: [string, boolean]; result: boolean }
   'output.importToWorkflow': { args: [string, string?]; result: WorkflowRecord | null }
   'output.exportZip': { args: [string[], string?]; result: { path: string } }
 
@@ -1076,7 +1099,10 @@ export type IpcChannelMap = {
     args: [{ query?: string; category?: string; limit?: number; page?: number; instanceId?: string }?]
     result: RegistryPageResult<MarketItem>
   }
-  'market.install': { args: [string, string?]; result: NodePackRecord }
+  'market.install': {
+    args: [{ id: string; version?: string; repository?: string; instanceId?: string }]
+    result: NodePackRecord
+  }
 
   // shell
   'shell.openExternal': { args: [string]; result: boolean }

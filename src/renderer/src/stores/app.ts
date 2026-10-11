@@ -6,7 +6,8 @@ import type {
   SystemSnapshot,
   ExecProgressEvent,
   DoctorReport,
-  AppNotification
+  AppNotification,
+  RemoteInstanceConfig
 } from '@shared/types'
 import {
   ipc,
@@ -22,6 +23,9 @@ export const useAppStore = defineStore('app', () => {
   const settings = ref<AppSettings | null>(null)
   const instances = ref<ComfyInstanceInfo[]>([])
   const activeInstanceId = ref<string | null>(null)
+  /** Remote ComfyUI instances (LAN / cloud) — read-only targets. */
+  const remotes = ref<RemoteInstanceConfig[]>([])
+  const activeRemoteId = ref<string | null>(null)
   /**
    * Bumped whenever activeInstanceId changes. Domain views watch this
    * instead of hunting for every write site — switching the header selector
@@ -35,17 +39,41 @@ export const useAppStore = defineStore('app', () => {
   const doctorReport = ref<DoctorReport | null>(null)
   /** Global notification queue pushed by the main process (long-running tasks). */
   const notifications = ref<AppNotification[]>([])
+  /**
+   * Monotonic counter — the ONLY reliable cursor for consumers.
+   * `notifications.length` is capped at 20, so a length-based watcher
+   * silently stops firing after the 20th toast. Watch this seq instead.
+   */
+  const notificationSeq = ref(0)
 
   const activeInstance = computed(
     () => instances.value.find((i) => i.id === activeInstanceId.value) || instances.value[0] || null
   )
 
-  watch(activeInstanceId, () => {
+  /** The selected remote (null when a local instance is active). */
+  const activeRemote = computed(
+    () => remotes.value.find((r) => r.id === activeRemoteId.value) || null
+  )
+
+  /** True when a remote is selected — local-only features should be disabled. */
+  const isRemoteActive = computed(() => Boolean(activeRemoteId.value))
+
+  /**
+   * URL to use for monitor / queue / WS / workflow-queue.
+   * Remote baseUrl when a remote is active, else the local instance URL.
+   */
+  const activeTargetUrl = computed(() => {
+    if (activeRemote.value) return activeRemote.value.baseUrl
+    return activeInstance.value?.url || null
+  })
+
+  watch([activeInstanceId, activeRemoteId], () => {
     instanceSwitchTick.value += 1
   })
 
   function pushNotification(n: AppNotification): void {
     notifications.value = [...notifications.value.slice(-19), n]
+    notificationSeq.value += 1
   }
 
   /** Drop a stale activeInstanceId when its instance disappeared. */
@@ -60,6 +88,7 @@ export const useAppStore = defineStore('app', () => {
     try {
       settings.value = await ipc('settings.get')
       instances.value = await ipc('instance.list')
+      remotes.value = await ipc('remote.list')
       if (!opts?.keepSelection || !activeInstanceId.value) {
         activeInstanceId.value = instances.value[0]?.id ?? null
       }
@@ -81,23 +110,42 @@ export const useAppStore = defineStore('app', () => {
     pruneActiveInstance()
   }
 
+  async function refreshRemotes(): Promise<void> {
+    remotes.value = await ipc('remote.list')
+    if (activeRemoteId.value && !remotes.value.some((r) => r.id === activeRemoteId.value)) {
+      activeRemoteId.value = null
+    }
+  }
+
   /**
    * WS is an app-level resource bound to the active instance.
    * Views must NOT disconnect it on unmount — that would kill progress
    * streams for pages listening in the background.
    */
   async function syncWs(): Promise<void> {
+    const url = activeTargetUrl.value
     const inst = activeInstance.value
-    if (inst?.url && (inst.status === 'running' || inst.status === 'starting')) {
+    // Local: only connect when running/starting. Remote: always try.
+    if (isRemoteActive.value) {
+      if (url) {
+        try {
+          await ipc('monitor.connectWs', url)
+        } catch {
+          /* offline — polling still covers queue */
+        }
+      }
+      return
+    }
+    if (url && inst && (inst.status === 'running' || inst.status === 'starting')) {
       try {
-        await ipc('monitor.connectWs', inst.url)
+        await ipc('monitor.connectWs', url)
       } catch {
         /* offline — polling still covers queue */
       }
     }
   }
 
-  watch(activeInstanceId, () => {
+  watch([activeInstanceId, activeRemoteId], () => {
     void syncWs()
   })
 
@@ -134,14 +182,21 @@ export const useAppStore = defineStore('app', () => {
     instances,
     activeInstanceId,
     instanceSwitchTick,
+    remotes,
+    activeRemoteId,
+    activeRemote,
+    isRemoteActive,
+    activeTargetUrl,
     system,
     wsEvents,
     lastWsProgress,
     doctorReport,
     notifications,
+    notificationSeq,
     activeInstance,
     bootstrap,
     refreshInstances,
+    refreshRemotes,
     bindLive,
     pushNotification,
     pruneActiveInstance,

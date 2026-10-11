@@ -90,27 +90,45 @@ const GITHUB_CANDIDATES: Array<{ id: string; label: string; value: string; probe
   }
 ]
 
-async function probeOne(url: string, timeoutMs = 4000): Promise<number> {
+/**
+ * One probe attempt over session fetch (app proxy) with a Node fetch fallback.
+ * The body is never consumed — any HTTP response proves the host is reachable.
+ */
+async function probeOnce(url: string, method: 'HEAD' | 'GET', timeoutMs: number): Promise<number> {
   const started = Date.now()
-  // Prefer session fetch so the app proxy is honored; fall back to Node fetch.
   try {
     const res = await session.defaultSession.fetch(url, {
-      method: 'GET',
+      method,
       signal: AbortSignal.timeout(timeoutMs)
     })
-    // Any HTTP response means the host is reachable.
     void res.status
+    try {
+      await res.body?.cancel()
+    } catch {
+      /* ignore */
+    }
     return Date.now() - started
   } catch {
-    // ignore — try node fetch below
+    // session fetch unavailable — fall back to Node fetch
   }
+  void proxyEnv(loadSettings().proxy)
+  const res = await fetch(url, { method, signal: AbortSignal.timeout(timeoutMs) })
+  void res.status
   try {
-    void proxyEnv(loadSettings().proxy)
-    const res = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(timeoutMs) })
-    void res.status
-    return Date.now() - started
-  } catch (err) {
-    throw err instanceof Error ? err : new Error(String(err))
+    await res.body?.cancel()
+  } catch {
+    /* ignore */
+  }
+  return Date.now() - started
+}
+
+async function probeOne(url: string, timeoutMs = 4000): Promise<number> {
+  // HEAD first — the probe only needs latency, so never download a page body.
+  // Hosts that reject HEAD fall back to GET, still without reading the body.
+  try {
+    return await probeOnce(url, 'HEAD', timeoutMs)
+  } catch {
+    return probeOnce(url, 'GET', timeoutMs)
   }
 }
 

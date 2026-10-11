@@ -7,7 +7,7 @@ import {
 } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 import { ipc } from '@/composables/useIpc'
-import type { AppSettings, RemoteInstanceConfig, EnvProbe, ProxySettings } from '@shared/types'
+import type { AppSettings, RemoteInstanceConfig, RemoteInstanceStatus, EnvProbe, ProxySettings } from '@shared/types'
 import { APP_VERSION, DEFAULT_SETTINGS, PIP_INDEX_PRESETS, TORCH_INDEX_PRESETS } from '@shared/constants'
 
 const pipIndexLabelKeys: Record<string, string> = {
@@ -83,6 +83,17 @@ async function openConfigDir(): Promise<void> {
     const dir = await ipc('settings.dataDir')
     configPath.value = dir
     await ipc('shell.openPath', dir)
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function addScanRoot(): Promise<void> {
+  try {
+    const dir = await ipc('shell.pickDirectory')
+    if (dir && !form.value.modelScanRoots.includes(dir)) {
+      form.value.modelScanRoots = [...form.value.modelScanRoots, dir]
+    }
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   }
@@ -219,10 +230,34 @@ async function probeEnv(): Promise<void> {
 async function testRemote(id: string): Promise<void> {
   try {
     const s = await ipc('remote.test', id)
-    message.info(`online=${s.online}`)
+    remoteStatuses.value = { ...remoteStatuses.value, [id]: s }
+    message.info(s.online ? t('settings.remoteOnline') : t('settings.remoteOffline'))
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   }
+}
+
+/** remote.listStatus — probe every remote at once and show online/queue state. */
+const remoteStatuses = ref<Record<string, RemoteInstanceStatus>>({})
+const testingRemotes = ref(false)
+
+async function testAllRemotes(): Promise<void> {
+  testingRemotes.value = true
+  try {
+    const list = await ipc('remote.listStatus')
+    const map: Record<string, RemoteInstanceStatus> = {}
+    for (const s of list) map[s.id] = s
+    remoteStatuses.value = map
+    message.success(t('settings.testAllRemotes'))
+  } catch (err) {
+    message.error(t('settings.remoteTestAllFailed', { error: err instanceof Error ? err.message : String(err) }))
+  } finally {
+    testingRemotes.value = false
+  }
+}
+
+function remoteStatusOf(id: string): RemoteInstanceStatus | undefined {
+  return remoteStatuses.value[id]
 }
 
 async function removeRemote(id: string): Promise<void> {
@@ -257,6 +292,24 @@ onMounted(async () => {
 
     <div class="page-body">
     <div class="grid settings-grid">
+      <NCard :title="t('settings.paths')" class="card" size="small">
+        <NForm label-placement="top">
+          <NFormItem :label="t('settings.modelScanRoots')">
+            <div class="scan-roots">
+              <div v-for="(r, idx) in form.modelScanRoots" :key="idx" class="scan-root-row">
+                <NInput :value="r" readonly size="small" />
+                <NButton size="tiny" secondary type="error" @click="form.modelScanRoots.splice(idx, 1)">
+                  {{ t('common.delete') }}
+                </NButton>
+              </div>
+              <NButton size="small" secondary @click="addScanRoot">
+                {{ t('settings.addScanRoot') }}
+              </NButton>
+              <div class="hint">{{ t('settings.modelScanRootsHint') }}</div>
+            </div>
+          </NFormItem>
+        </NForm>
+      </NCard>
       <NCard :title="t('settings.network')" class="card" size="small">
         <NForm label-placement="top">
           <NFormItem :label="t('settings.githubEndpoint')">
@@ -323,6 +376,11 @@ onMounted(async () => {
             <NSwitch v-model:value="form.allowPipInstall" />
             <div class="hint">{{ t('settings.allowPipHint') }}</div>
           </NFormItem>
+        </NForm>
+      </NCard>
+
+      <NCard :title="t('settings.download')" class="card" size="small">
+        <NForm label-placement="top">
           <NFormItem :label="t('settings.useAria2')">
             <NSwitch v-model:value="form.useAria2" />
           </NFormItem>
@@ -416,12 +474,42 @@ onMounted(async () => {
       </NCard>
 
       <NCard :title="t('settings.remotes')" class="card" size="small">
+        <div class="remotes-head">
+          <span class="meta">{{ t('settings.remotes') }}</span>
+          <NButton
+            size="small"
+            secondary
+            type="primary"
+            :loading="testingRemotes"
+            :disabled="!remotes.length"
+            @click="testAllRemotes"
+          >
+            {{ t('settings.testAllRemotes') }}
+          </NButton>
+        </div>
         <NList v-if="remotes.length" bordered>
           <NListItem v-for="r in remotes" :key="r.id">
             <div class="row">
               <div>
                 <div class="name">{{ r.name }}</div>
                 <div class="meta mono">{{ r.baseUrl }}</div>
+                <div v-if="remoteStatusOf(r.id)" class="remote-status">
+                  <NTag size="tiny" round :type="remoteStatusOf(r.id)?.online ? 'success' : 'error'">
+                    {{ remoteStatusOf(r.id)?.online ? t('settings.remoteOnline') : t('settings.remoteOffline') }}
+                  </NTag>
+                  <span v-if="remoteStatusOf(r.id)?.version" class="meta">
+                    {{ t('settings.remoteStatusVersion', { version: remoteStatusOf(r.id)?.version || '' }) }}
+                  </span>
+                  <span class="meta">
+                    {{ t('settings.remoteQueueInfo', {
+                      running: remoteStatusOf(r.id)?.queueRunning ?? 0,
+                      pending: remoteStatusOf(r.id)?.queuePending ?? 0
+                    }) }}
+                  </span>
+                  <span v-if="remoteStatusOf(r.id)?.error" class="meta remote-error">
+                    {{ t('settings.remoteErrorLabel') }}: {{ remoteStatusOf(r.id)?.error }}
+                  </span>
+                </div>
               </div>
               <NSpace>
                 <NButton size="tiny" secondary @click="testRemote(r.id)">{{ t('settings.test') }}</NButton>
@@ -501,6 +589,17 @@ onMounted(async () => {
 <style lang="scss" scoped>
 @use '@/styles/variables.scss' as *;
 .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.scan-roots {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+.scan-root-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
 .proxy-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -518,6 +617,9 @@ onMounted(async () => {
 .shortcut-list { display: flex; flex-direction: column; gap: 10px; }
 .shortcut-row { display: flex; align-items: center; gap: 12px; }
 .shortcut-desc { font-size: 13px; color: $color-text-secondary; }
+.remotes-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.remote-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 6px; }
+.remote-error { color: $color-danger; }
 .pass-ink { color: $color-success; }
 .fail-ink { color: $color-danger; }
 </style>

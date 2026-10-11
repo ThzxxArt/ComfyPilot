@@ -11,7 +11,7 @@ import {
 } from 'fs'
 import { join, dirname, resolve, sep } from 'path'
 import { createHash, randomUUID } from 'crypto'
-import { execFile } from 'child_process'
+import { execFile, execFileSync } from 'child_process'
 import { promisify } from 'util'
 import { EventEmitter } from 'events'
 import type {
@@ -46,6 +46,65 @@ import { resolveRuntimesPythonSync } from './instance'
 import { findInRuntimes } from './bootstrap'
 
 const execFileAsync = promisify(execFile)
+
+/** Error with a machine-readable code so the renderer can localize it. */
+function codedError(code: string, fallback: string): Error {
+  const e = new Error(fallback)
+  ;(e as Error & { code?: string }).code = code
+  return e
+}
+
+function isAbortError(e: unknown): boolean {
+  if (!(e instanceof Error)) return false
+  const code = (e as Error & { code?: string }).code
+  return e.name === 'AbortError' || code === 'ABORT_ERR' || code === 'OP_CANCELLED'
+}
+
+/** Combine a timeout with a caller-supplied abort signal. */
+function withAbort(timeoutMs: number, signal?: AbortSignal): AbortSignal {
+  const t = AbortSignal.timeout(timeoutMs)
+  return signal ? AbortSignal.any([t, signal]) : t
+}
+
+/**
+ * PEP 503 distribution names from a requirements.txt body.
+ * Drops comments / options / URLs / VCS lines and strips version specifiers,
+ * extras and environment markers so the list is uninstallable package names.
+ */
+export function parseRequirementNames(text: string): string[] {
+  const names: string[] = []
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    let line = raw.trim()
+    if (!line || line.startsWith('#') || line.startsWith('-')) continue
+    const hash = line.indexOf('#')
+    if (hash >= 0) line = line.slice(0, hash).trim()
+    if (!line || line.includes('://') || line.startsWith('.') || line.startsWith('/')) continue
+    // drop environment marker
+    line = line.split(';')[0].trim()
+    // drop extras: name[extra]
+    line = line.replace(/\[[^\]]*\]/g, '')
+    // name is everything before the first version specifier / whitespace / @
+    const m = line.match(/^([A-Za-z0-9][A-Za-z0-9._-]*)/)
+    if (m) names.push(m[1].toLowerCase())
+  }
+  return [...new Set(names)]
+}
+
+/** Best-effort git HEAD sha for a pack directory. */
+function gitRevOf(dir: string): string | undefined {
+  try {
+    if (!dir || !existsSync(join(dir, '.git'))) return undefined
+    const gitBin = resolveGitBinary()
+    const out = execFileSync(gitBin, ['-C', dir, 'rev-parse', 'HEAD'], {
+      timeout: 5000,
+      windowsHide: true,
+      encoding: 'utf8'
+    })
+    return String(out).trim() || undefined
+  } catch {
+    return undefined
+  }
+}
 
 /**
  * Resolve a usable git binary.
@@ -227,6 +286,28 @@ function resolveNestedPackDir(dest: string): string {
   return dest
 }
 
+/**
+ * Flatten `dest/ComfyUI-Xxx-main/` → `dest/` so the pack lives at the top
+ * level of its install directory (GitHub archive naming convention).
+ * Only fires when there is exactly one subdirectory and no sibling files.
+ */
+function flattenSingleNestedDir(dest: string): void {
+  try {
+    const entries = readdirSync(dest).filter((n) => !n.startsWith('.') && n !== '__MACOSX')
+    if (entries.length !== 1) return
+    const nested = join(dest, entries[0])
+    if (!statSync(nested).isDirectory()) return
+    // Move every child of the nested dir up to dest.
+    for (const child of readdirSync(nested)) {
+      renameSync(join(nested, child), join(dest, child))
+    }
+    // Remove the now-empty nested directory.
+    rmSync(nested, { recursive: true, force: true })
+  } catch {
+    /* best-effort — the nested layout still works via resolveNestedPackDir */
+  }
+}
+
 /** Best-effort python for the targeted instance (venv preferred, then runtimes). */
 function resolveInstancePython(instanceId?: string): string {
   const inst = resolveInstanceConfig(instanceId)
@@ -278,7 +359,48 @@ function detectCustomNodesRoot(instanceIdOrPath?: string): string {
   return candidates.find((p) => existsSync(p)) || candidates[0] || ''
 }
 
-function readPackMeta(dir: string): Partial<NodePackRecord> & { nodeList?: string[] } {
+/**
+ * Fingerprint of every file readPackMeta looks at. Cheap stat calls replace
+ * re-reading pyproject/package.json and re-scanning all .py files for
+ * NODE_CLASS_MAPPINGS on every list().
+ */
+function packMetaSignature(dir: string): string {
+  const parts: string[] = []
+  for (const f of ['pyproject.toml', 'package.json', 'node_list.json']) {
+    const p = join(dir, f)
+    try {
+      const st = statSync(p)
+      parts.push(`${f}:${st.size}:${st.mtimeMs}`)
+    } catch {
+      parts.push(`${f}:-`)
+    }
+  }
+  try {
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith('.py')) continue
+      try {
+        const st = statSync(join(dir, f))
+        parts.push(`${f}:${st.size}:${st.mtimeMs}`)
+      } catch {
+        parts.push(`${f}:!`)
+      }
+    }
+  } catch {
+    /* unreadable dir — signature still distinguishes the error case */
+  }
+  return parts.join('|')
+}
+
+type PackMeta = Partial<NodePackRecord> & { nodeList?: string[] }
+
+/** dir + input signature → parsed meta. */
+const packMetaCache = new Map<string, { sig: string; meta: PackMeta }>()
+
+function readPackMeta(dir: string): PackMeta {
+  const sig = packMetaSignature(dir)
+  const hit = packMetaCache.get(dir)
+  if (hit && hit.sig === sig) return hit.meta
+
   const pyproject = join(dir, 'pyproject.toml')
   const pkgJson = join(dir, 'package.json')
   let name = dir.split(/[\\/]/).pop() || 'unknown'
@@ -293,7 +415,10 @@ function readPackMeta(dir: string): Partial<NodePackRecord> & { nodeList?: strin
     const n = text.match(/name\s*=\s*["']([^"']+)["']/)
     const v = text.match(/version\s*=\s*["']([^"']+)["']/)
     const d = text.match(/description\s*=\s*["']([^"']+)["']/)
-    const r = text.match(/(?:repository|homepage)\s*=\s*["']([^"']+)["']/)
+    // Match both flat `repository = "..."` and `[project.urls]` table formats.
+    const r =
+      text.match(/(?:repository|homepage)\s*=\s*["']([^"']+)["']/) ||
+      text.match(/\[project\.urls\][\s\S]*?(?:Repository|Homepage|Source)\s*=\s*["']([^"']+)["']/i)
     const l = text.match(/license\s*=\s*["']([^"']+)["']/)
     const py = text.match(/requires-python\s*=\s*["']([^"']+)["']/)
     if (n) name = n[1]
@@ -343,7 +468,7 @@ function readPackMeta(dir: string): Partial<NodePackRecord> & { nodeList?: strin
     nodeList = [...new Set(nodeList)].slice(0, 200)
   }
 
-  return {
+  const result: PackMeta = {
     name,
     displayName: name,
     version,
@@ -353,6 +478,8 @@ function readPackMeta(dir: string): Partial<NodePackRecord> & { nodeList?: strin
     pythonCompatible,
     nodeList
   }
+  packMetaCache.set(dir, { sig, meta: result })
+  return result
 }
 
 function collectIssues(dir: string, meta: Partial<NodePackRecord>): NodePackIssue[] {
@@ -416,7 +543,41 @@ export class NodePackService extends EventEmitter {
   }
 
   // ---- UpdateProgress-shaped stream (feeds the shared progress modal) ----
-  private opProgress: UpdateProgress | null = null
+  /**
+   * Per-instance progress streams. A single shared object made concurrent
+   * installs/updates on different instances overwrite each other's steps.
+   */
+  private opProgressMap = new Map<string, UpdateProgress>()
+
+  /**
+   * Active install/update abort controllers, keyed by instance (or 'default').
+   * cancelOp() aborts the in-flight clone/pip/download for that instance.
+   */
+  private opAborts = new Map<string, AbortController>()
+
+  /** Arm an AbortController for a new install/update run. */
+  private beginOpAbort(instanceId?: string): AbortSignal {
+    const key = instanceId || 'default'
+    // A new run supersedes any stale controller for the same instance.
+    this.opAborts.get(key)?.abort()
+    const ac = new AbortController()
+    this.opAborts.set(key, ac)
+    return ac.signal
+  }
+
+  private endOpAbort(instanceId?: string): void {
+    this.opAborts.delete(instanceId || 'default')
+  }
+
+  /** Cancel the in-flight install/update for an instance. True when something was aborted. */
+  cancelOp(instanceId?: string): boolean {
+    const key = instanceId || 'default'
+    const ac = this.opAborts.get(key)
+    if (!ac) return false
+    ac.abort()
+    this.opAborts.delete(key)
+    return true
+  }
 
   /**
    * Emit an UpdateProgress-shaped snapshot so the renderer can reuse
@@ -426,15 +587,17 @@ export class NodePackService extends EventEmitter {
   private emitOpProgress(opts: {
     instanceId: string
     step: UpdateStepId
-    status: 'pending' | 'running' | 'done' | 'failed' | 'skipped'
+    status: 'pending' | 'running' | 'done' | 'failed' | 'skipped' | 'cancelled'
     message: string
     logLine?: string
     detailKey?: string
   }): void {
-    if (!this.opProgress || this.opProgress.instanceId !== opts.instanceId) {
-      this.opProgress = {
+    const key = opts.instanceId || 'default'
+    let p = this.opProgressMap.get(key)
+    if (!p) {
+      p = {
         runId: randomUUID(),
-        instanceId: opts.instanceId,
+        instanceId: key,
         step: 'download',
         status: 'running',
         steps: [
@@ -448,8 +611,8 @@ export class NodePackService extends EventEmitter {
         message: opts.message,
         percent: 0
       }
+      this.opProgressMap.set(key, p)
     }
-    const p = this.opProgress
     const s = p.steps.find((x) => x.id === opts.step)
     if (s) {
       s.status = opts.status
@@ -462,10 +625,15 @@ export class NodePackService extends EventEmitter {
     }
     p.step = opts.step
     p.message = opts.message
-    p.status = opts.status === 'failed' ? 'failed' : opts.step === 'done' && opts.status === 'done' ? 'done' : 'running'
+    p.status =
+      opts.status === 'failed' || opts.status === 'cancelled'
+        ? opts.status
+        : opts.step === 'done' && opts.status === 'done'
+          ? 'done'
+          : 'running'
     // Surface the failure text on the progress object so the shared modal's
     // error block actually renders something.
-    if (p.status === 'failed') p.error = opts.message
+    if (p.status === 'failed' || p.status === 'cancelled') p.error = opts.message
     // On terminal success every remaining pending step is closed out so the
     // bar actually reaches 100% instead of stalling on an untouched "verify".
     if (p.status === 'done') {
@@ -484,18 +652,26 @@ export class NodePackService extends EventEmitter {
     this.emit('op-progress', { ...p })
   }
 
-  private opLog(line: string): void {
-    if (!this.opProgress) return
-    const s = this.opProgress.steps.find((x) => x.id === this.opProgress!.step)
+  private opLog(line: string, instanceId?: string): void {
+    const key = instanceId || 'default'
+    const p = this.opProgressMap.get(key)
+    if (!p) return
+    const s = p.steps.find((x) => x.id === p.step)
     if (s) {
       s.log.push(line)
       if (s.log.length > 400) s.log.splice(0, s.log.length - 400)
     }
-    this.emit('op-progress', { ...this.opProgress })
+    this.emit('op-progress', { ...p })
   }
 
-  getOpProgress(): UpdateProgress | null {
-    return this.opProgress
+  getOpProgress(instanceId?: string): UpdateProgress | null {
+    if (instanceId) return this.opProgressMap.get(instanceId) || null
+    // Latest active stream (for status polling without an id).
+    let latest: UpdateProgress | null = null
+    for (const p of this.opProgressMap.values()) {
+      if (!latest || p.runId > latest.runId) latest = p
+    }
+    return latest
   }
 
   list(instancePathOrId?: string): NodePackRecord[] {
@@ -523,25 +699,31 @@ export class NodePackService extends EventEmitter {
       } catch {
         continue
       }
-      const meta = readPackMeta(dir)
-      const issues = collectIssues(dir, meta)
+      // Registry zips nest a single top-level folder — descend so that
+      // collectIssues/readPackMeta see __init__.py / pyproject.toml.
+      const packed = resolveNestedPackDir(dir)
+      const meta = readPackMeta(packed)
+      const issues = collectIssues(packed, meta)
       const disabledMarker = join(dir, '.disabled')
       const disabled = existsSync(disabledMarker) || name.endsWith('.disabled')
       const id = createHash('sha1').update(dir).digest('hex').slice(0, 16)
       const prev = known.get(meta.name || name)
       const latest = prev?.latestVersion
+      const effectiveVersion = prev?.pinnedVersion || meta.version || '0.0.0'
       const hasUpdate =
         !disabled &&
         Boolean(latest) &&
-        Boolean(meta.version) &&
-        isUpdateAvailable(meta.version || '0.0.0', latest || '')
+        Boolean(effectiveVersion) &&
+        isUpdateAvailable(effectiveVersion, latest || '')
       packs.push({
         id,
         name: meta.name || name,
         displayName: meta.displayName || name,
         description: meta.description || '',
         author: prev?.author || '',
-        version: meta.version || '0.0.0',
+        // An explicit install-time pin wins over on-disk meta across list()
+        // refreshes too — otherwise the requested version is lost immediately.
+        version: prev?.pinnedVersion || meta.version || '0.0.0',
         latestVersion: latest,
         status: disabled
           ? 'disabled'
@@ -562,7 +744,10 @@ export class NodePackService extends EventEmitter {
         nodeList: meta.nodeList || [],
         license: meta.license,
         pythonCompatible: meta.pythonCompatible,
-        notes: prev?.notes
+        notes: prev?.notes,
+        pipRequirements: prev?.pipRequirements,
+        pinnedVersion: prev?.pinnedVersion,
+        gitRev: prev?.gitRev
       })
     }
     return packs
@@ -582,12 +767,19 @@ export class NodePackService extends EventEmitter {
   /** Manager channel list (PLAN: Registry + Manager channel + 本地) */
   async managerChannelList(): Promise<RegistryNodePack[]> {
     const settings = loadSettings()
-    const endpoints = [
+    // Multiple sources — ComfyUI-Manager's repo has been restructured several
+    // times; try known locations. All GitHub raw URLs go through the mirror.
+    const rawEndpoints = [
       'https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main/custom-node-list.json',
-      'https://raw.githubusercontent.com/Comfy-Org/ComfyUI-Manager/manager-v4/custom-node-list.json'
+      'https://raw.githubusercontent.com/Comfy-Org/ComfyUI-Manager/manager-v4/custom-node-list.json',
+      'https://raw.githubusercontent.com/Comfy-Org/ComfyUI-Manager/main/custom-node-list.json',
+      // extension-node-map is the other commonly published list
+      'https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main/extension-node-map.json'
     ]
+    const endpoints = rawEndpoints.map((u) => applyGithubMirror(u))
     const out: RegistryNodePack[] = []
     const seen = new Set<string>()
+    let lastError: string | undefined
     for (const url of endpoints) {
       try {
         // session.fetch honors the app proxy — bare fetch() times out behind it.
@@ -596,8 +788,29 @@ export class NodePackService extends EventEmitter {
           signal: AbortSignal.timeout(15000),
           headers: { 'User-Agent': 'ComfyPilot/0.1' }
         })
-        if (!res.ok) continue
-        const data = (await res.json()) as Array<Record<string, unknown>>
+        if (!res.ok) {
+          lastError = `HTTP ${res.status} from ${url.slice(0, 60)}`
+          continue
+        }
+        const raw = await res.json() as Array<Record<string, unknown>> | Record<string, unknown>
+        // custom-node-list.json is an Array; extension-node-map.json is an
+        // object mapping node-class names → [ {name, ...}, ... ].
+        let data: Array<Record<string, unknown>>
+        if (Array.isArray(raw)) {
+          data = raw
+        } else if (raw && typeof raw === 'object') {
+          data = []
+          for (const [nodeClass, entries] of Object.entries(raw)) {
+            if (!Array.isArray(entries)) continue
+            for (const e of entries) {
+              if (e && typeof e === 'object') {
+                data.push({ ...e, id: (e as Record<string, unknown>).id || nodeClass, nodeClass })
+              }
+            }
+          }
+        } else {
+          continue
+        }
         // No hard truncation — take every entry the channel publishes.
         for (const n of data) {
           const id = String(n.id || n.title || n.name)
@@ -618,9 +831,14 @@ export class NodePackService extends EventEmitter {
           })
         }
         if (out.length) break
-      } catch {
+      } catch (e) {
+        lastError = e instanceof Error ? e.message : String(e)
         if (settings.networkMode === 'offline') break
       }
+    }
+    if (!out.length && lastError) {
+      // Do NOT throw — callers (installInner fallback) expect a graceful empty list.
+      this.opLog?.(`Manager channel unavailable: ${lastError}`, undefined)
     }
     return out
   }
@@ -663,19 +881,25 @@ export class NodePackService extends EventEmitter {
     if (settings.networkMode === 'offline') {
       throw blocked('SETTING_OFFLINE', 'Offline mode forbids remote installs')
     }
+    const level = settings.securityLevel
+    // strong: forbid ALL remote node installs (git + registry + manager)
+    if (level === 'strong') {
+      throw blocked(
+        'SETTING_SECURITY_STRONG',
+        `security_level=strong forbids ${source} node installs`
+      )
+    }
     if (source === 'git') {
-      if (!settings.allowGitUrlInstall) {
-        throw blocked('SETTING_GIT_INSTALL', 'Git URL install is disabled (allow_git_url_install=false)')
-      }
-      if (settings.securityLevel === 'strong') {
-        throw blocked('SETTING_SECURITY_STRONG', 'security_level=strong forbids git installs')
-      }
-    }
-    if (source === 'registry' || source === 'manager') {
-      if (settings.securityLevel === 'strong') {
-        throw blocked('SETTING_SECURITY_STRONG', 'security_level=strong forbids remote node installs')
+      // normal: git requires the explicit allowGitUrlInstall opt-in
+      // normal-/weak: git is allowed without the extra gate
+      if (level === 'normal' && !settings.allowGitUrlInstall) {
+        throw blocked(
+          'SETTING_GIT_INSTALL',
+          'Git URL install is disabled (allow_git_url_install=false)'
+        )
       }
     }
+    // registry/manager allowed at normal / normal- / weak
   }
 
   async install(opts: {
@@ -685,6 +909,8 @@ export class NodePackService extends EventEmitter {
     url?: string
     branch?: string
     instanceId?: string
+    /** Known repository URL from search results — fallback when /install API returns 401. */
+    repository?: string
   }): Promise<NodePackRecord> {
     this.assertInstallAllowed(opts.source)
     this.emitInstallProgress({
@@ -694,7 +920,7 @@ export class NodePackService extends EventEmitter {
       message: `Installing ${opts.id}…`
     })
     // Fresh op-progress stream for the shared modal.
-    this.opProgress = null
+    this.opProgressMap.delete(opts.instanceId || 'default')
     // Pick the first step by source so the modal never shows "Download"
     // when the user actually asked for a git install.
     const firstStep: UpdateStepId = opts.source === 'git' || opts.source === 'manager' ? 'clone' : 'download'
@@ -705,8 +931,9 @@ export class NodePackService extends EventEmitter {
       message:
         firstStep === 'clone' ? `Cloning ${opts.id}…` : `Downloading ${opts.id}…`
     })
+    const signal = this.beginOpAbort(opts.instanceId)
     try {
-      const rec = await this.installInner(opts)
+      const rec = await this.installInner({ ...opts, signal })
       // Must emit 'done' — the UI hangs on the spinner/banner until it arrives.
       this.emitInstallProgress({
         phase: 'done',
@@ -722,6 +949,9 @@ export class NodePackService extends EventEmitter {
       })
       return rec
     } catch (e) {
+      // Only treat as cancelled when the error itself is an AbortError —
+      // a timeout must not mask the real error.
+      const cancelled = isAbortError(e)
       this.emitInstallProgress({
         phase: 'error',
         packName: opts.id,
@@ -731,10 +961,12 @@ export class NodePackService extends EventEmitter {
       this.emitOpProgress({
         instanceId: opts.instanceId || 'default',
         step: 'done',
-        status: 'failed',
+        status: cancelled ? 'cancelled' : 'failed',
         message: e instanceof Error ? e.message : String(e)
       })
-      throw e
+      throw cancelled ? codedError('OP_CANCELLED', 'Install cancelled') : e
+    } finally {
+      this.endOpAbort(opts.instanceId)
     }
   }
 
@@ -745,6 +977,11 @@ export class NodePackService extends EventEmitter {
     url?: string
     branch?: string
     instanceId?: string
+    /** Registry/manager catalog id — preserved as record.registryId even on the git transport. */
+    registryId?: string
+    /** Known repository URL from search results — fallback when /install API returns 401. */
+    repository?: string
+    signal?: AbortSignal
   }): Promise<NodePackRecord> {
     // PLAN: 安装前自动快照
     try {
@@ -759,9 +996,14 @@ export class NodePackService extends EventEmitter {
     if (opts.source === 'git' || opts.source === 'manager') {
       let url = (opts.url || '').trim()
       if (!url && opts.source === 'manager') {
-        const list = await this.managerChannelList()
-        const hit = list.find((n) => n.id === opts.id || n.name === opts.id || n.displayName === opts.id)
-        url = (hit?.repository || '').trim()
+        // Fallback: look up the pack in the Manager channel list.
+        try {
+          const list = await this.managerChannelList()
+          const hit = list.find((n) => n.id === opts.id || n.name === opts.id || n.displayName === opts.id)
+          url = (hit?.repository || '').trim()
+        } catch {
+          /* managerChannelList is best-effort — fall through to error below */
+        }
       }
       if (!url) {
         if (opts.source === 'manager') throw new Error('Manager pack has no repository URL')
@@ -779,6 +1021,10 @@ export class NodePackService extends EventEmitter {
       // ever remove OUR temp dir, never a pre-existing user directory.
       const tmpDest = join(root, `._clone_tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`)
       if (!isStrictInside(tmpDest, root)) throw new Error('Refusing unsafe temp clone path')
+      // Version pin: clone the default branch shallow first, then check out the
+      // requested tag/ref inside the temp dir so a failed checkout never touches
+      // `dest`. Shallow clone hides most tags, so fetch the ref explicitly.
+      const pinned = (opts.version || '').trim()
       const args = ['clone', '--depth', '1']
       const safeBranch = assertSafeBranch(opts.branch || '')
       if (safeBranch) args.push('--branch', safeBranch)
@@ -789,6 +1035,38 @@ export class NodePackService extends EventEmitter {
           maxBuffer: 20 * 1024 * 1024,
           env: proxyEnv(loadSettings().proxy)
         })
+        if (pinned) {
+          const safeRef = assertSafeBranch(pinned)
+          // Shallow clone hides tags — fetch the tag ref explicitly first.
+          await execFileAsync(
+            gitBin,
+            ['-C', tmpDest, 'fetch', '--depth', '1', 'origin', `refs/tags/${safeRef}:refs/tags/${safeRef}`],
+            { timeout: 60000, env: proxyEnv(loadSettings().proxy) }
+          ).catch(() => undefined)
+          // tags/<v> first (exact release tag), then the bare ref (branch / sha).
+          // Checkout failure is NON-FATAL — fall through to default branch.
+          let checkedOut = false
+          try {
+            await execFileAsync(gitBin, ['-C', tmpDest, 'checkout', `tags/${safeRef}`], {
+              timeout: 30000,
+              env: proxyEnv(loadSettings().proxy)
+            })
+            checkedOut = true
+          } catch {
+            try {
+              await execFileAsync(gitBin, ['-C', tmpDest, 'checkout', safeRef], {
+                timeout: 30000,
+                env: proxyEnv(loadSettings().proxy)
+              })
+              checkedOut = true
+            } catch {
+              this.opLog?.(`tag/ref "${pinned}" not found — using default branch`, opts.instanceId)
+            }
+          }
+          if (!checkedOut) {
+            this.opLog?.(`Continuing with default branch (wanted ${pinned})`, opts.instanceId)
+          }
+        }
         // Atomic-ish publish: only now do we touch `dest`.
         if (existsSync(dest)) {
           rmSync(tmpDest, { recursive: true, force: true })
@@ -799,7 +1077,7 @@ export class NodePackService extends EventEmitter {
           instanceId: opts.instanceId || 'default',
           step: 'clone',
           status: 'done',
-          message: 'Cloned'
+          message: pinned ? `Cloned @ ${pinned}` : 'Cloned'
         })
         this.emitOpProgress({
           instanceId: opts.instanceId || 'default',
@@ -825,41 +1103,55 @@ export class NodePackService extends EventEmitter {
         // error is reported by the install() wrapper
         throw e
       }
-      return await this.afterInstall(resolveNestedPackDir(dest), opts.source, opts.id, opts.instanceId)
+      return await this.afterInstall(
+        resolveNestedPackDir(dest),
+        opts.source,
+        opts.registryId ?? opts.id,
+        opts.instanceId,
+        { pinnedVersion: pinned || undefined, signal: opts.signal }
+      )
     }
 
-    // ---- registry zip path (below) ----
+    // ---- registry install: git clone preferred, zip fallback ----
 
-    const versionPart = opts.version ? `/${encodeURIComponent(opts.version)}` : ''
-    const apiUrl = `${REGISTRY_API}/nodes/${encodeURIComponent(opts.id)}/install${versionPart}`
-    // Electron session.fetch honors the app proxy — bare fetch() does NOT,
-    // which is why market installs time out behind a proxy.
+    // Known repository from search results (passed by the renderer).
+    let repoUrl = (opts.repository || '').trim()
+
+    // session is needed by both the /install API call and the zip download.
     const { session } = await import('electron')
-    const res = await session.defaultSession.fetch(apiUrl, {
-      headers: { 'User-Agent': 'ComfyPilot/0.1' },
-      signal: AbortSignal.timeout(30000)
-    })
-    if (!res.ok) throw new Error(`Registry install failed: HTTP ${res.status}`)
-    const data = (await res.json()) as {
-      url?: string
-      downloadUrl?: string
-      status?: string
-      repository?: string
-    }
-    const downloadUrl = data.url || data.downloadUrl
-    if (data.status === 'banned') throw new Error('Node pack is banned on Registry')
-    if (!downloadUrl) throw new Error('Registry did not return a download URL')
-    const { isSafeExternalUrl } = await import('./security')
-    if (!isSafeExternalUrl(downloadUrl)) {
-      throw new Error('Blocked registry download URL scheme')
+
+    // If we don't have a repo URL yet, try the /install API for it.
+    let downloadUrl: string | undefined
+    if (!repoUrl || !(await gitAvailable())) {
+      const versionPart = opts.version ? `/${encodeURIComponent(opts.version)}` : ''
+      const apiUrl = `${REGISTRY_API}/nodes/${encodeURIComponent(opts.id)}/install${versionPart}`
+      try {
+        const res = await session.defaultSession.fetch(apiUrl, {
+          headers: { 'User-Agent': 'ComfyPilot/0.1' },
+          signal: withAbort(30000, opts.signal)
+        })
+        if (res.ok) {
+          const data = (await res.json()) as {
+            url?: string; downloadUrl?: string; status?: string; repository?: string
+          }
+          if (data.status === 'banned') throw new Error('Node pack is banned on Registry')
+          downloadUrl = data.url || data.downloadUrl
+          if (!repoUrl) repoUrl = (data.repository || '').trim()
+        } else if (res.status !== 401 && res.status !== 403) {
+          throw new Error(`Registry install failed: HTTP ${res.status}`)
+        }
+      } catch (e) {
+        if (!repoUrl && !downloadUrl) throw e
+        // We have a repo URL — the API is only needed for zip download.
+      }
     }
 
-    // Prefer git clone when the pack has a repository and git works — a clone
-    // is resumable-ish, updateable via `git pull`, and matches how the pack is
-    // developed. Fall back to the zip when git is unavailable or the URL is unsafe.
-    const repoUrl = await resolveRepoUrl(data.repository, downloadUrl, opts.id)
+    // Resolve the full repo URL (handles archive / codeload / index lookup).
+    const resolvedRepo = await resolveRepoUrl(repoUrl, downloadUrl || '', opts.id)
     const hasGit = await gitAvailable()
-    if (repoUrl && hasGit) {
+
+    // GIT CLONE PREFERRED — only fall back to zip when git is unavailable.
+    if (resolvedRepo && hasGit) {
       try {
         // Mark the zip-only steps as skipped so the modal shows "Git clone"
         // instead of a phantom "Download / Unpack".
@@ -879,16 +1171,18 @@ export class NodePackService extends EventEmitter {
           instanceId: opts.instanceId || 'default',
           step: 'clone',
           status: 'running',
-          message: `Cloning ${repoUrl}…`
+          message: `Cloning ${resolvedRepo}…`
         })
         // Call installInner directly — NOT install() — because install() would
         // re-check assertInstallAllowed('git') which is gated by
         // allowGitUrlInstall (default false). We already passed the registry
         // gate; the internal git clone is just a transport choice.
         const rec = await this.installInner({
-          id: repoUrl,
+          id: resolvedRepo,
           source: 'git',
-          url: repoUrl,
+          url: resolvedRepo,
+          version: opts.version,
+          registryId: opts.id,
           instanceId: opts.instanceId
         })
         this.emitOpProgress({
@@ -905,21 +1199,40 @@ export class NodePackService extends EventEmitter {
         })
         return rec
       } catch (e) {
-        // Surface the git failure clearly — do NOT silently pretend the zip
-        // path was the plan all along.
+        // Git clone failed — fall back to zip. This is NOT a terminal failure;
+        // do NOT emit status:'failed' or the UI modal closes prematurely.
         const msg = e instanceof Error ? e.message : String(e)
         this.opLog?.(`git clone failed (${msg}) — falling back to zip`)
         this.emitOpProgress({
           instanceId: opts.instanceId || 'default',
           step: 'clone',
-          status: 'failed',
-          message: `Git clone failed: ${msg}`
+          status: 'skipped',
+          message: `Git clone failed (${msg}) — using zip`
         })
       }
-    } else if (!repoUrl) {
+    } else if (!resolvedRepo) {
       this.opLog?.('Registry did not expose a repository URL — using zip download')
     } else {
       this.opLog?.('git is not available — using zip download')
+    }
+
+    // ---- zip download fallback (no git, or git clone failed) ----
+    // When the /install API didn't give us a downloadUrl (401), construct a
+    // GitHub archive URL from the known repository.
+    if (!downloadUrl && resolvedRepo) {
+      const ghMatch = resolvedRepo.match(/github\.com[/:]([^/]+)\/([^/.]+)/i)
+      if (ghMatch) {
+        downloadUrl = `https://github.com/${ghMatch[1]}/${ghMatch[2]}/archive/refs/heads/main.zip`
+      }
+    }
+    if (!downloadUrl) {
+      throw new Error(
+        `Registry install failed: no download URL (HTTP 401) and no repository to build one from`
+      )
+    }
+    const { isSafeExternalUrl } = await import('./security')
+    if (!isSafeExternalUrl(downloadUrl)) {
+      throw new Error('Blocked registry download URL scheme')
     }
 
     this.emitOpProgress({
@@ -935,7 +1248,7 @@ export class NodePackService extends EventEmitter {
       message: 'Downloading package…'
     })
     const zipRes = await session.defaultSession.fetch(downloadUrl, {
-      signal: AbortSignal.timeout(30 * 60 * 1000)
+      signal: withAbort(30 * 60 * 1000, opts.signal)
     })
     if (!zipRes.ok) throw new Error(`Download failed: HTTP ${zipRes.status}`)
     const total = Number(zipRes.headers.get('content-length') || 0)
@@ -989,6 +1302,9 @@ export class NodePackService extends EventEmitter {
         throw new Error(`Destination already exists: ${destName}`)
       }
       renameSync(tmpDest, dest)
+      // GitHub archive zips nest a single folder (e.g. ComfyUI-KJNodes-main/).
+      // Flatten it so the pack lives directly at dest/, not dest/nested/.
+      flattenSingleNestedDir(dest)
       this.emitOpProgress({
         instanceId: opts.instanceId || 'default',
         step: 'unpack',
@@ -1017,7 +1333,10 @@ export class NodePackService extends EventEmitter {
       /* ignore */
     }
     const packed = resolveNestedPackDir(dest)
-    const rec = await this.afterInstall(packed, 'registry', opts.id, opts.instanceId)
+    const rec = await this.afterInstall(packed, 'registry', opts.registryId ?? opts.id, opts.instanceId, {
+      pinnedVersion: opts.version?.trim() || undefined,
+      signal: opts.signal
+    })
     this.emitOpProgress({
       instanceId: opts.instanceId || 'default',
       step: 'verify',
@@ -1031,15 +1350,24 @@ export class NodePackService extends EventEmitter {
     dir: string,
     source: 'registry' | 'git' | 'manager' | 'local' = 'local',
     registryId?: string,
-    instanceId?: string
+    instanceId?: string,
+    extra?: { pinnedVersion?: string; signal?: AbortSignal }
   ): Promise<NodePackRecord> {
     const meta = readPackMeta(dir)
     const issues = collectIssues(dir, meta)
+    // Requirements recorded on the pack record so uninstall can list/offer
+    // residual pip deps without re-reading the (soon deleted) directory.
+    let pipRequirements: string[] = []
     // Pack deps (requirements.txt). ON by default — a node pack without its
     // deps is a broken install. Settings.allowPipInstall turns this off for
     // users who want ComfyUI-Manager "manual deps" semantics.
     const reqFile = join(dir, 'requirements.txt')
     if (existsSync(reqFile)) {
+      try {
+        pipRequirements = parseRequirementNames(readFileSync(reqFile, 'utf-8'))
+      } catch {
+        pipRequirements = []
+      }
       const settings = loadSettings()
       if (!settings.allowPipInstall) {
         issues.push({
@@ -1096,7 +1424,7 @@ export class NodePackService extends EventEmitter {
               uvPath: uvComp?.path,
               pipIndex: String(settings.pipIndex || '').trim(),
               onLine: (line) => {
-                this.opLog(line)
+                this.opLog(line, instanceId || 'default')
                 this.emitInstallProgress({
                   phase: 'pip',
                   packName: meta.name || dir,
@@ -1114,11 +1442,14 @@ export class NodePackService extends EventEmitter {
             })
           }
         } catch (err) {
+          // Pip failure is NON-FATAL — the node is installed, just missing deps.
+          // Emit 'skipped' not 'failed' so the modal stays open until the
+          // overall install reaches its terminal state.
           this.emitOpProgress({
             instanceId: instanceId || 'default',
             step: 'requirements',
-            status: 'failed',
-            message: err instanceof Error ? err.message : String(err)
+            status: 'skipped',
+            message: `Deps failed: ${err instanceof Error ? err.message : String(err)}`
           })
           issues.push({
             code: 'pip-failed',
@@ -1153,7 +1484,9 @@ export class NodePackService extends EventEmitter {
       displayName: meta.displayName || 'unknown',
       description: meta.description || '',
       author: prev?.author || '',
-      version: meta.version || '0.0.0',
+      // An explicitly requested version wins over on-disk meta — that is what
+      // "install version X" means to the user (and what the acceptance checks).
+      version: extra?.pinnedVersion || meta.version || '0.0.0',
       status: 'installed',
       path: dir,
       repository: meta.repository,
@@ -1167,13 +1500,80 @@ export class NodePackService extends EventEmitter {
       nodeList: meta.nodeList || [],
       license: meta.license,
       pythonCompatible: meta.pythonCompatible,
-      notes: prev?.notes
+      notes: prev?.notes,
+      pipRequirements: pipRequirements.length ? pipRequirements : prev?.pipRequirements,
+      pinnedVersion: extra?.pinnedVersion || undefined,
+      gitRev: gitRevOf(dir) ?? prev?.gitRev
     }
     upsertNodePack(rec)
     return rec
   }
 
-  async uninstall(idOrName: string, instanceId?: string): Promise<boolean> {
+  /**
+   * Residual pip requirement names recorded for a pack. Empty when the pack
+   * ships no requirements.txt. Used by the uninstall dialog to offer an
+   * optional pip cleanup.
+   */
+  pipDeps(idOrName: string, instanceId?: string): string[] {
+    const packs = this.list(instanceId)
+    const pack = packs.find((p) => p.id === idOrName || p.name === idOrName)
+    if (!pack) return []
+    if (pack.pipRequirements?.length) return [...pack.pipRequirements]
+    // Fall back to reading requirements.txt for records saved before the
+    // pipRequirements field existed.
+    try {
+      if (pack.path) {
+        const reqFile = join(pack.path, 'requirements.txt')
+        if (existsSync(reqFile)) return parseRequirementNames(readFileSync(reqFile, 'utf-8'))
+      }
+    } catch {
+      /* ignore */
+    }
+    return []
+  }
+
+  /** Uninstall recorded pip requirements for a pack. Returns the removed names. */
+  private async removePipDeps(names: string[], instanceId?: string): Promise<string[]> {
+    const removed: string[] = []
+    const vpy = resolveInstancePython(instanceId)
+    if (!vpy || !names.length) return removed
+    // Remove in modest batches so a giant requirements list cannot blow argv.
+    const BATCH = 20
+    for (let i = 0; i < names.length; i += BATCH) {
+      const batch = names.slice(i, i + BATCH)
+      try {
+        await execFileAsync(vpy, ['-m', 'pip', 'uninstall', '-y', ...batch], {
+          timeout: 5 * 60 * 1000,
+          maxBuffer: 10 * 1024 * 1024,
+          windowsHide: true,
+          env: proxyEnv(loadSettings().proxy)
+        })
+        removed.push(...batch)
+      } catch {
+        // Some names may not be installed — keep going and report what worked.
+        for (const n of batch) {
+          try {
+            await execFileAsync(vpy, ['-m', 'pip', 'uninstall', '-y', n], {
+              timeout: 60000,
+              maxBuffer: 2 * 1024 * 1024,
+              windowsHide: true,
+              env: proxyEnv(loadSettings().proxy)
+            })
+            removed.push(n)
+          } catch {
+            /* not installed / already gone */
+          }
+        }
+      }
+    }
+    return removed
+  }
+
+  async uninstall(
+    idOrName: string,
+    instanceId?: string,
+    opts?: { removePipDeps?: boolean }
+  ): Promise<boolean> {
     const packs = this.list(instanceId)
     const pack = packs.find((p) => p.id === idOrName || p.name === idOrName)
     if (!pack?.path) return false
@@ -1184,7 +1584,7 @@ export class NodePackService extends EventEmitter {
       op: 'uninstall',
       message: `Uninstalling ${pack.name || idOrName}…`
     })
-    this.opProgress = null
+    this.opProgressMap.delete(instanceId || 'default')
     this.emitOpProgress({
       instanceId: instanceId || 'default',
       step: 'verify',
@@ -1210,6 +1610,27 @@ export class NodePackService extends EventEmitter {
           } catch {
             /* keep going — report via remaining dirs */
           }
+        }
+      }
+      // Optional pip cleanup — offered by the UI after listing the residual deps.
+      if (opts?.removePipDeps) {
+        const deps = pack.pipRequirements?.length ? pack.pipRequirements : []
+        if (deps.length) {
+          this.emitOpProgress({
+            instanceId: instanceId || 'default',
+            step: 'requirements',
+            status: 'running',
+            message: `Removing ${deps.length} pip package(s)…`
+          })
+          const removed = await this.removePipDeps(deps, instanceId)
+          this.emitOpProgress({
+            instanceId: instanceId || 'default',
+            step: 'requirements',
+            status: removed.length ? 'done' : 'skipped',
+            message: removed.length
+              ? `Removed pip packages: ${removed.join(', ')}`
+              : 'No matching pip packages were installed'
+          })
         }
       }
       deleteNodePack(pack.id)
@@ -1444,15 +1865,16 @@ export class NodePackService extends EventEmitter {
     this.emitInstallProgress({ phase: 'start', packName: idOrName, op: 'update', message: `Updating ${idOrName}…` })
     // Fresh op-progress stream so the shared modal can finish (git-pull path
     // never emitted a terminal 'done' before).
-    this.opProgress = null
+    this.opProgressMap.delete(instanceId || 'default')
     this.emitOpProgress({
       instanceId: instanceId || 'default',
       step: 'clone',
       status: 'running',
       message: `Updating ${idOrName}…`
     })
+    const signal = this.beginOpAbort(instanceId)
     try {
-      const rec = await this.updateInner(idOrName, version, instanceId)
+      const rec = await this.updateInner(idOrName, version, instanceId, signal)
       this.emitInstallProgress({
         phase: 'done',
         packName: rec.name || idOrName,
@@ -1467,6 +1889,10 @@ export class NodePackService extends EventEmitter {
       })
       return rec
     } catch (e) {
+      // Only treat as cancelled when the error itself is an AbortError.
+      // `signal.aborted` alone is too broad — a timeout must NOT mask the
+      // real error (e.g. HTTP 502) with "Update cancelled".
+      const cancelled = isAbortError(e)
       this.emitInstallProgress({
         phase: 'error',
         packName: idOrName,
@@ -1476,14 +1902,21 @@ export class NodePackService extends EventEmitter {
       this.emitOpProgress({
         instanceId: instanceId || 'default',
         step: 'done',
-        status: 'failed',
+        status: cancelled ? 'cancelled' : 'failed',
         message: e instanceof Error ? e.message : String(e)
       })
-      throw e
+      throw cancelled ? codedError('OP_CANCELLED', 'Update cancelled') : e
+    } finally {
+      this.endOpAbort(instanceId)
     }
   }
 
-  private async updateInner(idOrName: string, version?: string, instanceId?: string): Promise<NodePackRecord> {
+  private async updateInner(
+    idOrName: string,
+    version?: string,
+    instanceId?: string,
+    _signal?: AbortSignal
+  ): Promise<NodePackRecord> {
     const packs = this.list(instanceId)
     const pack = packs.find((p) => p.id === idOrName || p.name === idOrName)
     if (!pack) throw new Error('Pack not found')
@@ -1498,6 +1931,18 @@ export class NodePackService extends EventEmitter {
       pack.installSource === 'git' || Boolean(pack.path && existsSync(join(pack.path, '.git')))
     if (isGitPack && pack.path) {
       const gitBin = resolveGitBinary()
+      // Capture the pre-update rev so a failed pull can be hard-reset back to
+      // a consistent tree (partial fetch/index state must not survive).
+      let oldRev = ''
+      try {
+        const { stdout } = await execFileAsync(gitBin, ['-C', pack.path, 'rev-parse', 'HEAD'], {
+          timeout: 10000,
+          env: proxyEnv(loadSettings().proxy)
+        })
+        oldRev = stdout.trim()
+      } catch {
+        /* no rev — skip the reset safety net */
+      }
       try {
         await execFileAsync(gitBin, ['-C', pack.path, 'pull', '--ff-only'], {
           timeout: 60000,
@@ -1506,6 +1951,20 @@ export class NodePackService extends EventEmitter {
         })
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
+        if (oldRev) {
+          try {
+            await execFileAsync(gitBin, ['-C', pack.path, 'reset', '--hard', oldRev], {
+              timeout: 30000,
+              env: proxyEnv(loadSettings().proxy)
+            })
+            this.opLog?.(`git pull failed — reset --hard ${oldRev.slice(0, 12)}`, instanceId)
+          } catch {
+            /* reset is best-effort; the original error still surfaces */
+          }
+        }
+        if (isAbortError(e)) {
+          throw codedError('OP_CANCELLED', 'Update cancelled')
+        }
         throw new Error(`git pull failed for ${pack.name}: ${msg}`)
       }
       return await this.afterInstall(
@@ -1517,6 +1976,17 @@ export class NodePackService extends EventEmitter {
     }
     if (pack.installSource === 'registry' && pack.registryId && pack.path) {
       const trash = `${pack.path}.bak-${Date.now()}`
+      const root = detectCustomNodesRoot(instanceId)
+      // Remember pre-update root entries so a failed reinstall can sweep any
+      // orphan destName the git-prefer path created under a different folder
+      // name than the old pack.path (restore of .bak alone leaves it behind).
+      const preEntries = (() => {
+        try {
+          return root && existsSync(root) ? new Set(readdirSync(root)) : new Set<string>()
+        } catch {
+          return new Set<string>()
+        }
+      })()
       renameSync(pack.path, trash)
       try {
         const next = await this.install({
@@ -1542,6 +2012,26 @@ export class NodePackService extends EventEmitter {
         return next
       } catch (e) {
         // rollback — failures here MUST surface, never silently swallow.
+        // First sweep orphan dirs the failed install published under a new
+        // destName (git-prefer names from the repo URL, not the registry id).
+        if (root && existsSync(root)) {
+          try {
+            for (const name of readdirSync(root)) {
+              if (preEntries.has(name)) continue
+              const cand = join(root, name)
+              if (cand === pack.path || cand === trash) continue
+              if (!isStrictInside(cand, root)) continue
+              try {
+                rmSync(cand, { recursive: true, force: true })
+                this.opLog?.(`removed orphan install dir ${name}`, instanceId)
+              } catch {
+                /* best-effort */
+              }
+            }
+          } catch {
+            /* sweep is best-effort */
+          }
+        }
         let rolledBack = false
         try {
           if (existsSync(pack.path)) rmSync(pack.path, { recursive: true, force: true })
@@ -1713,11 +2203,14 @@ export class NodePackService extends EventEmitter {
   }
 
   createSnapshot(name?: string, instanceId?: string): NodeSnapshot {
+    // Record version AND git rev per pack so a rollback can pin the exact
+    // source state that existed when the snapshot was taken.
     const packs = this.list(instanceId).map((p) => ({
       name: p.name,
       version: p.version,
       path: p.path || '',
-      source: p.status === 'disabled' ? `${p.installSource}@disabled` : p.installSource
+      source: p.status === 'disabled' ? `${p.installSource}@disabled` : p.installSource,
+      gitRev: (p.path && gitRevOf(p.path)) || p.gitRev
     }))
     const snapshot: NodeSnapshot = {
       id: randomUUID(),

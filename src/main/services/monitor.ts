@@ -126,6 +126,12 @@ export class MonitorService extends EventEmitter {
   private wsBaseUrl = ''
   private reconnectTimer: NodeJS.Timeout | null = null
   private reconnectAttempts = 0
+  /**
+   * Connection generation. Bumped on every connectWs/disconnectWs so that a
+   * stale close/error handler from a previous socket can never schedule a
+   * reconnect against the current wsBaseUrl (which would open a duplicate WS).
+   */
+  private wsGeneration = 0
 
   /** Never rejects: partial si failures degrade instead of blowing up the tick. */
   async systemSnapshot(): Promise<SystemSnapshot> {
@@ -227,19 +233,22 @@ export class MonitorService extends EventEmitter {
     this.disconnectWs()
     this.reconnectAttempts = 0
     this.wsBaseUrl = baseUrl
-    return this.openWs(baseUrl)
+    const gen = ++this.wsGeneration
+    return this.openWs(baseUrl, gen)
   }
 
-  private openWs(baseUrl: string): boolean {
+  private openWs(baseUrl: string, gen: number): boolean {
     const wsUrl = baseUrl.replace(/^http/, 'ws').replace(/\/$/, '') + '/ws?clientId=' + COMFY_CLIENT_ID
     try {
       const ws = new WebSocket(wsUrl)
       this.ws = ws
       ws.on('open', () => {
+        if (gen !== this.wsGeneration) return
         this.reconnectAttempts = 0
         this.emit('ws', { type: 'status', text: 'connected' } as ExecProgressEvent)
       })
       ws.on('message', (raw) => {
+        if (gen !== this.wsGeneration) return
         try {
           const buf = Buffer.isBuffer(raw) ? raw : Buffer.from(raw as ArrayBuffer)
           if (buf.length > 0 && buf[0] === 0x00) return // binary preview frame
@@ -261,21 +270,24 @@ export class MonitorService extends EventEmitter {
         }
       })
       ws.on('close', () => {
+        if (gen !== this.wsGeneration) return
         this.emit('ws', { type: 'status', text: 'disconnected' } as ExecProgressEvent)
-        this.scheduleReconnect()
+        this.scheduleReconnect(gen)
       })
       ws.on('error', () => {
+        if (gen !== this.wsGeneration) return
         this.emit('ws', { type: 'status', text: 'error' } as ExecProgressEvent)
-        this.scheduleReconnect()
+        this.scheduleReconnect(gen)
       })
       return true
     } catch {
-      this.scheduleReconnect()
+      this.scheduleReconnect(gen)
       return false
     }
   }
 
-  private scheduleReconnect(): void {
+  private scheduleReconnect(gen: number): void {
+    if (gen !== this.wsGeneration) return
     if (!this.wsBaseUrl) return
     if (this.reconnectTimer) return
     // Retry forever; exponential backoff capped at 60s.
@@ -283,17 +295,19 @@ export class MonitorService extends EventEmitter {
     this.reconnectAttempts += 1
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
+      if (gen !== this.wsGeneration) return
       if (this.wsBaseUrl) {
         try {
-          this.openWs(this.wsBaseUrl)
+          this.openWs(this.wsBaseUrl, gen)
         } catch {
-          this.scheduleReconnect()
+          this.scheduleReconnect(gen)
         }
       }
     }, delay)
   }
 
   disconnectWs(): void {
+    this.wsGeneration += 1
     this.wsBaseUrl = ''
     this.reconnectAttempts = 0
     if (this.reconnectTimer) {

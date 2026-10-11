@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events'
 import { randomUUID, createHash } from 'crypto'
-import { existsSync, readFileSync, readdirSync, statSync, mkdirSync } from 'fs'
+import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, unlinkSync } from 'fs'
 import { join, extname, basename, dirname } from 'path'
 import type {
   BatchJob,
@@ -17,7 +17,9 @@ import {
   listOutputAssetsAll,
   listRemotes,
   upsertBatchJob,
+  deleteOutputAsset,
   mergeUpsertOutputAsset,
+  mergeUpsertOutputAssets,
   updateOutputAsset,
   upsertRemote,
   deleteRemote,
@@ -25,7 +27,7 @@ import {
   loadSettings
 } from './db'
 import { ComfyApiClient } from './comfyApi'
-import { extractPngTextMeta, lookupPromptWorkflowLink } from './workflow'
+import { readPngTextMetaFromFile, lookupPromptWorkflowLink } from './workflow'
 import { assertSafeRelativeFilename } from './security'
 
 // ---------- helpers ----------
@@ -35,6 +37,23 @@ function instanceUrl(inst: { listen: string; port: number }): string {
     ? '127.0.0.1'
     : inst.listen
   return `http://${host}:${inst.port}`
+}
+
+/**
+ * Resolve the actual output directory for an instance.
+ * ComfyUI allows `--output-directory <path>` in extraArgs — when present,
+ * the output scanner MUST use that directory instead of the default `path/output`.
+ */
+export function resolveOutputDir(inst: { path: string; extraArgs?: string[] }): string {
+  const args = inst.extraArgs || []
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--output-directory' && args[i + 1]) {
+      const custom = args[i + 1]
+      // Relative paths resolve against the instance root.
+      return custom.match(/^[a-zA-Z]:[\\/]|^\//) ? custom : join(inst.path, custom)
+    }
+  }
+  return join(inst.path, 'output')
 }
 
 function emptyItem(
@@ -50,9 +69,12 @@ function emptyItem(
     submitted: partial.submitted ?? 0,
     completed: partial.completed ?? 0,
     failed: partial.failed ?? 0,
+    submitFailed: partial.submitFailed ?? 0,
+    execFailed: partial.execFailed ?? 0,
     promptIds: partial.promptIds ?? [],
     seeds: partial.seeds ?? [],
-    outputPaths: partial.outputPaths ?? []
+    outputPaths: partial.outputPaths ?? [],
+    cancelled: partial.cancelled
   }
 }
 
@@ -61,7 +83,7 @@ function readWorkflowGraph(path: string): Record<string, unknown> | null {
   const ext = extname(path).toLowerCase()
   try {
     if (ext === '.png') {
-      const meta = extractPngTextMeta(readFileSync(path))
+      const meta = readPngTextMetaFromFile(path)
       if (meta.prompt) {
         try {
           return JSON.parse(String(meta.prompt)) as Record<string, unknown>
@@ -102,6 +124,8 @@ function normalizeLegacyJob(raw: Record<string, unknown>): BatchJob {
       submitted: raw.submitted != null ? Number(raw.submitted) : sum((i) => i.submitted),
       completed: raw.completed != null ? Number(raw.completed) : sum((i) => i.completed),
       failed: raw.failed != null ? Number(raw.failed) : sum((i) => i.failed),
+      submitFailed: raw.submitFailed != null ? Number(raw.submitFailed) : sum((i) => i.submitFailed),
+      execFailed: raw.execFailed != null ? Number(raw.execFailed) : sum((i) => i.execFailed),
       produced: raw.produced != null ? Number(raw.produced) : 0,
       createdAt: Number(raw.createdAt) || Date.now(),
       finishedAt: raw.finishedAt != null ? Number(raw.finishedAt) : undefined,
@@ -128,6 +152,8 @@ function normalizeLegacyJob(raw: Record<string, unknown>): BatchJob {
     submitted: item.submitted,
     completed: Number(raw.completed) || 0,
     failed: Number(raw.failed) || 0,
+    submitFailed: Number(raw.submitFailed) || 0,
+    execFailed: Number(raw.execFailed) || 0,
     produced: Number(raw.produced) || 0,
     createdAt: Number(raw.createdAt) || Date.now(),
     finishedAt: raw.finishedAt != null ? Number(raw.finishedAt) : undefined,
@@ -182,6 +208,8 @@ export class BatchService extends EventEmitter {
       submitted: 0,
       completed: 0,
       failed: 0,
+      submitFailed: 0,
+      execFailed: 0,
       produced: 0,
       createdAt: Date.now(),
       notes: input.notes || '',
@@ -214,6 +242,8 @@ export class BatchService extends EventEmitter {
     ) {
       job.submitted = 0
       job.failed = 0
+      job.submitFailed = 0
+      job.execFailed = 0
       job.produced = 0
       job.completed = 0
       job.finishedAt = undefined
@@ -222,6 +252,8 @@ export class BatchService extends EventEmitter {
         it.submitted = 0
         it.completed = 0
         it.failed = 0
+        it.submitFailed = 0
+        it.execFailed = 0
         it.promptIds = []
         it.seeds = []
         it.outputPaths = []
@@ -253,10 +285,24 @@ export class BatchService extends EventEmitter {
 
       for (let li = 0; li < job.items.length; li++) {
         const item = job.items[li]
+        // Per-item cancel — skip the rest of this leg entirely.
+        if (item.cancelled) {
+          const skip = Math.max(0, item.count - item.submitted - item.failed)
+          item.submitFailed += skip
+          item.failed += skip
+          job.submitFailed += skip
+          job.failed += skip
+          upsertBatchJob(job)
+          this.emit('progress', job)
+          continue
+        }
         const graph = readWorkflowGraph(item.workflowPath)
         if (!graph) {
-          item.failed += Math.max(0, item.count - item.submitted)
-          job.failed += Math.max(0, item.count - item.submitted)
+          const unparseable = Math.max(0, item.count - item.submitted)
+          item.submitFailed += unparseable
+          item.failed += unparseable
+          job.submitFailed += unparseable
+          job.failed += unparseable
           job.notes = [job.notes, `#${li + 1} cannot parse ${basename(item.workflowPath)}`]
             .filter(Boolean)
             .join('; ')
@@ -266,12 +312,24 @@ export class BatchService extends EventEmitter {
           continue
         }
 
+        // Independent loop counter — item.submitted does NOT advance on
+        // submit failure, so reusing it would collide seeds in increment mode.
+        let iteration = 0
         for (let i = 0; i < item.count; i++) {
           const live = this.list().find((j) => j.id === id)
           if (!this.runningIds.has(id) || live?.status === 'cancelled') {
             return this.finishCancel(job)
           }
-          const iteration = item.submitted
+          if (live?.items?.[li]?.cancelled) {
+            const skip = Math.max(0, item.count - item.submitted - item.failed)
+            item.submitFailed += skip
+            item.failed += skip
+            job.submitFailed += skip
+            job.failed += skip
+            upsertBatchJob(job)
+            this.emit('progress', job)
+            break
+          }
           let seed = 0
           try {
             const built = buildIterationPrompt(graph, {
@@ -296,14 +354,21 @@ export class BatchService extends EventEmitter {
               item.seeds.push(seed)
               item.submitted += 1
               job.submitted += 1
+              iteration += 1
             } else {
-              // Submit refused — counts against the job, not as an exec failure.
+              // Submit refused — never accepted, so it is NOT an exec failure.
+              item.submitFailed += 1
               item.failed += 1
+              job.submitFailed += 1
               job.failed += 1
+              iteration += 1
             }
           } catch (err) {
+            item.submitFailed += 1
             item.failed += 1
+            job.submitFailed += 1
             job.failed += 1
+            iteration += 1
             const msg = err instanceof Error ? err.message : String(err)
             job.notes = [job.notes, `#${li + 1}.${i + 1} ${msg}`].filter(Boolean).join('; ').slice(-800)
           }
@@ -325,17 +390,19 @@ export class BatchService extends EventEmitter {
       // Prefer the post-awaitOutputs snapshot so produced/outputPaths survive.
       const done = latest
       // Terminal state:
-      //   submitted = prompts handed to ComfyUI
-      //   completed = prompts that settled successfully
-      //   failed    = submit + exec failures
-      //   produced  = images linked from history
-      // Zero successes with at least one failure is an error — never "done".
+      //   submitted    = prompts handed to ComfyUI
+      //   completed    = prompts that settled successfully
+      //   submitFailed = prompts never accepted (refused / build error)
+      //   execFailed   = prompts accepted but failed in execution
+      //   failed       = submitFailed + execFailed (display compat)
+      //   produced     = images linked from history
       if (!done.submitted) {
         done.submitted = done.items.reduce((s, it) => s + (it.submitted || 0), 0)
       }
-      // Unsettled prompts (submitted > completed+failed) mean we hit the
-      // awaitOutputs deadline: never report "done", mark error + note timeouts.
-      const unsettled = done.submitted - done.completed - done.failed
+      // Unsettled = accepted prompts that never reached a terminal exec state.
+      // CRITICAL: must subtract ONLY execFailed — including submitFailed here
+      // would let submit-failures mask real timeouts (unsettled goes negative).
+      const unsettled = done.submitted - done.completed - (done.execFailed || 0)
       if (unsettled > 0) {
         // Only the prompts that never settled — not every promptId on the job.
         const allIds = done.items.flatMap((it) => it.promptIds)
@@ -455,7 +522,10 @@ export class BatchService extends EventEmitter {
             item.completed += 1
             live.completed += 1
           } else {
+            // Accepted-but-failed — this is an exec failure, NOT a submit failure.
+            item.execFailed += 1
             item.failed += 1
+            live.execFailed += 1
             live.failed += 1
           }
         }
@@ -525,7 +595,7 @@ export class BatchService extends EventEmitter {
       let seed: number | undefined
       if (/\.png$/i.test(abs)) {
         try {
-          const meta = extractPngTextMeta(readFileSync(abs))
+          const meta = readPngTextMetaFromFile(abs)
           if (meta.seed) seed = Number(meta.seed)
           if (meta.prompt) {
             try {
@@ -576,6 +646,35 @@ export class BatchService extends EventEmitter {
     }
   }
 
+  /**
+   * Per-item cancel: mark one workflow leg cancelled, dequeue its pending
+   * prompts, and let the submit loop skip whatever is left.
+   */
+  cancelItem(id: string, workflowPath: string): BatchJob {
+    const job = this.list().find((j) => j.id === id)
+    if (!job) throw new Error('Batch job not found')
+    const item = job.items.find((it) => it.workflowPath === workflowPath)
+    if (!item) throw new Error('Batch item not found')
+    item.cancelled = true
+    upsertBatchJob(job)
+    this.emit('progress', job)
+
+    // Fire-and-forget dequeue of this leg's still-pending prompts.
+    void (async () => {
+      try {
+        const instances = loadInstanceConfigs()
+        const inst = instances.find((i) => i.id === job.instanceId) || instances[0]
+        if (!inst) return
+        const client = new ComfyApiClient(instanceUrl(inst))
+        const ids = [...item.promptIds]
+        if (ids.length) await this.tryDequeue(client, ids)
+      } catch {
+        /* ignore */
+      }
+    })()
+    return job
+  }
+
   cancel(id: string): BatchJob {
     this.runningIds.delete(id)
     const job = this.list().find((j) => j.id === id)
@@ -619,6 +718,16 @@ export const batchService = new BatchService()
 // ---------- Output ----------
 
 export class OutputService {
+  /**
+   * Resident path→asset map used by walks: O(1) lookups instead of a per-file
+   * scan of the whole index (the old `listOutputAssetsAll().find(...)`).
+   */
+  private readonly prevMap = new Map<string, OutputAsset>()
+
+  private refreshPrevMap(): void {
+    for (const a of listOutputAssetsAll()) this.prevMap.set(a.path, a)
+  }
+
   list(opts?: {
     root?: string
     type?: string
@@ -629,17 +738,21 @@ export class OutputService {
     workflowId?: string
     sort?: 'createdAt' | 'size' | 'name'
     order?: 'asc' | 'desc'
+    createdFrom?: number
+    createdTo?: number
   }): { items: OutputAsset[]; total: number; truncated: boolean } {
     const scanRoots = [opts?.root].filter(Boolean) as string[]
     if (scanRoots.length) {
+      this.refreshPrevMap()
       const assets: OutputAsset[] = []
-      const prevMap = new Map(listOutputAssetsAll().map((x) => [x.path, x]))
       for (const root of scanRoots) {
         if (!existsSync(root)) continue
-        this.walk(root, assets, 0, prevMap)
+        this.walk(root, assets, 0)
       }
       // Field-level merge so batch/walk concurrent writes never drop linkage.
-      for (const a of assets) mergeUpsertOutputAsset(a)
+      // One read-modify-write for the whole walk, not one per file.
+      mergeUpsertOutputAssets(assets)
+      for (const a of assets) this.prevMap.set(a.path, a)
     }
 
     let all = listOutputAssetsAll()
@@ -653,6 +766,9 @@ export class OutputService {
     if (opts?.favorite) all = all.filter((a) => a.favorite)
     if (opts?.batchJobId) all = all.filter((a) => a.batchJobId === opts.batchJobId)
     if (opts?.workflowId) all = all.filter((a) => a.workflowId === opts.workflowId)
+    // Date range filter on createdAt (epoch ms).
+    if (opts?.createdFrom != null) all = all.filter((a) => a.createdAt >= opts.createdFrom!)
+    if (opts?.createdTo != null) all = all.filter((a) => a.createdAt <= opts.createdTo!)
 
     const sort = opts?.sort || 'createdAt'
     const order = opts?.order === 'asc' ? 1 : -1
@@ -672,12 +788,7 @@ export class OutputService {
     }
   }
 
-  private walk(
-    dir: string,
-    out: OutputAsset[],
-    depth: number,
-    prevMap?: Map<string, OutputAsset>
-  ): void {
+  private walk(dir: string, out: OutputAsset[], depth: number): void {
     if (depth > 4) return
     let entries: string[] = []
     try {
@@ -690,7 +801,7 @@ export class OutputService {
       try {
         const st = statSync(full)
         if (st.isDirectory()) {
-          this.walk(full, out, depth + 1, prevMap)
+          this.walk(full, out, depth + 1)
           continue
         }
         const ext = extname(name).toLowerCase()
@@ -703,15 +814,37 @@ export class OutputService {
               : 'other'
         if (type === 'other') continue
 
-        // Preserve user-linked fields from an existing index row (O(1) map).
-        const prev = prevMap?.get(full) ?? listOutputAssetsAll().find((x) => x.path === full)
+        // Preserve user-linked fields from an existing index row (resident O(1) map).
+        const prev = this.prevMap.get(full)
+
+        // (path,size,mtime) unchanged → the indexed analysis is still valid.
+        // PNG rows only skip once pngKeys proves a previous metadata pass ran.
+        if (
+          prev &&
+          prev.size === st.size &&
+          prev.createdAt === st.mtimeMs &&
+          (ext !== '.png' || Array.isArray(prev.params?.pngKeys))
+        ) {
+          const link =
+            prev.promptId && !prev.workflowId ? lookupPromptWorkflowLink(prev.promptId) : undefined
+          out.push({
+            ...prev,
+            type,
+            size: st.size,
+            createdAt: st.mtimeMs,
+            fileName: basename(full),
+            workflowId: prev.workflowId || link?.workflowId,
+            workflowName: prev.workflowName || link?.workflowName
+          })
+          continue
+        }
 
         let params: Record<string, unknown> = {}
         let seed: number | undefined
         let promptId: string | undefined
         if (type === 'image' && ext === '.png') {
           try {
-            const meta = extractPngTextMeta(readFileSync(full))
+            const meta = readPngTextMetaFromFile(full)
             if (meta.prompt) {
               try {
                 const prompt = JSON.parse(String(meta.prompt)) as Record<
@@ -771,6 +904,19 @@ export class OutputService {
 
   favorite(id: string, favorite: boolean): boolean {
     return Boolean(updateOutputAsset(id, { favorite }))
+  }
+
+  /**
+   * Delete an output asset. deleteFile=true also removes the file on disk;
+   * false only drops the DB record (the file stays for the OS / recycle bin).
+   */
+  remove(id: string, deleteFile: boolean): boolean {
+    const rec = listOutputAssetsAll().find((a) => a.id === id)
+    if (!rec) return false
+    if (deleteFile && rec.path && existsSync(rec.path)) {
+      unlinkSync(rec.path)
+    }
+    return deleteOutputAsset(id)
   }
 
   /** Multi-file share bundle. */
