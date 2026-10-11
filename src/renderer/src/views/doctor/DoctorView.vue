@@ -1,13 +1,13 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   MedkitOutline, CheckmarkCircleOutline, WarningOutline, CloseCircleOutline,
   FlashOutline, ConstructOutline
 } from '@vicons/ionicons5'
-import { NButton, NIcon, NSpace, NSpin, NTag, useMessage, NEmpty } from 'naive-ui'
+import { NButton, NIcon, NSpace, NSpin, NTag, useMessage, NEmpty, NProgress } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
-import { ipc } from '@/composables/useIpc'
+import { ipc, onDoctorProgress } from '@/composables/useIpc'
 import type { DoctorCheck, DoctorReport } from '@shared/types'
 
 const store = useAppStore()
@@ -15,6 +15,7 @@ const message = useMessage()
 const { t } = useI18n()
 const running = ref(false)
 const fixing = ref(false)
+const progress = ref<{ done?: number; total?: number; title?: string } | null>(null)
 // Persisted in the app store so Dashboard "one-click doctor" survives the route change.
 const report = ref<DoctorReport | null>(store.doctorReport)
 
@@ -31,9 +32,13 @@ function toneFor(s: DoctorCheck['severity']): string {
 }
 
 async function run(): Promise<void> {
+  const id = store.activeInstanceId
+  if (!id) {
+    message.warning(t('common.needRunningInstance'))
+    return
+  }
   running.value = true
   try {
-    const id = store.activeInstanceId || 'default'
     report.value = await ipc('doctor.run', id)
     store.doctorReport = report.value
     message.success(
@@ -52,9 +57,14 @@ async function run(): Promise<void> {
 
 async function fix(check: DoctorCheck): Promise<void> {
   if (!check.fixId) return
+  const id = store.activeInstanceId
+  if (!id) {
+    message.warning(t('common.needRunningInstance'))
+    return
+  }
   fixing.value = true
   try {
-    const res = await ipc('doctor.fix', store.activeInstanceId || 'default', check.fixId)
+    const res = await ipc('doctor.fix', id, check.fixId)
     message[res.ok ? 'success' : 'error'](res.message)
     await run()
   } catch (err) {
@@ -63,6 +73,15 @@ async function fix(check: DoctorCheck): Promise<void> {
     fixing.value = false
   }
 }
+
+let offProgress: (() => void) | null = null
+onMounted(() => {
+  offProgress = onDoctorProgress((p) => {
+    const info = p as { done?: number; total?: number; title?: string }
+    progress.value = info
+  })
+})
+onUnmounted(() => offProgress?.())
 </script>
 
 <template>
@@ -81,6 +100,18 @@ async function fix(check: DoctorCheck): Promise<void> {
     </div>
 
     <div class="page-body">
+    <div v-if="running && progress" class="doctor-progress card">
+      <NProgress
+        type="line"
+        :percentage="progress.total ? Math.min(100, Math.round(((progress.done || 0) / progress.total) * 100)) : 0"
+        :height="8"
+        processing
+      />
+      <div class="doctor-progress-meta">
+        {{ progress.title || t('doctor.run') }}
+        <span v-if="progress.total"> — {{ progress.done || 0 }} / {{ progress.total }}</span>
+      </div>
+    </div>
     <NSpin :show="running || fixing">
       <template v-if="report">
         <div class="summary card">
@@ -147,6 +178,8 @@ async function fix(check: DoctorCheck): Promise<void> {
 <style lang="scss" scoped>
 @use '@/styles/variables.scss' as *;
 .summary { display: grid; grid-template-columns: repeat(4, 1fr); padding: 20px; margin-bottom: 16px; text-align: center; }
+.doctor-progress { padding: 12px 16px; margin-bottom: 12px; }
+.doctor-progress-meta { margin-top: 6px; font-size: 12px; color: #6b7280; }
 .sum-num { font-size: 30px; font-weight: 800; letter-spacing: -0.03em; }
 .sum-label { margin-top: 4px; font-size: 12.5px; color: $color-text-muted; }
 .checks { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }

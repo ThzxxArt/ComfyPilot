@@ -68,8 +68,7 @@ vi.mock('../../src/main/services/db', () => ({
     securityLevel: 'normal',
     networkMode: 'public',
     pipIndex: '',
-    proxy: { enabled: false, protocol: 'http', host: '', port: 7890, bypass: '', username: '', password: '' },
-    defaultInstancePath: ''
+    proxy: { enabled: false, protocol: 'http', host: '', port: 7890, bypass: '', username: '', password: '' }
   })),
   loadInstanceConfigs: vi.fn(() => h.state.instances),
   listNodePacks: vi.fn(() => h.state.nodePacks),
@@ -264,13 +263,14 @@ describe('resolveGitBinary', () => {
     vi.clearAllMocks()
   })
 
-  it('prefers portable MinGit from runtimes when present', async () => {
+  it('prefers PATH git over portable MinGit (never shadow system git)', async () => {
     const bootstrap = await import('../../src/main/services/bootstrap')
     ;(bootstrap.findInRuntimes as ReturnType<typeof vi.fn>).mockReturnValue('C:/runtimes/cmd/git.exe')
-    expect(resolveGitBinary()).toBe('C:/runtimes/cmd/git.exe')
+    // Sync hint always returns 'git' — actual probing happens in resolveGitBinaryAsync.
+    expect(resolveGitBinary()).toBe('git')
   })
 
-  it('falls back to bare git when no portable binary', async () => {
+  it('still returns bare git when no portable binary', async () => {
     const bootstrap = await import('../../src/main/services/bootstrap')
     ;(bootstrap.findInRuntimes as ReturnType<typeof vi.fn>).mockReturnValue(null)
     expect(resolveGitBinary()).toBe('git')

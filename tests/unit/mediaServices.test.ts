@@ -276,9 +276,9 @@ describe('media services', () => {
   // ---------- toMediaUrl / resolveMediaUrlToPath / thumbnailDisplayUrl ----------
 
   describe('media URL gate expansion', () => {
-    it('maps output-root files including nested folders and settings root', async () => {
+    it('maps output-root files including nested folders', async () => {
       const media = await freshMedia()
-      const { saveSettings, upsertInstanceConfig } = await import('../../src/main/services/db')
+      const { upsertInstanceConfig } = await import('../../src/main/services/db')
       const instOut = join(ROOT, 'inst', 'output')
       mkdirSync(join(instOut, 'sub', 'dir'), { recursive: true })
       const nested = join(instOut, 'sub', 'dir', 'pic.png')
@@ -303,17 +303,6 @@ describe('media services', () => {
       const url = media.toMediaUrl(nested)
       expect(url).toBe('comfy-pilot-media:output/sub/dir/pic.png')
       expect(media.resolveMediaUrlToPath(url!)).toBe(nested)
-
-      // settings.outputIndexRoot
-      const sOut = join(ROOT, 'settings-out')
-      mkdirSync(join(sOut, 'a'), { recursive: true })
-      const f2 = join(sOut, 'a', 'b.jpeg')
-      writeFileSync(f2, 'x')
-      saveSettings({ outputIndexRoot: sOut })
-      const u2 = media.toMediaUrl(f2)
-      expect(u2).toBe('comfy-pilot-media:output/a/b.jpeg')
-      expect(media.resolveMediaUrlToPath(u2!)).toBe(f2)
-      saveSettings({ outputIndexRoot: '' })
     })
 
     it('rejects empty path, bad ext, and throws-to-null', async () => {

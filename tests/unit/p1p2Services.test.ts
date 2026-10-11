@@ -444,7 +444,8 @@ describe('p1p2 services', () => {
         return jsonResponse({})
       })
       const result = await batchService.start(job.id)
-      expect(result.produced).toBe(1)
+      // produced counts linked output FILES (4 real files), not successful prompts.
+      expect(result.produced).toBe(4)
       expect(result.items[0].outputPaths).toContain(inAbs)
       expect(result.items[0].outputPaths).toContain(otherAbs)
       expect(result.items[0].outputPaths).toContain(join(ROOT, 'comfy', 'output', 'clip.mp4'))
@@ -784,7 +785,9 @@ describe('p1p2 services', () => {
         return jsonResponse({})
       })
       const result = await batchService.start(job.id)
-      expect(result.produced).toBe(1)
+      // History settled success but linked no files — completed=1, produced=0.
+      expect(result.completed).toBe(1)
+      expect(result.produced).toBe(0)
       expect(hist).toBeGreaterThanOrEqual(2)
     })
 
@@ -835,7 +838,8 @@ describe('p1p2 services', () => {
         return jsonResponse({})
       })
       const result = await batchService.start(job.id)
-      expect(result.produced).toBe(1)
+      // No output files were linked — produced stays 0 (not the old fake +1).
+      expect(result.produced).toBe(0)
       expect(result.items[0].outputPaths).toEqual([])
     })
   })
@@ -1200,7 +1204,7 @@ describe('p1p2 services', () => {
   describe('MarketService', () => {
     it('maps registry items with installed detection from custom_nodes + nodePack', async () => {
       const { marketService } = await freshP1p2()
-      const { saveSettings } = await import('../../src/main/services/db')
+      const { saveSettings, upsertInstanceConfig } = await import('../../src/main/services/db')
       const instPath = join(ROOT, 'mkt-inst')
       mkdirSync(join(instPath, 'custom_nodes', 'ComfyUI-Foo'), { recursive: true })
       mkdirSync(join(instPath, 'custom_nodes', '.git'), { recursive: true })
@@ -1208,7 +1212,7 @@ describe('p1p2 services', () => {
       mkdirSync(join(instPath, 'custom_nodes', '__MACOSX'), { recursive: true })
       mkdirSync(join(instPath, 'custom_nodes', 'node_modules'), { recursive: true })
       mkdirSync(join(instPath, 'custom_nodes', 'Other-Pack'), { recursive: true })
-      saveSettings({ defaultInstancePath: instPath })
+      upsertInstanceConfig(makeInstance({ id: 'mkt-1', path: instPath }) as never)
 
       const real = await import('../../src/main/services/registry')
       vi.doMock('../../src/main/services/registry', async (importOriginal) => {
@@ -1236,7 +1240,7 @@ describe('p1p2 services', () => {
         }
       }))
 
-      const res = await marketService.list({ category: 'tools' })
+      const res = await marketService.list({ category: 'tools', instanceId: 'mkt-1' })
       expect(res.items.length).toBe(3)
       const foo = res.items.find((i: { id: string }) => i.id === 'ComfyUI-Foo')!
       expect(foo.installed).toBe(true)
@@ -1248,12 +1252,11 @@ describe('p1p2 services', () => {
       void real
     })
 
-    it('resolves instanceId path over defaultInstancePath', async () => {
+    it('resolves installed packs from the selected instanceId path only', async () => {
       const { marketService } = await freshP1p2()
-      const { saveSettings, upsertInstanceConfig } = await import('../../src/main/services/db')
+      const { upsertInstanceConfig } = await import('../../src/main/services/db')
       const defPath = join(ROOT, 'mkt-default')
       mkdirSync(join(defPath, 'custom_nodes', 'Default-Pack'), { recursive: true })
-      saveSettings({ defaultInstancePath: defPath })
 
       const altPath = join(ROOT, 'mkt-alt')
       mkdirSync(join(altPath, 'custom_nodes', 'Alt-Pack'), { recursive: true })
@@ -1324,10 +1327,10 @@ describe('p1p2 services', () => {
 
     it('survives nodePack module failure using directory keys only', async () => {
       const { marketService } = await freshP1p2()
-      const { saveSettings } = await import('../../src/main/services/db')
+      const { upsertInstanceConfig } = await import('../../src/main/services/db')
       const instPath = join(ROOT, 'mkt-np')
       mkdirSync(join(instPath, 'custom_nodes', 'DirOnly'), { recursive: true })
-      saveSettings({ defaultInstancePath: instPath })
+      upsertInstanceConfig(makeInstance({ id: 'mkt-np', path: instPath }) as never)
       vi.doMock('../../src/main/services/registry', async (importOriginal) => {
         const actual = await importOriginal<typeof import('../../src/main/services/registry')>()
         return {
@@ -1346,14 +1349,12 @@ describe('p1p2 services', () => {
       vi.doMock('../../src/main/services/nodePack', () => {
         throw new Error('nodePack unavailable')
       })
-      const res = await marketService.list()
+      const res = await marketService.list({ instanceId: 'mkt-np' })
       expect(res.items[0].installed).toBe(true)
     })
 
     it('readdirSafe handles empty instance path', async () => {
       const { marketService } = await freshP1p2()
-      const { saveSettings } = await import('../../src/main/services/db')
-      saveSettings({ defaultInstancePath: '' })
       vi.doMock('../../src/main/services/registry', async (importOriginal) => {
         const actual = await importOriginal<typeof import('../../src/main/services/registry')>()
         return {

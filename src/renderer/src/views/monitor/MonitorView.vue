@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { PulseOutline, HardwareChipOutline } from '@vicons/ionicons5'
 import { NButton, NSpace, NProgress, NEmpty } from 'naive-ui'
 import StatCard from '@/components/StatCard.vue'
@@ -23,46 +23,50 @@ function pct(used: number, total: number): number {
 async function refreshQueue(): Promise<void> {
   try {
     const inst = store.activeInstance
-    if (!inst?.url) return
+    if (!inst?.url) {
+      // Switching to an instance without a URL must not show the previous
+      // instance's queue.
+      queue.value = null
+      return
+    }
     queue.value = await ipc('monitor.queue', inst.url)
   } catch {
-    /* instance offline */
+    // Offline: clear stale data instead of leaving the old queue on screen.
+    queue.value = null
   }
 }
 
 let off: (() => void) | null = null
 let queueTimer: ReturnType<typeof setInterval> | null = null
 
-async function connectLiveWs(): Promise<void> {
-  const inst = store.activeInstance
-  if (!inst?.url) return
-  try {
-    await ipc('monitor.connectWs', inst.url)
-  } catch {
-    /* offline — polling still covers queue */
-  }
-}
-
 onMounted(async () => {
   await store.bootstrap({ keepSelection: true })
-  const snap = await ipc('monitor.system')
-  store.system = snap
-  history.value.push(snap.cpuUsage)
+  const snap = await ipc('monitor.system').catch(() => null)
+  if (snap) {
+    store.system = snap
+    history.value.push(snap.cpuUsage)
+  }
   off = onMonitorTick((s) => {
     const snap = s as SystemSnapshot
     store.system = snap
     history.value.push(snap.cpuUsage)
     if (history.value.length > 60) history.value.shift()
   })
-  await connectLiveWs()
+  // WS is owned by the app store (bound to the active instance) — do not
+  // connect/disconnect it here or leaving this page would kill other pages' streams.
   await refreshQueue()
   queueTimer = setInterval(() => void refreshQueue(), 3000)
 })
 
+// Re-poll when the user switches the active instance in the header.
+watch(
+  () => store.instanceSwitchTick,
+  () => void refreshQueue()
+)
+
 onUnmounted(() => {
   off?.()
   if (queueTimer) clearInterval(queueTimer)
-  void ipc('monitor.disconnectWs').catch(() => undefined)
 })
 </script>
 
@@ -118,7 +122,7 @@ onUnmounted(() => {
       </section>
 
       <section class="card panel">
-        <div class="panel-title">GPU</div>
+        <div class="panel-title">{{ $t('monitor.gpuTitle') }}</div>
         <div v-if="store.system?.gpus?.length" class="gpu-list">
           <div v-for="gpu in store.system.gpus" :key="gpu.index" class="gpu-item">
             <div class="gpu-name">{{ gpu.model }}</div>
@@ -149,11 +153,11 @@ onUnmounted(() => {
       </div>
       <div v-else class="queue-list">
         <div v-for="r in queue.running" :key="r.promptId" class="queue-row">
-          <span class="chip chip-success">running</span>
+          <span class="chip chip-success">{{ $t('status.running') }}</span>
           <span class="mono">{{ r.promptId }}</span>
         </div>
         <div v-for="p in queue.pending" :key="p.promptId" class="queue-row">
-          <span class="chip chip-warning">pending</span>
+          <span class="chip chip-warning">{{ $t('monitor.pending') }}</span>
           <span class="mono">{{ p.promptId }}</span>
         </div>
       </div>

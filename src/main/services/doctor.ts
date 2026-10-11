@@ -1,4 +1,5 @@
 import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { homedir } from 'os'
 import { join } from 'path'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
@@ -62,7 +63,7 @@ export class DoctorService extends EventEmitter {
     emitProgress(0, 13, 'Starting health check…')
 
     // 1. install path
-    const installPath = config?.path || settings.defaultInstancePath
+    const installPath = config?.path || ''
     const hasMain = installPath ? existsSync(join(installPath, 'main.py')) : false
     checks.push({
       id: 'install-path',
@@ -297,15 +298,16 @@ export class DoctorService extends EventEmitter {
     }
 
     // 9. disk space
-    if (settings.downloadDir && existsSync(settings.downloadDir)) {
+    const downloadDir = join(homedir(), 'Downloads', 'ComfyPilot')
+    if (existsSync(downloadDir)) {
       try {
-        statSync(settings.downloadDir)
+        statSync(downloadDir)
         checks.push({
           id: 'download-dir',
           group: 'Storage',
           title: 'Download directory',
           severity: 'pass',
-          detail: settings.downloadDir,
+          detail: downloadDir,
           fixable: false
         })
       } catch {
@@ -384,8 +386,7 @@ export class DoctorService extends EventEmitter {
   async fix(instanceId: string, fixId: string): Promise<{ ok: boolean; message: string }> {
     const configs = loadInstanceConfigs()
     const config = configs.find((c) => c.id === instanceId) || configs[0]
-    const settings = loadSettings()
-    const installPath = config?.path || settings.defaultInstancePath
+    const installPath = config?.path || ''
     if (!installPath) return { ok: false, message: 'No instance path' }
 
     switch (fixId) {

@@ -463,6 +463,18 @@ app.whenReady().then(async () => {
   void import('./services/registryIndex')
     .then(({ registryIndex }) => {
       registryIndex.on('progress', (p) => broadcast(IPC_EVENTS.registryIndexProgress, p))
+      // `ready` must reach the renderer: without it MarketView's indexing
+      // banner never clears after a search-triggered rebuild.
+      registryIndex.on('ready', (status) => {
+        const s = status as { pages?: number; count?: number; total?: number }
+        const pages = s.pages || 1
+        broadcast(IPC_EVENTS.registryIndexProgress, {
+          done: pages,
+          total: pages,
+          count: s.count || 0,
+          ready: true
+        })
+      })
     })
     .catch(() => undefined)
 

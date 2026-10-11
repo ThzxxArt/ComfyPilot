@@ -1,7 +1,6 @@
 /** Shared domain types between main / preload / renderer — full PLAN coverage */
 
 // ---------- App ----------
-export type AppTheme = 'light' | 'system'
 export type AppLocale = 'zh-CN' | 'en-US'
 
 export type ProxyProtocol = 'http' | 'https' | 'socks5'
@@ -18,12 +17,8 @@ export interface ProxySettings {
 }
 
 export interface AppSettings {
-  theme: AppTheme
   locale: AppLocale
-  defaultInstancePath: string
-  extraModelPathsFile: string
   modelScanRoots: string[]
-  downloadDir: string
   githubEndpoint: string
   hfEndpoint: string
   civitaiEndpoint: string
@@ -35,7 +30,6 @@ export interface AppSettings {
   networkMode: 'public' | 'private' | 'offline' | 'personal_cloud'
   aria2Path: string
   useAria2: boolean
-  outputIndexRoot: string
   /** Start ComfyPilot at OS login */
   launchOnBoot: boolean
   /** Closing the window hides to tray instead of quitting */
@@ -126,6 +120,17 @@ export interface WaitReadyResult {
   info: ComfyInstanceInfo
   error?: string
   elapsedMs: number
+}
+
+/** Result of startAll/stopAll — per-instance outcome so the UI can summarize. */
+export interface InstanceActionResult extends ComfyInstanceInfo {
+  ok: boolean
+  error?: string
+}
+
+/** stop/forceKill result — `adopted` marks an external process we only signalled. */
+export interface InstanceStopResult extends ComfyInstanceInfo {
+  adopted?: boolean
 }
 
 export interface DiagnosticPackage {
@@ -241,6 +246,8 @@ export interface NodePackRecord {
   nodeList: string[]
   license?: string
   icon?: string
+  /** Free-form user note kept across update / reinstall. */
+  notes?: string
 }
 
 export interface NodePackIssue {
@@ -273,6 +280,8 @@ export interface NodeSnapshot {
   createdAt: number
   packs: Array<{ name: string; version: string; path: string; source: string }>
   notes: string
+  /** Instance this snapshot was taken against. */
+  instanceId?: string
 }
 
 export interface NodeNameConflict {
@@ -487,11 +496,17 @@ export interface BatchJob {
   completed: number
   /** Submit + exec failures (sum of item.failed). */
   failed: number
-  /** Images linked from history for successful prompts. */
+  /**
+   * Output FILES actually linked from history (unique paths pushed to
+   * item.outputPaths). A prompt that settled "success" but whose files were
+   * missing on disk counts as produced=0, never as a success-image.
+   */
   produced: number
   createdAt: number
   finishedAt?: number
   notes: string
+  /** Concise failure summary (first errors / timeouts) for the UI card. */
+  errorSummary?: string
   params: BatchParamOverrides
   /** Display path of the primary workflow (items[0]). */
   workflowPath: string
@@ -801,11 +816,11 @@ export type IpcChannelMap = {
   'instance.launch': { args: [string, LaunchOptions?]; result: ComfyInstanceInfo }
   'instance.waitReady': { args: [string, number?]; result: WaitReadyResult }
   'instance.previewLaunch': { args: [string]; result: LaunchCommandPreview }
-  'instance.stop': { args: [string]; result: ComfyInstanceInfo }
+  'instance.stop': { args: [string]; result: InstanceStopResult }
   'instance.restart': { args: [string, LaunchOptions?]; result: ComfyInstanceInfo }
-  'instance.forceKill': { args: [string]; result: ComfyInstanceInfo }
-  'instance.startAll': { args: []; result: ComfyInstanceInfo[] }
-  'instance.stopAll': { args: []; result: ComfyInstanceInfo[] }
+  'instance.forceKill': { args: [string]; result: InstanceStopResult }
+  'instance.startAll': { args: []; result: InstanceActionResult[] }
+  'instance.stopAll': { args: []; result: InstanceActionResult[] }
   'instance.getLogs': { args: [string, number?]; result: ComfyLogLine[] }
   'instance.clearLogs': { args: [string]; result: boolean }
   'instance.checkPort': { args: [number]; result: PortCheckResult }
@@ -836,6 +851,7 @@ export type IpcChannelMap = {
   'model.pauseDownload': { args: [string]; result: DownloadTask }
   'model.resumeDownload': { args: [string]; result: DownloadTask }
   'model.cancelDownload': { args: [string]; result: boolean }
+  'model.clearFinishedDownloads': { args: []; result: number }
   'model.storageStats': { args: []; result: StorageStats[] }
   'model.parseExtraPaths': { args: [string?]; result: string[] }
   'model.fetchCivitaiMeta': { args: [string]; result: Record<string, unknown> | null }
@@ -846,20 +862,20 @@ export type IpcChannelMap = {
   'node.list': { args: [string?]; result: NodePackRecord[] }
   'node.refresh': { args: [string?]; result: NodePackRecord[] }
   'node.registrySearch': {
-    args: [{ query?: string; limit?: number; page?: number; scanPages?: number }?]
+    args: [{ query?: string; limit?: number; page?: number }?]
     result: RegistryPageResult<RegistryNodePack>
   }
   'registry.indexStatus': {
     args: []
-    result: { ready: boolean; updatedAt: number; total: number; pages: number; count: number }
+    result: { ready: boolean; updatedAt: number; total: number; pages: number; count: number; skippedPages?: number }
   }
   'registry.refreshIndex': {
     args: []
-    result: { ready: boolean; updatedAt: number; total: number; pages: number; count: number }
+    result: { ready: boolean; updatedAt: number; total: number; pages: number; count: number; skippedPages?: number }
   }
   'registry.ensureIndex': {
     args: []
-    result: { ready: boolean; updatedAt: number; total: number; pages: number; count: number }
+    result: { ready: boolean; updatedAt: number; total: number; pages: number; count: number; skippedPages?: number }
   }
   'node.managerChannel': { args: []; result: RegistryNodePack[] }
   'node.install': {
@@ -869,21 +885,27 @@ export type IpcChannelMap = {
   'node.uninstall': { args: [string, string?]; result: boolean }
   'node.update': { args: [string, string?, string?]; result: NodePackRecord }
   'node.toggle': { args: [string, boolean, string?]; result: NodePackRecord }
-  'node.lock': { args: [string, boolean]; result: NodePackRecord }
+  'node.lock': { args: [string, boolean, string?]; result: NodePackRecord }
   'node.checkIssues': { args: [string, string?]; result: NodePackIssue[] }
   'node.conflicts': { args: [string?]; result: NodeNameConflict[] }
   'node.smokeTest': { args: [string, string?]; result: NodePackIssue[] }
-  'node.snapshots': { args: []; result: NodeSnapshot[] }
-  'node.createSnapshot': { args: [string?]; result: NodeSnapshot }
-  'node.restoreSnapshot': { args: [string]; result: boolean }
-  'node.deleteSnapshot': { args: [string]; result: boolean }
+  'node.snapshots': { args: [string?]; result: NodeSnapshot[] }
+  'node.createSnapshot': { args: [string?, string?]; result: NodeSnapshot }
+  'node.restoreSnapshot': { args: [string, string?]; result: boolean }
+  'node.deleteSnapshot': { args: [string, string?]; result: boolean }
   'node.checkUpdates': { args: [string?]; result: NodeUpdateCheckResult[] }
   'node.updateAll': { args: [string?]; result: NodeUpdateAllResult[] }
 
   // workflows
   'workflow.list': { args: [{ includeMissing?: boolean }?]; result: WorkflowRecord[] }
   'workflow.import': { args: [string, string?]; result: WorkflowRecord }
-  'workflow.importMany': { args: [string[], string?]; result: WorkflowRecord[] }
+  'workflow.importMany': {
+    args: [string[], string?]
+    result: {
+      ok: WorkflowRecord[]
+      errors: Array<{ path: string; message: string }>
+    }
+  }
   'workflow.launch': { args: [string, string?]; result: boolean }
   'workflow.tag': { args: [string, string[]]; result: WorkflowRecord }
   'workflow.favorite': { args: [string, boolean]; result: WorkflowRecord }
@@ -1051,7 +1073,7 @@ export type IpcChannelMap = {
 
   // market
   'market.list': {
-    args: [{ query?: string; category?: string; limit?: number; page?: number; scanPages?: number; instanceId?: string }?]
+    args: [{ query?: string; category?: string; limit?: number; page?: number; instanceId?: string }?]
     result: RegistryPageResult<MarketItem>
   }
   'market.install': { args: [string, string?]; result: NodePackRecord }
@@ -1098,4 +1120,10 @@ export interface AppNotification {
   title: string
   message: string
   duration?: number
+  /** i18n key for the title — renderer translates when present (title is fallback). */
+  titleKey?: string
+  /** i18n key for the message — renderer translates when present (message is fallback). */
+  messageKey?: string
+  /** Interpolation params for titleKey / messageKey. */
+  params?: Record<string, string | number>
 }

@@ -89,9 +89,25 @@ interface RuntimeEntry {
   }>
   /** Interval that polls /system_stats until ready. */
   readyPollTimer?: NodeJS.Timeout
+  /** Last status value pushed over IPC (change detection for pushLog). */
+  lastEmittedStatus?: InstanceStatus
+  /** Timestamp of the last status IPC (same-status throttle). */
+  lastStatusEmitAt?: number
 }
 
+/** Per-instance outcome of a batch start/stop so the UI can summarize.
+ *  Carries full ComfyInstanceInfo (status etc.) plus ok/error for the summary. */
+export type InstanceActionResult = ComfyInstanceInfo & {
+  ok: boolean
+  error?: string
+}
+
+/** stop/forceKill result: `adopted` marks an external process we only signalled. */
+export type InstanceStopResult = ComfyInstanceInfo & { adopted?: boolean }
+
 const LOG_CAP = 5000
+/** Minimum gap between same-status IPC pushes triggered by log lines. */
+const STATUS_EMIT_MIN_MS = 1000
 const READY_POLL_MS = 500
 // Cold start with modern ComfyUI + plugins can take 60–120s before the HTTP
 // port binds (alembic/kitchen/aimdo imports, torch JIT, custom nodes). 45s was
@@ -129,7 +145,13 @@ export class InstanceService extends EventEmitter {
     rt.logs.push(line)
     if (rt.logs.length > LOG_CAP) rt.logs.splice(0, rt.logs.length - LOG_CAP)
     this.emit('log', rt.config.id, line)
-    this.emitStatus(rt)
+    // Log lines arrive in bursts during startup — emitting full status per line
+    // floods the IPC bridge. Only push when status changed, else at most 1/s.
+    const now = Date.now()
+    const changed = rt.lastEmittedStatus !== rt.status
+    if (changed || now - (rt.lastStatusEmitAt ?? 0) >= STATUS_EMIT_MIN_MS) {
+      this.emitStatus(rt)
+    }
     this.appendLogFile(rt.config.id, line)
   }
 
@@ -145,6 +167,8 @@ export class InstanceService extends EventEmitter {
   }
 
   private emitStatus(rt: RuntimeEntry): void {
+    rt.lastEmittedStatus = rt.status
+    rt.lastStatusEmitAt = Date.now()
     this.emit('status', this.toInfo(rt))
   }
 
@@ -343,7 +367,6 @@ export class InstanceService extends EventEmitter {
       join(home, 'Downloads'),
       join(process.env.USERPROFILE || '', 'ComfyUI'),
       join(process.env.LOCALAPPDATA || '', 'Programs', 'comfyui-desktop'),
-      settings.defaultInstancePath,
       ...settings.modelScanRoots
     ].filter(Boolean) as string[]
     return [...new Set(candidates)]
@@ -423,15 +446,36 @@ export class InstanceService extends EventEmitter {
 
   getLogs(id: string, limit = 500): ComfyLogLine[] {
     const rt = this.runtimes.get(id)
-    return rt ? rt.logs.slice(-limit) : []
+    const mem = rt?.logs ?? []
+    // Memory only holds the current process session; past runs live in the log file.
+    const file = this.readLogFile(id)
+    if (!file.length) return mem.slice(-limit)
+    if (!mem.length) return file.slice(-limit)
+    // pushLog writes to both sinks, so memory duplicates the file tail — drop
+    // memory lines already present in the file and append only the remainder.
+    const fileKeys = new Set(file.map((l) => `${l.ts}|${l.message}`))
+    const extra = mem.filter((l) => !fileKeys.has(`${l.ts}|${l.message}`))
+    return [...file, ...extra].slice(-limit)
   }
 
   clearLogs(id: string): boolean {
     const rt = this.runtimes.get(id)
-    if (!rt) return false
-    rt.logs = []
-    this.emitStatus(rt)
-    return true
+    if (rt) rt.logs = []
+    // Wipe the on-disk history too — getLogs merges the file back in, so leaving
+    // it would make "Clear logs" a no-op on the next read. Also clear when there
+    // is no live runtime (after an app restart the file is the only history).
+    let removed = false
+    try {
+      const file = join(logsDir(), `${id}.log`)
+      if (existsSync(file)) {
+        rmSync(file)
+        removed = true
+      }
+    } catch {
+      /* ignore */
+    }
+    if (rt) this.emitStatus(rt)
+    return Boolean(rt) || removed
   }
 
   async checkPort(port: number): Promise<PortCheckResult> {
@@ -456,7 +500,21 @@ export class InstanceService extends EventEmitter {
       const check = await this.checkPort(p)
       if (check.available) return p
     }
-    return 9000 + Math.floor(Math.random() * 500)
+    // Defaults are taken — probe a few random candidates instead of blindly
+    // returning an unchecked port (the old fallback could collide).
+    for (let i = 0; i < 8; i++) {
+      const candidate = 9000 + Math.floor(Math.random() * 500)
+      const check = await this.checkPort(candidate)
+      if (check.available) return candidate
+    }
+    // Last resort: sequential scan just above the default range.
+    for (let p = 8193; p < 8223; p++) {
+      const check = await this.checkPort(p)
+      if (check.available) return p
+    }
+    // Nothing free among the probed candidates — throw rather than hand back a
+    // known-busy port (8188) that would silently fail to start.
+    throw new Error('No free port found in the probed ranges')
   }
 
   async probeEnv(id: string): Promise<EnvProbe> {
@@ -601,11 +659,17 @@ export class InstanceService extends EventEmitter {
         .split('\n')
         .filter(Boolean)
         .map((line) => {
-          const m = line.match(/^\[([^\]]+)\]\s+(\w+)\s+(.*)$/)
+          // Write format is `[ISO] LEVEL message` with exactly one space after
+          // the level. A greedy `\s+` would swallow leading spaces from the
+          // message and break ts|message dedupe against in-memory lines
+          // (Python traceback indent lines would be duplicated).
+          const m = line.match(/^\[([^\]]+)\] (\w+) (.*)$/)
           return {
             ts: m ? Date.parse(m[1]) : Date.now(),
             level: (m?.[2]?.toLowerCase() as ComfyLogLine['level']) || 'info',
-            message: m?.[3] || line
+            // `??` (not `||`) so an empty message stays empty instead of
+            // falling back to the raw line and missing the dedupe key.
+            message: m ? m[3] : line
           }
         })
     } catch {
@@ -995,48 +1059,57 @@ export class InstanceService extends EventEmitter {
     return this.toInfo(rt)
   }
 
-  async startAll(): Promise<ComfyInstanceInfo[]> {
+  async startAll(): Promise<InstanceActionResult[]> {
     const configs = loadInstanceConfigs().filter((c) => c.enabled !== false)
-    const out: ComfyInstanceInfo[] = []
+    const out: InstanceActionResult[] = []
     for (const c of configs) {
       try {
-        out.push(await this.start(c.id))
+        const info = await this.start(c.id)
+        out.push({ ...info, ok: true })
       } catch (err) {
-        this.pushLog(
-          this.ensureRuntime(c),
-          'error',
-          `startAll: ${err instanceof Error ? err.message : String(err)}`
-        )
-        out.push(this.toInfo(this.ensureRuntime(c)))
+        const msg = err instanceof Error ? err.message : String(err)
+        this.pushLog(this.ensureRuntime(c), 'error', `startAll: ${msg}`)
+        out.push({ ...this.toInfo(this.ensureRuntime(c)), ok: false, error: msg })
       }
     }
     return out
   }
 
-  async stopAll(): Promise<ComfyInstanceInfo[]> {
-    const out: ComfyInstanceInfo[] = []
+  async stopAll(): Promise<InstanceActionResult[]> {
+    const out: InstanceActionResult[] = []
     for (const rt of this.runtimes.values()) {
-      if (rt.process) {
-        out.push(await this.stop(rt.config.id))
+      if (!rt.process) continue
+      const id = rt.config.id
+      try {
+        const info = await this.stop(id)
+        out.push({ ...info, ok: true })
+      } catch (err) {
+        out.push({
+          ...this.toInfo(rt),
+          ok: false,
+          error: err instanceof Error ? err.message : String(err)
+        })
       }
     }
     return out
   }
 
-  async stop(id: string): Promise<ComfyInstanceInfo> {
+  async stop(id: string): Promise<InstanceStopResult> {
     const rt = this.runtimes.get(id)
     if (!rt) throw new Error(`Instance not found: ${id}`)
     rt.intentionalStop = true
     rt.generation += 1
     const child = rt.process
     const wasManaged = rt.managed
+    // Snapshot BEFORE overwriting status/ready so a second stop of an adopted
+    // external process can still see that it was live.
+    const wasRunning = rt.status === 'running' || rt.status === 'starting'
+    const wasReady = rt.ready
     rt.process = undefined
     rt.pid = undefined
     rt.status = 'stopped'
-    // clearReadyProbe zeroes rt.ready — snapshot first so the external-process
-    // warning below can still see that the adopted instance *was* live.
-    const wasReady = rt.ready
     this.clearReadyProbe(rt, wasManaged ? 'Stopped' : 'External process left running')
+    let adopted = false
     if (child) {
       try {
         child.kill('SIGTERM')
@@ -1052,13 +1125,16 @@ export class InstanceService extends EventEmitter {
           /* ignore */
         }
       }, 3000)
-    } else if (!wasManaged && wasReady) {
+    } else if (!wasManaged && (wasReady || wasRunning)) {
       // We only adopted an external ComfyUI — be honest instead of pretending we killed it.
+      adopted = true
       this.pushLog(rt, 'warn', 'Stop requested for an adopted external process — it is still running outside ComfyPilot')
     }
     rt.managed = false
     this.emitStatus(rt)
-    return this.toInfo(rt)
+    const info = this.toInfo(rt) as InstanceStopResult
+    if (adopted) info.adopted = true
+    return info
   }
 
   async restart(id: string, opts?: LaunchOptions): Promise<ComfyInstanceInfo> {
@@ -1075,7 +1151,7 @@ export class InstanceService extends EventEmitter {
     return this.launch(id, opts)
   }
 
-  async forceKill(id: string): Promise<ComfyInstanceInfo> {
+  async forceKill(id: string): Promise<InstanceStopResult> {
     const rt = this.runtimes.get(id)
     if (!rt) throw new Error(`Instance not found: ${id}`)
     rt.intentionalStop = true
@@ -1083,9 +1159,12 @@ export class InstanceService extends EventEmitter {
     const child = rt.process
     const pid = rt.pid
     const wasManaged = rt.managed
+    // Snapshot readiness before clearReadyProbe zeroes it (same as stop()).
+    const wasReady = rt.ready
     rt.process = undefined
     rt.pid = undefined
     this.clearReadyProbe(rt, 'Force killed')
+    let adopted = false
     if (child) {
       try {
         child.kill('SIGKILL')
@@ -1099,14 +1178,18 @@ export class InstanceService extends EventEmitter {
       } catch {
         /* ignore */
       }
-    } else if (!wasManaged) {
+    } else if (!wasManaged && (wasReady || rt.status === 'running')) {
+      // Live external ComfyUI we refused to kill — tell the UI we only signalled state.
+      adopted = true
       this.pushLog(rt, 'warn', 'Force-kill requested for an adopted external process — refusing to kill an unowned PID')
     }
     rt.status = 'stopped'
     rt.managed = false
     this.pushLog(rt, 'warn', 'Force killed')
     this.emitStatus(rt)
-    return this.toInfo(rt)
+    const info = this.toInfo(rt) as InstanceStopResult
+    if (adopted) info.adopted = true
+    return info
   }
 
   /** Synchronous best-effort kill used on app quit. */

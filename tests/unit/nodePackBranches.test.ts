@@ -21,8 +21,7 @@ const h = vi.hoisted(() => {
       securityLevel: 'normal',
       networkMode: 'public',
       pipIndex: '',
-      proxy: { enabled: false, protocol: 'http', host: '', port: 7890, bypass: '', username: '', password: '' },
-      defaultInstancePath: ''
+      proxy: { enabled: false, protocol: 'http', host: '', port: 7890, bypass: '', username: '', password: '' }
     } as Record<string, unknown>,
     insertSnapshotThrows: false,
     writeFileSyncThrows: false,
@@ -250,7 +249,6 @@ function reset(): void {
   h.state.writeFileSyncThrows = false
   h.state.renameFail = false
   h.state.settings.networkMode = 'public'
-  h.state.settings.defaultInstancePath = ''
   h.state.instances = [
     {
       id: 'inst-1',
@@ -702,14 +700,14 @@ describe('createSnapshot persistence failures', () => {
       'pyproject.toml': 'name = "SnapPack"\nversion = "1.0.0"\n'
     })
     h.state.nodePacks = []
-    // createSnapshot() calls list() with no args → needs defaultInstancePath
-    h.state.settings.defaultInstancePath = 'C:/fake/ComfyUI'
+    // createSnapshot() calls list() with no args → needs a resolvable custom_nodes root
+    process.env.COMFYUI_PATH = 'C:/fake/ComfyUI'
     const snap = nodePackService.createSnapshot()
     expect(snap.name.startsWith('snapshot-')).toBe(true)
     expect(snap.packs.length).toBe(1)
     expect(snap.packs[0].path).toBe(dir)
     expect(snap.packs[0].source).toBeTruthy()
-    h.state.settings.defaultInstancePath = ''
+    delete process.env.COMFYUI_PATH
   })
 })
 
@@ -717,8 +715,8 @@ describe('install without instanceId (emit fallbacks)', () => {
   it('git install without instanceId emits with the default instance label', async () => {
     reset()
     seedRoot()
-    // without instanceId, detectCustomNodesRoot falls back to settings.defaultInstancePath
-    h.state.settings.defaultInstancePath = 'C:/fake/ComfyUI'
+    // without instanceId, detectCustomNodesRoot falls back to COMFYUI_PATH
+    process.env.COMFYUI_PATH = 'C:/fake/ComfyUI'
     const events: Array<Record<string, unknown>> = []
     nodePackService.on('install-progress', (e: Record<string, unknown>) => events.push(e))
     nodePackService.on('op-progress', (e: Record<string, unknown>) => events.push({ __op: e }))
@@ -733,18 +731,17 @@ describe('install without instanceId (emit fallbacks)', () => {
     const opEvents = events.filter((e) => e.__op)
     expect(opEvents.length).toBeGreaterThan(0)
     expect(opEvents.some((e) => (e.__op as { instanceId?: string }).instanceId === 'default')).toBe(true)
-    h.state.settings.defaultInstancePath = ''
+    delete process.env.COMFYUI_PATH
   })
 
   it('install error without instanceId still emits a done/failed op-progress', async () => {
     reset()
     seedRoot()
-    h.state.settings.defaultInstancePath = 'C:/fake/ComfyUI'
     const events: Array<Record<string, unknown>> = []
     nodePackService.on('install-progress', (e: Record<string, unknown>) => events.push(e))
     nodePackService.on('op-progress', (e: Record<string, unknown>) => events.push({ __op: e }))
     // remove root so installInner throws
-    h.state.settings.defaultInstancePath = ''
+    delete process.env.COMFYUI_PATH
     h.state.instances = []
     await expect(
       nodePackService.install({ id: 'https://github.com/foo/bar.git', source: 'git' })
@@ -853,7 +850,7 @@ describe('toggle name.disabled edge', () => {
   it('enabling a name.disabled pack when the clean name already exists is a no-op rename', () => {
     reset()
     const root = seedRoot()
-    h.state.settings.defaultInstancePath = 'C:/fake/ComfyUI'
+    process.env.COMFYUI_PATH = 'C:/fake/ComfyUI'
     const disabledDir = join(root, 'Tog.disabled')
     const cleanDir = join(root, 'Tog')
     mkdirs(disabledDir)
@@ -870,7 +867,7 @@ describe('toggle name.disabled edge', () => {
     expect(out).toBeTruthy()
     // the clean pack remains untouched
     expect(h.state.dirs.has(cleanDir)).toBe(true)
-    h.state.settings.defaultInstancePath = ''
+    delete process.env.COMFYUI_PATH
   })
 })
 
@@ -946,7 +943,7 @@ describe('git pack update hits afterInstall fallbacks', () => {
       // no requirements.txt → afterInstall takes the else branch at 1058
     })
     mkdirs(join(dir, '.git'))
-    h.state.settings.defaultInstancePath = 'C:/fake/ComfyUI'
+    process.env.COMFYUI_PATH = 'C:/fake/ComfyUI'
     h.state.nodePacks = [
       {
         id: 'git-1',
@@ -970,7 +967,7 @@ describe('git pack update hits afterInstall fallbacks', () => {
     expect(events.length).toBeGreaterThan(0)
     const opEvents = events.filter((e) => e.__op)
     expect(opEvents.some((e) => (e.__op as { instanceId?: string }).instanceId === 'default')).toBe(true)
-    h.state.settings.defaultInstancePath = ''
+    delete process.env.COMFYUI_PATH
   })
 
   it('git pull failure wraps the error message', async () => {

@@ -754,7 +754,9 @@ export class InstallerService extends EventEmitter {
           const repo = plan.comfyRepo || COMFY_REPO
           const branch = plan.comfyBranch || ''
           const args = buildGitCloneArgs(repo, comfyDir, branch)
-          const gitBin = bootstrap.components.find((c) => c.kind === 'mingit' && c.installed)?.path || 'git'
+          // Prefer system git (PATH) — portable MinGit is only a zero-prereq fallback.
+          const { resolveGitBinary } = await import('./nodePack')
+          const gitBin = resolveGitBinary()
           await this.run(gitBin, args, { timeout: 300000 })
         } else {
           await this.fetchComfyZip(comfyDir)

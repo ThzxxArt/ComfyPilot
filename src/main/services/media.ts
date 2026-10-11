@@ -114,6 +114,44 @@ export class ThumbnailService {
     }
     return n
   }
+
+  // ---------- Output asset thumbnails (产物库缩略图管线) ----------
+
+  outputThumbRoot(): string {
+    return join(this.ensure(), 'output')
+  }
+
+  /**
+   * Generate a downscaled thumbnail for an output image so the grid does not
+   * load full-size PNGs. Returns the thumb path, or null when not applicable.
+   */
+  async ensureOutputThumb(assetPath: string): Promise<string | null> {
+    try {
+      const ext = extname(assetPath).toLowerCase()
+      if (!['.png', '.jpg', '.jpeg', '.webp', '.bmp'].includes(ext)) return null
+      if (!existsSync(assetPath)) return null
+      const root = this.outputThumbRoot()
+      mkdirSync(root, { recursive: true })
+      const key = createHash('sha1').update(assetPath).digest('hex').slice(0, 16)
+      const out = join(root, `${key}.png`)
+      if (existsSync(out)) return out
+      // Electron nativeImage can decode + resize without external deps.
+      const { nativeImage } = await import('electron')
+      const img = nativeImage.createFromPath(assetPath)
+      if (img.isEmpty()) return null
+      const size = img.getSize()
+      const maxDim = 320
+      const scale = Math.min(1, maxDim / Math.max(size.width || 1, size.height || 1))
+      const resized =
+        scale < 1
+          ? img.resize({ width: Math.max(1, Math.round(size.width * scale)) })
+          : img
+      writeFileSync(out, resized.toPNG())
+      return out
+    } catch {
+      return null
+    }
+  }
 }
 
 export const thumbnailService = new ThumbnailService()
@@ -132,8 +170,6 @@ function mediaThumbsRoot(): string {
 function mediaOutputRoots(): string[] {
   const roots: string[] = []
   try {
-    const s = loadSettings()
-    if (s.outputIndexRoot) roots.push(s.outputIndexRoot)
     try {
       roots.push(workflowLibraryDir())
     } catch {

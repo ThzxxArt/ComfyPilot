@@ -27,6 +27,7 @@ import {
   NTag,
   NEmpty,
   useMessage,
+  useDialog,
   NModal,
   NSelect,
   NInputNumber,
@@ -44,6 +45,7 @@ import type { WorkflowRecord } from '@shared/types'
 const { t } = useI18n()
 const store = useAppStore()
 const message = useMessage()
+const dialog = useDialog()
 const router = useRouter()
 const loading = ref(false)
 const items = ref<WorkflowRecord[]>([])
@@ -69,7 +71,7 @@ const showDetail = ref(false)
 const detail = ref<WorkflowRecord | null>(null)
 const openingFrontend = ref(false)
 
-/** ComfyPilot never auto-starts an instance — gate every live action on this. */
+/** ComfyPilot never auto-starts an instance —gate every live action on this. */
 const instanceRunning = computed(
   () => store.activeInstance?.status === 'running'
 )
@@ -105,10 +107,15 @@ async function importFile(): Promise<void> {
       filters: [{ name: 'Workflow', extensions: ['json', 'png'] }]
     })
     if (!paths?.length) return
-    const imported = await ipc('workflow.importMany', paths, store.activeInstanceId)
+    const result = await ipc('workflow.importMany', paths, store.activeInstanceId)
     await refresh()
-    const names = imported.map((r) => r.name).join(', ')
-    message.success(t('workflows.importedToInstance', { name: names, root: libraryRoot.value }))
+    const names = result.ok.map((r: { name: string }) => r.name).join(', ')
+    if (result.errors.length) {
+      message.warning(t('workflows.importedWithErrors', { ok: result.ok.length, failed: result.errors.length }))
+      for (const e of result.errors) console.warn('import failed:', e.path, e.message)
+    } else {
+      message.success(t('workflows.importedToInstance', { name: names, root: libraryRoot.value }))
+    }
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
     await refresh()
@@ -162,7 +169,7 @@ async function doTags(): Promise<void> {
 
 async function removeRow(row: WorkflowRecord): Promise<void> {
   try {
-    // library + instance → delete the source file; external → unregister only.
+    // library + instance —delete the source file; external —unregister only.
     const deleteSource = row.origin !== 'external'
     await ipc('workflow.delete', row.id, { deleteSource })
     message.success(
@@ -255,13 +262,27 @@ async function doQueue(): Promise<void> {
   }
   queuing.value = true
   try {
+    const wf = queueTarget.value
     const promptId = await ipc('workflow.queue', {
-      workflowPath: queueTarget.value.path,
+      workflowPath: wf.path,
       instanceId: store.activeInstanceId || '',
       seed: seed.value ?? undefined
     })
-    message.success(promptId ? t('workflows.queued', { id: promptId }) : t('workflows.queueFailed'))
     closeQueue()
+    if (promptId) {
+      // Offer a jump to the output library (promptId is linked via sidecar).
+      dialog.success({
+        title: t('workflows.queued', { id: promptId }),
+        content: t('workflows.queuedHint'),
+        positiveText: t('workflows.viewOutputs'),
+        negativeText: t('common.close'),
+        onPositiveClick: () => {
+          void router.push({ path: '/output', query: { workflowId: wf.id } })
+        }
+      })
+    } else {
+      message.warning(t('workflows.queueFailed'))
+    }
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   } finally {
@@ -278,20 +299,23 @@ async function safeRevealPath(path: string): Promise<void> {
 }
 
 async function sendToBatch(row: WorkflowRecord): Promise<void> {
-  if (!instanceRunning.value) {
-    message.warning(needInstanceHint)
+  // batch.create does NOT need a running instance —only batch.start does.
+  // Relax the gate to just require an instance to exist.
+  if (!store.instances.length) {
+    message.warning(t('workflows.needInstanceForImport'))
     return
   }
   try {
-    await ipc('batch.create', {
-      name: t('batch.defaultName') + ' · ' + row.name,
+    const job = await ipc('batch.create', {
+      name: t('batch.defaultName') + ' ·' + row.name,
       instanceId: store.activeInstanceId || '',
       items: [{ workflowId: row.id, workflowName: row.name, workflowPath: row.path, count: 1 }],
       notes: '',
       params: { seedMode: 'random' }
     })
     message.success(t('workflows.sentToBatchHint'))
-    await router.push('/batch')
+    // Navigate to BatchView with the job highlighted.
+    void router.push({ path: '/batch', query: { jobId: job.id } })
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   }
@@ -369,7 +393,7 @@ onMounted(async () => {
               <div class="wf-title">
                 <div class="wf-name">{{ wf.name }}</div>
                 <div class="wf-meta">
-                  {{ wf.nodeCount }} nodes · {{ wf.format }} · v{{ wf.version }}
+                  {{ wf.nodeCount }} nodes ·{{ wf.format }} ·v{{ wf.version }}
                 </div>
               </div>
               <NButton text @click="toggleFavorite(wf)">
@@ -384,7 +408,7 @@ onMounted(async () => {
                 {{ originLabel(wf.origin) }}
               </NTag>
               <NTag v-for="tg in wf.tags" :key="tg" size="tiny" round>{{ tg }}</NTag>
-              <NTag v-if="wf.seed != null" size="tiny" round type="info">seed {{ wf.seed }}</NTag>
+              <NTag v-if="wf.seed != null" size="tiny" round type="info">{{ $t('workflows.seed') }} {{ wf.seed }}</NTag>
               <NTag v-if="wf.missingNodes.length" size="tiny" round type="warning">
                 {{ $t('workflows.missingNodes', { n: wf.missingNodes.length }) }}
               </NTag>
@@ -428,6 +452,13 @@ onMounted(async () => {
                 {{ $t('workflows.toBatch') }}
               </NButton>
               <NButton size="tiny" secondary @click="openDetail(wf)">{{ $t('workflows.detail') }}</NButton>
+              <NButton
+                size="tiny"
+                secondary
+                @click="router.push({ path: '/output', query: { workflowId: wf.id } })"
+              >
+                {{ $t('workflows.viewOutputs') }}
+              </NButton>
             </div>
             <div class="wf-actions">
               <NButton size="tiny" quaternary @click="openRename(wf)">
@@ -522,7 +553,7 @@ onMounted(async () => {
         <div><b>{{ $t('workflows.origin') }}</b> {{ originLabel(detail.origin) }}</div>
         <div><b>{{ $t('workflows.nodeCount') }}</b> {{ detail.nodeCount }}</div>
         <div v-if="detail.modelUsed"><b>{{ $t('workflows.modelUsed') }}</b> {{ detail.modelUsed }}</div>
-        <div v-if="detail.seed != null"><b>Seed</b> {{ detail.seed }}</div>
+        <div v-if="detail.seed != null"><b>{{ $t('workflows.seed') }}</b> {{ detail.seed }}</div>
         <div v-if="detail.description"><b>{{ $t('workflows.description') }}</b> {{ detail.description }}</div>
         <div v-if="detail.missingNodes.length">
           <b>{{ $t('workflows.missingNodes', { n: detail.missingNodes.length }) }}</b>
@@ -536,7 +567,7 @@ onMounted(async () => {
               style="cursor: pointer"
               @click="router.push({ path: '/market', query: { q: n } })"
             >
-              {{ n }} →
+              {{ n }} —
             </NTag>
           </NSpace>
         </div>

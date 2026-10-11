@@ -153,6 +153,25 @@ function onLayoutRequest(): void {
 watch([collapsed, sidebarWidth], () => notifyEmbedLayout())
 
 let dispose: (() => void) | null = null
+let notifiedCount = 0
+
+// Surface main-process notifications as global toasts (task done / failed).
+watch(
+  () => store.notifications.length,
+  (len) => {
+    while (notifiedCount < len) {
+      const n = store.notifications[notifiedCount++]
+      if (!n) break
+      // Prefer i18n keys from main; fall back to the literal strings.
+      const title = n.titleKey ? t(n.titleKey, n.params || {}) : n.title
+      const msg = n.messageKey ? t(n.messageKey, n.params || {}) : n.message
+      discreteMessage[n.type === 'error' ? 'error' : n.type === 'warning' ? 'warning' : n.type === 'success' ? 'success' : 'info'](
+        title && msg ? `${title} — ${msg}` : title || msg,
+        { duration: n.duration ?? 5000 }
+      )
+    }
+  }
+)
 
 onMounted(async () => {
   await store.bootstrap()
@@ -256,7 +275,7 @@ async function toggleInstanceRun(): Promise<void> {
               </div>
               <div v-if="!collapsed" class="brand-text">
                 <div class="brand-name">ComfyPilot</div>
-                <div class="brand-tag">Control Tower · v{{ APP_VERSION }}</div>
+                <div class="brand-tag">{{ $t('app.brandTag') }} · v{{ APP_VERSION }}</div>
               </div>
             </div>
 
@@ -287,7 +306,7 @@ async function toggleInstanceRun(): Promise<void> {
                 <template #icon>
                   <NIcon :component="LogoGithub" />
                 </template>
-                <span v-if="!collapsed">GitHub</span>
+                <span v-if="!collapsed">{{ $t('app.github') }}</span>
               </NButton>
             </div>
           </aside>

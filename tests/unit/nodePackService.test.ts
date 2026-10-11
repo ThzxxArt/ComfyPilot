@@ -26,8 +26,7 @@ const h = vi.hoisted(() => {
       securityLevel: 'normal',
       networkMode: 'public',
       pipIndex: '',
-      proxy: { enabled: false, protocol: 'http', host: '', port: 7890, bypass: '', username: '', password: '' },
-      defaultInstancePath: ''
+      proxy: { enabled: false, protocol: 'http', host: '', port: 7890, bypass: '', username: '', password: '' }
     } as Record<string, unknown>,
     renameFail: new Set<string>(),
     writeFail: new Set<string>(),
@@ -528,8 +527,7 @@ function resetState(): void {
     securityLevel: 'normal',
     networkMode: 'public',
     pipIndex: '',
-    proxy: { enabled: false, protocol: 'http', host: '', port: 7890, bypass: '', username: '', password: '' },
-    defaultInstancePath: COMFY
+    proxy: { enabled: false, protocol: 'http', host: '', port: 7890, bypass: '', username: '', password: '' }
   }
   h.state.instances = [
     {
@@ -888,16 +886,14 @@ describe('NodePackService.list', () => {
     expect(packs.map((p) => p.name)).toEqual(['PathForm'])
   })
 
-  it('falls back to settings.defaultInstancePath when instance path is missing', () => {
+  it('returns [] when instance path is missing and no COMFYUI_PATH fallback is set', () => {
     h.state.instances = []
-    h.state.settings.defaultInstancePath = COMFY
     seedPack({ name: 'ViaSettings' })
-    expect(nodePackService.list().map((p) => p.name)).toEqual(['ViaSettings'])
+    expect(nodePackService.list().map((p) => p.name)).toEqual([])
   })
 
   it('falls back to COMFYUI_PATH env when nothing else resolves', () => {
     h.state.instances = []
-    h.state.settings.defaultInstancePath = ''
     process.env.COMFYUI_PATH = COMFY
     try {
       seedPack({ name: 'ViaEnv' })
@@ -992,7 +988,6 @@ describe('install security guards', () => {
 
   it('throws when custom_nodes root cannot be resolved', async () => {
     h.state.instances = []
-    h.state.settings.defaultInstancePath = ''
     delete process.env.COMFYUI_PATH
     // empty root string �?install throws
     await expect(nodePackService.install({ id: 'https://g.com/a', source: 'git' })).rejects.toThrow(/custom_nodes/i)
@@ -1818,9 +1813,9 @@ describe('toggle and lock', () => {
 
   it('lock/unlock toggles the locked flag', () => {
     seedPack({ name: 'LockA' })
-    const locked = nodePackService.lock('LockA', true)
+    const locked = nodePackService.lock('LockA', true, 'inst-1')
     expect(locked?.locked).toBe(true)
-    const unlocked = nodePackService.lock('LockA', false)
+    const unlocked = nodePackService.lock('LockA', false, 'inst-1')
     expect(unlocked?.locked).toBe(false)
   })
 
@@ -1909,7 +1904,7 @@ describe('snapshots', () => {
   it('createSnapshot records packs and marks disabled ones with @disabled', () => {
     seedPack({ name: 'SnapA' })
     seedPack({ name: 'SnapB', disabledMarker: true })
-    const snap = nodePackService.createSnapshot('manual-1')
+    const snap = nodePackService.createSnapshot('manual-1', 'inst-1')
     expect(snap.name).toBe('manual-1')
     expect(snap.packs).toHaveLength(2)
     const disabled = snap.packs.find((p) => p.name === 'SnapB')
@@ -1941,12 +1936,12 @@ describe('snapshots', () => {
     seedPack({ name: 'KeepOn' })
     seedPack({ name: 'TurnOff', disabledMarker: true })
     seedPack({ name: 'DropMe' })
-    const snap = nodePackService.createSnapshot('align')
+    const snap = nodePackService.createSnapshot('align', 'inst-1')
     // Snapshot has KeepOn enabled, TurnOff disabled, DropMe enabled.
     // Now flip current state and restore.
     nodePackService.toggle('KeepOn', false, 'inst-1')
     nodePackService.toggle('TurnOff', true, 'inst-1')
-    const ok = nodePackService.restoreSnapshot(snap.id)
+    const ok = nodePackService.restoreSnapshot(snap.id, 'inst-1')
     expect(ok).toBe(true)
     const byName = new Map(nodePackService.list('inst-1').map((p) => [p.name, p]))
     expect(byName.get('KeepOn')?.status).toBe('installed')
@@ -1957,9 +1952,9 @@ describe('snapshots', () => {
 
   it('restoreSnapshot disables current packs absent from the snapshot', () => {
     seedPack({ name: 'Early' })
-    const snap = nodePackService.createSnapshot('with-early')
+    const snap = nodePackService.createSnapshot('with-early', 'inst-1')
     seedPack({ name: 'Late' })
-    const ok = nodePackService.restoreSnapshot(snap.id)
+    const ok = nodePackService.restoreSnapshot(snap.id, 'inst-1')
     expect(ok).toBe(true)
     const byName = new Map(nodePackService.list('inst-1').map((p) => [p.name, p]))
     expect(byName.get('Late')?.status).toBe('disabled')

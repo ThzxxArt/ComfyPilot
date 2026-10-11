@@ -141,7 +141,7 @@ describe('workflow branch coverage', () => {
     await expect(workflowService.exportZip('vanish-1')).rejects.toThrow(/missing/i)
   })
 
-  it('copyToInstance collides and uniquifies the destination name', async () => {
+  it('copyToInstance reuses the destination when content is identical', async () => {
     const { workflowService } = await import('../../src/main/services/workflow')
     const { upsertInstanceConfig } = await import('../../src/main/services/db')
     const instPath = join(ROOT, 'coll-inst')
@@ -168,7 +168,8 @@ describe('workflow branch coverage', () => {
     const rec = await workflowService.importFile(src)
     const first = await workflowService.copyToInstance(rec.id, 'coll-inst')
     const second = await workflowService.copyToInstance(rec.id, 'coll-inst')
-    expect(first.path).not.toBe(second.path)
+    // Same content must not stack name-1.json / name-2.json copies.
+    expect(second.path).toBe(first.path)
     expect(existsSync(second.path)).toBe(true)
   })
 

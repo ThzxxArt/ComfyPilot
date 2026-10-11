@@ -25,7 +25,7 @@ import {
   loadSettings
 } from './db'
 import { ComfyApiClient } from './comfyApi'
-import { extractPngTextMeta } from './workflow'
+import { extractPngTextMeta, lookupPromptWorkflowLink } from './workflow'
 import { assertSafeRelativeFilename } from './security'
 
 // ---------- helpers ----------
@@ -106,6 +106,7 @@ function normalizeLegacyJob(raw: Record<string, unknown>): BatchJob {
       createdAt: Number(raw.createdAt) || Date.now(),
       finishedAt: raw.finishedAt != null ? Number(raw.finishedAt) : undefined,
       notes: String(raw.notes || ''),
+      errorSummary: raw.errorSummary != null ? String(raw.errorSummary) : undefined,
       params: (raw.params as BatchParamOverrides) || {},
       workflowPath: String(raw.workflowPath || norm[0]?.workflowPath || '')
     }
@@ -131,6 +132,7 @@ function normalizeLegacyJob(raw: Record<string, unknown>): BatchJob {
     createdAt: Number(raw.createdAt) || Date.now(),
     finishedAt: raw.finishedAt != null ? Number(raw.finishedAt) : undefined,
     notes: String(raw.notes || ''),
+    errorSummary: raw.errorSummary != null ? String(raw.errorSummary) : undefined,
     params: (raw.params as BatchParamOverrides) || {},
     workflowPath: item.workflowPath
   }
@@ -201,12 +203,21 @@ export class BatchService extends EventEmitter {
     const jobs = this.list()
     const job = jobs.find((j) => j.id === id)
     if (!job) throw new Error('Batch job not found')
-    if (job.status === 'cancelled') {
-      // Restarting a cancelled job is allowed — reset the run state first.
+    // Any deliberate re-run (done / error / queued / cancelled) starts from a
+    // clean slate: leftover counters from a previous run would otherwise
+    // inflate submitted/completed and hide real failures.
+    if (
+      job.status === 'done' ||
+      job.status === 'error' ||
+      job.status === 'queued' ||
+      job.status === 'cancelled'
+    ) {
       job.submitted = 0
       job.failed = 0
       job.produced = 0
       job.completed = 0
+      job.finishedAt = undefined
+      job.errorSummary = undefined
       for (const it of job.items) {
         it.submitted = 0
         it.completed = 0
@@ -227,6 +238,7 @@ export class BatchService extends EventEmitter {
       job.status = 'error'
       job.finishedAt = Date.now()
       job.notes = [job.notes, 'No instance configured'].filter(Boolean).join('; ')
+      job.errorSummary = 'No instance configured'
       upsertBatchJob(job)
       this.emit('progress', job)
       throw new Error('No instance')
@@ -304,7 +316,7 @@ export class BatchService extends EventEmitter {
       job.status = 'running'
       upsertBatchJob(job)
       this.emit('progress', job)
-      await this.awaitOutputs(job.id, client, inst.path)
+      const settledIds = await this.awaitOutputs(job.id, client, inst.path)
 
       // The job may have been removed while we were polling — never resurrect it.
       const latest = this.list().find((j) => j.id === id)
@@ -321,7 +333,30 @@ export class BatchService extends EventEmitter {
       if (!done.submitted) {
         done.submitted = done.items.reduce((s, it) => s + (it.submitted || 0), 0)
       }
-      done.status = done.completed === 0 && done.failed > 0 ? 'error' : 'done'
+      // Unsettled prompts (submitted > completed+failed) mean we hit the
+      // awaitOutputs deadline: never report "done", mark error + note timeouts.
+      const unsettled = done.submitted - done.completed - done.failed
+      if (unsettled > 0) {
+        // Only the prompts that never settled — not every promptId on the job.
+        const allIds = done.items.flatMap((it) => it.promptIds)
+        const timedOutIds = allIds.filter((p) => !settledIds.has(p))
+        done.status = 'error'
+        const note =
+          `timed out waiting for ${unsettled} prompt(s): ` +
+          timedOutIds.slice(0, 8).join(', ') +
+          (timedOutIds.length > 8 ? '...' : '')
+        done.notes = [done.notes, note].filter(Boolean).join('; ').slice(-800)
+        done.errorSummary = `Timeout: ${unsettled} prompt(s) never settled`
+      } else if (done.completed === 0 && done.failed > 0) {
+        done.status = 'error'
+        done.errorSummary = `All ${done.failed} prompt(s) failed`
+      } else {
+        done.status = 'done'
+      }
+      // Concise failure summary for the UI card (notes stays the full log).
+      if (!done.errorSummary && done.failed > 0) {
+        done.errorSummary = `${done.failed} failed · ${done.completed} ok · ${done.produced} produced`
+      }
       done.finishedAt = Date.now()
       upsertBatchJob(done)
       this.emit('progress', done)
@@ -331,6 +366,9 @@ export class BatchService extends EventEmitter {
       if (still) {
         still.status = 'error'
         still.finishedAt = Date.now()
+        const msg = e instanceof Error ? e.message : String(e)
+        still.notes = [still.notes, msg].filter(Boolean).join('; ').slice(-800)
+        still.errorSummary = msg.slice(0, 200)
         upsertBatchJob(still)
         this.emit('progress', still)
       }
@@ -370,7 +408,7 @@ export class BatchService extends EventEmitter {
     jobId: string,
     client: ComfyApiClient,
     instancePath: string
-  ): Promise<void> {
+  ): Promise<Set<string>> {
     const settled = new Set<string>()
     // Scale the wait with the job: 30s base + 20s per prompt, capped at 30 min.
     const first = this.list().find((j) => j.id === jobId)
@@ -380,7 +418,7 @@ export class BatchService extends EventEmitter {
 
     while (Date.now() < deadline) {
       const live = this.list().find((j) => j.id === jobId)
-      if (!live || live.status === 'cancelled' || !this.runningIds.has(jobId)) return
+      if (!live || live.status === 'cancelled' || !this.runningIds.has(jobId)) return settled
 
       const allIds = live.items.flatMap((it) => it.promptIds)
       const pending = allIds.filter((p) => !settled.has(p))
@@ -421,23 +459,27 @@ export class BatchService extends EventEmitter {
             live.failed += 1
           }
         }
-        if (ok) live.produced += 1
-        // Link images from history outputs when available.
+        // Link output files from history. `produced` counts ONLY files that
+        // actually exist on disk and are pushed into item.outputPaths — a
+        // "success" prompt whose files are missing is NOT a produced image.
         if (ok && h.outputs?.length) {
           for (const out of h.outputs) {
             const abs = this.resolveHistoryOutput(out, instancePath)
             if (!abs) continue
+            let linked = false
             for (const item of live.items) {
               if (item.promptIds.includes(pid) && !item.outputPaths.includes(abs)) {
                 item.outputPaths.push(abs)
+                linked = true
               }
             }
+            if (linked) live.produced += 1
             this.indexPromptOutput(abs, live, pid)
           }
         }
       }
       // A cancel during history() must not be clobbered by this stale snapshot.
-      if (!this.runningIds.has(jobId)) return
+      if (!this.runningIds.has(jobId)) return settled
       upsertBatchJob(live)
       this.emit('progress', live)
 
@@ -454,6 +496,7 @@ export class BatchService extends EventEmitter {
       upsertBatchJob(live)
       this.emit('progress', live)
     }
+    return settled
   }
 
   private resolveHistoryOutput(
@@ -464,7 +507,13 @@ export class BatchService extends EventEmitter {
     const sub = out.subfolder || ''
     const typeDir = out.type === 'input' ? 'input' : 'output'
     const abs = join(instancePath, typeDir, sub, basename(out.filename))
-    return existsSync(abs) ? abs : null
+    if (!existsSync(abs)) {
+      // History referenced a file that is not on disk — log it so the gap is
+      // visible, and do NOT count it as a produced image.
+      console.warn(`[batch] history output file missing: ${abs}`)
+      return null
+    }
+    return abs
   }
 
   private indexPromptOutput(abs: string, job: BatchJob, promptId: string): void {
@@ -581,8 +630,7 @@ export class OutputService {
     sort?: 'createdAt' | 'size' | 'name'
     order?: 'asc' | 'desc'
   }): { items: OutputAsset[]; total: number; truncated: boolean } {
-    const settings = loadSettings()
-    const scanRoots = [opts?.root, settings.outputIndexRoot].filter(Boolean) as string[]
+    const scanRoots = [opts?.root].filter(Boolean) as string[]
     if (scanRoots.length) {
       const assets: OutputAsset[] = []
       const prevMap = new Map(listOutputAssetsAll().map((x) => [x.path, x]))
@@ -693,6 +741,10 @@ export class OutputService {
           }
         }
 
+        // Backfill workflowId from the queue-time sidecar map (task: single-shot
+        // queue runs must attribute outputs to their workflow).
+        const link = promptId ? lookupPromptWorkflowLink(promptId) : undefined
+
         out.push({
           id: createHash('sha1').update(full).digest('hex').slice(0, 16),
           path: full,
@@ -703,8 +755,8 @@ export class OutputService {
           seed: seed ?? prev?.seed,
           promptId: promptId ?? prev?.promptId,
           favorite: prev?.favorite,
-          workflowId: prev?.workflowId,
-          workflowName: prev?.workflowName,
+          workflowId: prev?.workflowId || link?.workflowId,
+          workflowName: prev?.workflowName || link?.workflowName,
           batchJobId: prev?.batchJobId,
           thumbnail: prev?.thumbnail,
           width: prev?.width,
@@ -724,8 +776,7 @@ export class OutputService {
   /** Multi-file share bundle. */
   async exportZip(paths: string[], destDir?: string): Promise<{ path: string }> {
     if (!paths.length) throw new Error('No files selected')
-    const settings = loadSettings()
-    const targetDir = destDir || settings.downloadDir || dirname(paths[0])
+    const targetDir = destDir || dirname(paths[0])
     mkdirSync(targetDir, { recursive: true })
     const zipPath = join(targetDir, `comfy-pilot-outputs-${Date.now()}.zip`)
     const { writeZip } = await import('./zipWrite')
@@ -857,7 +908,6 @@ export class MarketService {
     category?: string
     limit?: number
     page?: number
-    scanPages?: number
     instanceId?: string
   }) {
     const settings = loadSettings()
@@ -866,13 +916,12 @@ export class MarketService {
       const result = await searchRegistry({
         query: opts?.query,
         limit: opts?.limit,
-        page: opts?.page,
-        scanPages: opts?.scanPages
+        page: opts?.page
       })
       // Installed detection must target the selected instance's custom_nodes.
       // Match on directory name AND pack metadata name/registryId — registry
       // `name` often differs from the folder the zip extracted to.
-      let instancePath = settings.defaultInstancePath
+      let instancePath = ''
       if (opts?.instanceId) {
         const inst = loadInstanceConfigs().find((c) => c.id === opts.instanceId)
         if (inst?.path) instancePath = inst.path

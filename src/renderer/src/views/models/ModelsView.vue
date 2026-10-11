@@ -1,23 +1,24 @@
 <script setup lang="ts">
-import { computed, h, onMounted, onUnmounted, ref } from 'vue'
+import { computed, h, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   CloudDownloadOutline, SearchOutline, RefreshOutline,
   DuplicateOutline
 } from '@vicons/ionicons5'
 import {
-  NButton, NDataTable, NIcon, NInput, NSpace, NSpin, NTag, NPopconfirm, NModal,
-  useMessage, NTabs, NTabPane, NGrid, NGi, type DataTableColumns
+  NButton, NDataTable, NIcon, NInput, NSpace, NSpin, NTag, NModal, NEmpty,
+  useMessage, useDialog, NTabs, NTabPane, NGrid, NGi, type DataTableColumns
 } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 import { ipc, onDownloadProgress, onModelScanProgress } from '@/composables/useIpc'
 import { formatBytes } from '@/utils/format'
 import { MODEL_CATEGORY_LABELS, STARTER_MODELS } from '@shared/constants'
-import type { DownloadTask, ModelRecord, StorageStats, DuplicateGroup, StarterModel } from '@shared/types'
+import type { DownloadTask, ModelRecord, StorageStats, DuplicateGroup, StarterModel, ModelCategory } from '@shared/types'
 
-const { t } = useI18n()
+const { t, te } = useI18n()
 const store = useAppStore()
 const message = useMessage()
+const dialog = useDialog()
 const loading = ref(false)
 const scanning = ref(false)
 const scanProgress = ref('')
@@ -34,6 +35,34 @@ const duplicates = ref<DuplicateGroup[]>([])
 const tab = ref('all')
 const starterModels = ref<StarterModel[]>(STARTER_MODELS)
 const starterBusy = ref<string | null>(null)
+
+/** Real category set — matches ModelCategory / scan categorize(). */
+const CATEGORY_KEYS: ModelCategory[] = [
+  'checkpoints',
+  'diffusion_models',
+  'loras',
+  'vae',
+  'clip',
+  'text_encoders',
+  'unet',
+  'controlnet',
+  'upscale_models',
+  'embeddings',
+  'other'
+]
+
+/** i18n `models.cat.<key>` with MODEL_CATEGORY_LABELS fallback. */
+function catLabel(key: string): string {
+  const i18nKey = `models.cat.${key}`
+  return te(i18nKey) ? t(i18nKey) : MODEL_CATEGORY_LABELS[key] || key
+}
+
+/** 'total' is a summary, not a category card. */
+const storageTotal = computed(() => storage.value.find((s) => s.category === 'total') || null)
+const storageByCategory = computed(() => storage.value.filter((s) => s.category !== 'total'))
+
+const finishedStatuses = new Set(['done', 'error', 'cancelled'])
+const hasFinishedDownloads = computed(() => downloads.value.some((d) => finishedStatuses.has(d.status)))
 
 async function downloadStarter(s: StarterModel): Promise<void> {
   starterBusy.value = s.id
@@ -67,6 +96,28 @@ function hTag(text: string, type: 'info' | 'success' | 'warning' = 'info') {
   return h(NTag, { size: 'tiny', round: true, bordered: false, type }, { default: () => text })
 }
 
+async function doDelete(id: string, deleteFile: boolean): Promise<void> {
+  try {
+    await ipc('model.delete', id, deleteFile)
+    await refresh()
+    message.success(t('models.deleted'))
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+/** Two explicit outcomes: record-only vs delete file too. Dismiss = cancel. */
+function confirmDelete(row: ModelRecord): void {
+  dialog.warning({
+    title: t('models.deleteAction'),
+    content: t('models.deleteConfirm'),
+    positiveText: t('models.deleteFileToo'),
+    negativeText: t('models.removeRecordOnly'),
+    onPositiveClick: () => doDelete(row.id, true),
+    onNegativeClick: () => doDelete(row.id, false)
+  })
+}
+
 const columns = computed<DataTableColumns<ModelRecord>>(() => [
   {
     title: t('models.colName'),
@@ -87,7 +138,7 @@ const columns = computed<DataTableColumns<ModelRecord>>(() => [
         h('span', { style: 'overflow:hidden;text-overflow:ellipsis' }, row.name)
       ])
   },
-  { title: t('models.colCategory'), key: 'category', width: 130, render: (row) => hTag(MODEL_CATEGORY_LABELS[row.category] || row.category) },
+  { title: t('models.colCategory'), key: 'category', width: 130, render: (row) => hTag(catLabel(row.category)) },
   {
     title: t('models.colArchitecture'),
     key: 'architecture',
@@ -109,23 +160,14 @@ const columns = computed<DataTableColumns<ModelRecord>>(() => [
     render: (row) =>
       h('div', { style: 'display:flex;gap:6px' }, [
         h(
-          NPopconfirm,
+          NButton,
           {
-            onPositiveClick: async () => {
-              try {
-                await ipc('model.delete', row.id, true)
-                await refresh()
-                message.success(t('models.deleted'))
-              } catch (err) {
-                message.error(err instanceof Error ? err.message : String(err))
-              }
-            }
+            size: 'tiny',
+            type: 'error',
+            secondary: true,
+            onClick: () => confirmDelete(row)
           },
-          {
-            trigger: () =>
-              h(NButton, { size: 'tiny', type: 'error', secondary: true }, { default: () => t('models.deleteAction') }),
-            default: () => t('models.deleteConfirm')
-          }
+          { default: () => t('models.deleteAction') }
         ),
         h(
           NButton,
@@ -163,14 +205,17 @@ async function refresh(): Promise<void> {
   }
 }
 
+/** Scan roots: settings roots win; otherwise the ACTIVE instance's models/ dir. */
+function currentScanRoots(): string[] {
+  if (store.settings?.modelScanRoots?.length) return store.settings.modelScanRoots
+  const path = store.activeInstance?.path
+  return path ? [`${path.replace(/[\\/]+$/, '')}/models`] : []
+}
+
 async function scan(hash = false): Promise<void> {
   scanning.value = true
   try {
-    const roots = store.settings?.modelScanRoots?.length
-      ? store.settings.modelScanRoots
-      : store.instances[0]?.path
-        ? [`${store.instances[0].path.replace(/[\\/]+$/, '')}/models`]
-        : []
+    const roots = currentScanRoots()
     models.value = await ipc('model.scan', { roots, hash })
     storage.value = await ipc('model.storageStats')
     if (hash) duplicates.value = await ipc('model.findDuplicates')
@@ -182,6 +227,15 @@ async function scan(hash = false): Promise<void> {
     scanProgress.value = ''
   }
 }
+
+// Active instance changed → drop stale list and re-scan against the new roots.
+watch(
+  () => store.instanceSwitchTick,
+  () => {
+    void refresh()
+    if (!scanning.value) void scan(false)
+  }
+)
 
 async function findDuplicates(): Promise<void> {
   try {
@@ -202,9 +256,10 @@ async function ensureThumbs(): Promise<void> {
   }
 }
 
+/** Applies to ALL filtered rows (no 50-row cap). dryRun keeps the preview. */
 async function batchRename(dryRun = true): Promise<void> {
   try {
-    const ids = filtered.value.slice(0, 50).map((m) => m.id)
+    const ids = filtered.value.map((m) => m.id)
     renameResult.value = await ipc('model.batchRename', {
       ids,
       pattern: renamePattern.value,
@@ -213,7 +268,7 @@ async function batchRename(dryRun = true): Promise<void> {
     if (!dryRun) {
       showRename.value = false
       await refresh()
-      message.success(t('models.renameDone'))
+      message.success(t('models.renameDoneCount', { n: renameResult.value.length }))
     }
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
@@ -232,6 +287,24 @@ async function pauseDl(id: string): Promise<void> {
 async function resumeDl(id: string): Promise<void> {
   try {
     await ipc('model.resumeDownload', id)
+    downloads.value = await ipc('model.downloads')
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function cancelDl(id: string): Promise<void> {
+  try {
+    await ipc('model.cancelDownload', id)
+    downloads.value = await ipc('model.downloads')
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function clearFinishedDl(): Promise<void> {
+  try {
+    await ipc('model.clearFinishedDownloads')
     downloads.value = await ipc('model.downloads')
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
@@ -299,22 +372,38 @@ onUnmounted(() => {
 
     <div v-if="scanProgress" class="scan-banner card">{{ scanProgress }}</div>
 
+    <div v-if="storageTotal" class="stat-summary card">
+      <div class="stat-mini-val">{{ storageTotal.count }}</div>
+      <div class="stat-mini-label">{{ $t('models.storageTotal') }}</div>
+      <div class="stat-mini-sub">{{ formatBytes(storageTotal.bytes) }}</div>
+    </div>
+
     <NGrid :cols="5" :x-gap="12" class="stats">
-      <NGi v-for="s in storage" :key="s.category">
+      <NGi v-for="s in storageByCategory" :key="s.category">
         <div class="stat-mini card">
           <div class="stat-mini-val">{{ s.count }}</div>
-          <div class="stat-mini-label">{{ MODEL_CATEGORY_LABELS[s.category] || s.category }}</div>
+          <div class="stat-mini-label">{{ catLabel(s.category) }}</div>
           <div class="stat-mini-sub">{{ formatBytes(s.bytes) }}</div>
         </div>
       </NGi>
     </NGrid>
 
     <div v-if="downloads.length" class="dl-banner card">
+      <div class="dl-head">
+        <div class="panel-title">{{ $t('models.downloadsTitle') }}</div>
+        <NButton v-if="hasFinishedDownloads" size="tiny" secondary @click="clearFinishedDl">
+          {{ $t('models.clearFinished') }}
+        </NButton>
+      </div>
       <div v-for="d in downloads" :key="d.id" class="dl-row">
         <span class="dl-name">{{ d.fileName }}</span>
         <span class="chip" :class="d.status === 'done' ? 'chip-success' : d.status === 'error' ? 'chip-danger' : 'chip-warning'">{{ d.status }}</span>
         <span class="mono">{{ formatBytes(d.receivedBytes) }} / {{ formatBytes(d.totalBytes) }}</span>
         <span v-if="d.speedBps" class="mono">{{ formatBytes(d.speedBps) }}/s</span>
+        <span v-if="d.error" class="dl-error">{{ d.error }}</span>
+        <NButton v-if="d.status === 'running' || d.status === 'queued' || d.status === 'paused'" size="tiny" secondary @click="cancelDl(d.id)">
+          {{ $t('models.cancel') }}
+        </NButton>
         <NButton v-if="d.status === 'running'" size="tiny" secondary @click="pauseDl(d.id)">{{ $t('models.pause') }}</NButton>
         <NButton v-if="d.status === 'paused'" size="tiny" secondary @click="resumeDl(d.id)">{{ $t('models.resume') }}</NButton>
       </div>
@@ -323,14 +412,23 @@ onUnmounted(() => {
     <div class="card table-card">
       <NTabs v-model:value="tab" type="segment" class="tabs">
         <NTabPane name="all" :tab="$t('models.tabAll')" />
-        <NTabPane name="checkpoints" tab="Checkpoint" />
-        <NTabPane name="loras" tab="LoRA" />
-        <NTabPane name="diffusion_models" tab="Diffusion" />
-        <NTabPane name="vae" tab="VAE" />
-        <NTabPane name="controlnet" tab="ControlNet" />
+        <NTabPane v-for="c in CATEGORY_KEYS" :key="c" :name="c" :tab="catLabel(c)" />
       </NTabs>
       <NSpin :show="loading">
-        <NDataTable :columns="columns" :data="filtered" :row-key="(row) => row.id" size="small" :bordered="false" max-height="480" />
+        <NDataTable
+          v-if="filtered.length"
+          :columns="columns"
+          :data="filtered"
+          :row-key="(row) => row.id"
+          size="small"
+          :bordered="false"
+          max-height="480"
+        />
+        <NEmpty v-else :description="$t('models.empty')" class="empty-state">
+          <template #extra>
+            <NButton type="primary" :loading="scanning" @click="scan(false)">{{ $t('models.scan') }}</NButton>
+          </template>
+        </NEmpty>
       </NSpin>
     </div>
 
@@ -355,6 +453,7 @@ onUnmounted(() => {
       <NSpace vertical>
         <NInput v-model:value="renamePattern" :placeholder="$t('models.renamePatternPlaceholder', { example: '{category}_{index}_{name}' })" />
         <div class="meta">{{ $t('models.renamePatternMeta', { list: '{name} {category} {index} {arch}' }) }}</div>
+        <div class="meta">{{ $t('models.renameTargetCount', { n: filtered.length }) }}</div>
         <div v-if="renameResult.length" class="rename-preview">
           <div v-for="(r, i) in renameResult" :key="i" class="mono">
             <span :class="r.ok ? 'pass-ink' : 'fail-ink'">{{ r.ok ? 'OK' : 'ERR' }}</span>
@@ -410,15 +509,37 @@ onUnmounted(() => {
 <style lang="scss" scoped>
 @use '@/styles/variables.scss' as *;
 .stats { margin-bottom: 14px; }
+.stat-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 14px 18px;
+  margin-bottom: 12px;
+}
 .stat-mini { padding: 12px 14px; }
 .stat-mini-val { font-size: 22px; font-weight: 700; }
+.stat-summary .stat-mini-val { font-size: 28px; }
 .stat-mini-label { font-size: 11px; color: $color-text-muted; margin-top: 2px; }
+.stat-summary .stat-mini-label { margin-top: 0; font-size: 13px; }
 .stat-mini-sub { font-size: 11px; color: $color-text-secondary; }
+.stat-summary .stat-mini-sub { font-size: 13px; margin-left: auto; }
 .table-card { padding: 4px 8px 12px; margin-bottom: 14px; }
 .tabs { padding: 4px 8px 0; }
 .scan-banner, .dl-banner { margin-bottom: 12px; padding: 12px 16px; font-size: 13px; color: $color-text-secondary; }
-.dl-row { display: flex; gap: 12px; align-items: center; padding: 6px 0; }
+.dl-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.dl-row { display: flex; gap: 12px; align-items: center; padding: 6px 0; flex-wrap: wrap; }
 .dl-name { font-weight: 600; color: $color-text; }
+.dl-error {
+  color: $color-danger;
+  font-size: 12px;
+  word-break: break-all;
+}
+.empty-state { padding: 48px 0; }
 .dup-card { padding: 18px; }
 .dup-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
 .panel-title { font-size: 15px; font-weight: 700; }

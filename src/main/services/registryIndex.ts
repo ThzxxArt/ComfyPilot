@@ -15,6 +15,8 @@ export interface RegistryIndexMeta {
   total: number
   pages: number
   count: number
+  /** Pages that failed to fetch during the last full build. */
+  skippedPages: number
 }
 
 type IndexFile = RegistryIndexMeta & { items: Array<Record<string, unknown>> }
@@ -74,7 +76,8 @@ export class RegistryIndexService extends EventEmitter {
         updatedAt: data.updatedAt || 0,
         total: data.total || data.items.length,
         pages: data.pages || 0,
-        count: data.items.length
+        count: data.items.length,
+        skippedPages: data.skippedPages || 0
       }
       return true
     } catch {
@@ -82,7 +85,7 @@ export class RegistryIndexService extends EventEmitter {
     }
   }
 
-  private saveToDisk(items: Array<Record<string, unknown>>, total: number, pages: number): void {
+  private saveToDisk(items: Array<Record<string, unknown>>, total: number, pages: number, skippedPages = 0): void {
     try {
       const dir = cacheDir()
       mkdirSync(dir, { recursive: true })
@@ -91,6 +94,7 @@ export class RegistryIndexService extends EventEmitter {
         total,
         pages,
         count: items.length,
+        skippedPages,
         items
       }
       const tmp = join(dir, `${INDEX_NAME}.tmp`)
@@ -107,7 +111,8 @@ export class RegistryIndexService extends EventEmitter {
       updatedAt: this.meta?.updatedAt || 0,
       total: this.meta?.total || 0,
       pages: this.meta?.pages || 0,
-      count: this.items?.length || 0
+      count: this.items?.length || 0,
+      skippedPages: this.meta?.skippedPages || 0
     }
   }
 
@@ -149,7 +154,10 @@ export class RegistryIndexService extends EventEmitter {
     const pageSize = first.limit || 100
     const totalPages = first.totalPages || Math.ceil(first.total / pageSize) || 1
     const collected: Array<Record<string, unknown>> = first.nodes.map(slimNode)
-    this.emit('progress', { done: 1, total: totalPages, count: collected.length })
+    // `done` is a high-water mark: 6 workers report page numbers out of order.
+    let maxDone = 1
+    let skippedPages = 0
+    this.emit('progress', { done: maxDone, total: totalPages, count: collected.length })
 
     const concurrency = 6
     let next = 2
@@ -161,9 +169,10 @@ export class RegistryIndexService extends EventEmitter {
           const p = await fetchRegistryPage(pg, pageSize)
           for (const n of p.nodes) collected.push(slimNode(n))
         } catch {
-          /* skip failed page */
+          skippedPages++
         }
-        this.emit('progress', { done: Math.min(pg, totalPages), total: totalPages, count: collected.length })
+        if (pg > maxDone) maxDone = pg
+        this.emit('progress', { done: maxDone, total: totalPages, count: collected.length })
       }
     })
     await Promise.all(workers)
@@ -183,10 +192,27 @@ export class RegistryIndexService extends EventEmitter {
       updatedAt: Date.now(),
       total: first.total || unique.length,
       pages: totalPages,
-      count: unique.length
+      count: unique.length,
+      skippedPages
     }
-    this.saveToDisk(unique, this.meta.total, totalPages)
+    this.saveToDisk(unique, this.meta.total, totalPages, skippedPages)
     this.emit('ready', this.status())
+    if (skippedPages > 0) {
+      // Surface skipped pages — a silently partial index looks like missing packs.
+      void import('../ipc/handlers')
+        .then(({ broadcastNotification }) => {
+          broadcastNotification({
+            type: 'warning',
+            title: 'Registry index incomplete',
+            titleKey: 'notify.indexWarning',
+            message: `${skippedPages} of ${totalPages} catalog pages failed to fetch and were skipped. Search results may be incomplete — retry "Refresh full index" later.`,
+            duration: 10000
+          })
+        })
+        .catch(() => {
+          /* notification is best-effort */
+        })
+    }
   }
 
   /** Search the FULL catalog (not a single page). */

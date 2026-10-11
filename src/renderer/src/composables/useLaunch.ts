@@ -62,12 +62,19 @@ export function useLaunch() {
     if (busy.value[id]) return false
     setBusy(id, true)
     const open = opts?.open ?? 'none'
+    // Snapshot before launch so we can tell "already running" from a cold start
+    // and avoid a duplicate "ready" toast.
+    const wasRunning = info.status === 'running' || info.status === 'starting'
     try {
       // Never let main auto-relocate silently — PORT_IN_USE must surface to the user first.
       const result = await ipc('instance.launch', id, { ...opts, open: 'none', relocatePort: false })
       await store.refreshInstances()
       await openFrontend(result, open)
-      ui().message.success(t('launch.ready', { name: result.name }))
+      if (wasRunning) {
+        ui().message.info(t('launch.alreadyRunning', { name: result.name }))
+      } else {
+        ui().message.success(t('launch.ready', { name: result.name }))
+      }
       return true
     } catch (err) {
       await handleLaunchError(err, info, opts)
@@ -139,12 +146,24 @@ export function useLaunch() {
   }
 
   async function stop(info: ComfyInstanceInfo): Promise<void> {
+    // Stop must be able to interrupt a long-running launch — do NOT gate on
+    // the launch busy key. Use a dedicated key to prevent double-clicks.
+    const stopKey = `stop:${info.id}`
+    if (busy.value[stopKey]) return
+    setBusy(stopKey, true)
     try {
-      await ipc('instance.stop', info.id)
+      const result = await ipc('instance.stop', info.id)
       await store.refreshInstances()
-      ui().message.success(t('launch.stopped', { name: info.name }))
+      if (result.adopted) {
+        // External process was only signalled — it keeps running outside ComfyPilot.
+        ui().message.warning(t('launch.signalledExternal', { name: info.name }))
+      } else {
+        ui().message.success(t('launch.stopped', { name: info.name }))
+      }
     } catch (err) {
       ui().message.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(stopKey, false)
     }
   }
 
@@ -166,12 +185,22 @@ export function useLaunch() {
   }
 
   async function forceKill(info: ComfyInstanceInfo): Promise<void> {
+    // Same as stop: must be callable while a launch is in flight.
+    const killKey = `kill:${info.id}`
+    if (busy.value[killKey]) return
+    setBusy(killKey, true)
     try {
-      await ipc('instance.forceKill', info.id)
+      const result = await ipc('instance.forceKill', info.id)
       await store.refreshInstances()
-      ui().message.warning(t('launch.forceKilled', { name: info.name }))
+      if (result.adopted) {
+        ui().message.warning(t('launch.signalledExternal', { name: info.name }))
+      } else {
+        ui().message.warning(t('launch.forceKilled', { name: info.name }))
+      }
     } catch (err) {
       ui().message.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(killKey, false)
     }
   }
 

@@ -12,7 +12,9 @@ import {
   RocketOutline,
   StopOutline,
   PlayOutline,
-  CheckmarkCircleOutline
+  CheckmarkCircleOutline,
+  GitBranchOutline,
+  AlertCircleOutline
 } from '@vicons/ionicons5'
 import {
   NButton,
@@ -50,6 +52,7 @@ const loading = ref(true)
 const nodePacks = ref<NodePackRecord[]>([])
 const models = ref<ModelRecord[]>([])
 const queue = ref<QueueSnapshot | null>(null)
+const statsError = ref('')
 
 /** Seconds since the active instance entered `starting` — ticks only while starting. */
 const startElapsed = ref(0)
@@ -113,11 +116,21 @@ async function launchActive(): Promise<void> {
   await launch(inst, { open: 'embed' })
 }
 
-/** Stop with a confirm when the queue still holds work. */
-function stopActive(): void {
+/** Stop with a confirm when the queue still holds work. Queries live state first. */
+async function stopActive(): Promise<void> {
   const inst = store.activeInstance
   if (!inst) return
-  const pending = (queue.value?.running.length || 0) + (queue.value?.pending.length || 0)
+  // Query live queue — the 5s poll snapshot may be stale (recent enqueues).
+  let pending = 0
+  if (inst.url && inst.status === 'running') {
+    try {
+      const live = await ipc('monitor.queue', inst.url)
+      pending = (live.running.length || 0) + (live.pending.length || 0)
+      queue.value = live
+    } catch {
+      pending = (queue.value?.running.length || 0) + (queue.value?.pending.length || 0)
+    }
+  }
   if (pending > 0) {
     dialog.warning({
       title: t('dashboard.stopConfirmTitle'),
@@ -144,6 +157,19 @@ async function refreshTailLogs(): Promise<void> {
     tailLogs.value = logs.slice(-3)
   } catch {
     tailLogs.value = []
+  }
+}
+
+/** Per-instance node/model counts — must follow the active instance. */
+async function refreshStats(): Promise<void> {
+  try {
+    nodePacks.value = await ipc('node.list', store.activeInstanceId || undefined)
+    models.value = await ipc('model.list')
+    statsError.value = ''
+  } catch (err) {
+    statsError.value = err instanceof Error ? err.message : String(err)
+    nodePacks.value = []
+    models.value = []
   }
 }
 
@@ -180,14 +206,8 @@ watch(
 )
 
 onMounted(async () => {
-  try {
-    nodePacks.value = await ipc('node.list', store.activeInstanceId || undefined)
-    models.value = await ipc('model.list')
-  } catch {
-    /* optional in empty state */
-  } finally {
-    loading.value = false
-  }
+  await refreshStats()
+  loading.value = false
   await refreshQueue()
   queueTimer = setInterval(() => void refreshQueue(), 5000)
   if (activeStatus.value === 'starting') void refreshTailLogs()
@@ -199,6 +219,16 @@ onMounted(async () => {
   })
 })
 
+// Node/model counts are per active instance — refresh when the header switches.
+watch(
+  () => store.instanceSwitchTick,
+  () => {
+    void refreshStats()
+    void refreshQueue()
+    void refreshTailLogs()
+  }
+)
+
 onUnmounted(() => {
   if (queueTimer) clearInterval(queueTimer)
   if (startTimer) clearInterval(startTimer)
@@ -206,7 +236,11 @@ onUnmounted(() => {
 })
 
 async function runDoctor(): Promise<void> {
-  const id = store.activeInstanceId || 'default'
+  const id = store.activeInstanceId
+  if (!id) {
+    message.warning(t('common.needRunningInstance'))
+    return
+  }
   try {
     store.doctorReport = await ipc('doctor.run', id)
     void router.push('/doctor')
@@ -230,7 +264,7 @@ async function runDoctor(): Promise<void> {
           </template>
           {{ $t('dashboard.switchInstance') }}
         </NButton>
-        <NButton type="primary" @click="runDoctor">
+        <NButton type="primary" :disabled="!hasInstances" @click="runDoctor">
           <template #icon>
             <NIcon :component="FlashOutline" />
           </template>
@@ -292,6 +326,10 @@ async function runDoctor(): Promise<void> {
           <div v-if="queue" class="hero-queue">
             {{ $t('dashboard.queueStatus', { running: queue.running.length, pending: queue.pending.length }) }}
           </div>
+          <div v-if="store.activeInstance?.lastError" class="hero-error">
+            <NIcon :size="14" :component="AlertCircleOutline" />
+            {{ store.activeInstance.lastError }}
+          </div>
           <div v-if="activeStatus === 'starting'" class="hero-starting">
             <div class="hero-starting-label">
               <NIcon :size="14" :component="PulseOutline" class="spin-slow" />
@@ -346,6 +384,11 @@ async function runDoctor(): Promise<void> {
           {{ $t('dashboard.onboarding.goModels') }}
         </NButton>
       </section>
+
+      <div v-if="statsError" class="stats-error">
+        <NIcon :size="14" :component="AlertCircleOutline" />
+        {{ $t('dashboard.statsError') }} — {{ statsError }}
+      </div>
 
       <div class="grid stats">
         <StatCard
@@ -434,9 +477,17 @@ async function runDoctor(): Promise<void> {
               <NIcon :size="22" :component="ExtensionPuzzleOutline" />
               <span>{{ $t('dashboard.nodeManage') }}</span>
             </button>
-            <button class="quick" @click="router.push('/workflows')">
+            <button class="quick" @click="router.push('/market')">
               <NIcon :size="22" :component="FlashOutline" />
+              <span>{{ $t('nav.market') }}</span>
+            </button>
+            <button class="quick" @click="router.push('/workflows')">
+              <NIcon :size="22" :component="GitBranchOutline" />
               <span>{{ $t('nav.workflows') }}</span>
+            </button>
+            <button class="quick" @click="router.push('/batch')">
+              <NIcon :size="22" :component="PlayOutline" />
+              <span>{{ $t('nav.batch') }}</span>
             </button>
             <button class="quick" @click="router.push('/doctor')">
               <NIcon :size="22" :component="MedkitOutline" />
@@ -508,6 +559,28 @@ async function runDoctor(): Promise<void> {
   margin-top: 8px;
   font-size: 12px;
   color: $color-text-secondary;
+}
+
+.hero-error {
+  margin-top: 8px;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12px;
+  color: $color-danger;
+  word-break: break-all;
+}
+
+.stats-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(220, 38, 38, 0.08);
+  color: $color-danger;
+  font-size: 12px;
 }
 
 .hero-starting {

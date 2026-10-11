@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
   AddOutline, PlayOutline, StopOutline, TrashOutline, FolderOpenOutline,
   OpenOutline, RefreshOutline, PowerOutline, DownloadOutline, LinkOutline, RocketOutline,
@@ -26,6 +26,7 @@ import type {
 } from '@shared/types'
 
 const router = useRouter()
+const route = useRoute()
 const store = useAppStore()
 const message = useMessage()
 const dialog = useDialog()
@@ -87,6 +88,33 @@ function statusLabel(s: InstanceStatus | undefined): string {
   return t(`status.${s || 'unknown'}`)
 }
 
+/** Open the edit modal for an instance id (Detail → Edit deep-link). */
+async function openEditById(editId: string): Promise<void> {
+  if (!editId) return
+  if (!store.instances.length) {
+    try {
+      await store.refreshInstances()
+    } catch {
+      /* fall through — not found below */
+    }
+  }
+  const item = store.instances.find((i) => i.id === editId)
+  if (item) {
+    openEdit(item)
+  } else {
+    message.warning(t('instance.editTargetMissing'))
+  }
+}
+
+function consumeEditQuery(): string | null {
+  const raw = route.query.edit
+  const editId = typeof raw === 'string' ? raw : Array.isArray(raw) ? String(raw[0] || '') : ''
+  if (!editId) return null
+  // Consume the deep-link so the modal does not reopen on a later re-render.
+  void router.replace({ path: '/instances', query: { ...route.query, edit: undefined } })
+  return editId
+}
+
 onMounted(async () => {
   loading.value = true
   try {
@@ -97,7 +125,20 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
+  const editId = consumeEditQuery()
+  if (editId) await openEditById(editId)
 })
+
+watch(
+  () => route.query.edit,
+  (raw) => {
+    const editId = typeof raw === 'string' ? raw : Array.isArray(raw) ? String(raw[0] || '') : ''
+    if (editId) {
+      void openEditById(editId)
+      void router.replace({ path: '/instances', query: { ...route.query, edit: undefined } })
+    }
+  }
+)
 
 async function pickPath(field: 'path' | 'pythonPath' | 'venvPath'): Promise<void> {
   await pickPathInto(draft.value, field)
@@ -176,6 +217,8 @@ async function importSelectedCandidates(): Promise<void> {
     message.warning(t('instance.selectUnregisteredFirst'))
     return
   }
+  let ok = 0
+  let fail = 0
   for (const c of picks) {
     try {
       const port = await ipc('instance.suggestPort')
@@ -196,13 +239,19 @@ async function importSelectedCandidates(): Promise<void> {
         listen: '127.0.0.1',
         frontendVersion: ''
       })
+      ok++
     } catch (err) {
+      fail++
       message.error(`${c.path}: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
   await store.refreshInstances()
   showDiscover.value = false
-  message.success(t('instance.importedCount', { n: picks.length }))
+  if (fail === 0) {
+    message.success(t('instance.importedCount', { n: ok }))
+  } else {
+    message.warning(t('instance.importedSummary', { ok, fail }))
+  }
 }
 
 async function suggestPort(): Promise<void> {
@@ -214,10 +263,10 @@ async function suggestPort(): Promise<void> {
   }
 }
 
-async function checkPort(): Promise<void> {
+async function checkPortOf(port: number): Promise<void> {
   try {
-    const r = await ipc('instance.checkPort', draft.value.port)
-    portChecks.value[draft.value.port] = r
+    const r = await ipc('instance.checkPort', port)
+    portChecks.value = { ...portChecks.value, [port]: r }
     message[r.available ? 'success' : 'warning'](
       r.available
         ? t('instance.portAvailableMsg', { port: r.port })
@@ -226,6 +275,15 @@ async function checkPort(): Promise<void> {
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   }
+}
+
+async function checkPort(): Promise<void> {
+  await checkPortOf(draft.value.port)
+}
+
+async function checkEditPort(): Promise<void> {
+  if (!editing.value) return
+  await checkPortOf(editing.value.port)
 }
 
 async function createInstance(): Promise<void> {
@@ -240,6 +298,13 @@ async function createInstance(): Promise<void> {
     await store.refreshInstances()
     showCreate.value = false
     message.success(t('instance.instanceAdded', { name: info.name }))
+    // Reset so a second "Add" does not inherit the previous form.
+    draft.value = {
+      id: '', name: 'My ComfyUI', path: '', pythonPath: '', venvPath: '',
+      port: 8188, listen: '127.0.0.1', extraArgs: [], argTemplateId: 'default',
+      enabled: true, notes: '', autoStart: false, frontendVersion: '', pinned: false
+    }
+    extraArgsText.value = ''
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   } finally {
@@ -465,9 +530,13 @@ async function exportDiag(info: ComfyInstanceInfo): Promise<void> {
 
 async function startAll(): Promise<void> {
   try {
-    await ipc('instance.startAll')
+    const results = await ipc('instance.startAll')
     await store.refreshInstances()
-    message.success(t('instance.startAll'))
+    const ok = results.filter((r) => r.ok).length
+    const fail = results.length - ok
+    const text = t('instance.startAllSummary', { ok, fail })
+    if (fail === 0) message.success(text)
+    else message.warning(text)
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   }
@@ -475,9 +544,13 @@ async function startAll(): Promise<void> {
 
 async function stopAll(): Promise<void> {
   try {
-    await ipc('instance.stopAll')
+    const results = await ipc('instance.stopAll')
     await store.refreshInstances()
-    message.success(t('instance.stopAll'))
+    const ok = results.filter((r) => r.ok).length
+    const fail = results.length - ok
+    const text = t('instance.stopAllSummary', { ok, fail })
+    if (fail === 0) message.success(text)
+    else message.warning(text)
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   }
@@ -832,7 +905,26 @@ function statusClass(s: string): string {
         </NFormItem>
         <div class="form-row">
           <NFormItem :label="$t('instance.port')">
-            <NInputNumber v-model:value="editing.port" :min="1" :max="65535" />
+            <NSpace vertical :size="6">
+              <NSpace>
+                <NInputNumber v-model:value="editing.port" :min="1" :max="65535" />
+                <NButton size="small" secondary @click="checkEditPort">{{ $t('instance.checkPort') }}</NButton>
+              </NSpace>
+              <div
+                v-if="editing.port && portChecks[editing.port]"
+                class="port-check"
+                :class="portChecks[editing.port]?.available ? 'ok' : 'bad'"
+              >
+                {{
+                  portChecks[editing.port]?.available
+                    ? $t('instance.portAvailableMsg', { port: editing.port })
+                    : $t('instance.portOccupiedMsg', {
+                        port: editing.port,
+                        owner: portChecks[editing.port]?.owner || ''
+                      })
+                }}
+              </div>
+            </NSpace>
           </NFormItem>
           <NFormItem :label="$t('instance.listen')">
             <NInput v-model:value="editing.listen" />
@@ -908,10 +1000,26 @@ function statusClass(s: string): string {
         </NFormItem>
         <div class="form-row">
           <NFormItem :label="$t('instance.port')">
-            <NSpace>
-              <NInputNumber v-model:value="draft.port" :min="1" :max="65535" />
-              <NButton size="small" secondary @click="suggestPort">{{ $t('instance.suggestPort') }}</NButton>
-              <NButton size="small" secondary @click="checkPort">{{ $t('instance.checkPort') }}</NButton>
+            <NSpace vertical :size="6">
+              <NSpace>
+                <NInputNumber v-model:value="draft.port" :min="1" :max="65535" />
+                <NButton size="small" secondary @click="suggestPort">{{ $t('instance.suggestPort') }}</NButton>
+                <NButton size="small" secondary @click="checkPort">{{ $t('instance.checkPort') }}</NButton>
+              </NSpace>
+              <div
+                v-if="draft.port && portChecks[draft.port]"
+                class="port-check"
+                :class="portChecks[draft.port]?.available ? 'ok' : 'bad'"
+              >
+                {{
+                  portChecks[draft.port]?.available
+                    ? $t('instance.portAvailableMsg', { port: draft.port })
+                    : $t('instance.portOccupiedMsg', {
+                        port: draft.port,
+                        owner: portChecks[draft.port]?.owner || ''
+                      })
+                }}
+              </div>
             </NSpace>
           </NFormItem>
           <NFormItem :label="$t('instance.listenAddr')">
@@ -963,6 +1071,7 @@ function statusClass(s: string): string {
 .actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .empty { padding: 64px 0; }
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.port-check { font-size: 12px; line-height: 1.5; &.ok { color: $color-success; } &.bad { color: $color-danger; } }
 .cand-list { display: flex; flex-direction: column; gap: 8px; max-height: 420px; overflow: auto; }
 .cand-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid $color-border; border-radius: 12px; }
 .cand-main { flex: 1; min-width: 0; }

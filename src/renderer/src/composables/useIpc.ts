@@ -73,4 +73,20 @@ export function onModelScanProgress<T>(fn: (p: T) => void): () => void {
   return onIpc(IPC_EVENTS.modelScanProgress, (payload) => fn(payload as T))
 }
 
+export function onNotification<T>(fn: (n: T) => void): () => void {
+  return onIpc(IPC_EVENTS.notification, (payload) => fn(payload as T))
+}
+
+export function onDoctorProgress<T>(fn: (p: T) => void): () => void {
+  return onIpc(IPC_EVENTS.doctorProgress, (payload) => fn(payload as T))
+}
+
+export function onBatchProgress<T>(fn: (job: T) => void): () => void {
+  return onIpc(IPC_EVENTS.batchProgress, (payload) => fn(payload as T))
+}
+
+export function onRegistryIndexProgress<T>(fn: (p: T) => void): () => void {
+  return onIpc(IPC_EVENTS.registryIndexProgress, (payload) => fn(payload as T))
+}
+
 export { IPC_EVENTS }

@@ -173,15 +173,6 @@ async function applyProxy(): Promise<void> {
   }
 }
 
-async function pickDir(target: 'downloadDir' | 'defaultInstancePath' | 'outputIndexRoot' | 'extraModelPathsFile'): Promise<void> {
-  try {
-    const p = await ipc('shell.pickDirectory')
-    if (p) form.value[target] = p
-  } catch (err) {
-    message.error(err instanceof Error ? err.message : String(err))
-  }
-}
-
 async function loadRemotes(): Promise<void> {
   try {
     remotes.value = await ipc('remote.list')
@@ -216,8 +207,7 @@ function cancelRemoteDialog(): void {
 async function probeEnv(): Promise<void> {
   try {
     envProbe.value = await ipc('env.probe', {
-      pythonPath: 'python',
-      venvPath: form.value.defaultInstancePath || undefined
+      pythonPath: 'python'
     })
     pythons.value = await ipc('env.listPythons')
     message.success(t('settings.envProbeDone'))
@@ -267,35 +257,6 @@ onMounted(async () => {
 
     <div class="page-body">
     <div class="grid settings-grid">
-      <NCard :title="t('settings.paths')" class="card" size="small">
-        <NForm label-placement="top">
-          <NFormItem :label="t('settings.defaultInstancePath')">
-            <NInput v-model:value="form.defaultInstancePath">
-              <template #suffix>
-                <NButton size="tiny" secondary @click="pickDir('defaultInstancePath')">{{ t('settings.browse') }}</NButton>
-              </template>
-            </NInput>
-          </NFormItem>
-          <NFormItem :label="t('settings.downloadDir')">
-            <NInput v-model:value="form.downloadDir">
-              <template #suffix>
-                <NButton size="tiny" secondary @click="pickDir('downloadDir')">{{ t('settings.browse') }}</NButton>
-              </template>
-            </NInput>
-          </NFormItem>
-          <NFormItem label="extra_model_paths.yaml">
-            <NInput v-model:value="form.extraModelPathsFile" :placeholder="t('settings.extraModelPathsPlaceholder')" />
-          </NFormItem>
-          <NFormItem :label="t('settings.outputIndexRoot')">
-            <NInput v-model:value="form.outputIndexRoot">
-              <template #suffix>
-                <NButton size="tiny" secondary @click="pickDir('outputIndexRoot')">{{ t('settings.browse') }}</NButton>
-              </template>
-            </NInput>
-          </NFormItem>
-        </NForm>
-      </NCard>
-
       <NCard :title="t('settings.network')" class="card" size="small">
         <NForm label-placement="top">
           <NFormItem :label="t('settings.githubEndpoint')">
@@ -448,13 +409,6 @@ onMounted(async () => {
               </NButton>
               <NButton :type="form.locale === 'en-US' ? 'primary' : 'default'" secondary @click="setLocale('en-US')">
                 English
-              </NButton>
-            </NSpace>
-          </NFormItem>
-          <NFormItem :label="t('settings.theme')">
-            <NSpace>
-              <NButton :type="form.theme === 'light' ? 'primary' : 'default'" secondary @click="form.theme = 'light'">
-                {{ t('settings.themeLight') }}
               </NButton>
             </NSpace>
           </NFormItem>

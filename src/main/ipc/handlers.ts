@@ -1,7 +1,9 @@
 import { ipcMain, dialog, shell, BrowserWindow, WebContentsView, clipboard } from 'electron'
 import { existsSync } from 'fs'
+import { homedir } from 'os'
 import { basename, extname, join } from 'path'
 import type { IpcResult, ComfyInstanceConfig, RemoteInstanceConfig, NodePackRecord, EnvCreateRequest, WorkflowRecord, AppSettings, InstallPlan, LaunchOptions } from '@shared/types'
+import { IPC_EVENTS } from '@shared/types'
 import { isSafeExternalUrl, isSafeEmbedUrl, sanitizeId, isSafeOpenPath, isLocalhostUrl } from '../services/security'
 import { loadSettings, saveSettings, loadInstanceConfigs, upsertInstanceConfig, deleteInstanceConfig } from '../services/db'
 import { LAUNCH_TEMPLATES } from '@shared/constants'
@@ -183,15 +185,6 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   // settings
   ipcMain.handle('settings.get', wrap(() => loadSettings()))
   ipcMain.handle('settings.set', wrap(async (patch: Partial<AppSettings>) => {
-    // outputIndexRoot enters the media-protocol allow-list — only accept
-    // concrete directories that already exist (the picker returns real paths).
-    for (const key of ['outputIndexRoot'] as const) {
-      const v = patch[key]
-      if (v !== undefined && v !== null && v !== '') {
-        if (typeof v !== 'string' || v.includes('\0')) throw new Error(`Invalid ${key}`)
-        if (!existsSync(v)) throw new Error(`${key} must be an existing directory`)
-      }
-    }
     const next = saveSettings(patch)
     // Re-apply proxy whenever settings change
     syncProxyFromSettings()
@@ -333,6 +326,9 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle('model.pauseDownload', wrap((id: string) => modelService.pauseDownload(id)))
   ipcMain.handle('model.resumeDownload', wrap((id: string) => modelService.resumeDownload(id)))
   ipcMain.handle('model.cancelDownload', wrap((id: string) => modelService.cancelDownload(id)))
+  ipcMain.handle('model.clearFinishedDownloads', wrap(() => modelService.clearFinishedDownloads()))
+  // Terminal download results surface as global toasts (ModelsView may be unmounted).
+  modelService.on('notify', (n) => broadcastNotification(n as Parameters<typeof broadcastNotification>[0]))
   ipcMain.handle('model.storageStats', wrap(() => modelService.storageStats()))
   ipcMain.handle('model.parseExtraPaths', wrap((file?: string) => import('../services/model').then((m) => m.parseExtraModelPaths(file))))
   ipcMain.handle('model.fetchCivitaiMeta', wrap((id: string) => modelService.fetchCivitaiMeta(id)))
@@ -348,7 +344,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   // node packs
   ipcMain.handle('node.list', wrap((instanceId?: string) => nodePackService.list(safeInstanceId(instanceId))))
   ipcMain.handle('node.refresh', wrap((instanceId?: string) => nodePackService.refresh(safeInstanceId(instanceId))))
-  ipcMain.handle('node.registrySearch', wrap((opts?: { query?: string; limit?: number; page?: number; scanPages?: number }) => nodePackService.registrySearch(opts)))
+  ipcMain.handle('node.registrySearch', wrap((opts?: { query?: string; limit?: number; page?: number }) => nodePackService.registrySearch(opts)))
   ipcMain.handle('registry.indexStatus', wrap(async () => {
     const { registryIndex } = await import('../services/registryIndex')
     return registryIndex.status()
@@ -362,20 +358,50 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     return registryIndex.ensure()
   }))
   ipcMain.handle('node.managerChannel', wrap(() => nodePackService.managerChannelList()))
-  ipcMain.handle('node.install', wrap((opts: { id: string; version?: string; source: 'registry' | 'git' | 'manager'; url?: string; instanceId?: string }) =>
-    nodePackService.install({ ...opts, instanceId: safeInstanceId(opts.instanceId) })
-  ))
-  ipcMain.handle('node.uninstall', wrap((id: string, instanceId?: string) => nodePackService.uninstall(id, safeInstanceId(instanceId))))
-  ipcMain.handle('node.update', wrap((id: string, version?: string, instanceId?: string) => nodePackService.update(id, version, safeInstanceId(instanceId))))
+  ipcMain.handle('node.install', wrap(async (opts: { id: string; version?: string; source: 'registry' | 'git' | 'manager'; url?: string; instanceId?: string }) => {
+    const rec = await nodePackService.install({ ...opts, instanceId: safeInstanceId(opts.instanceId) })
+    broadcastNotification({
+      type: 'success',
+      title: 'Node pack installed',
+      titleKey: 'notify.nodeInstalled',
+      message: `${rec.displayName || rec.name || opts.id} (${rec.version || '?'})`,
+      duration: 5000
+    })
+    return rec
+  }))
+  ipcMain.handle('node.uninstall', wrap(async (id: string, instanceId?: string) => {
+    const ok = await nodePackService.uninstall(id, safeInstanceId(instanceId))
+    if (ok) {
+      broadcastNotification({
+        type: 'success',
+        title: 'Node pack uninstalled',
+        titleKey: 'notify.nodeUninstalled',
+        message: id,
+        duration: 5000
+      })
+    }
+    return ok
+  }))
+  ipcMain.handle('node.update', wrap(async (id: string, version?: string, instanceId?: string) => {
+    const rec = await nodePackService.update(id, version, safeInstanceId(instanceId))
+    broadcastNotification({
+      type: 'success',
+      title: 'Node pack updated',
+      titleKey: 'notify.nodeUpdated',
+      message: `${rec.displayName || rec.name || id} (${rec.version || '?'})`,
+      duration: 5000
+    })
+    return rec
+  }))
   ipcMain.handle('node.toggle', wrap((id: string, enabled: boolean, instanceId?: string) => nodePackService.toggle(id, enabled, safeInstanceId(instanceId))))
-  ipcMain.handle('node.lock', wrap((id: string, locked: boolean) => nodePackService.lock(id, locked)))
+  ipcMain.handle('node.lock', wrap((id: string, locked: boolean, instanceId?: string) => nodePackService.lock(id, locked, safeInstanceId(instanceId))))
   ipcMain.handle('node.checkIssues', wrap((id: string, instanceId?: string) => nodePackService.checkIssues(id, safeInstanceId(instanceId))))
   ipcMain.handle('node.conflicts', wrap((instanceId?: string) => nodePackService.conflicts(safeInstanceId(instanceId))))
   ipcMain.handle('node.smokeTest', wrap((id: string, instanceId?: string) => nodePackService.smokeTest(id, safeInstanceId(instanceId))))
-  ipcMain.handle('node.snapshots', wrap(() => nodePackService.snapshots()))
-  ipcMain.handle('node.createSnapshot', wrap((name?: string) => nodePackService.createSnapshot(name)))
-  ipcMain.handle('node.deleteSnapshot', wrap((id: string) => nodePackService.deleteSnapshot(sanitizeId(id))))
-  ipcMain.handle('node.restoreSnapshot', wrap((id: string) => nodePackService.restoreSnapshot(sanitizeId(id))))
+  ipcMain.handle('node.snapshots', wrap((instanceId?: string) => nodePackService.snapshots(safeInstanceId(instanceId))))
+  ipcMain.handle('node.createSnapshot', wrap((name?: string, instanceId?: string) => nodePackService.createSnapshot(name, safeInstanceId(instanceId))))
+  ipcMain.handle('node.deleteSnapshot', wrap((id: string, instanceId?: string) => nodePackService.deleteSnapshot(sanitizeId(id), safeInstanceId(instanceId))))
+  ipcMain.handle('node.restoreSnapshot', wrap((id: string, instanceId?: string) => nodePackService.restoreSnapshot(sanitizeId(id), safeInstanceId(instanceId))))
   ipcMain.handle('node.checkUpdates', wrap((instanceId?: string) => nodePackService.checkUpdates(safeInstanceId(instanceId))))
   ipcMain.handle('node.updateAll', wrap((instanceId?: string) => nodePackService.updateAll(safeInstanceId(instanceId))))
 
@@ -386,7 +412,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     return workflowService.importFile(path, safeInstanceId(instanceId))
   }))
   ipcMain.handle('workflow.importMany', wrap(async (paths: string[], instanceId?: string) => {
-    if (!Array.isArray(paths) || !paths.length) return []
+    if (!Array.isArray(paths) || !paths.length) return { ok: [], errors: [] }
     for (const p of paths) {
       if (!isSafeReadPath(p)) throw new Error(`Blocked unsafe workflow path: ${basename(p)}`)
     }
@@ -411,11 +437,9 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     if (destDir) {
       if (!existsSync(destDir)) throw new Error('Export directory does not exist')
       const { isPathInside } = await import('../services/security')
-      const { loadSettings, workflowLibraryDir, cacheDir } = await import('../services/db')
-      const s = loadSettings()
+      const { workflowLibraryDir, cacheDir } = await import('../services/db')
       const allowed = [
-        s.downloadDir,
-        s.outputIndexRoot,
+        join(homedir(), 'Downloads', 'ComfyPilot'),
         workflowLibraryDir(),
         cacheDir(),
         ...loadInstanceConfigs().map((i) => i.path)
@@ -439,11 +463,16 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     url: string
   }> {
     const instances = loadInstanceConfigs()
-    const inst =
-      instances.find((i) => i.id === safeInstanceId(instanceId)) ||
-      instances.find((i) => i.id === safeInstanceId(instanceId || '')) ||
-      instances[0]
-    if (!inst) throw new Error('No instance configured')
+    const wanted = instanceId ? safeInstanceId(instanceId) : ''
+    // Explicit instanceId must resolve — never silently fall back to instances[0]
+    // (that would send the request to the wrong instance).
+    const inst = wanted
+      ? instances.find((i) => i.id === wanted)
+      : instances[0]
+    if (!inst) {
+      if (wanted) throw new Error(`Instance not found: ${wanted}`)
+      throw new Error('No instance configured')
+    }
     const host =
       inst.listen === '0.0.0.0' || inst.listen === '::' || inst.listen === '[::]'
         ? '127.0.0.1'
@@ -597,10 +626,53 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     return batchService.create({ ...input, instanceId: safeInstanceId(input.instanceId) || input.instanceId })
   }))
   ipcMain.handle('batch.start', wrap(async (id: string) => {
-    const job = batchService.list().find((j) => j.id === sanitizeId(id))
+    const safeId = sanitizeId(id)
+    const job = batchService.list().find((j) => j.id === safeId)
     // Batch submission needs a live backend — never auto-start one.
     await requireRunningInstance(job?.instanceId)
-    return batchService.start(sanitizeId(id))
+    try {
+      const result = await batchService.start(safeId)
+      // Surface terminal state as a global notification (task done / failed).
+      if (result.status === 'done') {
+        broadcastNotification({
+          type: 'success',
+          title: `Batch done: ${result.name}`,
+          titleKey: 'notify.batchDone',
+          params: { name: result.name },
+          message: `queued ${result.submitted} · ok ${result.completed} · produced ${result.produced} · failed ${result.failed}`
+        })
+      } else if (result.status === 'error') {
+        broadcastNotification({
+          type: 'error',
+          title: `Batch failed: ${result.name}`,
+          titleKey: 'notify.batchFailed',
+          params: { name: result.name },
+          message:
+            result.errorSummary ||
+            `queued ${result.submitted} · ok ${result.completed} · produced ${result.produced} · failed ${result.failed}`,
+          duration: 8000
+        })
+      } else if (result.status === 'cancelled') {
+        broadcastNotification({
+          type: 'warning',
+          title: `Batch cancelled: ${result.name}`,
+          titleKey: 'notify.batchCancelled',
+          params: { name: result.name },
+          message: `queued ${result.submitted} · ok ${result.completed} · failed ${result.failed}`
+        })
+      }
+      return result
+    } catch (e) {
+      broadcastNotification({
+        type: 'error',
+        title: `Batch failed: ${job?.name || safeId}`,
+        titleKey: 'notify.batchFailed',
+        params: { name: job?.name || safeId },
+        message: e instanceof Error ? e.message : String(e),
+        duration: 8000
+      })
+      throw e
+    }
   }))
   ipcMain.handle('batch.cancel', wrap((id: string) => batchService.cancel(sanitizeId(id))))
   ipcMain.handle('batch.remove', wrap((id: string) => batchService.remove(sanitizeId(id))))
@@ -622,10 +694,8 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       // Renderer-supplied root must sit inside an allow-listed output area.
       if (opts?.root) {
         const { isPathInside } = await import('../services/security')
-        const { loadSettings, workflowLibraryDir } = await import('../services/db')
-        const s = loadSettings()
+        const { workflowLibraryDir } = await import('../services/db')
         const allowed = [
-          s.outputIndexRoot,
           workflowLibraryDir(),
           ...loadInstanceConfigs().map((i) => join(i.path, 'output')),
           ...loadInstanceConfigs().map((i) => join(i.path, 'user', 'default', 'workflows'))
@@ -636,15 +706,24 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
         const okRoot = allowed.some((r) => root === r || isPathInside(root, r))
         if (!okRoot) throw new Error('Output root is outside the allowed areas')
       }
-      const { thumbnailDisplayUrl, toMediaUrl } = await import('../services/media')
+      const { thumbnailDisplayUrl, toMediaUrl, thumbnailService } = await import('../services/media')
       const result = outputService.list(opts)
-      return {
-        ...result,
-        items: result.items.map((a) => ({
-          ...a,
-          thumbnail: thumbnailDisplayUrl(a.thumbnail) || toMediaUrl(a.path) || undefined
-        }))
-      }
+      // Generate downscaled thumbs for image assets so the grid does not load
+      // full-size PNGs (产物库缩略图管线).
+      const items = await Promise.all(
+        result.items.map(async (a) => {
+          let thumb: string | undefined = thumbnailDisplayUrl(a.thumbnail) || undefined
+          if (!thumb && a.type === 'image') {
+            const generated = await thumbnailService.ensureOutputThumb(a.path)
+            if (generated) thumb = thumbnailDisplayUrl(generated) || undefined
+          }
+          return {
+            ...a,
+            thumbnail: thumb || toMediaUrl(a.path) || undefined
+          }
+        })
+      )
+      return { ...result, items }
     })
   )
   ipcMain.handle('output.open', wrap(async (path: string) => {
@@ -669,11 +748,9 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     if (destDir) {
       if (!existsSync(destDir)) throw new Error('Export directory does not exist')
       const { isPathInside } = await import('../services/security')
-      const { loadSettings, workflowLibraryDir, cacheDir } = await import('../services/db')
-      const s = loadSettings()
+      const { workflowLibraryDir, cacheDir } = await import('../services/db')
       const allowed = [
-        s.downloadDir,
-        s.outputIndexRoot,
+        join(homedir(), 'Downloads', 'ComfyPilot'),
         workflowLibraryDir(),
         cacheDir(),
         ...(loadInstanceConfigs().map((i) => i.path))
@@ -698,9 +775,17 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle('remote.listStatus', wrap(() => remoteService.listStatus()))
 
   // market
-  ipcMain.handle('market.list', wrap((opts?: { query?: string; category?: string; limit?: number; page?: number; scanPages?: number; instanceId?: string }) => marketService.list({ ...opts, instanceId: safeInstanceId(opts?.instanceId) })))
+  ipcMain.handle('market.list', wrap((opts?: { query?: string; category?: string; limit?: number; page?: number; instanceId?: string }) => marketService.list({ ...opts, instanceId: safeInstanceId(opts?.instanceId) })))
   ipcMain.handle('market.install', wrap(async (id: string, instanceId?: string): Promise<NodePackRecord> => {
-    return nodePackService.install({ id, source: 'registry', instanceId: safeInstanceId(instanceId) })
+    const rec = await nodePackService.install({ id, source: 'registry', instanceId: safeInstanceId(instanceId) })
+    broadcastNotification({
+      type: 'success',
+      title: 'Node pack installed',
+      titleKey: 'notify.nodeInstalled',
+      message: `${rec.displayName || rec.name || id} (${rec.version || '?'})`,
+      duration: 5000
+    })
+    return rec
   }))
 
   // shell
@@ -774,4 +859,17 @@ export function broadcast(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send(channel, payload)
   }
+}
+
+/** Push a global UI notification (long-running task done / failed). */
+export function broadcastNotification(n: {
+  type: 'info' | 'success' | 'warning' | 'error'
+  title: string
+  message: string
+  duration?: number
+  titleKey?: string
+  messageKey?: string
+  params?: Record<string, string | number>
+}): void {
+  broadcast(IPC_EVENTS.notification, n)
 }

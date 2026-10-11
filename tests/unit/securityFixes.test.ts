@@ -108,8 +108,7 @@ vi.mock('../../src/main/services/db', () => ({
     securityLevel: 'normal',
     networkMode: 'public',
     pipIndex: '',
-    proxy: { enabled: false, protocol: 'http', host: '', port: 7890, bypass: '', username: '', password: '' },
-    defaultInstancePath: ''
+    proxy: { enabled: false, protocol: 'http', host: '', port: 7890, bypass: '', username: '', password: '' }
   })),
   loadInstanceConfigs: vi.fn(() => h.state.instances),
   listNodePacks: vi.fn(() => h.state.nodePacks),

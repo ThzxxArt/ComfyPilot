@@ -150,8 +150,6 @@ export interface SearchOpts {
   query?: string
   page?: number
   limit?: number
-  /** how many remote pages to scan when filtering client-side */
-  scanPages?: number
 }
 
 /**

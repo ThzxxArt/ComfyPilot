@@ -7,15 +7,11 @@ export const APP_NAME = 'ComfyPilot'
  */
 declare const __APP_VERSION__: string | undefined
 export const APP_VERSION =
-  (typeof __APP_VERSION__ !== 'undefined' && __APP_VERSION__) || '0.1.5'
+  (typeof __APP_VERSION__ !== 'undefined' && __APP_VERSION__) || '0.1.6'
 
 export const DEFAULT_SETTINGS: AppSettings = {
-  theme: 'light',
   locale: 'zh-CN',
-  defaultInstancePath: '',
-  extraModelPathsFile: '',
   modelScanRoots: [],
-  downloadDir: '',
   githubEndpoint: '',
   hfEndpoint: '',
   civitaiEndpoint: 'https://civitai.com',
@@ -30,7 +26,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   networkMode: 'public',
   aria2Path: '',
   useAria2: false,
-  outputIndexRoot: '',
   launchOnBoot: false,
   minimizeToTray: true,
   autoStartInstancesOnLaunch: true,

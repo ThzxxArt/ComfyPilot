@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
   ExtensionPuzzleOutline, RefreshOutline, WarningOutline, CheckmarkCircleOutline,
@@ -20,9 +21,10 @@ import type {
 
 const { t } = useI18n()
 const store = useAppStore()
+const router = useRouter()
 const message = useMessage()
 const dialog = useDialog()
-const { nodeUpdatingPack, nodeInstallingPack, nodeUpdateMessage, nodeInstallMessage } = useComfyUpdate()
+const { nodeUpdatingPack, nodeInstallingPack, nodeUpdateMessage, nodeInstallMessage, progress } = useComfyUpdate()
 
 // Auto-refresh when a background install/update finishes — the user should not
 // have to hit Refresh to see a pack that just landed.
@@ -47,6 +49,7 @@ const tab = ref('installed')
 const checks = ref<Record<string, NodeUpdateCheckResult>>({})
 const checking = ref(false)
 const updatingOne = ref<string | null>(null)
+const lockingOne = ref<string | null>(null)
 const batchRunning = ref(false)
 
 const filteredPacks = computed(() => {
@@ -99,17 +102,27 @@ function canUpdatePack(pack: NodePackRecord): boolean {
 
 const updatablePacks = computed(() => packs.value.filter(hasUpdatePack))
 
-function describeUpdateError(err: unknown, pack?: NodePackRecord): string {
+function describeUpdateError(err: unknown, _pack?: NodePackRecord): string {
   const msg = err instanceof Error ? err.message : String(err)
   const backup = /backup at (.+)$/i.exec(msg)
   if (/rollback (also failed|FAILED)/i.test(msg) && backup) {
     return t('nodes.rollbackFailed', { path: backup[1].trim() })
   }
-  if (pack?.installSource === 'registry' || /rolled back/i.test(msg)) {
+  // Only claim a rollback when the message actually says one happened — a
+  // plain registry/network error must NOT read as "rolled back".
+  if (/rolled back/i.test(msg)) {
     return t('nodes.rolledBack')
   }
   return t('nodes.updateFailed', { error: msg })
 }
+
+// Auto-close the shared op modal when the operation reaches a terminal state.
+watch(
+  () => progress.value?.status,
+  (s) => {
+    if (s === 'done' || s === 'failed') showOpModal.value = false
+  }
+)
 
 async function refresh(): Promise<void> {
   loading.value = true
@@ -117,7 +130,7 @@ async function refresh(): Promise<void> {
     const instId = store.activeInstanceId || undefined
     packs.value = await ipc('node.refresh', instId)
     conflicts.value = await ipc('node.conflicts', instId)
-    snapshots.value = await ipc('node.snapshots')
+    snapshots.value = await ipc('node.snapshots', instId)
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   } finally {
@@ -160,6 +173,7 @@ async function updatePack(pack: NodePackRecord): Promise<void> {
     delete checks.value[pack.name]
     await refresh()
   } catch (err) {
+    showOpModal.value = false
     message.error(describeUpdateError(err, pack))
   } finally {
     updatingOne.value = null
@@ -217,6 +231,7 @@ async function installGit(): Promise<void> {
     }
     await refresh()
   } catch (err) {
+    showOpModal.value = false
     message.error(describeNodeError(t, err))
   }
 }
@@ -232,21 +247,31 @@ async function toggle(pack: NodePackRecord, enabled: boolean): Promise<void> {
 }
 
 async function lockPack(pack: NodePackRecord, locked: boolean): Promise<void> {
+  if (lockingOne.value) return
+  lockingOne.value = pack.name
   try {
-    await ipc('node.lock', pack.name, locked)
+    await ipc('node.lock', pack.name, locked, store.activeInstanceId || undefined)
     await refresh()
     message.success(locked ? t('nodes.locked') : t('nodes.unlocked'))
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    lockingOne.value = null
   }
 }
 
 async function smoke(pack: NodePackRecord): Promise<void> {
   try {
     const issues = await ipc('node.smokeTest', pack.name, store.activeInstanceId || undefined)
-    message[issues.some((i) => i.severity === 'error') ? 'error' : 'success'](
-      issues.length ? issues[0].message : t('nodes.smokePassed')
-    )
+    if (!issues.length) {
+      message.success(t('nodes.smokePassed'))
+      return
+    }
+    // Show EVERY issue — the old single-message toast hid all but the first.
+    const hasError = issues.some((i) => i.severity === 'error')
+    const text = issues.map((i) => i.message).join(' · ')
+    if (hasError) message.error(text, { duration: 8000, closable: true })
+    else message.warning(text, { duration: 8000, closable: true })
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   }
@@ -254,7 +279,7 @@ async function smoke(pack: NodePackRecord): Promise<void> {
 
 async function createSnapshot(): Promise<void> {
   try {
-    const s = await ipc('node.createSnapshot')
+    const s = await ipc('node.createSnapshot', undefined, store.activeInstanceId || undefined)
     message.success(t('nodes.snapshotCreated', { name: s.name }))
     await refresh()
   } catch (err) {
@@ -264,7 +289,7 @@ async function createSnapshot(): Promise<void> {
 
 async function restoreSnapshot(id: string): Promise<void> {
   try {
-    await ipc('node.restoreSnapshot', id)
+    await ipc('node.restoreSnapshot', id, store.activeInstanceId || undefined)
     message.success(t('nodes.snapshotRestored'))
     await refresh()
   } catch (err) {
@@ -284,7 +309,8 @@ async function uninstall(pack: NodePackRecord): Promise<void> {
 
 async function removeSnapshot(id: string): Promise<void> {
   try {
-    await ipc('node.deleteSnapshot', id)
+    await ipc('node.deleteSnapshot', id, store.activeInstanceId || undefined)
+    message.success(t('nodes.snapshotDeleted'))
     await refresh()
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
@@ -360,7 +386,12 @@ onMounted(() => {
                   </template>
                   {{ $t('nodes.confirmUninstall', { name: pack.name }) }}
                 </NPopconfirm>
-                <NButton size="tiny" quaternary @click="lockPack(pack, !pack.locked)">
+                <NButton
+                  size="tiny"
+                  quaternary
+                  :loading="lockingOne === pack.name"
+                  @click="lockPack(pack, !pack.locked)"
+                >
                   <template #icon>
                     <NIcon :component="pack.locked ? LockClosedOutline : LockOpenOutline" />
                   </template>
@@ -420,7 +451,11 @@ onMounted(() => {
               </NCollapse>
             </article>
           </div>
-          <NEmpty v-else :description="$t('nodes.emptyInstalled')" class="empty" />
+          <NEmpty v-else :description="$t('nodes.emptyInstalled')" class="empty">
+            <template #extra>
+              <NButton type="primary" @click="router.push('/market')">{{ $t('nav.market') }}</NButton>
+            </template>
+          </NEmpty>
         </NSpin>
       </NTabPane>
 

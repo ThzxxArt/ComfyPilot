@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, computed, watch } from 'vue'
+import { onMounted, onUnmounted, ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import {
@@ -12,7 +12,9 @@ import {
   Heart,
   FolderOpenOutline,
   ShareSocialOutline,
-  DownloadOutline
+  DownloadOutline,
+  ChevronBackOutline,
+  ChevronForwardOutline
 } from '@vicons/ionicons5'
 import {
   NButton,
@@ -32,10 +34,10 @@ import {
   useMessage,
   NPagination
 } from 'naive-ui'
-import { ipc } from '@/composables/useIpc'
+import { ipc, onIpc, IPC_EVENTS } from '@/composables/useIpc'
 import { useAppStore } from '@/stores/app'
 import { formatBytes } from '@/utils/format'
-import type { OutputAsset } from '@shared/types'
+import type { OutputAsset, WorkflowRecord } from '@shared/types'
 
 const { t } = useI18n()
 const store = useAppStore()
@@ -53,6 +55,8 @@ const sort = ref<'createdAt' | 'size' | 'name'>('createdAt')
 const order = ref<'asc' | 'desc'>('desc')
 const onlyFavorites = ref(false)
 const batchFilter = ref('')
+const workflowFilter = ref('')
+const workflows = ref<WorkflowRecord[]>([])
 const selected = ref<Set<string>>(new Set())
 
 const typeOptions = computed(() => [
@@ -67,6 +71,15 @@ const sortOptions = computed(() => [
   { label: t('output.sortSize'), value: 'size' },
   { label: t('output.sortName'), value: 'name' }
 ])
+
+const workflowOptions = computed(() => [
+  { label: t('output.filterWorkflowAll'), value: '' },
+  ...workflows.value.map((w) => ({ label: w.name, value: w.id }))
+])
+
+function workflowName(id: string): string {
+  return workflows.value.find((w) => w.id === id)?.name || id.slice(0, 8)
+}
 
 const detail = ref<OutputAsset | null>(null)
 const showDetail = ref(false)
@@ -90,6 +103,7 @@ async function refresh(): Promise<void> {
       offset: (page.value - 1) * pageSize,
       favorite: onlyFavorites.value ? true : undefined,
       batchJobId: batchFilter.value || undefined,
+      workflowId: workflowFilter.value || undefined,
       sort: sort.value,
       order: order.value
     })
@@ -118,11 +132,6 @@ async function pickRoot(): Promise<void> {
   const p = await ipc('shell.pickDirectory')
   if (p) {
     root.value = p
-    try {
-      await ipc('settings.set', { outputIndexRoot: p })
-    } catch {
-      /* non-fatal — previews may stay as icons */
-    }
     page.value = 1
     await refresh()
   }
@@ -182,10 +191,50 @@ async function openDetail(a: OutputAsset): Promise<void> {
 }
 
 function openLightbox(a: OutputAsset): void {
-  if (!a.thumbnail && a.type !== 'image') return
+  // Video/audio open externally  -no dead lightbox.
+  if (a.type === 'video' || a.type === 'audio') {
+    void safeOpen(a.path)
+    return
+  }
+  if (a.type !== 'image') return
   lightboxAsset.value = a
   lightboxSrc.value = a.thumbnail || a.path
   lightbox.value = true
+}
+
+/** Index of the current lightbox asset in the visible page of images. */
+function lightboxIndex(): number {
+  if (!lightboxAsset.value) return -1
+  return assets.value.findIndex((x) => x.id === lightboxAsset.value!.id)
+}
+
+function lightboxPrev(): void {
+  const idx = lightboxIndex()
+  if (idx < 0) return
+  const images = assets.value.filter((x) => x.type === 'image')
+  const cur = images.findIndex((x) => x.id === lightboxAsset.value!.id)
+  if (cur <= 0) return
+  const prev = images[cur - 1]
+  lightboxAsset.value = prev
+  lightboxSrc.value = prev.thumbnail || prev.path
+}
+
+function lightboxNext(): void {
+  const idx = lightboxIndex()
+  if (idx < 0) return
+  const images = assets.value.filter((x) => x.type === 'image')
+  const cur = images.findIndex((x) => x.id === lightboxAsset.value!.id)
+  if (cur < 0 || cur >= images.length - 1) return
+  const next = images[cur + 1]
+  lightboxAsset.value = next
+  lightboxSrc.value = next.thumbnail || next.path
+}
+
+function onLightboxKey(e: KeyboardEvent): void {
+  if (!lightbox.value) return
+  if (e.key === 'ArrowLeft') lightboxPrev()
+  else if (e.key === 'ArrowRight') lightboxNext()
+  else if (e.key === 'Escape') lightbox.value = false
 }
 
 /** Restore this PNG's embedded workflow into the active instance's workflows folder. */
@@ -232,18 +281,36 @@ function metaEntries(meta: Record<string, unknown>): Array<{ key: string; value:
     value:
       typeof value === 'string'
         ? value.length > 200
-          ? value.slice(0, 200) + '…'
+          ? value.slice(0, 200) + '...'
           : value
         : JSON.stringify(value)
   }))
 }
 
-watch([type, sort, order, onlyFavorites, batchFilter], () => {
+watch([type, sort, order, onlyFavorites, batchFilter, workflowFilter], () => {
+  page.value = 1
+  void refresh()
+})
+
+// root changes must reset page and refresh (was previously not watched).
+watch(root, () => {
   page.value = 1
   void refresh()
 })
 
 watch(page, () => void refresh())
+
+let offBatch: (() => void) | null = null
+let refreshTimer: ReturnType<typeof setTimeout> | null = null
+
+/** Debounced refresh when a batch produces new outputs. */
+function scheduleRefresh(): void {
+  if (refreshTimer) clearTimeout(refreshTimer)
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null
+    void refresh()
+  }, 1500)
+}
 
 onMounted(async () => {
   await store.bootstrap({ keepSelection: true })
@@ -251,17 +318,33 @@ onMounted(async () => {
   if (typeof q.batchJobId === 'string' && q.batchJobId) {
     batchFilter.value = q.batchJobId
   }
+  if (typeof q.workflowId === 'string' && q.workflowId) {
+    workflowFilter.value = q.workflowId
+  }
   try {
-    const settings = await ipc('settings.get')
-    if (settings.outputIndexRoot) root.value = settings.outputIndexRoot
-    else if (store.activeInstance?.path) {
+    workflows.value = await ipc('workflow.list', { includeMissing: true })
+  } catch {
+    /* non-fatal  -filter dropdown just stays empty */
+  }
+  try {
+    // Default to the active instance's output dir — no global setting needed.
+    if (store.activeInstance?.path) {
       const base = store.activeInstance.path.replace(/[\\/]+$/, '')
       root.value = `${base}${base.includes('\\') ? '\\' : '/'}output`
     }
   } catch {
     /* keep empty */
   }
+  // Auto-refresh when a batch produces new outputs.
+  offBatch = onIpc(IPC_EVENTS.batchProgress, () => scheduleRefresh())
+  window.addEventListener('keydown', onLightboxKey)
   await refresh()
+})
+
+onUnmounted(() => {
+  offBatch?.()
+  if (refreshTimer) clearTimeout(refreshTimer)
+  window.removeEventListener('keydown', onLightboxKey)
 })
 </script>
 
@@ -279,6 +362,13 @@ onMounted(async () => {
           </template>
         </NInput>
         <NSelect v-model:value="type" :options="typeOptions" style="width: 110px" />
+        <NSelect
+          v-model:value="workflowFilter"
+          :options="workflowOptions"
+          :placeholder="$t('output.filterWorkflow')"
+          style="width: 150px"
+          clearable
+        />
         <NSelect v-model:value="sort" :options="sortOptions" style="width: 120px" />
         <NButton secondary size="small" @click="order = order === 'desc' ? 'asc' : 'desc'">
           {{ order === 'desc' ? '↓' : '↑' }}
@@ -293,15 +383,17 @@ onMounted(async () => {
       </NSpace>
     </div>
 
-    <!-- batch filter chip -->
-    <NSpace v-if="batchFilter" align="center" style="margin-bottom: 12px">
-      <NTag closable round type="info" @close="batchFilter = ''">
-        {{ $t('output.filterBatch') }}: {{ batchFilter.slice(0, 8) }}…
-      </NTag>
-      <NText depth="3">{{ $t('output.total', { n: total }) }}</NText>
-    </NSpace>
-    <NSpace v-else align="center" style="margin-bottom: 12px" justify="space-between">
-      <NText depth="3">{{ $t('output.total', { n: total }) }}</NText>
+    <!-- filter chips + toolbar (toolbar stays visible even with filters) -->
+    <NSpace align="center" style="margin-bottom: 12px" justify="space-between">
+      <NSpace align="center">
+        <NTag v-if="batchFilter" closable round type="info" @close="batchFilter = ''">
+          {{ $t('output.filterBatch') }}: {{ batchFilter.slice(0, 8) }}
+        </NTag>
+        <NTag v-if="workflowFilter" closable round type="info" @close="workflowFilter = ''">
+          {{ $t('output.filterWorkflow') }}: {{ workflowName(workflowFilter) }}
+        </NTag>
+        <NText depth="3">{{ $t('output.total', { n: total }) }}</NText>
+      </NSpace>
       <NSpace>
         <NButton size="small" secondary @click="toggleSelectAll">
           {{ assets.length && selected.size === assets.length ? $t('output.clearSelection') : $t('output.selectAll') }}
@@ -343,10 +435,10 @@ onMounted(async () => {
                 <div class="asset-name">{{ a.fileName }}</div>
                 <div class="asset-meta">
                   {{ formatBytes(a.size) }}
-                  <span v-if="a.seed != null"> · seed {{ a.seed }}</span>
+                  <span v-if="a.seed != null"> ·{{ $t('output.seed') }} {{ a.seed }}</span>
                 </div>
                 <div class="asset-meta" v-if="a.workflowName || a.batchJobId">
-                  <NTag v-if="a.workflowName" size="tiny" round>{{ a.workflowName }}</NTag>
+                  <NTag v-if="a.workflowName" size="tiny" round style="cursor: pointer" @click.stop="a.workflowId && (workflowFilter = a.workflowId)">{{ a.workflowName }}</NTag>
                   <NTag v-if="a.batchJobId" size="tiny" round type="info">{{ $t('output.fromBatch') }}</NTag>
                 </div>
                 <NSpace justify="center">
@@ -396,7 +488,7 @@ onMounted(async () => {
         </div>
         <div class="detail-meta">
           <div><b>{{ $t('output.size') }}</b> {{ formatBytes(detail.size) }}</div>
-          <div v-if="detail.seed != null"><b>Seed</b> <NTag size="tiny" round>{{ detail.seed }}</NTag></div>
+          <div v-if="detail.seed != null"><b>{{ $t('output.seed') }}</b> <NTag size="tiny" round>{{ detail.seed }}</NTag></div>
           <div v-if="detail.workflowName">
             <b>{{ $t('output.fromWorkflow') }}</b> {{ detail.workflowName }}
           </div>
@@ -407,12 +499,12 @@ onMounted(async () => {
               round
               type="info"
               style="cursor: pointer; margin-left: 6px"
-              @click="router.push({ path: '/batch' })"
+              @click="router.push({ path: '/batch', query: { jobId: detail.batchJobId } })"
             >
-              {{ detail.batchJobId.slice(0, 8) }} →
+              {{ detail.batchJobId.slice(0, 8) }}
             </NTag>
           </div>
-          <div v-if="detail.promptId" class="mono"><b>prompt_id</b> {{ detail.promptId }}</div>
+          <div v-if="detail.promptId" class="mono"><b>{{ $t('output.promptId') }}</b> {{ detail.promptId }}</div>
           <div class="mono detail-path">{{ detail.path }}</div>
         </div>
 
@@ -450,18 +542,42 @@ onMounted(async () => {
     <!-- Lightbox -->
     <NModal v-model:show="lightbox" preset="card" style="width: 90vw; max-width: 1100px; border-radius: 20px">
       <div class="lightbox">
+        <NButton
+          class="lb-nav lb-prev"
+          secondary
+          circle
+          size="large"
+          @click="lightboxPrev"
+        >
+          <template #icon><NIcon :component="ChevronBackOutline" /></template>
+        </NButton>
         <img v-if="lightboxSrc" :src="lightboxSrc" class="lightbox-img" />
+        <NButton
+          class="lb-nav lb-next"
+          secondary
+          circle
+          size="large"
+          @click="lightboxNext"
+        >
+          <template #icon><NIcon :component="ChevronForwardOutline" /></template>
+        </NButton>
       </div>
       <template #footer>
-        <NSpace justify="end">
-          <NButton @click="lightbox = false">{{ $t('output.close') }}</NButton>
-          <NButton
-            secondary
-            @click="lightboxAsset && safeOpen(lightboxAsset.path)"
-          >
-            <template #icon><NIcon :component="DownloadOutline" /></template>
-            {{ $t('output.openFile') }}
-          </NButton>
+        <NSpace justify="space-between">
+          <NSpace>
+            <NButton secondary @click="lightboxPrev">{{ $t('output.prev') }}</NButton>
+            <NButton secondary @click="lightboxNext">{{ $t('output.next') }}</NButton>
+          </NSpace>
+          <NSpace>
+            <NButton @click="lightbox = false">{{ $t('output.close') }}</NButton>
+            <NButton
+              secondary
+              @click="lightboxAsset && safeOpen(lightboxAsset.path)"
+            >
+              <template #icon><NIcon :component="DownloadOutline" /></template>
+              {{ $t('output.openFile') }}
+            </NButton>
+          </NSpace>
         </NSpace>
       </template>
     </NModal>
@@ -592,12 +708,18 @@ onMounted(async () => {
 }
 .lightbox {
   display: grid;
-  place-items: center;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
   min-height: 320px;
 }
 .lightbox-img {
   max-width: 100%;
   max-height: 70vh;
   object-fit: contain;
+  justify-self: center;
+}
+.lb-nav {
+  flex-shrink: 0;
 }
 </style>

@@ -27,8 +27,7 @@ const h = vi.hoisted(() => {
       securityLevel: 'normal',
       networkMode: 'public',
       pipIndex: '',
-      proxy: { enabled: false, protocol: 'http', host: '', port: 7890, bypass: '', username: '', password: '' },
-      defaultInstancePath: ''
+      proxy: { enabled: false, protocol: 'http', host: '', port: 7890, bypass: '', username: '', password: '' }
     } as Record<string, unknown>,
     renameFail: new Set<string>(),
     writeFail: new Set<string>(),
@@ -633,8 +632,7 @@ function resetState(): void {
     securityLevel: 'normal',
     networkMode: 'public',
     pipIndex: '',
-    proxy: { enabled: false, protocol: 'http', host: '', port: 7890, bypass: '', username: '', password: '' },
-    defaultInstancePath: COMFY
+    proxy: { enabled: false, protocol: 'http', host: '', port: 7890, bypass: '', username: '', password: '' }
   }
   h.state.instances = [
     {
@@ -1391,7 +1389,6 @@ describe('resolveRemovalTargets', () => {
   it('returns only the pack when custom_nodes root cannot be resolved', () => {
     const packDir = seedPack({ name: 'NoRoot' })
     h.state.instances = []
-    h.state.settings.defaultInstancePath = ''
     delete process.env.COMFYUI_PATH
     const targets = priv.resolveRemovalTargets(packDir, 'inst-1')
     expect(targets).toEqual([packDir])

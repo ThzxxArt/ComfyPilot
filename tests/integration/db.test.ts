@@ -45,7 +45,7 @@ describe('JSONC store (integration)', () => {
   it('settings round-trip writes jsonc with header', async () => {
     const db = await import('../../src/main/services/db')
     const s0 = db.loadSettings()
-    expect(s0.theme).toBe('light')
+    expect(s0.securityLevel).toBe('normal')
     const s1 = db.saveSettings({ locale: 'en-US', proxy: { ...s0.proxy, port: 9999 } })
     expect(s1.locale).toBe('en-US')
     expect(s1.proxy.port).toBe(9999)

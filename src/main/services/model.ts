@@ -13,7 +13,8 @@ import {
   renameSync,
   symlinkSync,
   mkdirSync,
-  readFileSync
+  readFileSync,
+  writeFileSync
 } from 'fs'
 import { join, extname, basename, dirname, parse } from 'path'
 import { homedir } from 'os'
@@ -35,7 +36,9 @@ import {
   upsertModel,
   updateModel,
   upsertDownloadTask,
-  listDownloadTasks
+  listDownloadTasks,
+  stringifyJsonc,
+  userDataDir
 } from './db'
 import {
   resolveInsideAnyRoot,
@@ -90,8 +93,7 @@ function detectSourceFromPath(path: string): ModelRecord['source'] {
 
 /** Parse extra_model_paths.yaml and return all configured roots (including missing). */
 export function parseExtraModelPaths(filePath?: string, includeMissing = true): string[] {
-  const settings = loadSettings()
-  const candidates = [filePath, settings.extraModelPathsFile].filter(Boolean) as string[]
+  const candidates = [filePath].filter(Boolean) as string[]
   const roots: string[] = []
   for (const file of candidates) {
     if (!file || !existsSync(file)) continue
@@ -221,11 +223,9 @@ export class ModelService extends EventEmitter {
       .map((c) => c.path && join(c.path, 'models'))
       .filter(Boolean) as string[]
     return [
-      settings.downloadDir,
       join(homedir(), 'Downloads'),
       ...settings.modelScanRoots,
-      ...instanceModels,
-      settings.defaultInstancePath && join(settings.defaultInstancePath, 'models')
+      ...instanceModels
     ].filter(Boolean) as string[]
   }
 
@@ -276,19 +276,20 @@ export class ModelService extends EventEmitter {
 
   async scan(opts?: { roots?: string[]; hash?: boolean }): Promise<ModelRecord[]> {
     const settings = loadSettings()
-    const extraRoots = parseExtraModelPaths(undefined, false).filter((p) => existsSync(p))
-    const scanRoots = (
-      opts?.roots?.length ? opts.roots : [...settings.modelScanRoots, ...extraRoots]
-    ).filter(Boolean)
-
-    // Derive models/ under EVERY configured instance — not just the default path.
-    const instanceModels = loadInstanceConfigsSafe()
-      .map((c) => c.path && join(c.path, 'models'))
-      .filter(Boolean) as string[]
-    if (settings.defaultInstancePath) {
-      instanceModels.push(join(settings.defaultInstancePath, 'models'))
+    // When the caller passes explicit roots, honour ONLY those — do not silently
+    // widen the scan to every instance's models/ dir (that defeats scoping).
+    let allRoots: string[]
+    if (opts?.roots?.length) {
+      allRoots = [...new Set(opts.roots.filter(Boolean))]
+    } else {
+      const extraRoots = parseExtraModelPaths(undefined, false).filter((p) => existsSync(p))
+      const scanRoots = [...settings.modelScanRoots, ...extraRoots].filter(Boolean)
+      // Default behaviour: settings roots + models/ under EVERY configured instance.
+      const instanceModels = loadInstanceConfigsSafe()
+        .map((c) => c.path && join(c.path, 'models'))
+        .filter(Boolean) as string[]
+      allRoots = [...new Set([...scanRoots, ...instanceModels])]
     }
-    const allRoots = [...new Set([...scanRoots, ...instanceModels])]
 
     const files: string[] = []
     for (const root of allRoots) {
@@ -511,6 +512,50 @@ export class ModelService extends EventEmitter {
     return this.downloads.size ? [...this.downloads.values()] : listDownloadTasks()
   }
 
+  /**
+   * Drop finished (done/error/cancelled) tasks from the active list and the
+   * persisted store so the download banner does not grow forever.
+   * Returns how many tasks were removed.
+   */
+  clearFinishedDownloads(): number {
+    const FINISHED = new Set(['done', 'error', 'cancelled'])
+    let removed = 0
+    for (const [id, t] of [...this.downloads]) {
+      if (FINISHED.has(t.status)) {
+        this.downloads.delete(id)
+        removed += 1
+      }
+    }
+    const persisted = listDownloadTasks()
+    const keep = persisted.filter((t) => !FINISHED.has(t.status))
+    if (keep.length !== persisted.length) {
+      removed = Math.max(removed, persisted.length - keep.length)
+      this.persistDownloadTasks(keep)
+    }
+    return removed
+  }
+
+  /** Rewrite the downloads jsonc store (db.ts has no delete helper). */
+  private persistDownloadTasks(tasks: DownloadTask[]): void {
+    const file = join(userDataDir(), 'downloads.jsonc')
+    const tmp = file + '.tmp'
+    writeFileSync(tmp, stringifyJsonc(tasks), 'utf-8')
+    renameSync(tmp, file)
+  }
+
+  /** Push a global toast for terminal download states (done / final error). */
+  private notifyDownloadResult(task: DownloadTask): void {
+    if (task.status !== 'done' && task.status !== 'error') return
+    const ok = task.status === 'done'
+    this.emit('notify', {
+      type: ok ? 'success' : 'error',
+      title: ok ? 'Download complete' : 'Download failed',
+      titleKey: ok ? 'notify.downloadDone' : 'notify.downloadFailed',
+      message: ok ? task.fileName : `${task.fileName}: ${task.error || 'unknown error'}`,
+      params: { name: task.fileName }
+    })
+  }
+
   private detectDownloadSource(url: string): DownloadTask['source'] {
     if (url.includes('civitai.com')) return 'civitai'
     if (url.includes('huggingface.co') || url.includes('hf.co')) return 'huggingface'
@@ -528,13 +573,10 @@ export class ModelService extends EventEmitter {
       throw new Error(`Blocked download URL scheme: ${opts.url.slice(0, 40)}`)
     }
     const settings = loadSettings()
-    const defaultDir = settings.downloadDir || join(homedir(), 'Downloads', 'ComfyPilot')
-    let destDir = opts.destDir || defaultDir
-    {
-      const safeDest = resolveInsideAnyRoot(destDir, this.allowedDestRoots())
-      if (!safeDest) destDir = defaultDir
-      else destDir = safeDest
-    }
+    const defaultDir = join(homedir(), 'Downloads', 'ComfyPilot')
+    // Explicit destDir must be inside the allowlist — never silently relocate.
+    // A missing destDir still falls back to the configured default.
+    const destDir = opts.destDir ? this.assertSafeDestDir(opts.destDir) : defaultDir
     mkdirSync(destDir, { recursive: true })
     let url = opts.url
 
@@ -594,6 +636,7 @@ export class ModelService extends EventEmitter {
       task.finishedAt = Date.now()
       upsertDownloadTask(task)
       this.emit('download', { ...task })
+      this.notifyDownloadResult(task)
     })
     return task
   }
@@ -641,10 +684,13 @@ export class ModelService extends EventEmitter {
           const actual = await sha256File(task.destPath)
           task.actualSha256 = actual
           if (actual.toLowerCase() !== strict[1].toLowerCase()) {
-            // Untrusted/mismatched sidecar: warn but do NOT destroy the file.
-            task.verified = 'length'
+            // Sidecar hash does not match the downloaded bytes — verification FAILED.
+            // Keep the file (sidecar may be stale/untrusted) but never report success.
+            task.verified = 'failed'
             task.error = 'Companion .sha256 mismatch — file kept (untrusted sidecar)'
-            return true
+            task.status = 'error'
+            task.finishedAt = Date.now()
+            return false
           }
           task.verified = 'sha256'
           return true
@@ -684,14 +730,26 @@ export class ModelService extends EventEmitter {
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
           await this.runDownload(task, resume || attempt > 1)
-          if (task.status === 'done' || task.status === 'cancelled') return
+          if (task.status === 'done' || task.status === 'cancelled') {
+            this.notifyDownloadResult(task)
+            return
+          }
           // paused is user-intent — do not retry
           if (task.status === 'paused') return
           lastErr = new Error(task.error || 'download did not complete')
         } catch (err) {
           lastErr = err
           const msg = err instanceof Error ? err.message : String(err)
-          if (/Insufficient disk|Blocked download|already exists|already in progress/i.test(msg)) throw err
+          if (/Insufficient disk|Blocked download|already exists|already in progress/i.test(msg)) {
+            task.status = 'error'
+            task.error = msg
+            task.finishedAt = Date.now()
+            upsertDownloadTask(task)
+            this.emit('download', { ...task })
+            // Deterministic failure — do NOT notify here; the outer
+            // scheduleDownload().catch handler owns the single toast.
+            throw err
+          }
           if (task.status === 'cancelled' || task.status === 'paused') return
         }
         if (attempt < maxAttempts) {
@@ -709,6 +767,7 @@ export class ModelService extends EventEmitter {
         task.finishedAt = Date.now()
         upsertDownloadTask(task)
         this.emit('download', { ...task })
+        this.notifyDownloadResult(task)
       }
     } finally {
       this.releaseSlot()

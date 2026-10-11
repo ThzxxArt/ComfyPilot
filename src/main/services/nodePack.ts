@@ -48,13 +48,23 @@ import { findInRuntimes } from './bootstrap'
 const execFileAsync = promisify(execFile)
 
 /**
- * Resolve a usable git binary: PATH first, then the portable MinGit that
- * bootstrap may have downloaded (zero-prereq machines have no git on PATH).
- * Mirrors installer.ts's ComfyUI-clone path so node git installs work offline-prereq.
+ * Resolve a usable git binary.
+ * System git (PATH) is ALWAYS preferred — portable MinGit must never shadow
+ * a working system git. Falls back to portable only when PATH git is absent.
+ * Result is cached after the first probe.
  */
+let gitBinCache: string | null = null
 export function resolveGitBinary(): string {
-  const portable = findInRuntimes('git')
-  return portable || 'git'
+  if (gitBinCache) return gitBinCache
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { execSync } = require('child_process') as typeof import('child_process')
+    execSync('git --version', { timeout: 3000, windowsHide: true, stdio: 'ignore' })
+    gitBinCache = 'git'
+  } catch {
+    gitBinCache = findInRuntimes('git') || 'git'
+  }
+  return gitBinCache
 }
 
 /** True when a usable git binary answers --version. */
@@ -64,11 +74,57 @@ export async function gitAvailable(): Promise<boolean> {
     const { execFile } = await import('child_process')
     const { promisify } = await import('util')
     const run = promisify(execFile)
-    await run(gitBin, ['--version'], { timeout: 8000, windowsHide: true })
+    await run(gitBin, ['--version'], { timeout: 5000, windowsHide: true })
     return true
   } catch {
     return false
   }
+}
+
+/** Best working git binary (async probe — same preference as resolveGitBinary). */
+export async function resolveGitBinaryAsync(): Promise<string> {
+  return resolveGitBinary()
+}
+
+/**
+ * Resolve the git repository URL for a registry pack.
+ * Priority: explicit repository field → derived from GitHub archive download
+ * URL → looked up in the local registry index. Returns '' when unknown.
+ */
+export async function resolveRepoUrl(
+  repository: string | undefined,
+  downloadUrl: string,
+  packId: string
+): Promise<string> {
+  // 1) Explicit field from the install endpoint.
+  const direct = String(repository || '').trim()
+  if (direct) return direct
+  // 2) GitHub archive download URLs embed the repo path:
+  //    https://github.com/{owner}/{repo}/archive/refs/...  →  https://github.com/{owner}/{repo}.git
+  const gh = downloadUrl.match(
+    /^(https?:\/\/(?:www\.)?github\.com\/[^/]+\/[^/]+)\/archive\//
+  )
+  if (gh?.[1]) return `${gh[1]}.git`
+  // 3) codeload.github.com zip URLs
+  const cl = downloadUrl.match(
+    /^(https?:\/\/codeload\.github\.com\/[^/]+\/[^/]+)\/zip\//
+  )
+  if (cl?.[1]) return `${cl[1]}.git`
+  // 4) Local registry index carries `repository` for every catalog entry.
+  //    This is the most common source — the install endpoint often omits it.
+  try {
+    const { registryIndex } = await import('./registryIndex')
+    await registryIndex.ensure()
+    const hits = registryIndex.searchPacks(packId, 5)
+    const exact = hits.find(
+      (h) => h.id === packId || h.name === packId
+    )
+    const repo = String(exact?.repository || '').trim()
+    if (repo) return repo
+  } catch {
+    /* index not ready — fine */
+  }
+  return ''
 }
 
 /**
@@ -206,7 +262,6 @@ export function resolveInstanceConfig(instanceId?: string): import('@shared/type
 }
 
 function detectCustomNodesRoot(instanceIdOrPath?: string): string {
-  const settings = loadSettings()
   let instancePath: string | undefined
   if (instanceIdOrPath) {
     // Path form takes precedence — never resolve a filesystem path as an instance id.
@@ -218,7 +273,6 @@ function detectCustomNodesRoot(instanceIdOrPath?: string): string {
   }
   const candidates = [
     instancePath && join(instancePath, 'custom_nodes'),
-    settings.defaultInstancePath && join(settings.defaultInstancePath, 'custom_nodes'),
     process.env.COMFYUI_PATH && join(process.env.COMFYUI_PATH, 'custom_nodes')
   ].filter(Boolean) as string[]
   return candidates.find((p) => existsSync(p)) || candidates[0] || ''
@@ -409,6 +463,9 @@ export class NodePackService extends EventEmitter {
     p.step = opts.step
     p.message = opts.message
     p.status = opts.status === 'failed' ? 'failed' : opts.step === 'done' && opts.status === 'done' ? 'done' : 'running'
+    // Surface the failure text on the progress object so the shared modal's
+    // error block actually renders something.
+    if (p.status === 'failed') p.error = opts.message
     // On terminal success every remaining pending step is closed out so the
     // bar actually reaches 100% instead of stalling on an untouched "verify".
     if (p.status === 'done') {
@@ -416,6 +473,7 @@ export class NodePackService extends EventEmitter {
         if (x.status === 'pending') x.status = 'skipped'
       }
       p.percent = 100
+      p.error = undefined
     } else if (p.status === 'failed') {
       const doneCount = p.steps.filter((x) => x.status === 'done' || x.status === 'skipped').length
       p.percent = Math.round((doneCount / p.steps.length) * 100)
@@ -503,7 +561,8 @@ export class NodePackService extends EventEmitter {
         locked: prev?.locked || false,
         nodeList: meta.nodeList || [],
         license: meta.license,
-        pythonCompatible: meta.pythonCompatible
+        pythonCompatible: meta.pythonCompatible,
+        notes: prev?.notes
       })
     }
     return packs
@@ -570,7 +629,6 @@ export class NodePackService extends EventEmitter {
     query?: string
     limit?: number
     page?: number
-    scanPages?: number
   }): Promise<import('@shared/types').RegistryPageResult<RegistryNodePack>> {
     const settings = loadSettings()
     try {
@@ -578,8 +636,7 @@ export class NodePackService extends EventEmitter {
       const result = await searchRegistry({
         query: opts?.query,
         limit: opts?.limit,
-        page: opts?.page,
-        scanPages: opts?.scanPages
+        page: opts?.page
       })
       return toPageResult(result, mapRegistryPack)
     } catch (err) {
@@ -691,7 +748,7 @@ export class NodePackService extends EventEmitter {
   }): Promise<NodePackRecord> {
     // PLAN: 安装前自动快照
     try {
-      this.createSnapshot(`auto-pre-install-${sanitizeInstallName(opts.id)}`)
+      this.createSnapshot(`auto-pre-install-${sanitizeInstallName(opts.id)}`, opts.instanceId)
     } catch {
       /* snapshot is best-effort */
     }
@@ -800,8 +857,9 @@ export class NodePackService extends EventEmitter {
     // Prefer git clone when the pack has a repository and git works — a clone
     // is resumable-ish, updateable via `git pull`, and matches how the pack is
     // developed. Fall back to the zip when git is unavailable or the URL is unsafe.
-    const repoUrl = String(data.repository || '').trim()
-    if (repoUrl && (await gitAvailable())) {
+    const repoUrl = await resolveRepoUrl(data.repository, downloadUrl, opts.id)
+    const hasGit = await gitAvailable()
+    if (repoUrl && hasGit) {
       try {
         // Mark the zip-only steps as skipped so the modal shows "Git clone"
         // instead of a phantom "Download / Unpack".
@@ -823,7 +881,11 @@ export class NodePackService extends EventEmitter {
           status: 'running',
           message: `Cloning ${repoUrl}…`
         })
-        const rec = await this.install({
+        // Call installInner directly — NOT install() — because install() would
+        // re-check assertInstallAllowed('git') which is gated by
+        // allowGitUrlInstall (default false). We already passed the registry
+        // gate; the internal git clone is just a transport choice.
+        const rec = await this.installInner({
           id: repoUrl,
           source: 'git',
           url: repoUrl,
@@ -843,9 +905,21 @@ export class NodePackService extends EventEmitter {
         })
         return rec
       } catch (e) {
-        // Git path failed (proxy, auth, missing repo) — fall back to zip.
-        this.opLog?.(`git clone failed (${e instanceof Error ? e.message : String(e)}) — falling back to zip`)
+        // Surface the git failure clearly — do NOT silently pretend the zip
+        // path was the plan all along.
+        const msg = e instanceof Error ? e.message : String(e)
+        this.opLog?.(`git clone failed (${msg}) — falling back to zip`)
+        this.emitOpProgress({
+          instanceId: opts.instanceId || 'default',
+          step: 'clone',
+          status: 'failed',
+          message: `Git clone failed: ${msg}`
+        })
       }
+    } else if (!repoUrl) {
+      this.opLog?.('Registry did not expose a repository URL — using zip download')
+    } else {
+      this.opLog?.('git is not available — using zip download')
     }
 
     this.emitOpProgress({
@@ -1063,26 +1137,37 @@ export class NodePackService extends EventEmitter {
         message: 'No requirements.txt'
       })
     }
+    // Preserve user metadata (lock / tags / author / notes) across update and
+    // install-over. afterInstall rebuilds the record from disk metadata, which
+    // would otherwise reset those fields on every git pull / registry reinstall.
+    const prevList = listNodePacks()
+    const dirBase = dir.split(/[\\/]/).pop() || ''
+    const prev =
+      (registryId && prevList.find((p) => p.registryId === registryId)) ||
+      prevList.find((p) => p.name === (meta.name || dirBase)) ||
+      prevList.find((p) => p.path && normalizePathEverySegment(p.path) === normalizePathEverySegment(dir)) ||
+      prevList.find((p) => p.id === createHash('sha1').update(dir).digest('hex').slice(0, 16))
     const rec: NodePackRecord = {
       id: createHash('sha1').update(dir).digest('hex').slice(0, 16),
       name: meta.name || dir.split(/[\\/]/).pop() || 'unknown',
       displayName: meta.displayName || 'unknown',
       description: meta.description || '',
-      author: '',
+      author: prev?.author || '',
       version: meta.version || '0.0.0',
       status: 'installed',
       path: dir,
       repository: meta.repository,
-      registryId,
+      registryId: registryId ?? prev?.registryId,
       nodeCount: meta.nodeList?.length || 0,
-      tags: [],
+      tags: prev?.tags || [],
       installSource: source,
       lastCheckedAt: Date.now(),
       issues,
-      locked: false,
+      locked: prev?.locked || false,
       nodeList: meta.nodeList || [],
       license: meta.license,
-      pythonCompatible: meta.pythonCompatible
+      pythonCompatible: meta.pythonCompatible,
+      notes: prev?.notes
     }
     upsertNodePack(rec)
     return rec
@@ -1093,28 +1178,69 @@ export class NodePackService extends EventEmitter {
     const pack = packs.find((p) => p.id === idOrName || p.name === idOrName)
     if (!pack?.path) return false
     if (pack.locked) throw new Error('Pack is locked — unlock before uninstall')
-    // Snapshot before destructive ops so the user can at least see what was removed.
+    this.emitInstallProgress({
+      phase: 'start',
+      packName: pack.name || idOrName,
+      op: 'uninstall',
+      message: `Uninstalling ${pack.name || idOrName}…`
+    })
+    this.opProgress = null
+    this.emitOpProgress({
+      instanceId: instanceId || 'default',
+      step: 'verify',
+      status: 'running',
+      message: `Uninstalling ${pack.name || idOrName}…`
+    })
     try {
-      this.createSnapshot(`auto-pre-uninstall-${sanitizeInstallName(pack.name)}`)
-    } catch {
-      /* best-effort */
-    }
-    const targets = this.resolveRemovalTargets(pack.path, instanceId)
-    for (const target of targets) {
-      const trash = `${target}.trash-${Date.now()}`
+      // Snapshot before destructive ops so the user can at least see what was removed.
       try {
-        renameSync(target, trash)
-        rmSync(trash, { recursive: true, force: true })
+        this.createSnapshot(`auto-pre-uninstall-${sanitizeInstallName(pack.name)}`, instanceId)
       } catch {
+        /* best-effort */
+      }
+      const targets = this.resolveRemovalTargets(pack.path, instanceId)
+      for (const target of targets) {
+        const trash = `${target}.trash-${Date.now()}`
         try {
-          rmSync(target, { recursive: true, force: true })
+          renameSync(target, trash)
+          rmSync(trash, { recursive: true, force: true })
         } catch {
-          /* keep going — report via remaining dirs */
+          try {
+            rmSync(target, { recursive: true, force: true })
+          } catch {
+            /* keep going — report via remaining dirs */
+          }
         }
       }
+      deleteNodePack(pack.id)
+      this.emitInstallProgress({
+        phase: 'done',
+        packName: pack.name || idOrName,
+        op: 'uninstall',
+        message: `Uninstalled ${pack.name || idOrName}`
+      })
+      this.emitOpProgress({
+        instanceId: instanceId || 'default',
+        step: 'done',
+        status: 'done',
+        message: `Uninstalled ${pack.name || idOrName}`
+      })
+      return true
+    } catch (e) {
+      this.emitInstallProgress({
+        phase: 'error',
+        packName: pack.name || idOrName,
+        op: 'uninstall',
+        message: e instanceof Error ? e.message : String(e)
+      })
+      this.emitOpProgress({
+        instanceId: instanceId || 'default',
+        step: 'done',
+        status: 'failed',
+        message: e instanceof Error ? e.message : String(e)
+      })
+      throw e
     }
-    deleteNodePack(pack.id)
-    return true
   }
 
   /**
@@ -1166,7 +1292,7 @@ export class NodePackService extends EventEmitter {
 
     // Warm registry latest versions for packs that have a registryId or match by name.
     try {
-      const page = await this.registrySearch({ limit: 100, page: 1, scanPages: 1 })
+      const page = await this.registrySearch({ limit: 100, page: 1 })
       for (const item of page.items) {
         if (item.id) registryLatest.set(item.id, item.latestVersion || '')
         if (item.name) registryLatest.set(item.name, item.latestVersion || '')
@@ -1291,7 +1417,7 @@ export class NodePackService extends EventEmitter {
     const checks = await this.checkUpdates(instancePathOrId)
     const out: NodeUpdateAllResult[] = []
     try {
-      this.createSnapshot('auto-pre-update-all')
+      this.createSnapshot('auto-pre-update-all', instancePathOrId)
     } catch {
       /* best-effort */
     }
@@ -1316,6 +1442,15 @@ export class NodePackService extends EventEmitter {
 
   async update(idOrName: string, version?: string, instanceId?: string): Promise<NodePackRecord> {
     this.emitInstallProgress({ phase: 'start', packName: idOrName, op: 'update', message: `Updating ${idOrName}…` })
+    // Fresh op-progress stream so the shared modal can finish (git-pull path
+    // never emitted a terminal 'done' before).
+    this.opProgress = null
+    this.emitOpProgress({
+      instanceId: instanceId || 'default',
+      step: 'clone',
+      status: 'running',
+      message: `Updating ${idOrName}…`
+    })
     try {
       const rec = await this.updateInner(idOrName, version, instanceId)
       this.emitInstallProgress({
@@ -1324,12 +1459,24 @@ export class NodePackService extends EventEmitter {
         op: 'update',
         message: `Updated ${rec.name || idOrName}`
       })
+      this.emitOpProgress({
+        instanceId: instanceId || 'default',
+        step: 'done',
+        status: 'done',
+        message: `Updated ${rec.name || idOrName}`
+      })
       return rec
     } catch (e) {
       this.emitInstallProgress({
         phase: 'error',
         packName: idOrName,
         op: 'update',
+        message: e instanceof Error ? e.message : String(e)
+      })
+      this.emitOpProgress({
+        instanceId: instanceId || 'default',
+        step: 'done',
+        status: 'failed',
         message: e instanceof Error ? e.message : String(e)
       })
       throw e
@@ -1343,7 +1490,7 @@ export class NodePackService extends EventEmitter {
     if (pack.locked) throw new Error('Pack is locked')
     // Snapshot before update so enable/disable state can be aligned later.
     try {
-      this.createSnapshot(`auto-pre-update-${sanitizeInstallName(pack.name)}`)
+      this.createSnapshot(`auto-pre-update-${sanitizeInstallName(pack.name)}`, instanceId)
     } catch {
       /* best-effort */
     }
@@ -1388,7 +1535,10 @@ export class NodePackService extends EventEmitter {
             message: `Updated, but backup cleanup failed — kept ${trash}`
           })
         }
-        deleteNodePack(pack.id)
+        // Drop the OLD record only when the id changed — afterInstall already
+        // upserted (possibly under the same id) with locked/tags/author/notes
+        // preserved. Deleting unconditionally would wipe the fresh record.
+        if (pack.id !== next.id) deleteNodePack(pack.id)
         return next
       } catch (e) {
         // rollback — failures here MUST surface, never silently swallow.
@@ -1447,8 +1597,8 @@ export class NodePackService extends EventEmitter {
     return pack
   }
 
-  lock(idOrName: string, locked: boolean): NodePackRecord | undefined {
-    const packs = this.list()
+  lock(idOrName: string, locked: boolean, instanceId?: string): NodePackRecord | undefined {
+    const packs = this.list(instanceId)
     const pack = packs.find((p) => p.id === idOrName || p.name === idOrName)
     if (!pack) return undefined
     pack.locked = locked
@@ -1528,12 +1678,42 @@ export class NodePackService extends EventEmitter {
     return issues
   }
 
-  snapshots(): NodeSnapshot[] {
-    return listSnapshots()
+  snapshots(instanceId?: string): NodeSnapshot[] {
+    const all = listSnapshots()
+    // Legacy snapshots carry no instanceId — keep them visible everywhere so
+    // older auto-pre-* backups are never silently lost after an instance switch.
+    if (!instanceId) return all
+    return all.filter((s) => !s.instanceId || s.instanceId === instanceId)
   }
 
-  createSnapshot(name?: string): NodeSnapshot {
-    const packs = this.list().map((p) => ({
+  /**
+   * Prune `auto-pre-*` snapshots so the list cannot grow without bound.
+   * Keeps the most recent 10 auto snapshots for the given instance (legacy
+   * snapshots without an instanceId share the same bucket).
+   */
+  private pruneAutoSnapshots(instanceId?: string): void {
+    const MAX_AUTO = 10
+    try {
+      const all = listSnapshots()
+      const auto = all
+        .filter(
+          (s) =>
+            s.name.startsWith('auto-pre-') &&
+            // Legacy snapshots (no instanceId) share every bucket so they
+            // cannot accumulate forever.
+            (s.instanceId == null || s.instanceId === (instanceId || ''))
+        )
+        .sort((a, b) => b.createdAt - a.createdAt)
+      for (const s of auto.slice(MAX_AUTO)) {
+        this.deleteSnapshot(s.id, instanceId)
+      }
+    } catch {
+      /* pruning is best-effort */
+    }
+  }
+
+  createSnapshot(name?: string, instanceId?: string): NodeSnapshot {
+    const packs = this.list(instanceId).map((p) => ({
       name: p.name,
       version: p.version,
       path: p.path || '',
@@ -1544,7 +1724,8 @@ export class NodePackService extends EventEmitter {
       name: name || `snapshot-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}`,
       createdAt: Date.now(),
       packs,
-      notes: ''
+      notes: '',
+      instanceId
     }
     // Snapshot creation is best-effort on the persistence side — a DB or disk
     // failure must not lose the in-memory snapshot the caller is about to use.
@@ -1558,6 +1739,9 @@ export class NodePackService extends EventEmitter {
     } catch {
       /* ignore */
     }
+    if (name?.startsWith('auto-pre-')) {
+      this.pruneAutoSnapshots(instanceId)
+    }
     return snapshot
   }
 
@@ -1566,10 +1750,13 @@ export class NodePackService extends EventEmitter {
    * NOTE: this does NOT reinstall missing packs or roll back versions — it only
    * toggles `.disabled` markers to match the snapshot. UI must say so.
    */
-  restoreSnapshot(id: string): boolean {
+  restoreSnapshot(id: string, instanceId?: string): boolean {
     const snap = getSnapshot(id)
     if (!snap) return false
-    const current = this.list()
+    // Symmetric with deleteSnapshot: never restore an instance's snapshot
+    // against a different instance.
+    if (instanceId && snap.instanceId && snap.instanceId !== instanceId) return false
+    const current = this.list(instanceId)
     const currentNames = new Set(current.map((p) => p.name))
     const snapNames = new Set(snap.packs.map((p) => p.name))
     // Snapshot records disabled state via source suffix "@disabled"
@@ -1582,11 +1769,11 @@ export class NodePackService extends EventEmitter {
 
     for (const p of current) {
       if (!snapNames.has(p.name)) {
-        this.toggle(p.name, false)
+        this.toggle(p.name, false, instanceId)
       } else if (snapDisabled.has(p.name)) {
-        this.toggle(p.name, false)
+        this.toggle(p.name, false, instanceId)
       } else if (snapEnabled.has(p.name)) {
-        this.toggle(p.name, true)
+        this.toggle(p.name, true, instanceId)
       }
     }
     for (const s of snap.packs) {
@@ -1603,8 +1790,14 @@ export class NodePackService extends EventEmitter {
     return true
   }
 
-  deleteSnapshot(id: string): boolean {
+  deleteSnapshot(id: string, instanceId?: string): boolean {
     const safe = sanitizeId(id)
+    // Scope deletes to the instance when one is given — a snapshot taken on
+    // another instance must not disappear because someone cleaned up here.
+    if (instanceId) {
+      const snap = getSnapshot(safe)
+      if (snap?.instanceId && snap.instanceId !== instanceId) return false
+    }
     try {
       const file = join(snapshotDir(), `${safe}.json`)
       if (existsSync(file) && isPathInside(file, snapshotDir())) unlinkSync(file)

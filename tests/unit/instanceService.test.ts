@@ -59,7 +59,6 @@ const h = vi.hoisted(() => {
     settings: {
       theme: 'light',
       locale: 'zh-CN',
-      defaultInstancePath: '',
       modelScanRoots: [] as string[],
       proxy: {
         enabled: false,
@@ -397,7 +396,6 @@ beforeEach(() => {
   h.state.settings = {
     theme: 'light',
     locale: 'zh-CN',
-    defaultInstancePath: '',
     modelScanRoots: [],
     proxy: {
       enabled: false,
@@ -833,7 +831,7 @@ describe('discover()', () => {
     write(join(venved, 'main.py'), 'print(1)')
     write(join(venved, '.venv', 'pyvenv.cfg'), 'home = x')
     write(join(registered, 'main.py'), 'print(1)')
-    h.state.settings.defaultInstancePath = scan
+    h.state.settings.modelScanRoots = [scan]
     register(cfg({ id: 'r', path: registered }))
 
     const found = svc.discover()
@@ -856,7 +854,7 @@ describe('discover()', () => {
     const outside = join(ROOT, 'elsewhere', 'sneaky')
     write(join(inside, 'main.py'), 'print(1)')
     write(join(outside, 'main.py'), 'print(1)')
-    h.state.settings.defaultInstancePath = scan
+    h.state.settings.modelScanRoots = [scan]
     const found = svc.discover(outside)
     expect(found.every((c) => !c.path.startsWith(outside))).toBe(true)
   })
@@ -866,7 +864,7 @@ describe('discover()', () => {
     const nested = join(scan, 'nested', 'deep')
     write(join(nested, 'main.py'), 'print(1)')
     write(join(nested, 'requirements.txt'), 'x')
-    h.state.settings.defaultInstancePath = scan
+    h.state.settings.modelScanRoots = [scan]
     const found = svc.discover(nested)
     const hit = found.find((c) => c.path === nested)
     expect(hit).toBeTruthy()
@@ -877,7 +875,7 @@ describe('discover()', () => {
     const scan = join(HOME, 'scan')
     mkdirSync(join(scan, 'not-comfy'), { recursive: true })
     write(join(scan, 'not-comfy', 'readme.md'), 'hi')
-    h.state.settings.defaultInstancePath = scan
+    h.state.settings.modelScanRoots = [scan]
     const found = svc.discover()
     expect(found.every((c) => !c.path.endsWith('not-comfy'))).toBe(true)
   })
@@ -1596,7 +1594,7 @@ describe('killAllNow()', () => {
 // logs ring buffer
 // ===========================================================================
 describe('getLogs / clearLogs', () => {
-  it('caps the in-memory log ring at 5000 lines', async () => {
+  it('caps the in-memory log ring at 5000 lines but preserves file-backed history', async () => {
     register(cfg({ id: 'cap' }))
     h.state.fetchImpl = failFetch
     await svc.start('cap')
@@ -1604,11 +1602,16 @@ describe('getLogs / clearLogs', () => {
     for (let i = 0; i < 5001; i++) {
       child.stdout.emit('data', Buffer.from(`line ${i}\n`))
     }
+    // getLogs merges logs/<id>.log with the in-memory ring, so history is not lost.
     const logs = svc.getLogs('cap', 10000)
-    expect(logs.length).toBe(5000)
-    // oldest lines were dropped
-    expect(logs[0].message).toContain('line 1')
+    expect(logs.length).toBe(5001)
+    expect(logs[0].message).toContain('line 0')
     expect(logs[logs.length - 1].message).toContain('line 5000')
+    // The in-memory ring itself still drops the oldest line.
+    const rt = (svc as unknown as { runtimes: Map<string, { logs: Array<{ message: string }> }> })
+    const ring = rt.runtimes.get('cap')?.logs || []
+    expect(ring.length).toBeLessThanOrEqual(5000)
+    expect(ring[0].message).toContain('line 1')
   })
 
   it('getLogs honours the limit and unknown ids return empty', async () => {
@@ -1756,7 +1759,6 @@ describe('branch coverage extras', () => {
     delete process.env.USERPROFILE
     delete process.env.LOCALAPPDATA
     delete process.env.COMFYUI_PATH
-    h.state.settings.defaultInstancePath = ''
     const found = svc.discover()
     expect(Array.isArray(found)).toBe(true)
   })
@@ -1764,8 +1766,8 @@ describe('branch coverage extras', () => {
   it('dedupes a path scored both as a root and as a child', () => {
     const scan = join(HOME, 'scan')
     write(join(scan, 'main.py'), 'print(1)')
-    // scan is both settings.defaultInstancePath AND a child of HOME
-    h.state.settings.defaultInstancePath = scan
+    // scan is both a modelScanRoots entry AND a child of HOME
+    h.state.settings.modelScanRoots = [scan]
     const found = svc.discover()
     const hits = found.filter((c) => c.path === scan)
     expect(hits.length).toBeLessThanOrEqual(1)

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { SearchOutline, DownloadOutline, StarOutline, RefreshOutline, ArrowUpCircleOutline } from '@vicons/ionicons5'
 import { NButton, NIcon, NInput, NList, NListItem, NPopconfirm, NSpace, NSpin, NTag, NEmpty, NProgress, useMessage, useDialog } from 'naive-ui'
@@ -11,6 +12,8 @@ import type { MarketItem, RegistryPageResult } from '@shared/types'
 
 const { t } = useI18n()
 const store = useAppStore()
+const route = useRoute()
+const router = useRouter()
 const message = useMessage()
 const dialog = useDialog()
 const loading = ref(false)
@@ -124,11 +127,45 @@ async function loadMore(): Promise<void> {
   await load(false)
 }
 
+/** Re-fetch the CURRENT page in place (keeps paging position after install/update). */
+async function loadCurrentPage(): Promise<void> {
+  loading.value = true
+  try {
+    const res: RegistryPageResult<MarketItem> = await ipc('market.list', {
+      query: activeQuery.value || undefined,
+      page: page.value,
+      limit: pageSize,
+      instanceId: store.activeInstanceId || undefined
+    })
+    // Cumulative paging: replace only this page's slice, keep earlier pages.
+    const start = (page.value - 1) * pageSize
+    items.value = [...items.value.slice(0, start), ...res.items]
+    total.value = res.total
+    totalPages.value = res.totalPages
+    scanned.value = res.scanned
+    page.value = res.page
+    void loadIndexStatus()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    loading.value = false
+    loadingMore.value = false
+  }
+}
+
 const installingItem = ref<string | null>(null)
 const updatingItem = ref<string | null>(null)
 const showOpModal = ref(false)
 const opModalTitle = ref('')
-const { nodeInstallingPack, nodeUpdatingPack, nodeInstallMessage, nodeUpdateMessage } = useComfyUpdate()
+const { nodeInstallingPack, nodeUpdatingPack, nodeInstallMessage, nodeUpdateMessage, progress } = useComfyUpdate()
+
+// Auto-close the shared op modal when the operation reaches a terminal state.
+watch(
+  () => progress.value?.status,
+  (s) => {
+    if (s === 'done' || s === 'failed') showOpModal.value = false
+  }
+)
 
 async function install(item: MarketItem): Promise<void> {
   if (installingItem.value) return
@@ -147,8 +184,10 @@ async function install(item: MarketItem): Promise<void> {
     } else {
       message.success(t('market.installedItem', { name: item.name }))
     }
-    await load(true)
+    // Keep the user's paging position — only refresh the visible page.
+    await loadCurrentPage()
   } catch (err) {
+    showOpModal.value = false
     message.error(describeNodeError(t, err))
   } finally {
     installingItem.value = null
@@ -179,23 +218,28 @@ async function resolveLocalPack(item: MarketItem): Promise<{ name: string; locke
 
 /** Update an already-installed pack via node.update (git pull / registry reinstall). */
 async function updateItem(item: MarketItem): Promise<void> {
+  if (updatingItem.value) return
   updatingItem.value = item.id
   opModalTitle.value = t('nodes.updating')
   showOpModal.value = true
   try {
     const local = await resolveLocalPack(item)
     if (!local) {
+      showOpModal.value = false
       message.error(t('nodes.updateFailed', { error: 'Pack not found locally' }))
       return
     }
     if (local.locked) {
+      showOpModal.value = false
       message.warning(t('nodes.locked'))
       return
     }
     await ipc('node.update', local.name, undefined, store.activeInstanceId || undefined)
     message.success(t('nodes.updateDone', { name: local.name }))
-    await load(true)
+    // Keep the user's paging position — only refresh the visible page.
+    await loadCurrentPage()
   } catch (err) {
+    showOpModal.value = false
     const msg = describeNodeError(t, err)
     const backup = /backup at (.+)$/i.exec(msg)
     if (/rollback (also failed|FAILED)/i.test(msg) && backup) {
@@ -210,13 +254,31 @@ async function updateItem(item: MarketItem): Promise<void> {
 
 let offProgress: (() => void) | null = null
 
+/** Workflow→Market deep link: prefill search and auto-search. */
+function applyRouteQuery(): boolean {
+  const q = typeof route.query.q === 'string' ? route.query.q.trim() : ''
+  if (!q) return false
+  query.value = q
+  void load(true)
+  return true
+}
+
 onMounted(() => {
   offProgress = onIpc(IPC_EVENTS.registryIndexProgress, (p) => {
-    indexProgress.value = p as { done: number; total: number; count: number }
+    const ev = p as { done: number; total: number; count: number; ready?: boolean }
+    indexProgress.value = ev
+    // `ready:true` (or a fully-consumed page range) means the build ended —
+    // never leave the banner stuck on a finished index.
+    if (ev.ready || (typeof ev.total === 'number' && ev.total > 0 && ev.done >= ev.total)) {
+      indexing.value = false
+      indexProgress.value = null
+      void loadIndexStatus()
+      return
+    }
     indexing.value = true
   })
   void loadIndexStatus()
-  void load(true)
+  if (!applyRouteQuery()) void load(true)
   // warm the full-catalog index in background so search is instant
   void ipc('registry.ensureIndex')
     .then((s) => {
@@ -229,6 +291,29 @@ onMounted(() => {
       indexProgress.value = null
     })
 })
+
+// Deep link query changes while the view is alive.
+watch(
+  () => route.query.q,
+  () => applyRouteQuery()
+)
+
+// Refresh installed badges when the active instance changes.
+watch(
+  () => store.instanceSwitchTick,
+  () => {
+    void loadCurrentPage()
+  }
+)
+
+// Background install/update finished → refresh installed badges in place.
+watch(
+  () => [nodeInstallingPack.value, nodeUpdatingPack.value],
+  ([wasInstalling, wasUpdating], [prevInstalling, prevUpdating]) => {
+    const finished = (prevInstalling && !wasInstalling) || (prevUpdating && !wasUpdating)
+    if (finished) void loadCurrentPage()
+  }
+)
 
 onUnmounted(() => offProgress?.())
 </script>
@@ -298,7 +383,16 @@ onUnmounted(() => offProgress?.())
                     {{ item.stars }}
                   </NTag>
                   <NTag size="tiny" round>{{ item.downloads }} DL</NTag>
-                  <NTag v-if="item.installed" size="tiny" round type="success">{{ $t('market.installedTag') }}</NTag>
+                  <NTag
+                    v-if="item.installed"
+                    size="tiny"
+                    round
+                    type="success"
+                    style="cursor: pointer"
+                    @click="router.push('/nodes')"
+                  >
+                    {{ $t('market.installedTag') }}
+                  </NTag>
                 </div>
               </div>
               <NSpace>

@@ -345,12 +345,56 @@ const STEPS_KEYS = new Set(['steps'])
 const CFG_KEYS = new Set(['cfg'])
 
 /**
+ * Node types whose width/height/steps/cfg inputs are generation parameters.
+ * Restricting overrides to this whitelist prevents the matrix from clobbering
+ * same-named numeric inputs on non-generation nodes (e.g. ConditioningSetArea
+ * width/height, LatentComposite x/y, ImageScale width/height).
+ */
+const PARAM_OVERRIDE_TYPES = new Set([
+  // Samplers that own seed/steps/cfg
+  'KSampler',
+  'KSamplerAdvanced',
+  'KSamplerX0Inpaint',
+  'KSamplerTiled',
+  'SamplerCustom',
+  'SamplerCustomAdvanced',
+  'SamplerEuler',
+  'SamplerEulerAncestral',
+  'SamplerEulerAncestralCFGpp',
+  'SamplerEulerCFGpp',
+  'SamplerDPMPP_2M',
+  'SamplerDPMPP_2M_SDE',
+  'SamplerDPMPP_2S_Ancestral',
+  'SamplerDPMPP_SDE',
+  'SamplerLCM',
+  'SamplerUniPC',
+  'SamplerLMS',
+  'SamplerDDIM',
+  'SamplerDDPM',
+  // Flux / SD3 pipelines carry `steps` on the scheduler node, not the sampler.
+  'BasicScheduler',
+  'KSamplerSelect',
+  // Latent canvases (width / height)
+  'EmptyLatentImage',
+  'EmptySD3LatentImage',
+  'EmptyLatentVideo',
+  'EmptyHunyuanLatentVideo',
+  'EmptyMochiLatentImage',
+  'EmptyCogVideoXLatentVideo',
+  'EmptyLTXVLatentVideo',
+  // Size-critical upscale node (width/height inputs; LatentUpscaleBy uses
+  // scale_by and is intentionally NOT listed).
+  'LatentUpscale'
+])
+
+/**
  * Apply batch parameter matrix overrides onto an API prompt.
  * Only touches inputs whose current value is a number — never invents fields.
  */
 export function applyParamOverrides(prompt: ApiPrompt, o: PromptParamOverrides): ApiPrompt {
   for (const node of Object.values(prompt)) {
     if (!node.inputs) continue
+    if (!PARAM_OVERRIDE_TYPES.has(node.class_type)) continue
     for (const [k, v] of Object.entries(node.inputs)) {
       if (typeof v !== 'number') continue
       const lk = k.toLowerCase()

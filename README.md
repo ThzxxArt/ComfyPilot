@@ -378,6 +378,9 @@ ComfyUI 本身采用 GPL-3.0；本项目独立发布，采用 **MIT**。
 - [x] **0.1.5 工作流真库**：导入拷贝入库、list 合并 DB、PNG 抽 JSON、来源徽章、缺失可见
 - [x] **0.1.5 生产闭环**：批跑库选多工作流 + 参数矩阵 + 出图跟踪；产物排序分页收藏导出；批次/工作流回溯
 - [x] **0.1.5 工作流操作**：标签/收藏/改名/删除/ZIP 导出/同步实例/Frontend 打开
+- [x] **0.1.6 八域协同**：实例切换广播、通知总线、WS 归属、market?q 深链、batch?jobId、output?workflowId、instances?edit 深链
+- [x] **0.1.6 数据正确性**：批跑 produced 真计数、重跑清零、超时不定 done、rename 保 id、openInFrontend 去重、getLogs 回读、node 更新保留 lock/tags
+- [x] **0.1.6 UI/UX 完整**：模型删除真选项、下载取消/错误可见、产物 workflowId 筛选、灯箱翻页、批量过滤态可导出、节点空态去市场、op-modal 自动关
 - [ ] 自动更新通道（GitHub Releases）
 - [ ] 工作流版本对照与打包分享（0.1.5 已含 ZIP 分享）
 - [ ] 更细的 GPU 多卡 / 共享显存展示

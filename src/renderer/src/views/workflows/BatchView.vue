@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, computed } from 'vue'
+import { onMounted, onUnmounted, ref, computed, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import {
   PlayOutline,
   CloseOutline,
@@ -23,12 +23,15 @@ const { t } = useI18n()
 const store = useAppStore()
 const message = useMessage()
 const router = useRouter()
+const route = useRoute()
 const loading = ref(false)
 const jobs = ref<BatchJob[]>([])
 const workflows = ref<WorkflowRecord[]>([])
 const showCreate = ref(false)
 const startingId = ref('')
 const creating = ref(false)
+/** Job id from route.query.jobId — highlighted + scrolled into view. */
+const highlightId = ref('')
 
 function isBusy(status: string): boolean {
   return status === 'submitting' || status === 'running'
@@ -81,11 +84,22 @@ function statusType(status: string): 'success' | 'error' | 'info' | 'default' | 
   return 'default'
 }
 
+/** Lightweight refresh: only batch.list (no workflow.list disk walk). */
+async function refreshJobs(): Promise<void> {
+  try {
+    jobs.value = await ipc('batch.list')
+    if (!draft.value.instanceId) draft.value.instanceId = store.activeInstanceId || ''
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
 async function refresh(): Promise<void> {
   loading.value = true
   try {
     jobs.value = await ipc('batch.list')
-    workflows.value = await ipc('workflow.list', { includeMissing: true })
+    // workflow.list is a full disk walk — only fetch it when the create modal
+    // actually needs it (openCreate calls loadWorkflows).
     if (!draft.value.instanceId) draft.value.instanceId = store.activeInstanceId || ''
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
@@ -94,10 +108,16 @@ async function refresh(): Promise<void> {
   }
 }
 
-async function openCreate(): Promise<void> {
-  if (!workflows.value.length) {
-    await refresh()
+async function loadWorkflows(): Promise<void> {
+  try {
+    workflows.value = await ipc('workflow.list', { includeMissing: true })
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
   }
+}
+
+async function openCreate(): Promise<void> {
+  await loadWorkflows()
   draft.value.selected = []
   draft.value.name = t('batch.defaultName')
   draft.value.count = 4
@@ -234,10 +254,44 @@ function seedModeLabel(mode?: string): string {
 
 let offBatch: (() => void) | null = null
 
+/** Scroll a job card into view + highlight it briefly. */
+function highlightJob(id: string): void {
+  highlightId.value = id
+  // Scroll only after the DOM has the card — callers must await data first.
+  void nextTick(() => {
+    const el = document.querySelector(`[data-job-id="${id}"]`)
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  })
+  // Clear the highlight after a few seconds.
+  window.setTimeout(() => {
+    if (highlightId.value === id) highlightId.value = ''
+  }, 4000)
+}
+
+// Capture the target id immediately, but only scroll after refresh() has
+// rendered the cards (immediate watch runs before jobs are loaded).
+let pendingHighlight = ''
+watch(
+  () => route.query.jobId,
+  (v) => {
+    if (typeof v === 'string' && v) {
+      pendingHighlight = v
+      highlightId.value = v
+    }
+  },
+  { immediate: true }
+)
+
 onMounted(async () => {
   await store.bootstrap({ keepSelection: true })
   await refresh()
-  offBatch = onIpc(IPC_EVENTS.batchProgress, () => void refresh())
+  if (pendingHighlight) {
+    highlightJob(pendingHighlight)
+    pendingHighlight = ''
+  }
+  // On progress: only re-fetch batch.list — never trigger a workflow.list
+  // disk walk on every progress tick.
+  offBatch = onIpc(IPC_EVENTS.batchProgress, () => void refreshJobs())
 })
 
 onUnmounted(() => offBatch?.())
@@ -261,7 +315,13 @@ onUnmounted(() => offBatch?.())
     <div class="page-body">
       <NSpin :show="loading">
         <div v-if="jobs.length" class="grid cards">
-          <article v-for="job in jobs" :key="job.id" class="card job">
+          <article
+            v-for="job in jobs"
+            :key="job.id"
+            class="card job"
+            :class="{ highlighted: highlightId === job.id }"
+            :data-job-id="job.id"
+          >
             <div class="job-head">
               <div class="job-title">
                 <div class="job-name">{{ job.name }}</div>
@@ -296,8 +356,20 @@ onUnmounted(() => offBatch?.())
             <!-- per-item legs -->
             <div v-if="job.items.length > 1" class="job-items">
               <div v-for="(it, idx) in job.items" :key="idx" class="job-item mono">
-                {{ it.workflowName }} · {{ it.completed }}/{{ it.count }} · fail {{ it.failed }}
+                {{ it.workflowName }} · {{ it.completed }}/{{ it.count }}
+                <span v-if="it.failed" class="item-fail"> · {{ $t('batch.itemFailed', { n: it.failed }) }}</span>
+                <span v-if="it.submitted && it.completed + it.failed < it.submitted" class="item-pending">
+                  · {{ $t('batch.itemPending', { n: it.submitted - it.completed - it.failed }) }}
+                </span>
               </div>
+            </div>
+
+            <!-- error / notes surfacing -->
+            <div v-if="job.errorSummary" class="job-error">
+              {{ job.errorSummary }}
+            </div>
+            <div v-if="job.notes" class="job-notes">
+              {{ job.notes }}
             </div>
 
             <div v-if="job.params?.seedMode" class="job-meta">
@@ -309,7 +381,7 @@ onUnmounted(() => offBatch?.())
                 · {{ job.params.width }}×{{ job.params.height }}
               </template>
               <template v-if="job.params.steps"> · {{ $t('batch.steps') }} {{ job.params.steps }}</template>
-              <template v-if="job.params.cfg"> · CFG {{ job.params.cfg }}</template>
+              <template v-if="job.params.cfg"> · {{ $t('batch.cfg') }} {{ job.params.cfg }}</template>
             </div>
 
             <NSpace>
@@ -408,7 +480,7 @@ onUnmounted(() => offBatch?.())
               <NInputNumber v-model:value="draft.steps" :min="1" :max="150" clearable />
             </div>
             <div class="matrix-cell">
-              <NText depth="3">CFG</NText>
+              <NText depth="3">{{ $t('batch.cfg') }}</NText>
               <NInputNumber v-model:value="draft.cfg" :min="1" :max="30" :step="0.5" clearable />
             </div>
           </div>
@@ -479,6 +551,38 @@ onUnmounted(() => offBatch?.())
 .job-item {
   font-size: 11px;
   color: $color-text-muted;
+}
+.item-fail {
+  color: #e2557a;
+  font-weight: 600;
+}
+.item-pending {
+  color: #c9a227;
+}
+.job-error {
+  margin: 8px 0 4px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(226, 85, 122, 0.1);
+  border: 1px solid rgba(226, 85, 122, 0.35);
+  color: #e2557a;
+  font-size: 11.5px;
+  word-break: break-all;
+}
+.job-notes {
+  margin: 4px 0 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: $color-text-muted;
+  font-size: 11px;
+  word-break: break-all;
+  max-height: 80px;
+  overflow: auto;
+}
+.job.highlighted {
+  outline: 2px solid $color-primary;
+  box-shadow: 0 0 0 4px rgba(79, 110, 247, 0.25);
 }
 .matrix {
   display: flex;

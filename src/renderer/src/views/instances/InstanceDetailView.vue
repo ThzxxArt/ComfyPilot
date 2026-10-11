@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ArrowBackOutline, PlayOutline, StopOutline, OpenOutline, PulseOutline,
@@ -33,11 +33,12 @@ const preview = ref<LaunchCommandPreview | null>(null)
 
 const id = computed(() => String(route.params.id || ''))
 const instanceRunning = computed(() => instance.value?.status === 'running')
-const needInstanceHint = t('common.needRunningInstance')
+// Computed (not a one-shot t()) so the hint follows locale switches.
+const needInstanceHint = computed(() => t('common.needRunningInstance'))
 
 function openExternalIfRunning(): void {
   if (!instanceRunning.value) {
-    message.warning(needInstanceHint)
+    message.warning(needInstanceHint.value)
     return
   }
   if (instance.value?.url) void ipc('shell.openExternal', instance.value.url)
@@ -45,11 +46,31 @@ function openExternalIfRunning(): void {
 
 function openEmbedIfRunning(): void {
   if (!instanceRunning.value) {
-    message.warning(needInstanceHint)
+    message.warning(needInstanceHint.value)
     return
   }
   if (instance.value?.url) {
     void router.push({ path: '/embed', query: { url: instance.value.url } })
+  }
+}
+
+function statusLabel(s: string | undefined): string {
+  return t(`status.${s || 'unknown'}`)
+}
+
+function goEdit(): void {
+  // Deep-link into the instances list so its edit modal opens for this id.
+  void router.push({ path: '/instances', query: { edit: id.value } })
+}
+
+async function clearLogs(): Promise<void> {
+  if (!id.value) return
+  try {
+    await ipc('instance.clearLogs', id.value)
+    logs.value = []
+    message.success(t('instance.logsCleared'))
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
   }
 }
 
@@ -65,22 +86,31 @@ async function doStop(): Promise<void> {
   await refresh()
 }
 
+let refreshSeq = 0
+
 async function refresh(): Promise<void> {
+  const seq = ++refreshSeq
+  const forId = id.value
   try {
     await store.refreshInstances()
-    instance.value = store.instances.find((i) => i.id === id.value) || null
-    logs.value = await ipc('instance.getLogs', id.value, 400)
-    if (!preview.value) {
-      try {
-        preview.value = await ipc('instance.previewLaunch', id.value)
-      } catch {
-        /* instance may be missing */
-      }
+    // Ignore stale responses after the route switched to another instance.
+    if (seq !== refreshSeq || forId !== id.value) return
+    instance.value = store.instances.find((i) => i.id === forId) || null
+    const logsResult = await ipc('instance.getLogs', forId, 400)
+    if (seq !== refreshSeq || forId !== id.value) return
+    logs.value = logsResult
+    // Always re-fetch the preview — config (port/args/path) can change under us.
+    try {
+      const p = await ipc('instance.previewLaunch', forId)
+      if (seq !== refreshSeq || forId !== id.value) return
+      preview.value = p
+    } catch {
+      if (seq === refreshSeq && forId === id.value) preview.value = null
     }
   } catch (err) {
     console.error(err)
   } finally {
-    loading.value = false
+    if (seq === refreshSeq) loading.value = false
   }
 }
 
@@ -174,6 +204,23 @@ onUnmounted(() => {
   off?.()
   offLog?.()
 })
+
+// /instances/A → /instances/B reuses this component — reset per-instance state.
+watch(
+  () => route.params.id,
+  () => {
+    loading.value = true
+    instance.value = null
+    logs.value = []
+    preview.value = null
+    updateInfo.value = null
+    showUpdateModal.value = false
+    updateModalTitle.value = ''
+    checkingUpdate.value = false
+    repairing.value = false
+    void refresh()
+  }
+)
 </script>
 
 <template>
@@ -207,7 +254,7 @@ onUnmounted(() => {
           </template>
           {{ $t('header.stop') }}
         </NButton>
-        <NButton secondary @click="doLaunch('none')">
+        <NButton secondary :disabled="instanceRunning" :loading="busy[id]" @click="doLaunch('none')">
           <template #icon>
             <NIcon :component="PlayOutline" />
           </template>
@@ -236,7 +283,7 @@ onUnmounted(() => {
           </template>
           {{ $t('header.embed') }}
         </NButton>
-        <NButton secondary @click="router.push('/instances')">
+        <NButton secondary @click="goEdit">
           <template #icon>
             <NIcon :component="CreateOutline" />
           </template>
@@ -251,10 +298,15 @@ onUnmounted(() => {
         <section class="card panel">
           <div class="panel-title">{{ $t('instance.basicInfo') }}</div>
           <NDescriptions bordered size="small" :column="2" label-placement="left" class="desc">
-            <NDescriptionsItem :label="$t('common.status')">
-              <NTag :type="instance?.status === 'running' ? 'success' : instance?.status === 'error' ? 'error' : 'default'" round>
-                {{ instance?.status }}
-              </NTag>
+            <NDescriptionsItem :label="$t('common.status')" :span="2">
+              <NSpace align="center" :size="8">
+                <NTag :type="instance?.status === 'running' ? 'success' : instance?.status === 'error' ? 'error' : 'default'" round>
+                  {{ statusLabel(instance?.status) }}
+                </NTag>
+                <span v-if="instance?.status === 'error' && instance?.lastError" class="last-error">
+                  {{ instance.lastError }}
+                </span>
+              </NSpace>
             </NDescriptionsItem>
             <NDescriptionsItem label="PID">{{ instance?.pid || '—' }}</NDescriptionsItem>
             <NDescriptionsItem :label="$t('instance.listen')">{{ instance?.listen }}:{{ instance?.port }}</NDescriptionsItem>
@@ -342,10 +394,15 @@ onUnmounted(() => {
         <section class="card panel logs">
           <div class="panel-head">
             <div class="panel-title">{{ $t('instance.liveLogs') }}</div>
-            <NButton size="tiny" secondary @click="refresh">
-              <template #icon><NIcon :component="RefreshOutline" /></template>
-              {{ $t('common.refresh') }}
-            </NButton>
+            <NSpace :size="6">
+              <NButton size="tiny" secondary @click="clearLogs">
+                {{ $t('instance.clearLogs') }}
+              </NButton>
+              <NButton size="tiny" secondary @click="refresh">
+                <template #icon><NIcon :component="RefreshOutline" /></template>
+                {{ $t('common.refresh') }}
+              </NButton>
+            </NSpace>
           </div>
           <NScrollbar class="log-scroll" style="height: 420px">
             <div class="log-inner">
@@ -438,6 +495,13 @@ onUnmounted(() => {
   font-size: 12px;
   color: $color-danger;
   word-break: break-all;
+}
+
+.last-error {
+  font-size: 12px;
+  color: $color-danger;
+  word-break: break-all;
+  line-height: 1.5;
 }
 
 .cmd-collapse {

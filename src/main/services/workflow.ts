@@ -19,7 +19,8 @@ import {
   updateWorkflow,
   deleteWorkflow as dbDeleteWorkflow,
   loadInstanceConfigs,
-  workflowLibraryDir
+  workflowLibraryDir,
+  userDataDir
 } from './db'
 import { ComfyApiClient } from './comfyApi'
 import { assertSafeRelativeFilename, isPathInside } from './security'
@@ -94,6 +95,60 @@ interface ParsedWorkflow {
   graph: Record<string, unknown> | null
 }
 
+/**
+ * Explicit seed/noise_seed on KSampler-like nodes — the most trustworthy
+ * source. Returns undefined when no sampler node carries a seed field.
+ */
+function findSamplerSeed(nodes: Array<Record<string, unknown>>): number | undefined {
+  const SAMPLER_TYPES =
+    /KSampler|SamplerCustom|SamplerSelect|SamplerDPMPP|SamplerEuler|SamplerLCM|SamplerUniPC/i
+  for (const n of nodes) {
+    const type = String(n.type || n.class_type || '')
+    if (!SAMPLER_TYPES.test(type)) continue
+    // API form: { class_type, inputs: { seed | noise_seed } }
+    const inputs = n.inputs as Record<string, unknown> | undefined
+    if (inputs) {
+      if (typeof inputs.seed === 'number' && Number.isFinite(inputs.seed)) return inputs.seed
+      if (typeof inputs.noise_seed === 'number' && Number.isFinite(inputs.noise_seed)) {
+        return inputs.noise_seed
+      }
+    }
+    // UI form: widgets_values with seed/noise_seed at known positions.
+    const w = n.widgets_values
+    if (Array.isArray(w)) {
+      // KSampler: [seed, control_after_generate, steps, cfg, ...]
+      if (/^KSampler$/i.test(type) && typeof w[0] === 'number' && Number.isInteger(w[0])) {
+        return w[0]
+      }
+      // KSamplerAdvanced: [add_noise, noise_seed, ...]
+      if (/KSamplerAdvanced/i.test(type) && typeof w[1] === 'number' && Number.isInteger(w[1])) {
+        return w[1]
+      }
+      // Generic: widgets metadata names a seed/noise_seed slot.
+      const widgetNames = (n.widgets as Array<{ name?: string }> | undefined) || []
+      for (let i = 0; i < widgetNames.length && i < w.length; i++) {
+        const wn = String(widgetNames[i]?.name || '').toLowerCase()
+        if ((wn === 'seed' || wn === 'noise_seed') && typeof w[i] === 'number') {
+          return w[i]
+        }
+      }
+    }
+  }
+  return undefined
+}
+
+/** Last-resort heuristic: first plausible integer in widgets_values. */
+function findHeuristicSeed(nodes: Array<Record<string, unknown>>): number | undefined {
+  for (const n of nodes) {
+    const w = n.widgets_values
+    if (!Array.isArray(w)) continue
+    for (const v of w) {
+      if (typeof v === 'number' && Number.isInteger(v) && v > 1 && v < 2 ** 32) return v
+    }
+  }
+  return undefined
+}
+
 function analyzeUiOrApiGraph(parsed: Record<string, unknown>): ParsedWorkflow {
   const nodes = Array.isArray(parsed.nodes) ? parsed.nodes : []
   const nodeCount = nodes.length
@@ -102,17 +157,14 @@ function analyzeUiOrApiGraph(parsed: Record<string, unknown>): ParsedWorkflow {
   const missingNodes = (nodes as Array<{ type?: string }>)
     .filter((n) => typeof n?.type === 'string' && n.type.startsWith('Missing'))
     .map((n) => n.type as string)
-  let seed: number | undefined
   let modelUsed: string | undefined
+  // Seed priority: explicit sampler seed > heuristic first-integer.
+  // PNG meta.seed is applied as a further fallback in analyzeFile().
+  const samplerSeed = findSamplerSeed(nodes as Array<Record<string, unknown>>)
+  const heuristicSeed = findHeuristicSeed(nodes as Array<Record<string, unknown>>)
+  const seed = samplerSeed ?? undefined
   for (const n of nodes as Array<Record<string, unknown>>) {
     const w = n.widgets_values
-    if (Array.isArray(w)) {
-      for (const v of w) {
-        if (typeof v === 'number' && Number.isInteger(v) && v > 1 && v < 2 ** 32) {
-          seed = seed ?? v
-        }
-      }
-    }
     if (typeof n.title === 'string' && /model|checkpoint|unet/i.test(n.title)) {
       modelUsed = modelUsed || String(n.title)
     }
@@ -132,7 +184,9 @@ function analyzeUiOrApiGraph(parsed: Record<string, unknown>): ParsedWorkflow {
     seed,
     modelUsed,
     params: {
-      nodeTypes: [...new Set((nodes as Array<{ type?: string }>).map((n) => n.type))].slice(0, 50)
+      nodeTypes: [...new Set((nodes as Array<{ type?: string }>).map((n) => n.type))].slice(0, 50),
+      // Stashed so analyzeFile can fall back after PNG meta.seed.
+      ...(heuristicSeed != null ? { heuristicSeed } : {})
     },
     graph: parsed
   }
@@ -140,15 +194,19 @@ function analyzeUiOrApiGraph(parsed: Record<string, unknown>): ParsedWorkflow {
 
 function analyzeApiPrompt(prompt: Record<string, unknown>): ParsedWorkflow {
   const entries = Object.entries(prompt)
-  let seed: number | undefined
+  // Prefer explicit seed/noise_seed on KSampler-like nodes; fall back to any
+  // node's seed field (old behaviour) as the heuristic.
+  const nodeValues = entries.map(([, v]) => v as Record<string, unknown>)
+  const samplerSeed = findSamplerSeed(nodeValues)
+  let seed: number | undefined = samplerSeed
   let modelUsed: string | undefined
   const missingNodes: string[] = []
   for (const [, node] of entries) {
     const n = node as { class_type?: string; inputs?: Record<string, unknown> }
     if (!n || typeof n !== 'object') continue
     const inputs = n.inputs || {}
-    if (typeof inputs.seed === 'number' && seed == null) seed = inputs.seed
-    if (typeof inputs.noise_seed === 'number' && seed == null) seed = inputs.noise_seed
+    if (seed == null && typeof inputs.seed === 'number') seed = inputs.seed
+    if (seed == null && typeof inputs.noise_seed === 'number') seed = inputs.noise_seed
     const ckpt = inputs.ckpt_name || inputs.unet_name || inputs.model_name
     if (typeof ckpt === 'string' && !modelUsed) modelUsed = ckpt
   }
@@ -242,15 +300,18 @@ function analyzeFile(full: string, ext: string): ParsedWorkflow {
     graph = parseWorkflowJson(String(textMeta.prompt))
   }
   const base = analyzeParsedGraph(graph)
+  const heuristicSeed = typeof base.params.heuristicSeed === 'number' ? base.params.heuristicSeed : undefined
   const params: Record<string, unknown> = {
     ...base.params,
     pngMeta: Object.keys(textMeta)
   }
+  // Seed priority: explicit sampler seed > PNG meta.seed > old heuristic.
   let seed = base.seed
   if (seed == null && textMeta.seed) {
     const n = Number(textMeta.seed)
     if (Number.isFinite(n)) seed = n
   }
+  if (seed == null && heuristicSeed != null) seed = heuristicSeed
   let modelUsed = base.modelUsed
   if (!modelUsed && textMeta.model) modelUsed = String(textMeta.model)
   return {
@@ -278,16 +339,14 @@ export class WorkflowService {
    * Scan roots:
    *  1. ComfyPilot workflow library (always — this is where imports land)
    *  2. Each instance's `user/default/workflows`
-   *  3. settings.defaultInstancePath workflows
-   *  4. process.cwd()/workflows (dev convenience)
-   *  5. optional explicit `dir`
+   *  3. process.cwd()/workflows (dev convenience)
+   *  4. optional explicit `dir`
    *
    * Returns the UNION of scanned files and DB records. DB-only rows whose file
    * vanished are marked `missing` so the UI can show/repair them instead of
    * silently dropping the user's import.
    */
   list(opts?: { includeMissing?: boolean }): WorkflowRecord[] {
-    const settings = loadSettings()
     const instances = loadInstanceConfigs()
     const library = this.libraryRoot()
     const roots: Array<{ root: string; origin: WorkflowOrigin }> = [
@@ -296,14 +355,6 @@ export class WorkflowService {
         root: join(i.path, 'user', 'default', 'workflows'),
         origin: 'instance' as WorkflowOrigin
       })),
-      ...(settings.defaultInstancePath
-        ? [
-            {
-              root: join(settings.defaultInstancePath, 'user', 'default', 'workflows'),
-              origin: 'instance' as WorkflowOrigin
-            }
-          ]
-        : []),
       { root: join(process.cwd(), 'workflows'), origin: 'external' as WorkflowOrigin }
     ]
 
@@ -325,6 +376,9 @@ export class WorkflowService {
       const prev = dbById.get(rec.id) || dbByPath.get(rec.path)
       const merged: WorkflowRecord = {
         ...rec,
+        // Keep the DB row's stable id when the path-hash differs (rename keeps
+        // the original id so batch/output references stay valid).
+        id: prev?.id ?? rec.id,
         tags: prev?.tags?.length ? prev.tags : rec.tags,
         favorite: prev?.favorite ?? rec.favorite,
         description: prev?.description ?? rec.description,
@@ -505,20 +559,24 @@ export class WorkflowService {
     return rec
   }
 
-  async importMany(paths: string[], instanceId?: string): Promise<WorkflowRecord[]> {
-    const out: WorkflowRecord[] = []
-    const errors: string[] = []
+  async importMany(
+    paths: string[],
+    instanceId?: string
+  ): Promise<{ ok: WorkflowRecord[]; errors: Array<{ path: string; message: string }> }> {
+    const ok: WorkflowRecord[] = []
+    const errors: Array<{ path: string; message: string }> = []
     for (const p of paths) {
       try {
-        out.push(await this.importFile(p, instanceId))
+        ok.push(await this.importFile(p, instanceId))
       } catch (e) {
-        errors.push(`${basename(p)}: ${e instanceof Error ? e.message : String(e)}`)
+        errors.push({ path: p, message: e instanceof Error ? e.message : String(e) })
       }
     }
-    if (!out.length && errors.length) {
-      throw new Error(errors.join('; '))
+    // Still throw when EVERY file failed so the caller sees a hard error.
+    if (!ok.length && errors.length) {
+      throw new Error(errors.map((e) => `${basename(e.path)}: ${e.message}`).join('; '))
     }
-    return out
+    return { ok, errors }
   }
 
   async tag(id: string, tags: string[]): Promise<WorkflowRecord> {
@@ -548,15 +606,16 @@ export class WorkflowService {
       if (existsSync(dest)) throw new Error('Target name already exists')
       if (existsSync(rec.path)) renameSync(rec.path, dest)
     }
+    // KEEP the original record id — changing it would orphan
+    // batch.items[].workflowId and output_assets.workflowId references.
     const next: WorkflowRecord = {
       ...rec,
-      id: recordIdFor(dest),
       name: safe,
       path: dest,
       updatedAt: Date.now()
     }
-    // Drop the old id row so list() does not resurrect it as missing.
-    if (next.id !== rec.id) dbDeleteWorkflow(rec.id)
+    // Replace the old row in place (same id) so list() does not resurrect a
+    // stale path as missing.
     upsertWorkflow(next)
     return next
   }
@@ -688,15 +747,32 @@ export class WorkflowService {
     mkdirSync(destDir, { recursive: true })
     const ext = extname(rec.path)
     const safe = assertSafeRelativeFilename(rec.name)
-    let dest = join(destDir, `${safe}${ext}`)
-    let n = 1
-    while (existsSync(dest) && !resolveSame(dest, rec.path)) {
-      dest = join(destDir, `${safe}-${n}${ext}`)
-      n += 1
-      if (n > 200) throw new Error('Too many name collisions in instance workflows')
+    const srcHash = hash8(rec.path)
+
+    // 1) Preferred name: reuse when content is identical (openInFrontend on
+    //    every click must NOT keep minting foo-1.json, foo-2.json...).
+    const preferred = join(destDir, `${safe}${ext}`)
+    if (existsSync(preferred)) {
+      if (resolveSame(preferred, rec.path) || sameContentHash(preferred, rec.path)) {
+        return { path: preferred }
+      }
+      // 2) Name collision with DIFFERENT content: stable name derived from the
+      //    source content hash (not an incrementing counter) so re-copies land
+      //    on the same file instead of accumulating duplicates.
+      const hashed = join(destDir, `${safe}.${srcHash}${ext}`)
+      if (existsSync(hashed)) {
+        if (resolveSame(hashed, rec.path) || sameContentHash(hashed, rec.path)) {
+          return { path: hashed }
+        }
+        // Same stable name but content drifted — overwrite (we own this slot).
+        copyFileSync(rec.path, hashed)
+        return { path: hashed }
+      }
+      copyFileSync(rec.path, hashed)
+      return { path: hashed }
     }
-    if (!resolveSame(dest, rec.path)) copyFileSync(rec.path, dest)
-    return { path: dest }
+    copyFileSync(rec.path, preferred)
+    return { path: preferred }
   }
 
   /**
@@ -810,6 +886,14 @@ export class WorkflowService {
     if (!promptId) {
       throw new Error('ComfyUI accepted the prompt but returned no prompt_id')
     }
+    // Sidecar map: lets OutputService.walk attribute the later output files
+    // to this workflow even when PNG meta lacks the workflow id.
+    try {
+      const wf = listWorkflows().find((w) => w.path === opts.workflowPath)
+      recordPromptWorkflowLink(promptId, wf?.id, wf?.name)
+    } catch {
+      /* best-effort */
+    }
     return promptId
   }
 
@@ -837,12 +921,85 @@ export class WorkflowService {
   }
 }
 
+// ---------- promptId -> workflowId sidecar map ----------
+// Lets OutputService.walk attribute single-shot queue outputs to the workflow
+// that produced them (PNG meta may lack the workflow id).
+
+function promptLinksPath(): string {
+  return join(userDataDir(), 'prompt_links.jsonc')
+}
+
+interface PromptWorkflowLink {
+  workflowId?: string
+  workflowName?: string
+}
+
+function loadPromptLinks(): Record<string, PromptWorkflowLink> {
+  try {
+    const p = promptLinksPath()
+    if (!existsSync(p)) return {}
+    return JSON.parse(readFileSync(p, 'utf-8')) as Record<string, PromptWorkflowLink>
+  } catch {
+    return {}
+  }
+}
+
+function savePromptLinks(map: Record<string, PromptWorkflowLink>): void {
+  try {
+    writeFileSync(promptLinksPath(), JSON.stringify(map, null, 2), 'utf-8')
+  } catch {
+    /* best-effort */
+  }
+}
+
+/** Record promptId -> workflow linkage so walk() can backfill workflowId. */
+export function recordPromptWorkflowLink(
+  promptId: string,
+  workflowId?: string,
+  workflowName?: string
+): void {
+  if (!promptId) return
+  const map = loadPromptLinks()
+  map[promptId] = { workflowId, workflowName }
+  // Cap growth: drop the oldest half once past 2000 entries.
+  const keys = Object.keys(map)
+  if (keys.length > 2000) {
+    for (const k of keys.slice(0, 500)) delete map[k]
+  }
+  savePromptLinks(map)
+}
+
+/** Look up workflow linkage for a promptId recorded at queue time. */
+export function lookupPromptWorkflowLink(promptId: string): PromptWorkflowLink | undefined {
+  if (!promptId) return undefined
+  return loadPromptLinks()[promptId]
+}
+
 function resolveSame(a: string, b: string): boolean {
   try {
     // Only Windows and macOS default to case-insensitive paths.
     const fold = process.platform === 'win32' || process.platform === 'darwin'
     const key = (p: string) => (fold ? p.toLowerCase() : p)
     return key(a) === key(b)
+  } catch {
+    return false
+  }
+}
+
+/** Short content hash for stable collision names. */
+function hash8(filePath: string): string {
+  try {
+    return createHash('sha1').update(readFileSync(filePath)).digest('hex').slice(0, 8)
+  } catch {
+    return createHash('sha1').update(filePath).digest('hex').slice(0, 8)
+  }
+}
+
+/** True when both files have identical content (by hash). */
+function sameContentHash(a: string, b: string): boolean {
+  if (resolveSame(a, b)) return true
+  try {
+    return hash8(a) === hash8(b)
   } catch {
     return false
   }

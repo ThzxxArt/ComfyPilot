@@ -231,8 +231,10 @@ describe('workflow library', () => {
 
     // b is not JSON; c is JSON but not a ComfyUI workflow — both must fail.
     const out = await workflowService.importMany([a, b, c])
-    expect(out.length).toBe(1)
-    expect(out[0].name).toBe('a')
+    expect(out.ok.length).toBe(1)
+    expect(out.ok[0].name).toBe('a')
+    expect(out.errors.length).toBe(2)
+    expect(out.errors.map((e) => e.path).sort()).toEqual([b, c].sort())
   })
 })
 

@@ -12,8 +12,7 @@ describe('shared constants', () => {
     expect(ids).toContain('lowvram')
   })
 
-  it('defaults to light theme and locked-down security', () => {
-    expect(DEFAULT_SETTINGS.theme).toBe('light')
+  it('defaults to locked-down security', () => {
     expect(DEFAULT_SETTINGS.securityLevel).toBe('normal')
     expect(DEFAULT_SETTINGS.allowGitUrlInstall).toBe(false)
     expect(DEFAULT_SETTINGS.allowPipInstall).toBe(true)
