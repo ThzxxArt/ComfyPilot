@@ -53,7 +53,7 @@ describe('workflow pair delete + recovery', () => {
 
   it('remove deletes instance source files when deleteSource is true', async () => {
     const { workflowService } = await import('../../src/main/services/workflow')
-    const { upsertInstanceConfig, upsertWorkflow } = await import('../../src/main/services/db')
+    const { upsertInstanceConfig } = await import('../../src/main/services/db')
     const instPath = join(ROOT, 'inst-del')
     upsertInstanceConfig({
       id: 'inst-del',
@@ -130,7 +130,10 @@ describe('workflow pair delete + recovery', () => {
     mkdirSync(dir, { recursive: true })
     const src = join(dir, 'p2.png')
     writePng(src, [
-      ['workflow', JSON.stringify({ nodes: [{ id: 1, type: 'KSampler', widgets_values: [1] }], links: [] })]
+      [
+        'workflow',
+        JSON.stringify({ nodes: [{ id: 1, type: 'KSampler', widgets_values: [1] }], links: [] })
+      ]
     ])
     const rec = await workflowService.importFile(src)
     // one artifact only
@@ -175,7 +178,10 @@ describe('workflow pair delete + recovery', () => {
     mkdirSync(dir, { recursive: true })
     const src = join(dir, 'g.png')
     writePng(src, [
-      ['workflow', JSON.stringify({ nodes: [{ id: 1, type: 'KSampler', widgets_values: [1] }], links: [] })]
+      [
+        'workflow',
+        JSON.stringify({ nodes: [{ id: 1, type: 'KSampler', widgets_values: [1] }], links: [] })
+      ]
     ])
     const rec = await workflowService.importFile(src)
     expect(rec.path.endsWith('.json')).toBe(true)

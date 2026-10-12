@@ -6,8 +6,7 @@ export const APP_NAME = 'ComfyPilot'
  * Build injects __APP_VERSION__ from package.json; dev falls back to the literal.
  */
 declare const __APP_VERSION__: string | undefined
-export const APP_VERSION =
-  (typeof __APP_VERSION__ !== 'undefined' && __APP_VERSION__) || '0.1.7'
+export const APP_VERSION = (typeof __APP_VERSION__ !== 'undefined' && __APP_VERSION__) || '0.1.8'
 
 export const DEFAULT_SETTINGS: AppSettings = {
   locale: 'zh-CN',
@@ -47,11 +46,28 @@ export const MODEL_CATEGORY_LABELS: Record<string, string> = {
   diffusion_models: 'Diffusion Model',
   loras: 'LoRA',
   vae: 'VAE',
-  clip: 'CLIP',
+  text_encoders: 'Text Encoder',
+  clip_vision: 'CLIP Vision',
   controlnet: 'ControlNet',
   upscale_models: 'Upscaler',
   embeddings: 'Embedding',
-  text_encoders: 'Text Encoder',
+  style_models: 'Style Model',
+  diffusers: 'Diffusers',
+  vae_approx: 'VAE Approx',
+  gligen: 'GLIGEN',
+  latent_upscale_models: 'Latent Upscaler',
+  photomaker: 'PhotoMaker',
+  classifiers: 'Classifier',
+  model_patches: 'Model Patch',
+  audio_encoders: 'Audio Encoder',
+  hypernetworks: 'Hypernetwork',
+  background_removal: 'BG Removal',
+  frame_interpolation: 'Frame Interpolation',
+  geometry_estimation: 'Geometry Estimation',
+  optical_flow: 'Optical Flow',
+  detection: 'Detection',
+  // Legacy aliases
+  clip: 'CLIP',
   unet: 'UNet',
   other: 'Other'
 }

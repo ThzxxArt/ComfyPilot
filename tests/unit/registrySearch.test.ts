@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { matchesQuery, mapRegistryPack, mapMarketItem, packKeyVariants } from '../../src/main/services/registry'
+import {
+  matchesQuery,
+  mapRegistryPack,
+  mapMarketItem,
+  packKeyVariants
+} from '../../src/main/services/registry'
 
 describe('registry search matching', () => {
   const node = {

@@ -11,7 +11,9 @@ vi.mock('electron', () => ({
 
 import { ensurePip, installRequirements } from '../../src/main/services/env'
 
-function makeExec(script: Record<string, Error | string>): (cmd: string, args: string[]) => Promise<string> {
+function makeExec(
+  script: Record<string, Error | string>
+): (cmd: string, args: string[]) => Promise<string> {
   return async (_cmd: string, args: string[]) => {
     const key = args.join(' ')
     for (const [k, v] of Object.entries(script)) {
@@ -60,7 +62,9 @@ describe('ensurePip', () => {
       '--version': new Error('No module named pip'),
       ensurepip: new Error('ensurepip disabled')
     })
-    await expect(ensurePip('C:/venv/python.exe', exec)).rejects.toThrow(/ensurepip|pip is not available/i)
+    await expect(ensurePip('C:/venv/python.exe', exec)).rejects.toThrow(
+      /ensurepip|pip is not available/i
+    )
   })
 })
 

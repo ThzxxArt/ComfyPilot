@@ -21,9 +21,8 @@ describe('media URL gate', () => {
   })
 
   it('thumbs round-trip through comfy-pilot-media', async () => {
-    const { toMediaUrl, resolveMediaUrlToPath, thumbnailDisplayUrl } = await import(
-      '../../src/main/services/media'
-    )
+    const { toMediaUrl, resolveMediaUrlToPath, thumbnailDisplayUrl } =
+      await import('../../src/main/services/media')
     const { cacheDir } = await import('../../src/main/services/db')
     const thumbs = join(cacheDir(), 'thumbs')
     mkdirSync(thumbs, { recursive: true })

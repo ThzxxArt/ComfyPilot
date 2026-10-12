@@ -65,7 +65,9 @@ function uiWorkflow(withWidgetsMeta: boolean): string {
         type: 'CustomNode',
         title: 'checkpoint loader',
         widgets_values: ['a', 3.5, 12],
-        ...(withWidgetsMeta ? { widgets: [{ name: 'ckpt_name' }, { name: 'strength' }, { name: 'seed' }] } : {}),
+        ...(withWidgetsMeta
+          ? { widgets: [{ name: 'ckpt_name' }, { name: 'strength' }, { name: 'seed' }] }
+          : {}),
         inputs: [
           { name: 'ckpt_name', type: 'STRING', widget: { name: 'ckpt_name' } },
           { name: 'strength', type: 'FLOAT', widget: { name: 'strength' } },
@@ -132,7 +134,8 @@ describe('workflow final coverage', () => {
 
   it('prepareFrontend throws when no instance configured', async () => {
     const { workflowService } = await import('../../src/main/services/workflow')
-    const { deleteInstanceConfig, loadInstanceConfigs, upsertInstanceConfig } = await import('../../src/main/services/db')
+    const { deleteInstanceConfig, loadInstanceConfigs, upsertInstanceConfig } =
+      await import('../../src/main/services/db')
     // Import first (needs an instance), then wipe instances and try prepareFrontend.
     const dir = join(ROOT, 'noinst')
     mkdirSync(dir, { recursive: true })
@@ -207,15 +210,26 @@ describe('workflow final coverage', () => {
     const png2 = join(dir, 'q2.png')
     writePng(png2, [
       ['prompt', 'not-json'],
-      ['workflow', JSON.stringify({ nodes: [{ id: 1, type: 'KSampler', widgets_values: [1, 'fixed', 1, 1] }], links: [] })]
+      [
+        'workflow',
+        JSON.stringify({
+          nodes: [{ id: 1, type: 'KSampler', widgets_values: [1, 'fixed', 1, 1] }],
+          links: []
+        })
+      ]
     ])
     const pid2 = await workflowService.queue({ workflowPath: png2, instanceId: 'png-inst' })
     expect(pid2).toBe('png-pid')
 
     // PNG with neither parseable payload
     const png3 = join(dir, 'q3.png')
-    writePng(png3, [['prompt', 'nope'], ['workflow', 'also-nope']])
-    await expect(workflowService.queue({ workflowPath: png3, instanceId: 'png-inst' })).rejects.toThrow()
+    writePng(png3, [
+      ['prompt', 'nope'],
+      ['workflow', 'also-nope']
+    ])
+    await expect(
+      workflowService.queue({ workflowPath: png3, instanceId: 'png-inst' })
+    ).rejects.toThrow()
     vi.unstubAllGlobals()
   })
 
@@ -225,7 +239,10 @@ describe('workflow final coverage', () => {
     mkdirSync(dir, { recursive: true })
     const src = join(dir, 'shot.png')
     writePng(src, [
-      ['workflow', JSON.stringify({ nodes: [{ id: 1, type: 'KSampler', widgets_values: [1] }], links: [] })]
+      [
+        'workflow',
+        JSON.stringify({ nodes: [{ id: 1, type: 'KSampler', widgets_values: [1] }], links: [] })
+      ]
     ])
     const rec = await workflowService.importFile(src)
     // PNG import materialises a single .json — no PNG card in the library.
@@ -254,7 +271,9 @@ describe('workflow final coverage', () => {
       origin: 'library'
     })
     expect(workflowService.list({ includeMissing: true }).some((w) => w.missing)).toBe(true)
-    expect(workflowService.list({ includeMissing: false }).some((w) => w.id === 'ghost-gone')).toBe(false)
+    expect(workflowService.list({ includeMissing: false }).some((w) => w.id === 'ghost-gone')).toBe(
+      false
+    )
   })
 
   it('analyzes widgets metadata order and title-based model', async () => {
@@ -273,7 +292,10 @@ describe('workflow final coverage', () => {
     const dir = join(ROOT, 'itxt')
     mkdirSync(dir, { recursive: true })
     const png = join(dir, 'i.png')
-    writePng(png, [['Comment', 'ignored'], ['seed', '1']])
+    writePng(png, [
+      ['Comment', 'ignored'],
+      ['seed', '1']
+    ])
     const meta = extractPngTextMeta(readFileSync(png))
     // tEXt keys present; iTXt parsed into Comment
     expect(meta.seed === '1' || meta.Comment).toBeTruthy()

@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { clampPercent, formatPercent, formatBytes, formatUptime, formatSpeed } from '../../src/renderer/src/utils/format'
+import {
+  clampPercent,
+  formatPercent,
+  formatBytes,
+  formatUptime,
+  formatSpeed
+} from '../../src/renderer/src/utils/format'
 
 describe('format helpers', () => {
   it('clampPercent rounds to integer and clamps 0-100', () => {

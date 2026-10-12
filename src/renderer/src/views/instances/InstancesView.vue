@@ -2,15 +2,48 @@
 import { computed, h, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  AddOutline, PlayOutline, StopOutline, TrashOutline, FolderOpenOutline,
-  OpenOutline, RefreshOutline, PowerOutline, DownloadOutline, LinkOutline, RocketOutline,
-  CreateOutline, TerminalOutline, PinOutline, SearchOutline, EllipsisHorizontalOutline,
-  InformationCircleOutline, CloudDownloadOutline, ArrowUpCircleOutline, ConstructOutline
+  AddOutline,
+  PlayOutline,
+  StopOutline,
+  TrashOutline,
+  FolderOpenOutline,
+  OpenOutline,
+  RefreshOutline,
+  PowerOutline,
+  DownloadOutline,
+  LinkOutline,
+  RocketOutline,
+  CreateOutline,
+  TerminalOutline,
+  PinOutline,
+  SearchOutline,
+  EllipsisHorizontalOutline,
+  InformationCircleOutline,
+  CloudDownloadOutline,
+  ArrowUpCircleOutline,
+  ConstructOutline
 } from '@vicons/ionicons5'
 import {
-  NButton, NEmpty, NIcon, NModal, NForm, NFormItem, NInput, NInputNumber, NSpace,
-  NSpin, NSelect, NTag, NCheckbox, NSwitch, useMessage, useDialog, NInputGroup,
-  NDropdown, NTooltip, type DropdownOption
+  NButton,
+  NEmpty,
+  NIcon,
+  NModal,
+  NForm,
+  NFormItem,
+  NInput,
+  NInputNumber,
+  NSpace,
+  NSpin,
+  NSelect,
+  NTag,
+  NCheckbox,
+  NSwitch,
+  useMessage,
+  useDialog,
+  NInputGroup,
+  NDropdown,
+  NTooltip,
+  type DropdownOption
 } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 import { ipc } from '@/composables/useIpc'
@@ -20,8 +53,14 @@ import ComfyUpdateProgressModal from '@/components/ComfyUpdateProgressModal.vue'
 import { useI18n } from 'vue-i18n'
 import { formatUptime } from '@/utils/format'
 import type {
-  ComfyInstanceConfig, ComfyInstanceInfo, LaunchArgTemplate, EnvProbe,
-  PortCheckResult, InstanceDiscoveryCandidate, LaunchCommandPreview, InstanceStatus,
+  ComfyInstanceConfig,
+  ComfyInstanceInfo,
+  LaunchArgTemplate,
+  EnvProbe,
+  PortCheckResult,
+  InstanceDiscoveryCandidate,
+  LaunchCommandPreview,
+  InstanceStatus,
   ComfyUpdateInfo
 } from '@shared/types'
 
@@ -53,9 +92,20 @@ const editExtraArgs = ref('')
 const editSaving = ref(false)
 
 const draft = ref<ComfyInstanceConfig>({
-  id: '', name: 'My ComfyUI', path: '', pythonPath: '', venvPath: '',
-  port: 8188, listen: '127.0.0.1', extraArgs: [], argTemplateId: 'default',
-  enabled: true, notes: '', autoStart: false, frontendVersion: '', pinned: false
+  id: '',
+  name: 'My ComfyUI',
+  path: '',
+  pythonPath: '',
+  venvPath: '',
+  port: 8188,
+  listen: '127.0.0.1',
+  extraArgs: [],
+  argTemplateId: 'default',
+  enabled: true,
+  notes: '',
+  autoStart: false,
+  frontendVersion: '',
+  pinned: false
 })
 const extraArgsText = ref('')
 
@@ -212,7 +262,9 @@ function useCandidate(c: InstanceDiscoveryCandidate): void {
 }
 
 async function importSelectedCandidates(): Promise<void> {
-  const picks = candidates.value.filter((c) => selectedCandidates.value.includes(c.path) && !c.registered)
+  const picks = candidates.value.filter(
+    (c) => selectedCandidates.value.includes(c.path) && !c.registered
+  )
   if (!picks.length) {
     message.warning(t('instance.selectUnregisteredFirst'))
     return
@@ -300,9 +352,20 @@ async function createInstance(): Promise<void> {
     message.success(t('instance.instanceAdded', { name: info.name }))
     // Reset so a second "Add" does not inherit the previous form.
     draft.value = {
-      id: '', name: 'My ComfyUI', path: '', pythonPath: '', venvPath: '',
-      port: 8188, listen: '127.0.0.1', extraArgs: [], argTemplateId: 'default',
-      enabled: true, notes: '', autoStart: false, frontendVersion: '', pinned: false
+      id: '',
+      name: 'My ComfyUI',
+      path: '',
+      pythonPath: '',
+      venvPath: '',
+      port: 8188,
+      listen: '127.0.0.1',
+      extraArgs: [],
+      argTemplateId: 'default',
+      enabled: true,
+      notes: '',
+      autoStart: false,
+      frontendVersion: '',
+      pinned: false
     }
     extraArgsText.value = ''
   } catch (err) {
@@ -441,7 +504,10 @@ function updateInfoSummary(info: ComfyUpdateInfo): string {
   }
   parts.push(
     info.updatable
-      ? t('instance.updateAvailable', { latest: info.latest || info.current, current: info.current })
+      ? t('instance.updateAvailable', {
+          latest: info.latest || info.current,
+          current: info.current
+        })
       : t('instance.updateNone')
   )
   if (info.error) parts.push(t('instance.updateCheckFailed', { error: info.error }))
@@ -582,22 +648,38 @@ function confirmStopAll(): void {
 
 function moreOptions(item: ComfyInstanceInfo): DropdownOption[] {
   return [
-    { label: t('instance.restart'), key: 'restart', icon: () => h(NIcon, { component: RefreshOutline }) },
-    { label: t('instance.previewCmd'), key: 'preview', icon: () => h(NIcon, { component: TerminalOutline }) },
+    {
+      label: t('instance.restart'),
+      key: 'restart',
+      icon: () => h(NIcon, { component: RefreshOutline })
+    },
+    {
+      label: t('instance.previewCmd'),
+      key: 'preview',
+      icon: () => h(NIcon, { component: TerminalOutline })
+    },
     { label: t('instance.edit'), key: 'edit', icon: () => h(NIcon, { component: CreateOutline }) },
     {
       label: item.pinned ? t('instance.unpin') : t('instance.pin'),
       key: 'pin',
       icon: () => h(NIcon, { component: PinOutline })
     },
-    { label: t('instance.forceKill'), key: 'forceKill', icon: () => h(NIcon, { component: PowerOutline }) },
+    {
+      label: t('instance.forceKill'),
+      key: 'forceKill',
+      icon: () => h(NIcon, { component: PowerOutline })
+    },
     {
       label: t('instance.openBrowser'),
       key: 'openBrowser',
       icon: () => h(NIcon, { component: OpenOutline }),
       disabled: !item.url
     },
-    { label: t('instance.probeEnv'), key: 'probeEnv', icon: () => h(NIcon, { component: LinkOutline }) },
+    {
+      label: t('instance.probeEnv'),
+      key: 'probeEnv',
+      icon: () => h(NIcon, { component: LinkOutline })
+    },
     {
       label: t('instance.checkUpdate'),
       key: 'checkComfyUpdate',
@@ -613,9 +695,21 @@ function moreOptions(item: ComfyInstanceInfo): DropdownOption[] {
       key: 'repairEnv',
       icon: () => h(NIcon, { component: ConstructOutline })
     },
-    { label: t('instance.exportDiag'), key: 'exportDiag', icon: () => h(NIcon, { component: DownloadOutline }) },
-    { label: t('instance.detail'), key: 'detail', icon: () => h(NIcon, { component: InformationCircleOutline }) },
-    { label: t('instance.remove'), key: 'remove', icon: () => h(NIcon, { component: TrashOutline }) }
+    {
+      label: t('instance.exportDiag'),
+      key: 'exportDiag',
+      icon: () => h(NIcon, { component: DownloadOutline })
+    },
+    {
+      label: t('instance.detail'),
+      key: 'detail',
+      icon: () => h(NIcon, { component: InformationCircleOutline })
+    },
+    {
+      label: t('instance.remove'),
+      key: 'remove',
+      icon: () => h(NIcon, { component: TrashOutline })
+    }
   ]
 }
 
@@ -684,7 +778,12 @@ function statusClass(s: string): string {
       </div>
       <NSpace>
         <NInputGroup>
-          <NInput v-model:value="search" :placeholder="$t('instance.searchPlaceholder')" clearable style="width: 220px">
+          <NInput
+            v-model:value="search"
+            :placeholder="$t('instance.searchPlaceholder')"
+            clearable
+            style="width: 220px"
+          >
             <template #prefix><NIcon :component="SearchOutline" /></template>
           </NInput>
         </NInputGroup>
@@ -718,129 +817,176 @@ function statusClass(s: string): string {
     </div>
 
     <div class="page-body">
-    <NSpin :show="loading">
-      <div v-if="filtered.length" class="grid cards">
-        <article
-          v-for="item in filtered"
-          :key="item.id"
-          class="card card-interactive inst"
-          @click="router.push(`/instances/${item.id}`)"
-        >
-          <div class="inst-top">
-            <div>
-              <div class="inst-name">
-                <NIcon v-if="item.pinned" :component="PinOutline" :size="14" class="pin-icon" />
-                {{ item.name }}
+      <NSpin :show="loading">
+        <div v-if="filtered.length" class="grid cards">
+          <article
+            v-for="item in filtered"
+            :key="item.id"
+            class="card card-interactive inst"
+            role="button"
+            tabindex="0"
+            :aria-label="item.name"
+            @click="router.push(`/instances/${item.id}`)"
+            @keydown.enter.prevent="router.push(`/instances/${item.id}`)"
+            @keydown.space.prevent="router.push(`/instances/${item.id}`)"
+          >
+            <div class="inst-top">
+              <div class="inst-main">
+                <div class="inst-name" :title="item.name">
+                  <NIcon v-if="item.pinned" :component="PinOutline" :size="14" class="pin-icon" />
+                  {{ item.name }}
+                </div>
+                <div class="inst-path mono" :title="item.path">{{ item.path }}</div>
               </div>
-              <div class="inst-path mono">{{ item.path }}</div>
+              <span class="chip" :class="statusClass(item.status)">{{
+                statusLabel(item.status)
+              }}</span>
             </div>
-            <span class="chip" :class="statusClass(item.status)">{{ statusLabel(item.status) }}</span>
-          </div>
 
-          <div class="meta-row">
-            <span>{{ $t('instance.port') }} <b>{{ item.port }}</b></span>
-            <span v-if="item.version">{{ $t('instance.versionLabel') }} <b>{{ item.version }}</b></span>
-            <span v-if="item.pid">PID <b>{{ item.pid }}</b></span>
-            <span v-if="item.uptimeMs">
-              <b>{{ $t('instance.uptime', { t: formatUptime(item.uptimeMs) }) }}</b>
-            </span>
-            <span v-if="item.autoStart"><NTag size="tiny" type="success" round>autoStart</NTag></span>
-            <span v-if="item.managerEnabled"><NTag size="tiny" type="info" round>Manager</NTag></span>
-          </div>
+            <div class="meta-row">
+              <span
+                >{{ $t('instance.port') }} <b>{{ item.port }}</b></span
+              >
+              <span v-if="item.version"
+                >{{ $t('instance.versionLabel') }} <b>{{ item.version }}</b></span
+              >
+              <span v-if="item.pid"
+                >{{ $t('instance.metaPid') }} <b>{{ item.pid }}</b></span
+              >
+              <span v-if="item.uptimeMs">
+                <b>{{ $t('instance.uptime', { t: formatUptime(item.uptimeMs) }) }}</b>
+              </span>
+              <span v-if="item.autoStart"
+                ><NTag size="tiny" type="success" round>{{
+                  $t('instance.metaAutoStart')
+                }}</NTag></span
+              >
+              <span v-if="item.managerEnabled"
+                ><NTag size="tiny" type="info" round>{{ $t('instance.metaManager') }}</NTag></span
+              >
+            </div>
 
-          <div v-if="envProbes[item.id]" class="env-box">
-            <div class="mono">{{ envProbes[item.id].pythonVersion }}</div>
-            <div class="mono">torch {{ envProbes[item.id].torchVersion || '—' }} · cuda {{ envProbes[item.id].cudaVersion || '—' }}</div>
-          </div>
+            <div v-if="envProbes[item.id]" class="env-box">
+              <div class="mono">{{ envProbes[item.id].pythonVersion }}</div>
+              <div class="mono">
+                torch {{ envProbes[item.id].torchVersion || '—' }} · cuda
+                {{ envProbes[item.id].cudaVersion || '—' }}
+              </div>
+            </div>
 
-          <div class="actions" @click.stop>
-            <!-- Primary: launch & open, or stop when running -->
-            <NTooltip trigger="hover">
-              <template #trigger>
-                <NButton
-                  v-if="item.status !== 'running'"
-                  size="small"
-                  type="primary"
-                  secondary
-                  :loading="busy[item.id]"
-                  @click="launchAndOpen(item)"
-                >
-                  <template #icon><NIcon :component="RocketOutline" /></template>
-                  {{ $t('instance.launchOpen') }}
-                </NButton>
-                <NButton v-else size="small" type="warning" secondary @click="stop(item)">
-                  <template #icon><NIcon :component="StopOutline" /></template>
-                  {{ $t('header.stop') }}
-                </NButton>
-              </template>
-              {{ item.status === 'running' ? $t('header.stop') : $t('instance.launchOpen') }}
-            </NTooltip>
-
-            <!-- Secondary: start only / open frontend when already running -->
-            <NTooltip trigger="hover">
-              <template #trigger>
-                <NButton
-                  v-if="item.status !== 'running'"
-                  size="small"
-                  type="primary"
-                  tertiary
-                  @click="launch(item, { open: 'none' })"
-                >
-                  <template #icon><NIcon :component="PlayOutline" /></template>
-                  {{ $t('header.start') }}
-                </NButton>
-                <NButton
-                  v-else
-                  size="small"
-                  tertiary
-                  :disabled="item.status !== 'running' || !item.url"
-                  :title="item.status === 'running' ? '' : t('common.needRunningInstance')"
-                  @click="item.status === 'running' && item.url && router.push({ path: '/embed', query: { url: item.url } })"
-                >
-                  <template #icon><NIcon :component="OpenOutline" /></template>
-                  {{ $t('instance.openFrontend') }}
-                </NButton>
-              </template>
-              {{ item.status === 'running' ? $t('instance.openFrontend') : $t('header.start') }}
-            </NTooltip>
-
-            <!-- More -->
-            <NTooltip trigger="hover">
-              <template #trigger>
-                <NDropdown
-                  trigger="click"
-                  :options="moreOptions(item)"
-                  @select="(key: string | number) => onMoreSelect(key, item)"
-                >
-                  <NButton size="small" secondary>
-                    <template #icon><NIcon :component="EllipsisHorizontalOutline" /></template>
+            <div class="actions" @click.stop>
+              <!-- Primary: launch & open, or stop when running/starting -->
+              <NTooltip trigger="hover">
+                <template #trigger>
+                  <NButton
+                    v-if="item.status !== 'running' && item.status !== 'starting'"
+                    size="small"
+                    type="primary"
+                    secondary
+                    :loading="busy[item.id]"
+                    @click="launchAndOpen(item)"
+                  >
+                    <template #icon><NIcon :component="RocketOutline" /></template>
+                    {{ $t('instance.launchOpen') }}
                   </NButton>
-                </NDropdown>
-              </template>
-              {{ $t('instance.moreActions') }}
-            </NTooltip>
-          </div>
-        </article>
-      </div>
-      <div v-else class="empty">
-        <NEmpty :description="$t('instance.emptyInstances')">
-          <template #extra>
-            <NSpace>
-              <NButton type="primary" @click="showCreate = true">{{ $t('instance.addExistingManually') }}</NButton>
-              <NButton secondary @click="router.push('/install')">
-                <template #icon><NIcon :component="RocketOutline" /></template>
-                {{ $t('instance.installIsolated') }}
-              </NButton>
-              <NButton secondary @click="openDiscover">{{ $t('instance.discover') }}</NButton>
-            </NSpace>
-          </template>
-        </NEmpty>
-      </div>
-    </NSpin>
+                  <NButton
+                    v-else
+                    size="small"
+                    type="warning"
+                    secondary
+                    :loading="busy[`stop:${item.id}`]"
+                    @click="stop(item)"
+                  >
+                    <template #icon><NIcon :component="StopOutline" /></template>
+                    {{ $t('header.stop') }}
+                  </NButton>
+                </template>
+                {{
+                  item.status === 'running' || item.status === 'starting'
+                    ? $t('header.stop')
+                    : $t('instance.launchOpen')
+                }}
+              </NTooltip>
+
+              <!-- Secondary: start only / open frontend when already running -->
+              <NTooltip trigger="hover">
+                <template #trigger>
+                  <NButton
+                    v-if="item.status !== 'running' && item.status !== 'starting'"
+                    size="small"
+                    type="primary"
+                    tertiary
+                    @click="launch(item, { open: 'none' })"
+                  >
+                    <template #icon><NIcon :component="PlayOutline" /></template>
+                    {{ $t('header.start') }}
+                  </NButton>
+                  <NButton
+                    v-else
+                    size="small"
+                    tertiary
+                    :disabled="item.status !== 'running' || !item.url"
+                    @click="
+                      item.status === 'running' &&
+                      item.url &&
+                      router.push({ path: '/embed', query: { url: item.url } })
+                    "
+                  >
+                    <template #icon><NIcon :component="OpenOutline" /></template>
+                    {{ $t('instance.openFrontend') }}
+                  </NButton>
+                </template>
+                {{
+                  item.status === 'running' || item.status === 'starting'
+                    ? $t('instance.openFrontend')
+                    : $t('header.start')
+                }}
+              </NTooltip>
+
+              <!-- More -->
+              <NTooltip trigger="hover">
+                <template #trigger>
+                  <NDropdown
+                    trigger="click"
+                    :options="moreOptions(item)"
+                    @select="(key: string | number) => onMoreSelect(key, item)"
+                  >
+                    <NButton size="small" secondary>
+                      <template #icon><NIcon :component="EllipsisHorizontalOutline" /></template>
+                    </NButton>
+                  </NDropdown>
+                </template>
+                {{ $t('instance.moreActions') }}
+              </NTooltip>
+            </div>
+          </article>
+        </div>
+        <div v-else class="empty">
+          <NEmpty :description="$t('instance.emptyInstances')">
+            <template #extra>
+              <NSpace>
+                <NButton type="primary" @click="showCreate = true">{{
+                  $t('instance.addExistingManually')
+                }}</NButton>
+                <NButton secondary @click="router.push('/install')">
+                  <template #icon><NIcon :component="RocketOutline" /></template>
+                  {{ $t('instance.installIsolated') }}
+                </NButton>
+                <NButton secondary @click="openDiscover">{{ $t('instance.discover') }}</NButton>
+              </NSpace>
+            </template>
+          </NEmpty>
+        </div>
+      </NSpin>
     </div>
 
     <!-- Discovery candidates -->
-    <NModal v-model:show="showDiscover" preset="card" :title="$t('instance.candidates')" style="width: 720px; border-radius: 20px">
+    <NModal
+      v-model:show="showDiscover"
+      preset="card"
+      :title="$t('instance.candidates')"
+      style="width: 720px; border-radius: 20px"
+    >
       <NSpin :show="discovering">
         <div v-if="candidates.length" class="cand-list">
           <div v-for="c in candidates" :key="c.path" class="cand-row">
@@ -859,7 +1005,9 @@ function statusClass(s: string): string {
                 <span v-if="c.estimatedVersion"> · {{ c.estimatedVersion }}</span>
               </div>
             </div>
-            <NButton size="tiny" secondary :disabled="c.registered" @click="useCandidate(c)">{{ $t('instance.fillForm') }}</NButton>
+            <NButton size="tiny" secondary :disabled="c.registered" @click="useCandidate(c)">{{
+              $t('instance.fillForm')
+            }}</NButton>
           </div>
         </div>
         <NEmpty v-else :description="$t('instance.noCandidates')" />
@@ -867,14 +1015,23 @@ function statusClass(s: string): string {
       <template #footer>
         <NSpace justify="end">
           <NButton @click="showDiscover = false">{{ $t('common.close') }}</NButton>
-          <NButton secondary :loading="discovering" @click="runDiscover">{{ $t('instance.rescan') }}</NButton>
-          <NButton type="primary" @click="importSelectedCandidates">{{ $t('instance.importSelected') }}</NButton>
+          <NButton secondary :loading="discovering" @click="runDiscover">{{
+            $t('instance.rescan')
+          }}</NButton>
+          <NButton type="primary" @click="importSelectedCandidates">{{
+            $t('instance.importSelected')
+          }}</NButton>
         </NSpace>
       </template>
     </NModal>
 
     <!-- Launch command preview -->
-    <NModal v-model:show="showPreviewModal" preset="card" :title="$t('instance.previewCmd')" style="width: 720px; border-radius: 20px">
+    <NModal
+      v-model:show="showPreviewModal"
+      preset="card"
+      :title="$t('instance.previewCmd')"
+      style="width: 720px; border-radius: 20px"
+    >
       <div v-if="preview" class="preview-box">
         <div class="preview-label mono">cwd: {{ preview.cwd }}</div>
         <pre class="mono preview-cmd">{{ preview.commandLine }}</pre>
@@ -889,7 +1046,12 @@ function statusClass(s: string): string {
     </NModal>
 
     <!-- Edit instance -->
-    <NModal v-model:show="showEditModal" preset="card" :title="$t('instance.edit')" style="width: 640px; border-radius: 20px">
+    <NModal
+      v-model:show="showEditModal"
+      preset="card"
+      :title="$t('instance.edit')"
+      style="width: 640px; border-radius: 20px"
+    >
       <NForm v-if="editing" label-placement="top">
         <NFormItem :label="$t('instance.instanceName')">
           <NInput v-model:value="editing.name" />
@@ -897,21 +1059,30 @@ function statusClass(s: string): string {
         <NFormItem :label="$t('instance.installDir')">
           <NInput v-model:value="editing.path">
             <template #suffix>
-              <NButton size="tiny" secondary @click="pickEditPath('path')">{{ $t('instance.browse') }}</NButton>
+              <NButton size="tiny" secondary @click="pickEditPath('path')">{{
+                $t('instance.browse')
+              }}</NButton>
             </template>
           </NInput>
         </NFormItem>
         <NFormItem label="Python">
-          <NInput v-model:value="editing.pythonPath" :placeholder="$t('instance.pythonPlaceholder')">
+          <NInput
+            v-model:value="editing.pythonPath"
+            :placeholder="$t('instance.pythonPlaceholder')"
+          >
             <template #suffix>
-              <NButton size="tiny" secondary @click="pickEditPath('pythonPath')">{{ $t('instance.browse') }}</NButton>
+              <NButton size="tiny" secondary @click="pickEditPath('pythonPath')">{{
+                $t('instance.browse')
+              }}</NButton>
             </template>
           </NInput>
         </NFormItem>
         <NFormItem label="venv">
           <NInput v-model:value="editing.venvPath">
             <template #suffix>
-              <NButton size="tiny" secondary @click="pickEditPath('venvPath')">{{ $t('instance.browse') }}</NButton>
+              <NButton size="tiny" secondary @click="pickEditPath('venvPath')">{{
+                $t('instance.browse')
+              }}</NButton>
             </template>
           </NInput>
         </NFormItem>
@@ -920,7 +1091,9 @@ function statusClass(s: string): string {
             <NSpace vertical :size="6">
               <NSpace>
                 <NInputNumber v-model:value="editing.port" :min="1" :max="65535" />
-                <NButton size="small" secondary @click="checkEditPort">{{ $t('instance.checkPort') }}</NButton>
+                <NButton size="small" secondary @click="checkEditPort">{{
+                  $t('instance.checkPort')
+                }}</NButton>
               </NSpace>
               <div
                 v-if="editing.port && portChecks[editing.port]"
@@ -945,10 +1118,12 @@ function statusClass(s: string): string {
         <NFormItem :label="$t('instance.argTemplate')">
           <NSelect
             v-model:value="editing.argTemplateId"
-            :options="templates.map((tpl) => ({
-              label: `${t(`launchTpl.${tpl.id}.name`)} — ${t(`launchTpl.${tpl.id}.desc`)}`,
-              value: tpl.id
-            }))"
+            :options="
+              templates.map((tpl) => ({
+                label: `${t(`launchTpl.${tpl.id}.name`)} — ${t(`launchTpl.${tpl.id}.desc`)}`,
+                value: tpl.id
+              }))
+            "
           />
         </NFormItem>
         <NFormItem :label="$t('instance.extraArgs')">
@@ -969,13 +1144,20 @@ function statusClass(s: string): string {
       <template #footer>
         <NSpace justify="end">
           <NButton @click="showEditModal = false">{{ $t('common.cancel') }}</NButton>
-          <NButton type="primary" :loading="editSaving" @click="saveEdit">{{ $t('common.save') }}</NButton>
+          <NButton type="primary" :loading="editSaving" @click="saveEdit">{{
+            $t('common.save')
+          }}</NButton>
         </NSpace>
       </template>
     </NModal>
 
     <!-- Create instance -->
-    <NModal v-model:show="showCreate" preset="card" :title="$t('instance.addTitle')" style="width: 640px; border-radius: 20px">
+    <NModal
+      v-model:show="showCreate"
+      preset="card"
+      :title="$t('instance.addTitle')"
+      style="width: 640px; border-radius: 20px"
+    >
       <NForm label-placement="top">
         <NFormItem :label="$t('instance.instanceName')">
           <NInput v-model:value="draft.name" :placeholder="$t('instance.namePlaceholder')" />
@@ -983,31 +1165,39 @@ function statusClass(s: string): string {
         <NFormItem :label="$t('instance.comfyInstallDir')">
           <NInput v-model:value="draft.path" :placeholder="$t('instance.pathPlaceholder')">
             <template #suffix>
-              <NButton size="tiny" secondary @click="pickPath('path')">{{ $t('instance.browse') }}</NButton>
+              <NButton size="tiny" secondary @click="pickPath('path')">{{
+                $t('instance.browse')
+              }}</NButton>
             </template>
           </NInput>
         </NFormItem>
         <NFormItem :label="$t('instance.pythonLabel')">
           <NInput v-model:value="draft.pythonPath" :placeholder="$t('instance.pythonPlaceholder')">
             <template #suffix>
-              <NButton size="tiny" secondary @click="pickPath('pythonPath')">{{ $t('instance.browse') }}</NButton>
+              <NButton size="tiny" secondary @click="pickPath('pythonPath')">{{
+                $t('instance.browse')
+              }}</NButton>
             </template>
           </NInput>
         </NFormItem>
         <NFormItem :label="$t('instance.venvLabel')">
           <NInput v-model:value="draft.venvPath" :placeholder="$t('instance.venvPlaceholder')">
             <template #suffix>
-              <NButton size="tiny" secondary @click="pickPath('venvPath')">{{ $t('instance.browse') }}</NButton>
+              <NButton size="tiny" secondary @click="pickPath('venvPath')">{{
+                $t('instance.browse')
+              }}</NButton>
             </template>
           </NInput>
         </NFormItem>
         <NFormItem :label="$t('instance.argTemplate')">
           <NSelect
             v-model:value="draft.argTemplateId"
-            :options="templates.map((tpl) => ({
-              label: `${t(`launchTpl.${tpl.id}.name`)} — ${t(`launchTpl.${tpl.id}.desc`)}`,
-              value: tpl.id
-            }))"
+            :options="
+              templates.map((tpl) => ({
+                label: `${t(`launchTpl.${tpl.id}.name`)} — ${t(`launchTpl.${tpl.id}.desc`)}`,
+                value: tpl.id
+              }))
+            "
           />
         </NFormItem>
         <div class="form-row">
@@ -1015,8 +1205,12 @@ function statusClass(s: string): string {
             <NSpace vertical :size="6">
               <NSpace>
                 <NInputNumber v-model:value="draft.port" :min="1" :max="65535" />
-                <NButton size="small" secondary @click="suggestPort">{{ $t('instance.suggestPort') }}</NButton>
-                <NButton size="small" secondary @click="checkPort">{{ $t('instance.checkPort') }}</NButton>
+                <NButton size="small" secondary @click="suggestPort">{{
+                  $t('instance.suggestPort')
+                }}</NButton>
+                <NButton size="small" secondary @click="checkPort">{{
+                  $t('instance.checkPort')
+                }}</NButton>
               </NSpace>
               <div
                 v-if="draft.port && portChecks[draft.port]"
@@ -1060,7 +1254,9 @@ function statusClass(s: string): string {
       <template #footer>
         <NSpace justify="end">
           <NButton @click="showCreate = false">{{ $t('common.cancel') }}</NButton>
-          <NButton type="primary" :loading="saving" @click="createInstance">{{ $t('common.save') }}</NButton>
+          <NButton type="primary" :loading="saving" @click="createInstance">{{
+            $t('common.save')
+          }}</NButton>
         </NSpace>
       </template>
     </NModal>
@@ -1072,25 +1268,139 @@ function statusClass(s: string): string {
 
 <style lang="scss" scoped>
 @use '@/styles/variables.scss' as *;
-.cards { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
-.inst { padding: 18px; cursor: pointer; }
-.inst-top { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
-.inst-name { font-size: 17px; font-weight: 700; letter-spacing: -0.02em; display: flex; align-items: center; gap: 6px; }
-.pin-icon { color: $color-primary; }
-.inst-path { margin-top: 6px; font-size: 12px; color: $color-text-muted; word-break: break-all; }
-.meta-row { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; font-size: 12.5px; color: $color-text-secondary; b { color: $color-text; } }
-.env-box { background: $color-surface-2; border-radius: 10px; padding: 8px 10px; font-size: 11.5px; color: $color-text-muted; margin-bottom: 10px; }
-.actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-.empty { padding: 64px 0; }
-.form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.port-check { font-size: 12px; line-height: 1.5; &.ok { color: $color-success; } &.bad { color: $color-danger; } }
-.cand-list { display: flex; flex-direction: column; gap: 8px; max-height: 420px; overflow: auto; }
-.cand-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid $color-border; border-radius: 12px; }
-.cand-main { flex: 1; min-width: 0; }
-.cand-path { font-size: 12.5px; word-break: break-all; }
-.cand-meta { font-size: 11.5px; color: $color-text-muted; margin-top: 2px; }
-.cand-reg { font-size: 11px; color: $color-text-muted; width: 72px; }
-.preview-box { background: $color-surface-2; border-radius: 12px; padding: 14px; }
-.preview-label { font-size: 11.5px; color: $color-text-muted; margin-bottom: 8px; }
-.preview-cmd { font-size: 12.5px; white-space: pre-wrap; word-break: break-all; margin: 0; line-height: 1.6; }
+.cards {
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+}
+.inst {
+  padding: 18px;
+  cursor: pointer;
+}
+.inst-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+.inst-main {
+  flex: 1;
+  min-width: 0;
+}
+.inst-top .chip {
+  flex-shrink: 0;
+}
+.inst-name {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pin-icon {
+  color: $color-primary;
+  flex-shrink: 0;
+}
+.inst-path {
+  margin-top: 6px;
+  font-size: 12px;
+  color: $color-text-muted-ink;
+  word-break: break-all;
+}
+.meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 12px 0;
+  font-size: 12.5px;
+  color: $color-text-secondary;
+  b {
+    color: $color-text;
+  }
+}
+.env-box {
+  background: $color-surface-2;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 11.5px;
+  color: $color-text-muted-ink;
+  margin-bottom: 10px;
+}
+.actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.empty {
+  padding: 64px 0;
+}
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.port-check {
+  font-size: 12px;
+  line-height: 1.5;
+  &.ok {
+    color: $color-success;
+  }
+  &.bad {
+    color: $color-danger;
+  }
+}
+.cand-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 420px;
+  overflow: auto;
+}
+.cand-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid $color-border;
+  border-radius: 12px;
+}
+.cand-main {
+  flex: 1;
+  min-width: 0;
+}
+.cand-path {
+  font-size: 12.5px;
+  word-break: break-all;
+}
+.cand-meta {
+  font-size: 11.5px;
+  color: $color-text-muted-ink;
+  margin-top: 2px;
+}
+.cand-reg {
+  font-size: 11px;
+  color: $color-text-muted-ink;
+  width: 72px;
+}
+.preview-box {
+  background: $color-surface-2;
+  border-radius: 12px;
+  padding: 14px;
+}
+.preview-label {
+  font-size: 11.5px;
+  color: $color-text-muted-ink;
+  margin-bottom: 8px;
+}
+.preview-cmd {
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+  line-height: 1.6;
+}
 </style>

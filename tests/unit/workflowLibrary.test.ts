@@ -16,7 +16,11 @@ const ROOT = join(tmpdir(), `cp-workflow-lib-test-${process.pid}`)
 vi.mock('electron', async () => {
   return {
     app: { getPath: () => ROOT },
-    shell: { showItemInFolder: () => undefined, openExternal: async () => undefined, openPath: async () => '' }
+    shell: {
+      showItemInFolder: () => undefined,
+      openExternal: async () => undefined,
+      openPath: async () => ''
+    }
   }
 })
 

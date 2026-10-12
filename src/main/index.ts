@@ -19,8 +19,14 @@ import { isSafeExternalUrl, safeResolveUnder } from './services/security'
 // Custom schemes must be privileged BEFORE app ready so <img src="comfy-pilot-media:...">
 // and fetch() work inside the renderer.
 protocol.registerSchemesAsPrivileged([
-  { scheme: 'comfy-pilot', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
-  { scheme: 'comfy-pilot-media', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
+  {
+    scheme: 'comfy-pilot',
+    privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true }
+  },
+  {
+    scheme: 'comfy-pilot-media',
+    privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true }
+  }
 ])
 
 let mainWindow: BrowserWindow | null = null
@@ -29,7 +35,11 @@ let forceQuit = false
 
 function crashLog(msg: string): void {
   try {
-    const dir = join(process.env.APPDATA || join(process.env.HOME || '', 'AppData/Roaming'), 'ComfyPilot', 'logs')
+    const dir = join(
+      process.env.APPDATA || join(process.env.HOME || '', 'AppData/Roaming'),
+      'ComfyPilot',
+      'logs'
+    )
     mkdirSync(dir, { recursive: true })
     appendFileSync(join(dir, 'boot.log'), `[${new Date().toISOString()}] ${msg}\n`)
   } catch {
@@ -63,7 +73,11 @@ function resolveAppIcon(): string {
       : process.platform === 'darwin'
         ? ['ComfyPilot.icns', 'comfypilot-macos-512.png', 'comfypilot-macos-1024.png']
         : ['comfypilot-appstore-512.png', 'comfypilot-appstore-1024.png', 'ComfyPilot.ico']
-  const bases = [join(process.resourcesPath || '', 'resources'), join(app.getAppPath(), 'resources'), join(__dirname, '../../resources')]
+  const bases = [
+    join(process.resourcesPath || '', 'resources'),
+    join(app.getAppPath(), 'resources'),
+    join(__dirname, '../../resources')
+  ]
   for (const base of bases) {
     for (const name of candidates) {
       const p = join(base, name)
@@ -353,8 +367,14 @@ app.whenReady().then(async () => {
       }
       if (settings.enableAutoCheckUpdates) {
         const updater = await import('electron-updater')
-        const autoUpdater = updater.autoUpdater || (updater as { default?: { autoUpdater?: unknown } }).default?.autoUpdater
-        if (autoUpdater && typeof (autoUpdater as { checkForUpdatesAndNotify?: unknown }).checkForUpdatesAndNotify === 'function') {
+        const autoUpdater =
+          updater.autoUpdater ||
+          (updater as { default?: { autoUpdater?: unknown } }).default?.autoUpdater
+        if (
+          autoUpdater &&
+          typeof (autoUpdater as { checkForUpdatesAndNotify?: unknown })
+            .checkForUpdatesAndNotify === 'function'
+        ) {
           try {
             const au = autoUpdater as {
               checkForUpdatesAndNotify: () => unknown

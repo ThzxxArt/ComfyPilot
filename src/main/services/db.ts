@@ -277,10 +277,25 @@ export function loadSettings(): AppSettings {
 
 /** Known top-level AppSettings keys — unknown keys are stripped on save. */
 const KNOWN_SETTINGS_KEYS = new Set([
-  'locale', 'modelScanRoots', 'githubEndpoint', 'hfEndpoint', 'civitaiEndpoint',
-  'enableAutoCheckUpdates', 'embedFrontend', 'securityLevel', 'allowGitUrlInstall',
-  'allowPipInstall', 'networkMode', 'aria2Path', 'useAria2', 'launchOnBoot',
-  'minimizeToTray', 'autoStartInstancesOnLaunch', 'proxy', 'pipIndex', 'torchIndexMirror'
+  'locale',
+  'modelScanRoots',
+  'githubEndpoint',
+  'hfEndpoint',
+  'civitaiEndpoint',
+  'enableAutoCheckUpdates',
+  'embedFrontend',
+  'securityLevel',
+  'allowGitUrlInstall',
+  'allowPipInstall',
+  'networkMode',
+  'aria2Path',
+  'useAria2',
+  'launchOnBoot',
+  'minimizeToTray',
+  'autoStartInstancesOnLaunch',
+  'proxy',
+  'pipIndex',
+  'torchIndexMirror'
 ])
 
 export function saveSettings(patch: Partial<AppSettings>): AppSettings {
@@ -429,7 +444,9 @@ export function updateWorkflow(id: string, patch: Partial<WorkflowRecord>): Work
 
 export function deleteWorkflow(id: string): boolean {
   const before = readJsonc<WorkflowRecord[]>('workflows', []).length
-  const next = mutateInList<WorkflowRecord>('workflows', [], (list) => list.filter((w) => w.id !== id))
+  const next = mutateInList<WorkflowRecord>('workflows', [], (list) =>
+    list.filter((w) => w.id !== id)
+  )
   return next.length !== before
 }
 
@@ -556,7 +573,9 @@ export function listOutputAssetsAll(): OutputAsset[] {
 
 export function deleteOutputAsset(id: string): boolean {
   const before = readJsonc<OutputAsset[]>('output_assets', []).length
-  const next = mutateInList<OutputAsset>('output_assets', [], (list) => list.filter((a) => a.id !== id))
+  const next = mutateInList<OutputAsset>('output_assets', [], (list) =>
+    list.filter((a) => a.id !== id)
+  )
   return next.length !== before
 }
 
@@ -631,7 +650,9 @@ export function saveInstallRun(progress: {
 
 export function loadInstallRuns(): Array<Record<string, unknown>> {
   try {
-    return readJsonc<{ runs: Array<Record<string, unknown>> }>('install-runs', { runs: [] }).runs || []
+    return (
+      readJsonc<{ runs: Array<Record<string, unknown>> }>('install-runs', { runs: [] }).runs || []
+    )
   } catch {
     return []
   }

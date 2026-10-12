@@ -19,7 +19,12 @@ const rendererHtml = join(root, 'out', 'renderer', 'index.html')
 function electronBin(): string {
   const win = join(root, 'node_modules', 'electron', 'dist', 'electron.exe')
   if (existsSync(win)) return win
-  return join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'electron.cmd' : 'electron')
+  return join(
+    root,
+    'node_modules',
+    '.bin',
+    process.platform === 'win32' ? 'electron.cmd' : 'electron'
+  )
 }
 
 describe.skipIf(skip)('electron app smoke (real bundle)', () => {

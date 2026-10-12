@@ -40,10 +40,13 @@ export function assertSafeRelativeFilename(name: string): string {
  * Leading dots MUST be preserved — `.ci` / `.github` are legitimate directory names.
  */
 export function normalizePathSegment(segment: string): string {
-  return String(segment || '')
-    .replace(/[\x00-\x1f]/g, '')
-    .replace(/[. ]+$/g, '')
-    .replace(/^ +/, '')
+  return (
+    String(segment || '')
+      // eslint-disable-next-line no-control-regex -- 剔除控制字符是这里的目的
+      .replace(/[\x00-\x1f]/g, '')
+      .replace(/[. ]+$/g, '')
+      .replace(/^ +/, '')
+  )
 }
 
 /**
@@ -88,7 +91,9 @@ export function normalizePathEverySegment(pathStr: string): string {
 
 /** True if normalized path string still contains parent-directory hops. */
 export function hasParentHop(pathStr: string): boolean {
-  return normalizePathEverySegment(pathStr).split(/[\\/]+/).some((s) => s === '..')
+  return normalizePathEverySegment(pathStr)
+    .split(/[\\/]+/)
+    .some((s) => s === '..')
 }
 
 /**
@@ -118,7 +123,9 @@ export function isPathInside(child: string, parent: string): boolean {
     resolvedParent = resolvedParent.toLowerCase()
   }
   if (resolvedChild === resolvedParent) return true
-  return resolvedChild.startsWith(resolvedParent.endsWith('/') ? resolvedParent : resolvedParent + '/')
+  return resolvedChild.startsWith(
+    resolvedParent.endsWith('/') ? resolvedParent : resolvedParent + '/'
+  )
 }
 
 export function safeJoin(root: string, ...parts: string[]): string {
@@ -209,9 +216,31 @@ export function isLocalhostUrl(raw: string): boolean {
 }
 
 const BLOCKED_OPEN_EXTENSIONS = new Set([
-  '.exe', '.bat', '.cmd', '.com', '.scr', '.ps1', '.psm1', '.vbs', '.vbe',
-  '.js', '.jse', '.wsf', '.wsh', '.msi', '.msp', '.mst', '.hta', '.jar',
-  '.cpl', '.reg', '.lnk', '.url', '.pif', '.application', '.gadget'
+  '.exe',
+  '.bat',
+  '.cmd',
+  '.com',
+  '.scr',
+  '.ps1',
+  '.psm1',
+  '.vbs',
+  '.vbe',
+  '.js',
+  '.jse',
+  '.wsf',
+  '.wsh',
+  '.msi',
+  '.msp',
+  '.mst',
+  '.hta',
+  '.jar',
+  '.cpl',
+  '.reg',
+  '.lnk',
+  '.url',
+  '.pif',
+  '.application',
+  '.gadget'
 ])
 
 export function isSafeOpenPath(path: string): boolean {
@@ -236,4 +265,3 @@ export function isAbsoluteOrRelativePath(p: string): boolean {
 }
 
 export { dirname, basename, extname }
-

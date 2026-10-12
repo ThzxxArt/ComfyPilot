@@ -3,13 +3,20 @@
  * RenameService.batchRename, Aria2Service download.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
-import { mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, renameSync } from 'fs'
+import { mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from 'fs'
 import { join, dirname, basename } from 'path'
 import { tmpdir } from 'os'
+import { createHash } from 'crypto'
 import type { ModelRecord } from '../../src/shared/types'
 
 const h = vi.hoisted(() => ({
-  execImpl: null as null | ((cmd: string, args: string[], cb: (e: Error | null, o: string, s: string) => void) => unknown),
+  execImpl: null as
+    | null
+    | ((
+        cmd: string,
+        args: string[],
+        cb: (e: Error | null, o: string, s: string) => void
+      ) => unknown),
   pendingAborts: [] as Array<() => void>,
   hang: false,
   readFileSyncImpl: null as null | ((...a: unknown[]) => unknown),
@@ -41,14 +48,22 @@ vi.mock('fs', async (importOriginal) => {
 
 vi.mock('electron', () => ({
   app: { getPath: () => join(tmpdir(), 'cp-media-svc') },
+  nativeImage: {
+    createFromPath: (p: string) => ({
+      isEmpty: () => !existsSync(p) || p.includes('broken'),
+      getSize: () =>
+        p.includes('small') ? { width: 80, height: 60 } : { width: 640, height: 480 },
+      resize: () => ({ toPNG: () => Buffer.from('resized-png') }),
+      toPNG: () => Buffer.from('resized-png')
+    })
+  },
   session: {
     defaultSession: {
       // Delegate to the CURRENT global fetch so vi.stubGlobal('fetch', …)
       // after module load is still honored (proxyFetch routes through here).
       fetch: (url: unknown, init?: unknown) => {
         const f = (globalThis as Record<string, unknown>).fetch as
-          | ((u: unknown, i?: unknown) => Promise<unknown>)
-          | undefined
+          ((u: unknown, i?: unknown) => Promise<unknown>) | undefined
         return f ? f(url, init) : Promise.reject(new Error('no fetch'))
       },
       setProxy: async () => undefined
@@ -185,9 +200,7 @@ describe('media services', () => {
         return (h.actualReadFileSync as (...a: unknown[]) => unknown)(f, ...rest)
       }) as never
 
-      const fetchSpy = vi.fn(async () =>
-        new Response(Buffer.from('civ-img'), { status: 200 })
-      )
+      const fetchSpy = vi.fn(async () => new Response(Buffer.from('civ-img'), { status: 200 }))
       vi.stubGlobal('fetch', fetchSpy)
 
       const out = await media.thumbnailService.ensureModelThumb(r)
@@ -204,7 +217,10 @@ describe('media services', () => {
       const p = join(ROOT, 'models', 'svg-model.safetensors')
       writeFileSync(p, 'x')
 
-      vi.stubGlobal('fetch', vi.fn(async () => new Response('no', { status: 500 })))
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('no', { status: 500 }))
+      )
       const r1 = rec({
         id: 'svg1',
         path: p,
@@ -329,7 +345,9 @@ describe('media services', () => {
     it('thumbnailDisplayUrl passthrough / convert / null', async () => {
       const media = await freshMedia()
       expect(media.thumbnailDisplayUrl(undefined)).toBeNull()
-      expect(media.thumbnailDisplayUrl('comfy-pilot-media:thumbs/x.png')).toBe('comfy-pilot-media:thumbs/x.png')
+      expect(media.thumbnailDisplayUrl('comfy-pilot-media:thumbs/x.png')).toBe(
+        'comfy-pilot-media:thumbs/x.png'
+      )
       const { cacheDir } = await import('../../src/main/services/db')
       const thumbs = join(cacheDir(), 'thumbs')
       mkdirSync(thumbs, { recursive: true })
@@ -370,7 +388,11 @@ describe('media services', () => {
       expect(results[0].to).toBe(p1)
 
       // dryRun previews without rename
-      results = media.renameService.batchRename(['rn-alpha'], '{name}-{category}-{index}-{arch}', true)
+      results = media.renameService.batchRename(
+        ['rn-alpha'],
+        '{name}-{category}-{index}-{arch}',
+        true
+      )
       expect(results[0].ok).toBe(true)
       expect(results[0].to).toBe(join(dir, 'alpha-checkpoints-001-sdxl.safetensors'))
       expect(existsSync(p1)).toBe(true)
@@ -398,7 +420,14 @@ describe('media services', () => {
       writeFileSync(p2, 'x')
       writeFileSync(join(dir, 'gamma.safetensors'), 'x')
       upsertModel(rec({ id: 'rn-beta', name: 'beta', fileName: 'beta.safetensors', path: p2 }))
-      upsertModel(rec({ id: 'rn-gamma', name: 'gamma', fileName: 'gamma.safetensors', path: join(dir, 'gamma.safetensors') }))
+      upsertModel(
+        rec({
+          id: 'rn-gamma',
+          name: 'gamma',
+          fileName: 'gamma.safetensors',
+          path: join(dir, 'gamma.safetensors')
+        })
+      )
       results = media.renameService.batchRename(['rn-beta'], 'gamma', false)
       expect(results[0].ok).toBe(false)
       expect(results[0].error).toMatch(/target exists/i)
@@ -407,7 +436,13 @@ describe('media services', () => {
       const p3 = join(dir, 'weird.safetensors')
       writeFileSync(p3, 'x')
       upsertModel(
-        rec({ id: 'rn-weird', name: 'a/b\\c', fileName: 'weird.safetensors', path: p3, architecture: 'x/y' })
+        rec({
+          id: 'rn-weird',
+          name: 'a/b\\c',
+          fileName: 'weird.safetensors',
+          path: p3,
+          architecture: 'x/y'
+        })
       )
       results = media.renameService.batchRename(['rn-weird'], '{name}_{arch}', false)
       expect(results[0].ok).toBe(true)
@@ -416,7 +451,15 @@ describe('media services', () => {
       // missing architecture → unknown
       const p4 = join(dir, 'plain.safetensors')
       writeFileSync(p4, 'x')
-      upsertModel(rec({ id: 'rn-plain', name: 'plain', fileName: 'plain.safetensors', path: p4, architecture: undefined }))
+      upsertModel(
+        rec({
+          id: 'rn-plain',
+          name: 'plain',
+          fileName: 'plain.safetensors',
+          path: p4,
+          architecture: undefined
+        })
+      )
       results = media.renameService.batchRename(['rn-plain'], '{name}-{arch}', true)
       expect(results[0].to).toBe(join(dir, 'plain-unknown.safetensors'))
 
@@ -432,7 +475,8 @@ describe('media services', () => {
       expect(results[0].ok).toBe(false)
       expect(results[0].error).toMatch(/EBUSY/)
 
-      for (const id of ['rn-alpha', 'rn-beta', 'rn-gamma', 'rn-weird', 'rn-plain', 'rn-boom']) deleteModel(id)
+      for (const id of ['rn-alpha', 'rn-beta', 'rn-gamma', 'rn-weird', 'rn-plain', 'rn-boom'])
+        deleteModel(id)
     })
 
     it('name longer than 120 chars is truncated by the sanitizer slice', async () => {
@@ -470,7 +514,11 @@ describe('media services', () => {
       const dest = join(ROOT, 'dl', 'a.bin')
       mkdirSync(dirname(dest), { recursive: true })
 
-      h.execImpl = (cmd: string, args: string[], cb: (e: Error | null, o: string, s: string) => void) => {
+      h.execImpl = (
+        cmd: string,
+        args: string[],
+        cb: (e: Error | null, o: string, s: string) => void
+      ) => {
         void cmd
         expect(args).toContain('-c') // resume default
         queueMicrotask(() => cb(null, 'done', ''))
@@ -494,7 +542,9 @@ describe('media services', () => {
       mkdirSync(dirname(dest), { recursive: true })
       h.hang = true
       const ac = new AbortController()
-      const p = media.aria2Service.download('https://example.com/b.bin', dest, { signal: ac.signal })
+      const p = media.aria2Service.download('https://example.com/b.bin', dest, {
+        signal: ac.signal
+      })
       ac.abort()
       const res = await p
       expect(res.ok).toBe(false)
@@ -509,10 +559,60 @@ describe('media services', () => {
       h.hang = true
       const ac = new AbortController()
       ac.abort()
-      const res = await media.aria2Service.download('https://example.com/c.bin', dest, { signal: ac.signal })
+      const res = await media.aria2Service.download('https://example.com/c.bin', dest, {
+        signal: ac.signal
+      })
       expect(res.ok).toBe(false)
       expect(res.aborted).toBe(true)
       h.hang = false
     })
+  })
+})
+
+describe('output thumbnails (ensureOutputThumb / persistOutputThumb)', () => {
+  it('generates, persists and then reuses the output thumbnail', async () => {
+    const { thumbnailService } = await import('../../src/main/services/media')
+    const dir = join(ROOT, 'output-thumbs')
+    mkdirSync(dir, { recursive: true })
+    const img = join(dir, 'out.png')
+    writeFileSync(img, 'fake-png')
+
+    const first = await thumbnailService.ensureOutputThumb(img)
+    expect(first).toBeTruthy()
+    expect(existsSync(first!)).toBe(true)
+    expect(first).toContain(join('output', ''))
+
+    // Second call hits the cached file and re-persists it (same path).
+    const second = await thumbnailService.ensureOutputThumb(img)
+    expect(second).toBe(first)
+
+    const key = createHash('sha1').update(img).digest('hex').slice(0, 16)
+    expect(basename(first!)).toBe(`${key}.png`)
+  })
+
+  it('returns null for non-images and missing files', async () => {
+    const { thumbnailService } = await import('../../src/main/services/media')
+    const dir = join(ROOT, 'output-thumbs')
+    mkdirSync(dir, { recursive: true })
+    const txt = join(dir, 'note.txt')
+    writeFileSync(txt, 'x')
+    expect(await thumbnailService.ensureOutputThumb(txt)).toBeNull()
+    expect(await thumbnailService.ensureOutputThumb(join(dir, 'missing.png'))).toBeNull()
+  })
+
+  it('handles undecodable and already-small images', async () => {
+    const { thumbnailService } = await import('../../src/main/services/media')
+    const dir = join(ROOT, 'output-thumbs')
+    mkdirSync(dir, { recursive: true })
+    // nativeImage reports empty → null (no resize attempted).
+    const broken = join(dir, 'broken.png')
+    writeFileSync(broken, 'not-a-real-png')
+    expect(await thumbnailService.ensureOutputThumb(broken)).toBeNull()
+    // Scale >= 1 path: image smaller than 320px is written without resize.
+    const small = join(dir, 'small.png')
+    writeFileSync(small, 'tiny')
+    const thumb = await thumbnailService.ensureOutputThumb(small)
+    expect(thumb).toBeTruthy()
+    expect(existsSync(thumb!)).toBe(true)
   })
 })

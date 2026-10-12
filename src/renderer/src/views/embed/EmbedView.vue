@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { NButton, NSpace, NIcon, NInput, useMessage } from 'naive-ui'
@@ -19,20 +19,30 @@ const showFallback = ref(false)
 // Layout metrics published by App.vue (sidebar collapse-aware)
 const sidebarWidth = ref(240)
 const headerHeight = ref(64)
-const TOOLBAR_H = 56
+
+// 工具栏高度实测：文案换行/窄窗口会让工具栏变高，硬编码会把内嵌区域算错
+const barEl = ref<HTMLElement | null>(null)
+const barHeight = ref(56)
+let barObserver: ResizeObserver | null = null
 
 const displayUrl = computed(() => url.value || 'http://127.0.0.1:8188')
+
+function measureBar(): void {
+  const h = barEl.value?.getBoundingClientRect().height
+  if (h && h > 0) barHeight.value = Math.round(h)
+}
 
 function embedEnabled(): boolean {
   return store.settings?.embedFrontend !== false
 }
 
 function currentRect(): { x: number; y: number; width: number; height: number } {
+  const top = headerHeight.value + barHeight.value
   return {
     x: sidebarWidth.value,
-    y: headerHeight.value + TOOLBAR_H,
+    y: top,
     width: Math.max(200, window.innerWidth - sidebarWidth.value),
-    height: Math.max(160, window.innerHeight - headerHeight.value - TOOLBAR_H)
+    height: Math.max(160, window.innerHeight - top)
   }
 }
 
@@ -79,6 +89,7 @@ async function closeEmbed(): Promise<void> {
 }
 
 function onResize(): void {
+  measureBar()
   applyResize()
 }
 
@@ -87,12 +98,24 @@ onMounted(() => {
   window.addEventListener('comfypilot:layout', onLayout as EventListener)
   // Pull current layout metrics if App already published them
   window.dispatchEvent(new Event('comfypilot:layout-request'))
+  void nextTick(() => {
+    measureBar()
+    if (barEl.value && typeof ResizeObserver !== 'undefined') {
+      barObserver = new ResizeObserver(() => {
+        measureBar()
+        applyResize()
+      })
+      barObserver.observe(barEl.value)
+    }
+  })
   if (url.value) void embed()
 })
 
 onUnmounted(() => {
   window.removeEventListener('resize', onResize)
   window.removeEventListener('comfypilot:layout', onLayout as EventListener)
+  barObserver?.disconnect()
+  barObserver = null
   void ipc('embed.close').catch(() => undefined)
 })
 
@@ -111,7 +134,7 @@ watch(
 
 <template>
   <div class="embed-page">
-    <div class="embed-bar glass">
+    <div ref="barEl" class="embed-bar glass">
       <NSpace align="center" :size="10">
         <NButton text @click="router.back()">
           <template #icon>
@@ -119,7 +142,11 @@ watch(
           </template>
           {{ $t('embed.back') }}
         </NButton>
-        <NInput v-model:value="url" :placeholder="$t('embed.urlPlaceholder')" style="width: 360px" />
+        <NInput
+          v-model:value="url"
+          :placeholder="$t('embed.urlPlaceholder')"
+          style="width: 360px"
+        />
         <NButton type="primary" secondary @click="embed">{{ $t('embed.load') }}</NButton>
         <NButton secondary @click="openExternal">
           <template #icon>
@@ -166,11 +193,12 @@ watch(
 }
 
 .embed-bar {
-  height: 56px;
+  min-height: 56px;
   display: flex;
   align-items: center;
-  padding: 0 16px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  padding: 8px 16px;
+  border: none;
+  border-bottom: 1px solid rgba($color-text-muted, 0.18);
   z-index: 2;
   flex-shrink: 0;
 }

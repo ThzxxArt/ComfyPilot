@@ -9,7 +9,7 @@ import {
   rmSync,
   renameSync
 } from 'fs'
-import { join, dirname, resolve, sep } from 'path'
+import { join, dirname, resolve, sep, basename } from 'path'
 import { createHash, randomUUID } from 'crypto'
 import { execFile, execFileSync } from 'child_process'
 import { promisify } from 'util'
@@ -42,7 +42,7 @@ import { REGISTRY_API } from '@shared/constants'
 import { proxyEnv } from './proxy'
 import { sanitizeId, isPathInside, normalizePathEverySegment } from './security'
 import { assertSafeGitUrl, applyGithubMirror, assertSafeBranch } from './installer'
-import { resolveRuntimesPythonSync } from './instance'
+import { resolveInstancePythonPath, resolveRuntimesPythonSync } from './instance'
 import { findInRuntimes } from './bootstrap'
 
 const execFileAsync = promisify(execFile)
@@ -116,7 +116,6 @@ let gitBinCache: string | null = null
 export function resolveGitBinary(): string {
   if (gitBinCache) return gitBinCache
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { execSync } = require('child_process') as typeof import('child_process')
     execSync('git --version', { timeout: 3000, windowsHide: true, stdio: 'ignore' })
     gitBinCache = 'git'
@@ -160,14 +159,10 @@ export async function resolveRepoUrl(
   if (direct) return direct
   // 2) GitHub archive download URLs embed the repo path:
   //    https://github.com/{owner}/{repo}/archive/refs/...  →  https://github.com/{owner}/{repo}.git
-  const gh = downloadUrl.match(
-    /^(https?:\/\/(?:www\.)?github\.com\/[^/]+\/[^/]+)\/archive\//
-  )
+  const gh = downloadUrl.match(/^(https?:\/\/(?:www\.)?github\.com\/[^/]+\/[^/]+)\/archive\//)
   if (gh?.[1]) return `${gh[1]}.git`
   // 3) codeload.github.com zip URLs
-  const cl = downloadUrl.match(
-    /^(https?:\/\/codeload\.github\.com\/[^/]+\/[^/]+)\/zip\//
-  )
+  const cl = downloadUrl.match(/^(https?:\/\/codeload\.github\.com\/[^/]+\/[^/]+)\/zip\//)
   if (cl?.[1]) return `${cl[1]}.git`
   // 4) Local registry index carries `repository` for every catalog entry.
   //    This is the most common source — the install endpoint often omits it.
@@ -175,9 +170,7 @@ export async function resolveRepoUrl(
     const { registryIndex } = await import('./registryIndex')
     await registryIndex.ensure()
     const hits = registryIndex.searchPacks(packId, 5)
-    const exact = hits.find(
-      (h) => h.id === packId || h.name === packId
-    )
+    const exact = hits.find((h) => h.id === packId || h.name === packId)
     const repo = String(exact?.repository || '').trim()
     if (repo) return repo
   } catch {
@@ -266,6 +259,46 @@ export function sanitizeInstallNameForTest(name: string): string {
   return sanitizeInstallName(name)
 }
 
+/**
+ * Junk / cache entries that must never be listed as node packs.
+ * Shared by the custom_nodes root scan and the `.disabled/` holding dir.
+ */
+function isJunkPackName(name: string): boolean {
+  return (
+    name.startsWith('.') ||
+    name === '__pycache__' ||
+    name === '__MACOSX' ||
+    name === 'node_modules' ||
+    name.endsWith('.egg-info') ||
+    name.endsWith('.dist-info') ||
+    name.endsWith('.trash') ||
+    name.includes('.trash-') ||
+    name.includes('.bak-')
+  )
+}
+
+/** `.git` present (real dir or worktree/submodule pointer file) = git checkout. */
+function hasGitRepo(dir: string): boolean {
+  return existsSync(join(dir, '.git'))
+}
+
+/**
+ * Best-effort origin URL from a real `.git/config` so manually copied git
+ * checkouts still show their repository (and match registry/market entries).
+ */
+function readGitOriginUrl(dir: string): string | undefined {
+  try {
+    const cfg = join(dir, '.git', 'config')
+    if (!existsSync(cfg)) return undefined
+    const text = readFileSync(cfg, 'utf-8')
+    const section = text.match(/\[remote "origin"\]([\s\S]*?)(?=\r?\n\[|$)/)
+    const url = section?.[1].match(/^\s*url\s*=\s*(.+)$/m)
+    return url?.[1]?.trim() || undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** Registry zips often nest a single top-level folder — descend if needed. */
 function resolveNestedPackDir(dest: string): string {
   try {
@@ -308,22 +341,20 @@ function flattenSingleNestedDir(dest: string): void {
   }
 }
 
-/** Best-effort python for the targeted instance (venv preferred, then runtimes). */
+/** Best-effort python for the targeted instance (same rules as instance launch). */
 function resolveInstancePython(instanceId?: string): string {
   const inst = resolveInstanceConfig(instanceId)
-  if (inst?.venvPath) {
-    const win = join(inst.venvPath, 'Scripts', 'python.exe')
-    const unix = join(inst.venvPath, 'bin', 'python')
-    if (existsSync(win)) return win
-    if (existsSync(unix)) return unix
-  }
-  if (inst?.pythonPath) return inst.pythonPath
-  // Zero-prereq: portable Python downloaded by bootstrap
   try {
+    if (inst) {
+      // Shared resolver so pip installs and the launched interpreter never diverge
+      // (venv → pythonPath → embeds incl. AKI sibling python/ → managed runtime).
+      return resolveInstancePythonPath(inst)
+    }
+    // No instance resolved at all — fall back to the managed runtime, then PATH.
     const runtimePy = resolveRuntimesPythonSync()
     if (runtimePy) return runtimePy
   } catch {
-    /* ignore */
+    /* runtime probe failed — fall through to bare python */
   }
   return 'python'
 }
@@ -334,7 +365,9 @@ function resolveInstancePython(instanceId?: string): string {
  * - id found → that instance
  * - id provided but NOT found → undefined (never silently fall back to another instance)
  */
-export function resolveInstanceConfig(instanceId?: string): import('@shared/types').ComfyInstanceConfig | undefined {
+export function resolveInstanceConfig(
+  instanceId?: string
+): import('@shared/types').ComfyInstanceConfig | undefined {
   const configs = loadInstanceConfigs()
   if (instanceId) {
     return configs.find((c) => c.id === instanceId)
@@ -679,35 +712,19 @@ export class NodePackService extends EventEmitter {
     if (!root || !existsSync(root)) return []
     const known = new Map(listNodePacks().map((p) => [p.name, p]))
     const packs: NodePackRecord[] = []
-    for (const name of readdirSync(root)) {
-      // Junk / cache dirs that live beside real packs — never list as node packs.
-      if (
-        name.startsWith('.') ||
-        name === '__pycache__' ||
-        name === '__MACOSX' ||
-        name === 'node_modules' ||
-        name.endsWith('.egg-info') ||
-        name.endsWith('.dist-info') ||
-        name.endsWith('.trash') ||
-        name.includes('.trash-') ||
-        name.includes('.bak-')
-      )
-        continue
-      const dir = join(root, name)
-      try {
-        if (!statSync(dir).isDirectory()) continue
-      } catch {
-        continue
-      }
+
+    const pushPack = (rawName: string, dir: string, disabled: boolean): void => {
+      // `foo.disabled` rename convention: strip the suffix for display/lookup.
+      const baseName = rawName.endsWith('.disabled')
+        ? rawName.slice(0, -'.disabled'.length)
+        : rawName
       // Registry zips nest a single top-level folder — descend so that
       // collectIssues/readPackMeta see __init__.py / pyproject.toml.
       const packed = resolveNestedPackDir(dir)
       const meta = readPackMeta(packed)
       const issues = collectIssues(packed, meta)
-      const disabledMarker = join(dir, '.disabled')
-      const disabled = existsSync(disabledMarker) || name.endsWith('.disabled')
       const id = createHash('sha1').update(dir).digest('hex').slice(0, 16)
-      const prev = known.get(meta.name || name)
+      const prev = known.get(meta.name || baseName)
       const latest = prev?.latestVersion
       const effectiveVersion = prev?.pinnedVersion || meta.version || '0.0.0'
       const hasUpdate =
@@ -715,10 +732,25 @@ export class NodePackService extends EventEmitter {
         Boolean(latest) &&
         Boolean(effectiveVersion) &&
         isUpdateAvailable(effectiveVersion, latest || '')
+      // A manually copied checkout (git clone dropped into custom_nodes) has no
+      // install record yet — infer the real source from `.git` instead of
+      // mislabeling it "local" and hiding its update capability. Explicit DB
+      // records win (locked/author/installSource inheritance contract), except
+      // that a stale "local" label is corrected to "git" when .git is present.
+      const hasGit = hasGitRepo(packed) || (packed !== dir && hasGitRepo(dir))
+      const inferredSource: 'git' | 'local' = hasGit ? 'git' : 'local'
+      let installSource: NodePackRecord['installSource'] = prev?.installSource || inferredSource
+      if (installSource === 'local' && inferredSource === 'git') installSource = 'git'
+      const repository =
+        meta.repository ||
+        prev?.repository ||
+        (hasGit
+          ? readGitOriginUrl(packed) || (packed !== dir ? readGitOriginUrl(dir) : undefined)
+          : undefined)
       packs.push({
         id,
-        name: meta.name || name,
-        displayName: meta.displayName || name,
+        name: meta.name || baseName,
+        displayName: meta.displayName || baseName,
         description: meta.description || '',
         author: prev?.author || '',
         // An explicit install-time pin wins over on-disk meta across list()
@@ -733,12 +765,13 @@ export class NodePackService extends EventEmitter {
               ? 'update-available'
               : 'installed',
         path: dir,
-        repository: meta.repository,
+        repository,
         registryId: prev?.registryId,
         nodeCount: meta.nodeList?.length || 0,
         tags: prev?.tags || [],
-        installSource: prev?.installSource || 'local',
-        lastCheckedAt: Date.now(),
+        installSource,
+        // Never fake "just checked" — only checkUpdates() may advance this.
+        lastCheckedAt: prev?.lastCheckedAt ?? 0,
         issues,
         locked: prev?.locked || false,
         nodeList: meta.nodeList || [],
@@ -749,6 +782,47 @@ export class NodePackService extends EventEmitter {
         pinnedVersion: prev?.pinnedVersion,
         gitRev: prev?.gitRev
       })
+    }
+
+    for (const name of readdirSync(root)) {
+      const dir = join(root, name)
+      // Manager-compatible disabled holding area: its children ARE listed (as disabled).
+      if (name === '.disabled') {
+        try {
+          if (!statSync(dir).isDirectory()) continue
+        } catch {
+          continue
+        }
+        let children: string[] = []
+        try {
+          children = readdirSync(dir)
+        } catch {
+          // Locked/denied holding dir — degrade gracefully instead of failing list().
+          continue
+        }
+        for (const child of children) {
+          if (isJunkPackName(child)) continue
+          const childDir = join(dir, child)
+          try {
+            if (!statSync(childDir).isDirectory()) continue
+          } catch {
+            continue
+          }
+          pushPack(child, childDir, true)
+        }
+        continue
+      }
+      // Junk / cache dirs that live beside real packs — never list as node packs.
+      if (isJunkPackName(name)) continue
+      try {
+        if (!statSync(dir).isDirectory()) continue
+      } catch {
+        continue
+      }
+      // Legacy marker file (pack-dir/.disabled) is recognized but no longer written;
+      // the real mechanisms are `.disabled/<name>` (Manager) and `<name>.disabled`.
+      const legacyMarker = existsSync(join(dir, '.disabled'))
+      pushPack(name, dir, legacyMarker || name.endsWith('.disabled'))
     }
     return packs
   }
@@ -792,7 +866,7 @@ export class NodePackService extends EventEmitter {
           lastError = `HTTP ${res.status} from ${url.slice(0, 60)}`
           continue
         }
-        const raw = await res.json() as Array<Record<string, unknown>> | Record<string, unknown>
+        const raw = (await res.json()) as Array<Record<string, unknown>> | Record<string, unknown>
         // custom-node-list.json is an Array; extension-node-map.json is an
         // object mapping node-class names → [ {name, ...}, ... ].
         let data: Array<Record<string, unknown>>
@@ -859,7 +933,15 @@ export class NodePackService extends EventEmitter {
       return toPageResult(result, mapRegistryPack)
     } catch (err) {
       if (settings.networkMode === 'offline') {
-        return { items: [], total: 0, page: 1, pageSize: opts?.limit || 50, totalPages: 0, scanned: 0, clientFiltered: Boolean(opts?.query) }
+        return {
+          items: [],
+          total: 0,
+          page: 1,
+          pageSize: opts?.limit || 50,
+          totalPages: 0,
+          scanned: 0,
+          clientFiltered: Boolean(opts?.query)
+        }
       }
       throw err
     }
@@ -923,13 +1005,13 @@ export class NodePackService extends EventEmitter {
     this.opProgressMap.delete(opts.instanceId || 'default')
     // Pick the first step by source so the modal never shows "Download"
     // when the user actually asked for a git install.
-    const firstStep: UpdateStepId = opts.source === 'git' || opts.source === 'manager' ? 'clone' : 'download'
+    const firstStep: UpdateStepId =
+      opts.source === 'git' || opts.source === 'manager' ? 'clone' : 'download'
     this.emitOpProgress({
       instanceId: opts.instanceId || 'default',
       step: firstStep,
       status: 'running',
-      message:
-        firstStep === 'clone' ? `Cloning ${opts.id}…` : `Downloading ${opts.id}…`
+      message: firstStep === 'clone' ? `Cloning ${opts.id}…` : `Downloading ${opts.id}…`
     })
     const signal = this.beginOpAbort(opts.instanceId)
     try {
@@ -999,7 +1081,9 @@ export class NodePackService extends EventEmitter {
         // Fallback: look up the pack in the Manager channel list.
         try {
           const list = await this.managerChannelList()
-          const hit = list.find((n) => n.id === opts.id || n.name === opts.id || n.displayName === opts.id)
+          const hit = list.find(
+            (n) => n.id === opts.id || n.name === opts.id || n.displayName === opts.id
+          )
           url = (hit?.repository || '').trim()
         } catch {
           /* managerChannelList is best-effort — fall through to error below */
@@ -1010,7 +1094,12 @@ export class NodePackService extends EventEmitter {
         url = opts.id
       }
       const safeUrl = assertSafeGitUrl(applyGithubMirror(url))
-      const destName = sanitizeInstallName(safeUrl.split('/').pop()?.replace(/\.git$/, '') || `pack-${Date.now()}`)
+      const destName = sanitizeInstallName(
+        safeUrl
+          .split('/')
+          .pop()
+          ?.replace(/\.git$/, '') || `pack-${Date.now()}`
+      )
       const dest = join(root, normalizePathEverySegment(destName))
       // Hard guard: dest must be a real descendant of root — never root itself.
       if (!isStrictInside(dest, root)) {
@@ -1019,7 +1108,10 @@ export class NodePackService extends EventEmitter {
       const gitBin = resolveGitBinary()
       // Clone into a throwaway sibling, then rename — a failed clone can only
       // ever remove OUR temp dir, never a pre-existing user directory.
-      const tmpDest = join(root, `._clone_tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`)
+      const tmpDest = join(
+        root,
+        `._clone_tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+      )
       if (!isStrictInside(tmpDest, root)) throw new Error('Refusing unsafe temp clone path')
       // Version pin: clone the default branch shallow first, then check out the
       // requested tag/ref inside the temp dir so a failed checkout never touches
@@ -1040,7 +1132,15 @@ export class NodePackService extends EventEmitter {
           // Shallow clone hides tags — fetch the tag ref explicitly first.
           await execFileAsync(
             gitBin,
-            ['-C', tmpDest, 'fetch', '--depth', '1', 'origin', `refs/tags/${safeRef}:refs/tags/${safeRef}`],
+            [
+              '-C',
+              tmpDest,
+              'fetch',
+              '--depth',
+              '1',
+              'origin',
+              `refs/tags/${safeRef}:refs/tags/${safeRef}`
+            ],
             { timeout: 60000, env: proxyEnv(loadSettings().proxy) }
           ).catch(() => undefined)
           // tags/<v> first (exact release tag), then the bare ref (branch / sha).
@@ -1132,7 +1232,10 @@ export class NodePackService extends EventEmitter {
         })
         if (res.ok) {
           const data = (await res.json()) as {
-            url?: string; downloadUrl?: string; status?: string; repository?: string
+            url?: string
+            downloadUrl?: string
+            status?: string
+            repository?: string
           }
           if (data.status === 'banned') throw new Error('Node pack is banned on Registry')
           downloadUrl = data.url || data.downloadUrl
@@ -1257,7 +1360,9 @@ export class NodePackService extends EventEmitter {
       instanceId: opts.instanceId || 'default',
       step: 'download',
       status: 'done',
-      message: total ? `Downloaded ${(buf.byteLength / 1024 / 1024).toFixed(1)} MB` : 'Download complete'
+      message: total
+        ? `Downloaded ${(buf.byteLength / 1024 / 1024).toFixed(1)} MB`
+        : 'Download complete'
     })
     const tmpZip = join(root, `._install_${Date.now()}.zip`)
     writeFileSync(tmpZip, buf)
@@ -1273,7 +1378,10 @@ export class NodePackService extends EventEmitter {
     }
     // Unzip into a throwaway sibling, then rename — a failed unzip can only
     // ever remove OUR temp dir, never a pre-existing user directory.
-    const tmpDest = join(root, `._unzip_tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`)
+    const tmpDest = join(
+      root,
+      `._unzip_tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    )
     if (!isStrictInside(tmpDest, root)) {
       try {
         unlinkSync(tmpZip)
@@ -1333,10 +1441,16 @@ export class NodePackService extends EventEmitter {
       /* ignore */
     }
     const packed = resolveNestedPackDir(dest)
-    const rec = await this.afterInstall(packed, 'registry', opts.registryId ?? opts.id, opts.instanceId, {
-      pinnedVersion: opts.version?.trim() || undefined,
-      signal: opts.signal
-    })
+    const rec = await this.afterInstall(
+      packed,
+      'registry',
+      opts.registryId ?? opts.id,
+      opts.instanceId,
+      {
+        pinnedVersion: opts.version?.trim() || undefined,
+        signal: opts.signal
+      }
+    )
     this.emitOpProgress({
       instanceId: opts.instanceId || 'default',
       step: 'verify',
@@ -1373,8 +1487,10 @@ export class NodePackService extends EventEmitter {
         issues.push({
           code: 'pip-disabled',
           severity: 'warning',
-          message: 'requirements.txt present but allow_pip_install is off — dependencies NOT installed',
-          suggestion: 'Enable allow_pip_install in Settings, or run pip install -r requirements.txt manually.',
+          message:
+            'requirements.txt present but allow_pip_install is off — dependencies NOT installed',
+          suggestion:
+            'Enable allow_pip_install in Settings, or run pip install -r requirements.txt manually.',
           fixable: false
         })
         this.emitInstallProgress({
@@ -1410,29 +1526,37 @@ export class NodePackService extends EventEmitter {
             // Stream pip/uv output into the progress modal line by line.
             const { runStreaming, installRequirements } = await import('./env')
             const { bootstrapService } = await import('./bootstrap')
-            const bootstrap = await bootstrapService.ensure({ kinds: ['uv'], downloadIfMissing: false })
-            const uvComp = bootstrap.components.find((c) => c.kind === 'uv' && c.installed)
-            await installRequirements(vpy, reqFile, async (c, a, o) => {
-              // fall back to a buffered run if streaming is not wired
-              return execFileAsync(c, a, {
-                timeout: o?.timeout ?? 10 * 60 * 1000,
-                maxBuffer: 10 * 1024 * 1024,
-                windowsHide: true,
-                env: proxyEnv(loadSettings().proxy)
-              }).then((r) => r.stdout)
-            }, {
-              uvPath: uvComp?.path,
-              pipIndex: String(settings.pipIndex || '').trim(),
-              onLine: (line) => {
-                this.opLog(line, instanceId || 'default')
-                this.emitInstallProgress({
-                  phase: 'pip',
-                  packName: meta.name || dir,
-                  op: 'install',
-                  message: line.slice(0, 120)
-                })
-              }
+            const bootstrap = await bootstrapService.ensure({
+              kinds: ['uv'],
+              downloadIfMissing: false
             })
+            const uvComp = bootstrap.components.find((c) => c.kind === 'uv' && c.installed)
+            await installRequirements(
+              vpy,
+              reqFile,
+              async (c, a, o) => {
+                // fall back to a buffered run if streaming is not wired
+                return execFileAsync(c, a, {
+                  timeout: o?.timeout ?? 10 * 60 * 1000,
+                  maxBuffer: 10 * 1024 * 1024,
+                  windowsHide: true,
+                  env: proxyEnv(loadSettings().proxy)
+                }).then((r) => r.stdout)
+              },
+              {
+                uvPath: uvComp?.path,
+                pipIndex: String(settings.pipIndex || '').trim(),
+                onLine: (line) => {
+                  this.opLog(line, instanceId || 'default')
+                  this.emitInstallProgress({
+                    phase: 'pip',
+                    packName: meta.name || dir,
+                    op: 'install',
+                    message: line.slice(0, 120)
+                  })
+                }
+              }
+            )
             void runStreaming
             this.emitOpProgress({
               instanceId: instanceId || 'default',
@@ -1476,7 +1600,9 @@ export class NodePackService extends EventEmitter {
     const prev =
       (registryId && prevList.find((p) => p.registryId === registryId)) ||
       prevList.find((p) => p.name === (meta.name || dirBase)) ||
-      prevList.find((p) => p.path && normalizePathEverySegment(p.path) === normalizePathEverySegment(dir)) ||
+      prevList.find(
+        (p) => p.path && normalizePathEverySegment(p.path) === normalizePathEverySegment(dir)
+      ) ||
       prevList.find((p) => p.id === createHash('sha1').update(dir).digest('hex').slice(0, 16))
     const rec: NodePackRecord = {
       id: createHash('sha1').update(dir).digest('hex').slice(0, 16),
@@ -1736,6 +1862,10 @@ export class NodePackService extends EventEmitter {
     }
 
     for (const pack of packs) {
+      // Disabled packs are intentionally not updatable: a registry update
+      // re-installs into custom_nodes and would silently re-enable them.
+      if (pack.status === 'disabled') continue
+
       const gitLike =
         pack.installSource === 'git' ||
         pack.installSource === 'manager' ||
@@ -1758,20 +1888,69 @@ export class NodePackService extends EventEmitter {
       if (gitLike && pack.path && existsSync(join(pack.path, '.git'))) {
         try {
           const gitBin = resolveGitBinary()
+          const gitEnv = proxyEnv(loadSettings().proxy)
           await execFileAsync(gitBin, ['-C', pack.path, 'fetch', '--quiet'], {
             timeout: 30000,
-            env: proxyEnv(loadSettings().proxy)
+            env: gitEnv
           })
+          // Prefer the configured upstream; manually copied clones often have
+          // origin but no tracking branch — fall back to origin/<current branch>.
+          let compareRef = '@{u}'
+          try {
+            await execFileAsync(
+              gitBin,
+              ['-C', pack.path, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'],
+              { timeout: 10000, env: gitEnv }
+            )
+          } catch {
+            const { stdout: branchOut } = await execFileAsync(
+              gitBin,
+              ['-C', pack.path, 'rev-parse', '--abbrev-ref', 'HEAD'],
+              { timeout: 10000, env: gitEnv }
+            )
+            const branch = branchOut.trim()
+            let fallback = ''
+            if (branch && branch !== 'HEAD') {
+              const cand = `origin/${branch}`
+              try {
+                await execFileAsync(
+                  gitBin,
+                  ['-C', pack.path, 'rev-parse', '--verify', '--quiet', cand],
+                  {
+                    timeout: 10000,
+                    env: gitEnv
+                  }
+                )
+                fallback = cand
+              } catch {
+                /* origin branch missing */
+              }
+            }
+            if (!fallback) {
+              results.push({
+                name: pack.name,
+                id: pack.id,
+                currentVersion: pack.version,
+                latestVersion: pack.latestVersion,
+                updatable: false,
+                updateSource: 'git',
+                reason: 'Git checkout has no upstream or origin branch',
+                reasonKey: undefined
+              })
+              continue
+            }
+            compareRef = fallback
+          }
           const { stdout: behindOut } = await execFileAsync(
             gitBin,
-            ['-C', pack.path, 'rev-list', '--count', 'HEAD..@{u}'],
-            { timeout: 10000, env: proxyEnv(loadSettings().proxy) }
+            ['-C', pack.path, 'rev-list', '--count', `HEAD..${compareRef}`],
+            { timeout: 10000, env: gitEnv }
           )
           const behind = Number(behindOut.trim()) || 0
           const { stdout: remoteVer } = await execFileAsync(
             gitBin,
-            ['-C', pack.path, 'describe', '--tags', '--abbrev=0', '@{u}'],
-            { timeout: 10000, env: proxyEnv(loadSettings().proxy) }
+            ['-C', pack.path, 'describe', '--tags', '--abbrev=0', compareRef],
+            { timeout: 10000, env: gitEnv }
           ).catch(() => ({ stdout: '' }))
           const latest = remoteVer.trim() || pack.latestVersion
           results.push({
@@ -1791,7 +1970,9 @@ export class NodePackService extends EventEmitter {
       }
 
       const remote =
-        (pack.registryId && registryLatest.get(pack.registryId)) || registryLatest.get(pack.name) || pack.latestVersion
+        (pack.registryId && registryLatest.get(pack.registryId)) ||
+        registryLatest.get(pack.name) ||
+        pack.latestVersion
       if (!remote) {
         results.push({
           name: pack.name,
@@ -1818,7 +1999,11 @@ export class NodePackService extends EventEmitter {
           : canRegistry
             ? 'Up to date'
             : 'Pack is not updatable via Registry or git',
-        reasonKey: updatable ? 'nodes.hasUpdate' : canRegistry ? 'nodes.upToDate' : 'nodes.notUpdatable'
+        reasonKey: updatable
+          ? 'nodes.hasUpdate'
+          : canRegistry
+            ? 'nodes.upToDate'
+            : 'nodes.notUpdatable'
       })
       // Persist latestVersion so list() can flag update-available without another round-trip.
       try {
@@ -1847,10 +2032,20 @@ export class NodePackService extends EventEmitter {
         out.push({ name: c.name, ok: true, skipped: true })
         continue
       }
-      this.emitInstallProgress({ phase: 'start', packName: c.name, op: 'update', message: `Updating ${c.name}…` })
+      this.emitInstallProgress({
+        phase: 'start',
+        packName: c.name,
+        op: 'update',
+        message: `Updating ${c.name}…`
+      })
       try {
         await this.update(c.name, undefined, instancePathOrId)
-        this.emitInstallProgress({ phase: 'done', packName: c.name, op: 'update', message: `Updated ${c.name}` })
+        this.emitInstallProgress({
+          phase: 'done',
+          packName: c.name,
+          op: 'update',
+          message: `Updated ${c.name}`
+        })
         out.push({ name: c.name, ok: true })
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
@@ -1862,7 +2057,12 @@ export class NodePackService extends EventEmitter {
   }
 
   async update(idOrName: string, version?: string, instanceId?: string): Promise<NodePackRecord> {
-    this.emitInstallProgress({ phase: 'start', packName: idOrName, op: 'update', message: `Updating ${idOrName}…` })
+    this.emitInstallProgress({
+      phase: 'start',
+      packName: idOrName,
+      op: 'update',
+      message: `Updating ${idOrName}…`
+    })
     // Fresh op-progress stream so the shared modal can finish (git-pull path
     // never emitted a terminal 'done' before).
     this.opProgressMap.delete(instanceId || 'default')
@@ -1911,6 +2111,44 @@ export class NodePackService extends EventEmitter {
     }
   }
 
+  /**
+   * Bring a git pack up to date: `pull --ff-only` when a tracking branch is
+   * configured; manually copied clones (origin exists, no upstream) fall back
+   * to `fetch origin` + `merge --ff-only origin/<branch>`.
+   */
+  private async gitPullOrMerge(gitBin: string, cwd: string, instanceId?: string): Promise<void> {
+    const env = proxyEnv(loadSettings().proxy)
+    try {
+      await execFileAsync(gitBin, ['-C', cwd, 'pull', '--ff-only'], {
+        timeout: 60000,
+        maxBuffer: 20 * 1024 * 1024,
+        env
+      })
+      return
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      const noUpstream = /no tracking information|does not have a tracking/i.test(msg)
+      if (!noUpstream || isAbortError(e)) throw e
+      const { stdout: branchOut } = await execFileAsync(
+        gitBin,
+        ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'],
+        { timeout: 10000, env }
+      )
+      const branch = branchOut.trim()
+      if (!branch || branch === 'HEAD') throw e
+      await execFileAsync(gitBin, ['-C', cwd, 'fetch', 'origin', '--quiet'], {
+        timeout: 60000,
+        env
+      })
+      await execFileAsync(gitBin, ['-C', cwd, 'merge', '--ff-only', `origin/${branch}`], {
+        timeout: 60000,
+        maxBuffer: 20 * 1024 * 1024,
+        env
+      })
+      this.opLog?.(`pull had no upstream — fast-forwarded to origin/${branch}`, instanceId)
+    }
+  }
+
   private async updateInner(
     idOrName: string,
     version?: string,
@@ -1921,6 +2159,11 @@ export class NodePackService extends EventEmitter {
     const pack = packs.find((p) => p.id === idOrName || p.name === idOrName)
     if (!pack) throw new Error('Pack not found')
     if (pack.locked) throw new Error('Pack is locked')
+    if (pack.status === 'disabled') {
+      // Updating a disabled pack would move it back into custom_nodes (registry
+      // reinstall) and silently enable it — refuse and tell the user why.
+      throw codedError('NODE_DISABLED', 'Pack is disabled — enable it before updating')
+    }
     // Snapshot before update so enable/disable state can be aligned later.
     try {
       this.createSnapshot(`auto-pre-update-${sanitizeInstallName(pack.name)}`, instanceId)
@@ -1944,11 +2187,7 @@ export class NodePackService extends EventEmitter {
         /* no rev — skip the reset safety net */
       }
       try {
-        await execFileAsync(gitBin, ['-C', pack.path, 'pull', '--ff-only'], {
-          timeout: 60000,
-          maxBuffer: 20 * 1024 * 1024,
-          env: proxyEnv(loadSettings().proxy)
-        })
+        await this.gitPullOrMerge(gitBin, pack.path, instanceId)
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
         if (oldRev) {
@@ -2063,26 +2302,53 @@ export class NodePackService extends EventEmitter {
     const packs = this.list(instanceId)
     const pack = packs.find((p) => p.id === idOrName || p.name === idOrName)
     if (!pack?.path) return undefined
-    // Also handle `name.disabled` folder convention
+    const root = detectCustomNodesRoot(instanceId)
+    if (!root) return undefined
     let dir = pack.path
     if (!enabled) {
-      const disabledMarker = join(dir, '.disabled')
-      writeFileSync(disabledMarker, String(Date.now()))
+      // Real disable semantics (recognized by both ComfyUI and ComfyUI-Manager):
+      // move the pack into `<custom_nodes>/.disabled/<name>`.
+      // ComfyUI skips any entry ending in `.disabled`; Manager reads children of
+      // the `.disabled/` folder. A marker FILE inside the pack is invisible to
+      // both loaders — never rely on it again (kept below only for legacy reads).
+      if (!dir.endsWith('.disabled') && basename(dirname(dir)) !== '.disabled') {
+        const disabledRoot = join(root, '.disabled')
+        mkdirSync(disabledRoot, { recursive: true })
+        const target = join(disabledRoot, basename(dir))
+        if (existsSync(target)) {
+          throw codedError('DISABLE_CONFLICT', `Disable target already exists: ${target}`)
+        }
+        renameSync(dir, target)
+        dir = target
+      }
+      pack.path = dir
       pack.status = 'disabled'
     } else {
-      const disabledMarker = join(dir, '.disabled')
-      if (existsSync(disabledMarker)) unlinkSync(disabledMarker)
-      // rename foo.disabled → foo if needed
-      if (dir.endsWith('.disabled')) {
-        const target = dir.slice(0, -'.disabled'.length)
-        if (!existsSync(target)) {
-          renameSync(dir, target)
-          dir = target
-          pack.path = target
+      // Enable: undo whichever disabled form this pack uses.
+      if (basename(dirname(dir)) === '.disabled') {
+        const target = join(root, basename(dir))
+        if (existsSync(target)) {
+          throw codedError('ENABLE_CONFLICT', `Enable target already exists: ${target}`)
         }
+        renameSync(dir, target)
+        dir = target
+      } else if (dir.endsWith('.disabled')) {
+        const target = dir.slice(0, -'.disabled'.length)
+        if (existsSync(target)) {
+          throw codedError('ENABLE_CONFLICT', `Enable target already exists: ${target}`)
+        }
+        renameSync(dir, target)
+        dir = target
       }
+      // Legacy marker file cleanup (from pre-0.1.8 versions).
+      const legacyMarker = join(dir, '.disabled')
+      if (existsSync(legacyMarker)) unlinkSync(legacyMarker)
+      pack.path = dir
       pack.status = 'installed'
     }
+    // The directory identity (= pack id) changed with the move: recompute so the
+    // DB row, the next list() and deleteNodePack(id) all agree on one id.
+    pack.id = createHash('sha1').update(dir).digest('hex').slice(0, 16)
     upsertNodePack(pack)
     return pack
   }
@@ -2270,14 +2536,41 @@ export class NodePackService extends EventEmitter {
       }
     }
     for (const s of snap.packs) {
-      if (!currentNames.has(s.name) && s.path && existsSync(s.path)) {
-        try {
-          const marker = join(s.path, '.disabled')
-          if (snapDisabled.has(s.name) && !existsSync(marker)) writeFileSync(marker, String(Date.now()))
-          if (snapEnabled.has(s.name) && existsSync(marker)) unlinkSync(marker)
-        } catch {
-          /* ignore */
+      if (currentNames.has(s.name) || !s.path || !existsSync(s.path)) continue
+      try {
+        let dir = s.path
+        if (snapDisabled.has(s.name)) {
+          // Use a form ComfyUI actually honors: `<dir>.disabled` rename.
+          // (A marker file inside the pack is invisible to the loader.)
+          if (!dir.endsWith('.disabled') && basename(dirname(dir)) !== '.disabled') {
+            const target = `${dir}.disabled`
+            if (!existsSync(target)) {
+              renameSync(dir, target)
+              dir = target
+            } else {
+              writeFileSync(join(dir, '.disabled'), String(Date.now()))
+            }
+          }
+        } else if (snapEnabled.has(s.name)) {
+          // Undo both real disabled forms; the legacy marker is removed too.
+          if (basename(dirname(dir)) === '.disabled') {
+            const target = join(dirname(dirname(dir)), basename(dir))
+            if (!existsSync(target)) {
+              renameSync(dir, target)
+              dir = target
+            }
+          } else if (dir.endsWith('.disabled')) {
+            const target = dir.slice(0, -'.disabled'.length)
+            if (!existsSync(target)) {
+              renameSync(dir, target)
+              dir = target
+            }
+          }
+          const legacyMarker = join(dir, '.disabled')
+          if (existsSync(legacyMarker)) unlinkSync(legacyMarker)
         }
+      } catch {
+        /* ignore */
       }
     }
     return true

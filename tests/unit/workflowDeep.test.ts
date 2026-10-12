@@ -99,7 +99,10 @@ describe('workflow analyze shapes', () => {
     const dir = join(ROOT, 'pngplain')
     mkdirSync(dir, { recursive: true })
     const src = join(dir, 'plain.png')
-    writePng(src, [['seed', '99'], ['model', 'x.safetensors']])
+    writePng(src, [
+      ['seed', '99'],
+      ['model', 'x.safetensors']
+    ])
     await expect(workflowService.importFile(src)).rejects.toThrow(/no embedded workflow/i)
   })
 })
@@ -184,9 +187,13 @@ describe('workflow queue / meta', () => {
     writeApiPrompt(ok)
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => new Response(JSON.stringify({ error: { message: 'boom' } }), { status: 400 }))
+      vi.fn(
+        async () => new Response(JSON.stringify({ error: { message: 'boom' } }), { status: 400 })
+      )
     )
-    await expect(workflowService.queue({ workflowPath: ok, instanceId: 'q-inst' })).rejects.toThrow()
+    await expect(
+      workflowService.queue({ workflowPath: ok, instanceId: 'q-inst' })
+    ).rejects.toThrow()
     vi.unstubAllGlobals()
   })
 })
@@ -221,7 +228,10 @@ describe('workflow export / copy / remove edges', () => {
     mkdirSync(dir, { recursive: true })
     const src = join(dir, 'p.png')
     writePng(src, [
-      ['workflow', JSON.stringify({ nodes: [{ id: 1, type: 'KSampler', widgets_values: [1] }], links: [] })]
+      [
+        'workflow',
+        JSON.stringify({ nodes: [{ id: 1, type: 'KSampler', widgets_values: [1] }], links: [] })
+      ]
     ])
     const rec = await workflowService.importFile(src)
     const dest = join(dir, 'out')

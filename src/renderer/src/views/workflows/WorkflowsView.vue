@@ -36,10 +36,13 @@ import {
   NCard,
   NText,
   NSwitch,
-  NInputGroup
+  NInputGroup,
+  NTooltip
 } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 import { ipc } from '@/composables/useIpc'
+import { COLORS } from '@/styles/tokens'
+import ListSkeleton from '@/components/ListSkeleton.vue'
 import type { WorkflowRecord } from '@shared/types'
 
 const { t } = useI18n()
@@ -56,6 +59,7 @@ const missingCount = ref(0)
 
 const showQueue = ref(false)
 const queueTarget = ref<WorkflowRecord | null>(null)
+const queueInstanceId = ref('')
 const seed = ref<number | null>(null)
 const queuing = ref(false)
 
@@ -72,10 +76,8 @@ const detail = ref<WorkflowRecord | null>(null)
 const openingFrontend = ref(false)
 
 /** ComfyPilot never auto-starts an instance —gate every live action on this. */
-const instanceRunning = computed(
-  () => store.activeInstance?.status === 'running'
-)
-const needInstanceHint = t('workflows.needRunningInstance')
+const instanceRunning = computed(() => store.activeInstance?.status === 'running')
+const needInstanceHint = computed(() => t('workflows.needRunningInstance'))
 
 const originLabel = (o: WorkflowRecord['origin']): string => {
   if (o === 'library') return t('workflows.originLibrary')
@@ -111,7 +113,9 @@ async function importFile(): Promise<void> {
     await refresh()
     const names = result.ok.map((r: { name: string }) => r.name).join(', ')
     if (result.errors.length) {
-      message.warning(t('workflows.importedWithErrors', { ok: result.ok.length, failed: result.errors.length }))
+      message.warning(
+        t('workflows.importedWithErrors', { ok: result.ok.length, failed: result.errors.length })
+      )
       // Surface every failure with its reason — console.warn is invisible to users.
       const lines = result.errors.map((e: { path: string; message: string }) => {
         const base = e.path.split(/[\\/]/).pop() || e.path
@@ -120,19 +124,29 @@ async function importFile(): Promise<void> {
       dialog.error({
         title: t('workflows.importFailedTitle'),
         content: () =>
-          h('div', { style: 'max-height:320px;overflow:auto;display:flex;flex-direction:column;gap:6px' }, [
-            h('p', t('workflows.importedWithErrors', { ok: result.ok.length, failed: result.errors.length })),
-            ...lines.map((l: string) =>
+          h(
+            'div',
+            { style: 'max-height:320px;overflow:auto;display:flex;flex-direction:column;gap:6px' },
+            [
               h(
-                'div',
-                {
-                  style:
-                    'font-family:monospace;font-size:12px;word-break:break-all;padding:4px 8px;border-radius:6px;background:rgba(226,85,122,0.10);border:1px solid rgba(226,85,122,0.30)'
-                },
-                l
+                'p',
+                t('workflows.importedWithErrors', {
+                  ok: result.ok.length,
+                  failed: result.errors.length
+                })
+              ),
+              ...lines.map((l: string) =>
+                h(
+                  'div',
+                  {
+                    style:
+                      'font-family:monospace;font-size:12px;word-break:break-all;padding:4px 8px;border-radius:6px;background:rgba(239,68,68,0.10);border:1px solid rgba(239,68,68,0.30)'
+                  },
+                  l
+                )
               )
-            )
-          ]),
+            ]
+          ),
         positiveText: t('common.confirm')
       })
     } else {
@@ -194,9 +208,7 @@ async function removeRow(row: WorkflowRecord): Promise<void> {
     // library + instance —delete the source file; external —unregister only.
     const deleteSource = row.origin !== 'external'
     await ipc('workflow.delete', row.id, { deleteSource })
-    message.success(
-      t(deleteSource ? 'workflows.deletedWithFile' : 'workflows.deleted')
-    )
+    message.success(t(deleteSource ? 'workflows.deletedWithFile' : 'workflows.deleted'))
     await refresh()
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
@@ -233,7 +245,7 @@ async function copyToInstance(row: WorkflowRecord): Promise<void> {
 async function openInFrontend(row: WorkflowRecord): Promise<void> {
   if (openingFrontend.value) return
   if (!instanceRunning.value) {
-    message.warning(needInstanceHint)
+    message.warning(needInstanceHint.value)
     return
   }
   openingFrontend.value = true
@@ -266,9 +278,16 @@ function openDetail(row: WorkflowRecord): void {
 
 function openQueue(row: WorkflowRecord): void {
   queueTarget.value = row
+  // Local draft — selecting another instance here must not hijack the global switch.
+  queueInstanceId.value = store.activeInstanceId || ''
   seed.value = null
   showQueue.value = true
 }
+
+/** Running state of the instance picked inside the queue modal. */
+const queueInstanceRunning = computed(
+  () => store.instances.find((i) => i.id === queueInstanceId.value)?.status === 'running'
+)
 
 function closeQueue(): void {
   showQueue.value = false
@@ -278,8 +297,8 @@ function closeQueue(): void {
 
 async function doQueue(): Promise<void> {
   if (!queueTarget.value || queuing.value) return
-  if (!instanceRunning.value) {
-    message.warning(needInstanceHint)
+  if (!queueInstanceRunning.value) {
+    message.warning(needInstanceHint.value)
     return
   }
   queuing.value = true
@@ -287,7 +306,7 @@ async function doQueue(): Promise<void> {
     const wf = queueTarget.value
     const promptId = await ipc('workflow.queue', {
       workflowPath: wf.path,
-      instanceId: store.activeInstanceId || '',
+      instanceId: queueInstanceId.value,
       seed: seed.value ?? undefined
     })
     closeQueue()
@@ -356,6 +375,13 @@ function filtered(): WorkflowRecord[] {
   })
 }
 
+const hasFilter = computed(() => keyword.value.trim().length > 0 || onlyFavorites.value)
+
+function clearFilters(): void {
+  keyword.value = ''
+  onlyFavorites.value = false
+}
+
 onMounted(async () => {
   await store.bootstrap({ keepSelection: true })
   await refresh()
@@ -370,20 +396,26 @@ onMounted(async () => {
         <p class="page-subtitle">{{ $t('workflows.subtitle') }}</p>
       </div>
       <NSpace align="center">
-        <NInput v-model:value="keyword" clearable :placeholder="$t('workflows.searchPlaceholder')" style="width: 200px" />
+        <NInput
+          v-model:value="keyword"
+          clearable
+          :placeholder="$t('workflows.searchPlaceholder')"
+          style="width: 200px"
+        />
         <NSwitch v-model:value="onlyFavorites">
           <template #checked>{{ $t('workflows.favOnly') }}</template>
           <template #unchecked>{{ $t('workflows.favAll') }}</template>
         </NSwitch>
         <NButton secondary :loading="loading" @click="refresh">
-          <template #icon><NIcon :component="RefreshOutline" /></template>{{ $t('workflows.refresh') }}
+          <template #icon><NIcon :component="RefreshOutline" /></template
+          >{{ $t('workflows.refresh') }}
         </NButton>
         <NButton type="primary" @click="importFile">{{ $t('workflows.import') }}</NButton>
       </NSpace>
     </div>
 
     <!-- Library location banner: user must always know WHERE imports land -->
-    <NCard size="small" class="lib-banner" v-if="libraryRoot">
+    <NCard v-if="libraryRoot" size="small" class="lib-banner">
       <div class="lib-row">
         <div class="lib-left">
           <NIcon :component="FolderOpenOutline" :size="18" />
@@ -400,8 +432,9 @@ onMounted(async () => {
     </NCard>
 
     <div class="page-body">
-      <NSpin :show="loading">
-        <div v-if="filtered().length" class="grid cards">
+      <NSpin :show="loading && filtered().length > 0">
+        <ListSkeleton v-if="loading && !filtered().length" :rows="6" variant="card" />
+        <div v-else-if="filtered().length" class="grid cards">
           <article
             v-for="wf in filtered()"
             :key="wf.id"
@@ -410,27 +443,52 @@ onMounted(async () => {
           >
             <div class="wf-top">
               <div class="wf-icon">
-                <NIcon :size="22" :component="wf.format === 'png' ? ImageOutline : DocumentTextOutline" />
+                <NIcon
+                  :size="22"
+                  :component="wf.format === 'png' ? ImageOutline : DocumentTextOutline"
+                />
               </div>
               <div class="wf-title">
-                <div class="wf-name">{{ wf.name }}</div>
+                <div class="wf-name" :title="wf.name">{{ wf.name }}</div>
                 <div class="wf-meta">
-                  {{ wf.nodeCount }} nodes ·{{ wf.format }} ·{{ $t('workflows.formatVersion', { version: wf.version }) }}
+                  {{ $t('nodes.nodeCount', { n: wf.nodeCount }) }} ·
+                  {{ String(wf.format).toUpperCase() }} ·
+                  {{ $t('workflows.formatVersion', { version: wf.version }) }}
                 </div>
               </div>
-              <NButton text @click="toggleFavorite(wf)">
+              <NButton
+                text
+                :title="wf.favorite ? $t('workflows.favOnly') : $t('workflows.favAll')"
+                :aria-label="wf.favorite ? $t('workflows.favOnly') : $t('workflows.favAll')"
+                @click="toggleFavorite(wf)"
+              >
                 <template #icon>
-                  <NIcon :component="wf.favorite ? Heart : HeartOutline" :color="wf.favorite ? '#e2557a' : undefined" />
+                  <NIcon
+                    :component="wf.favorite ? Heart : HeartOutline"
+                    :color="wf.favorite ? COLORS.danger : undefined"
+                  />
                 </template>
               </NButton>
             </div>
 
             <div class="wf-tags">
-              <NTag size="tiny" round :type="wf.origin === 'library' ? 'success' : wf.origin === 'instance' ? 'info' : 'default'">
+              <NTag
+                size="tiny"
+                round
+                :type="
+                  wf.origin === 'library'
+                    ? 'success'
+                    : wf.origin === 'instance'
+                      ? 'info'
+                      : 'default'
+                "
+              >
                 {{ originLabel(wf.origin) }}
               </NTag>
               <NTag v-for="tg in wf.tags" :key="tg" size="tiny" round>{{ tg }}</NTag>
-              <NTag v-if="wf.seed != null" size="tiny" round type="info">{{ $t('workflows.seed') }} {{ wf.seed }}</NTag>
+              <NTag v-if="wf.seed != null" size="tiny" round type="info"
+                >{{ $t('workflows.seed') }} {{ wf.seed }}</NTag
+              >
               <NTag v-if="wf.missingNodes.length" size="tiny" round type="warning">
                 {{ $t('workflows.missingNodes', { n: wf.missingNodes.length }) }}
               </NTag>
@@ -441,39 +499,51 @@ onMounted(async () => {
             </div>
 
             <div class="wf-path mono" :title="wf.path">{{ wf.path }}</div>
-            <div v-if="wf.sourcePath" class="wf-src mono">{{ $t('workflows.sourcePath') }}: {{ wf.sourcePath }}</div>
+            <div v-if="wf.sourcePath" class="wf-src mono">
+              {{ $t('workflows.sourcePath') }}: {{ wf.sourcePath }}
+            </div>
 
             <div class="wf-actions">
-              <NButton
-                size="tiny"
-                type="primary"
-                secondary
-                :disabled="wf.missing || openingFrontend || !instanceRunning"
-                :loading="openingFrontend"
-                :title="instanceRunning ? '' : needInstanceHint"
-                @click="openInFrontend(wf)"
-              >
-                <template #icon><NIcon :component="PlayOutline" /></template>{{ $t('workflows.openFrontend') }}
-              </NButton>
-              <NButton
-                size="tiny"
-                secondary
-                :disabled="wf.missing || !instanceRunning"
-                :title="instanceRunning ? '' : needInstanceHint"
-                @click="openQueue(wf)"
-              >
-                <template #icon><NIcon :component="SendOutline" /></template>{{ $t('workflows.queue') }}
-              </NButton>
-              <NButton
-                size="tiny"
-                secondary
-                :disabled="wf.missing || !instanceRunning"
-                :title="instanceRunning ? '' : needInstanceHint"
-                @click="sendToBatch(wf)"
-              >
+              <NTooltip trigger="hover" :disabled="instanceRunning">
+                <template #trigger>
+                  <span class="btn-wrap">
+                    <NButton
+                      size="tiny"
+                      type="primary"
+                      secondary
+                      :disabled="wf.missing || openingFrontend || !instanceRunning"
+                      :loading="openingFrontend"
+                      @click="openInFrontend(wf)"
+                    >
+                      <template #icon><NIcon :component="PlayOutline" /></template
+                      >{{ $t('workflows.openFrontend') }}
+                    </NButton>
+                  </span>
+                </template>
+                {{ needInstanceHint }}
+              </NTooltip>
+              <NTooltip trigger="hover" :disabled="instanceRunning">
+                <template #trigger>
+                  <span class="btn-wrap">
+                    <NButton
+                      size="tiny"
+                      secondary
+                      :disabled="wf.missing || !instanceRunning"
+                      @click="openQueue(wf)"
+                    >
+                      <template #icon><NIcon :component="SendOutline" /></template
+                      >{{ $t('workflows.queue') }}
+                    </NButton>
+                  </span>
+                </template>
+                {{ needInstanceHint }}
+              </NTooltip>
+              <NButton size="tiny" secondary :disabled="wf.missing" @click="sendToBatch(wf)">
                 {{ $t('workflows.toBatch') }}
               </NButton>
-              <NButton size="tiny" secondary @click="openDetail(wf)">{{ $t('workflows.detail') }}</NButton>
+              <NButton size="tiny" secondary @click="openDetail(wf)">{{
+                $t('workflows.detail')
+              }}</NButton>
               <NButton
                 size="tiny"
                 secondary
@@ -482,23 +552,57 @@ onMounted(async () => {
                 {{ $t('workflows.viewOutputs') }}
               </NButton>
             </div>
-            <div class="wf-actions">
-              <NButton size="tiny" quaternary @click="openRename(wf)">
+            <div class="wf-actions wf-actions-secondary">
+              <NButton
+                size="tiny"
+                quaternary
+                :title="$t('workflows.renameTitle')"
+                :aria-label="$t('workflows.renameTitle')"
+                @click="openRename(wf)"
+              >
                 <template #icon><NIcon :component="CreateOutline" /></template>
               </NButton>
-              <NButton size="tiny" quaternary @click="openTags(wf)">{{ $t('workflows.editTags') }}</NButton>
-              <NButton size="tiny" quaternary :disabled="wf.missing" @click="exportZip(wf)">
+              <NButton size="tiny" quaternary @click="openTags(wf)">{{
+                $t('workflows.editTags')
+              }}</NButton>
+              <NButton
+                size="tiny"
+                quaternary
+                :disabled="wf.missing"
+                :title="$t('workflows.exportZip')"
+                :aria-label="$t('workflows.exportZip')"
+                @click="exportZip(wf)"
+              >
                 <template #icon><NIcon :component="ShareSocialOutline" /></template>
               </NButton>
-              <NButton size="tiny" quaternary :disabled="wf.missing" @click="copyToInstance(wf)">
+              <NButton
+                size="tiny"
+                quaternary
+                :disabled="wf.missing"
+                :title="$t('workflows.copyToInstanceLabel')"
+                :aria-label="$t('workflows.copyToInstanceLabel')"
+                @click="copyToInstance(wf)"
+              >
                 <template #icon><NIcon :component="CloudDownloadOutline" /></template>
               </NButton>
-              <NButton size="tiny" quaternary @click="reveal(wf)">
+              <NButton
+                size="tiny"
+                quaternary
+                :title="$t('workflows.reveal')"
+                :aria-label="$t('workflows.reveal')"
+                @click="reveal(wf)"
+              >
                 <template #icon><NIcon :component="OpenOutline" /></template>
               </NButton>
               <NPopconfirm @positive-click="removeRow(wf)">
                 <template #trigger>
-                  <NButton size="tiny" quaternary type="error">
+                  <NButton
+                    size="tiny"
+                    quaternary
+                    type="error"
+                    :title="$t('common.delete')"
+                    :aria-label="$t('common.delete')"
+                  >
                     <template #icon><NIcon :component="TrashOutline" /></template>
                   </NButton>
                 </template>
@@ -507,46 +611,75 @@ onMounted(async () => {
             </div>
           </article>
         </div>
-        <NEmpty v-else :description="$t('workflows.empty')" class="empty">
+        <NEmpty
+          v-else
+          :description="hasFilter ? $t('common.noMatch') : $t('workflows.empty')"
+          class="empty"
+        >
           <template #extra>
-            <NButton type="primary" @click="importFile">{{ $t('workflows.import') }}</NButton>
+            <NButton v-if="hasFilter" secondary @click="clearFilters">{{
+              $t('common.clearFilters')
+            }}</NButton>
+            <NButton v-else type="primary" @click="importFile">{{
+              $t('workflows.import')
+            }}</NButton>
           </template>
         </NEmpty>
       </NSpin>
     </div>
 
     <!-- Queue -->
-    <NModal v-model:show="showQueue" preset="card" :title="$t('workflows.queueTitle')" style="width: 480px; border-radius: 20px">
+    <NModal
+      v-model:show="showQueue"
+      preset="card"
+      :title="$t('workflows.queueTitle')"
+      style="width: 480px; border-radius: 20px"
+    >
       <NSpace vertical>
         <div>{{ queueTarget?.name }}</div>
         <NSelect
           :options="store.instances.map((i) => ({ label: i.name, value: i.id }))"
-          :value="store.activeInstanceId"
+          :value="queueInstanceId"
           :placeholder="$t('workflows.instancePlaceholder')"
-          @update:value="(v: string) => (store.activeInstanceId = v)"
+          @update:value="(v: string) => (queueInstanceId = v)"
         />
         <NInputNumber v-model:value="seed" :placeholder="$t('workflows.seedPlaceholder')" />
       </NSpace>
       <template #footer>
         <NSpace justify="end">
           <NButton @click="closeQueue">{{ $t('workflows.cancel') }}</NButton>
-          <NButton
-            type="primary"
-            :loading="queuing"
-            :disabled="!instanceRunning"
-            :title="instanceRunning ? '' : needInstanceHint"
-            @click="doQueue"
-          >
-            {{ $t('workflows.enqueue') }}
-          </NButton>
+          <NTooltip trigger="hover" :disabled="queueInstanceRunning">
+            <template #trigger>
+              <span class="btn-wrap">
+                <NButton
+                  type="primary"
+                  :loading="queuing"
+                  :disabled="!queueInstanceRunning"
+                  @click="doQueue"
+                >
+                  {{ $t('workflows.enqueue') }}
+                </NButton>
+              </span>
+            </template>
+            {{ needInstanceHint }}
+          </NTooltip>
         </NSpace>
       </template>
     </NModal>
 
     <!-- Rename -->
-    <NModal v-model:show="showRename" preset="card" :title="$t('workflows.renameTitle')" style="width: 420px; border-radius: 20px">
+    <NModal
+      v-model:show="showRename"
+      preset="card"
+      :title="$t('workflows.renameTitle')"
+      style="width: 420px; border-radius: 20px"
+    >
       <NInputGroup>
-        <NInput v-model:value="renameValue" :placeholder="$t('workflows.renamePlaceholder')" @keyup.enter="doRename" />
+        <NInput
+          v-model:value="renameValue"
+          :placeholder="$t('workflows.renamePlaceholder')"
+          @keyup.enter="doRename"
+        />
       </NInputGroup>
       <template #footer>
         <NSpace justify="end">
@@ -557,7 +690,12 @@ onMounted(async () => {
     </NModal>
 
     <!-- Tags -->
-    <NModal v-model:show="showTags" preset="card" :title="$t('workflows.tagsTitle')" style="width: 480px; border-radius: 20px">
+    <NModal
+      v-model:show="showTags"
+      preset="card"
+      :title="$t('workflows.tagsTitle')"
+      style="width: 480px; border-radius: 20px"
+    >
       <NDynamicTags v-model:value="tagsValue" />
       <template #footer>
         <NSpace justify="end">
@@ -568,12 +706,25 @@ onMounted(async () => {
     </NModal>
 
     <!-- Detail -->
-    <NModal v-model:show="showDetail" preset="card" :title="detail?.name || $t('workflows.detail')" style="width: 560px; border-radius: 20px">
-      <NSpace vertical v-if="detail">
-        <div><b>{{ $t('workflows.filePath') }}</b> <NText code>{{ detail.path }}</NText></div>
-        <div v-if="detail.sourcePath"><b>{{ $t('workflows.sourcePath') }}</b> <NText code>{{ detail.sourcePath }}</NText></div>
-        <div><b>{{ $t('workflows.origin') }}</b> {{ originLabel(detail.origin) }}</div>
-        <div><b>{{ $t('workflows.nodeCount') }}</b> {{ detail.nodeCount }}</div>
+    <NModal
+      v-model:show="showDetail"
+      preset="card"
+      :title="detail?.name || $t('workflows.detail')"
+      style="width: 560px; border-radius: 20px"
+    >
+      <NSpace v-if="detail" vertical>
+        <div>
+          <b>{{ $t('workflows.filePath') }}</b> <NText code>{{ detail.path }}</NText>
+        </div>
+        <div v-if="detail.sourcePath">
+          <b>{{ $t('workflows.sourcePath') }}</b> <NText code>{{ detail.sourcePath }}</NText>
+        </div>
+        <div>
+          <b>{{ $t('workflows.origin') }}</b> {{ originLabel(detail.origin) }}
+        </div>
+        <div>
+          <b>{{ $t('workflows.nodeCount') }}</b> {{ detail.nodeCount }}
+        </div>
         <div v-if="detail.modelUsed">
           <b>{{ $t('workflows.modelUsed') }}</b>
           <NTag
@@ -586,8 +737,12 @@ onMounted(async () => {
             {{ detail.modelUsed }} →
           </NTag>
         </div>
-        <div v-if="detail.seed != null"><b>{{ $t('workflows.seed') }}</b> {{ detail.seed }}</div>
-        <div v-if="detail.description"><b>{{ $t('workflows.description') }}</b> {{ detail.description }}</div>
+        <div v-if="detail.seed != null">
+          <b>{{ $t('workflows.seed') }}</b> {{ detail.seed }}
+        </div>
+        <div v-if="detail.description">
+          <b>{{ $t('workflows.description') }}</b> {{ detail.description }}
+        </div>
         <div v-if="detail.missingNodes.length">
           <b>{{ $t('workflows.missingNodes', { n: detail.missingNodes.length }) }}</b>
           <NSpace>
@@ -608,7 +763,9 @@ onMounted(async () => {
       <template #footer>
         <NSpace justify="end">
           <NButton @click="showDetail = false">{{ $t('workflows.close') }}</NButton>
-          <NButton secondary @click="detail && reveal(detail)">{{ $t('workflows.reveal') }}</NButton>
+          <NButton secondary @click="detail && reveal(detail)">{{
+            $t('workflows.reveal')
+          }}</NButton>
         </NSpace>
       </template>
     </NModal>
@@ -646,6 +803,7 @@ onMounted(async () => {
 }
 .cards {
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  grid-auto-rows: 1fr;
 }
 .wf {
   padding: 18px;
@@ -655,7 +813,7 @@ onMounted(async () => {
 }
 .wf.missing {
   opacity: 0.72;
-  border: 1px dashed rgba(220, 80, 80, 0.45);
+  border: 1px dashed rgba($color-danger, 0.45);
 }
 .wf-top {
   display: flex;
@@ -676,6 +834,9 @@ onMounted(async () => {
   color: $color-primary;
   flex-shrink: 0;
 }
+.wf-top .n-button {
+  flex-shrink: 0;
+}
 .wf-name {
   font-size: 15px;
   font-weight: 700;
@@ -685,18 +846,26 @@ onMounted(async () => {
 }
 .wf-meta {
   font-size: 12px;
-  color: $color-text-muted;
+  color: $color-text-muted-ink;
   margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+/* 路径/来源固定单行省略 —— 多行 break-all 是卡片高度参差的主因 */
 .wf-path {
   font-size: 11px;
-  color: $color-text-muted;
-  word-break: break-all;
+  color: $color-text-muted-ink;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .wf-src {
   font-size: 10.5px;
-  color: $color-text-muted;
-  word-break: break-all;
+  color: $color-text-muted-ink;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   opacity: 0.85;
 }
 .wf-tags {
@@ -709,6 +878,13 @@ onMounted(async () => {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+/* 第二排操作吸底，保证同网格卡片按钮位置一致 */
+.wf-actions-secondary {
+  margin-top: auto;
+}
+.btn-wrap {
+  display: inline-flex;
 }
 .empty {
   padding: 64px 0;

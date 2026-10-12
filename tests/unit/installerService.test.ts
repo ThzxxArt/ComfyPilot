@@ -3,15 +3,22 @@
  * starter models, mirror helpers, zip flatten, kill/cancel, pipArgs.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
-import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'fs'
+import { mkdirSync, writeFileSync, rmSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
 const h = vi.hoisted(() => ({
-  graphicsImpl: async (): Promise<{ controllers: Array<Record<string, unknown>> }> => ({ controllers: [] }),
+  graphicsImpl: async (): Promise<{ controllers: Array<Record<string, unknown>> }> => ({
+    controllers: []
+  }),
   execImpl: null as
     | null
-    | ((cmd: string, args: string[], opts: unknown, cb: (err: Error | null, out: string, errOut: string) => void) => unknown),
+    | ((
+        cmd: string,
+        args: string[],
+        opts: unknown,
+        cb: (err: Error | null, out: string, errOut: string) => void
+      ) => unknown),
   getPathImpl: (): string => join(tmpdir(), 'cp-inst-svc'),
   fetchImpl: async (): Promise<Response> => new Response('zip-bytes', { status: 200 }),
   unzipImpl: async (): Promise<void> => undefined
@@ -21,7 +28,8 @@ vi.mock('electron', () => ({
   app: { getPath: () => h.getPathImpl() },
   session: {
     defaultSession: {
-      fetch: (...args: unknown[]) => (h.fetchImpl as (...a: unknown[]) => Promise<Response>)(...args),
+      fetch: (...args: unknown[]) =>
+        (h.fetchImpl as (...a: unknown[]) => Promise<Response>)(...args),
       setProxy: async () => undefined
     }
   }
@@ -163,7 +171,10 @@ describe('installer service internals', () => {
 
     it('model-only regex matches geforce/gtx/quadro/tesla', async () => {
       h.graphicsImpl = async () => ({
-        controllers: [{ vendor: 'other', model: 'Quadro P4000' }, { vendor: '', model: '' }]
+        controllers: [
+          { vendor: 'other', model: 'Quadro P4000' },
+          { vendor: '', model: '' }
+        ]
       })
       const { installerService } = await import('../../src/main/services/installer')
       const gpus = await installerService.detectGpu()
@@ -243,7 +254,11 @@ describe('installer service internals', () => {
       const { installerService } = await import('../../src/main/services/installer')
       const root = join(ROOT, 'preflight-ok')
       mkdirSync(root, { recursive: true })
-      const res = await installerService.preflight({ installRoot: root, useUv: true, pythonPath: 'python' })
+      const res = await installerService.preflight({
+        installRoot: root,
+        useUv: true,
+        pythonPath: 'python'
+      })
       expect(res.ok).toBe(true)
       const byId = Object.fromEntries(res.checks.map((c) => [c.id, c]))
       expect(byId.root.ok).toBe(true)
@@ -298,7 +313,11 @@ describe('installer service internals', () => {
       const { installerService } = await import('../../src/main/services/installer')
       const root = join(ROOT, 'preflight-fix')
       mkdirSync(root, { recursive: true })
-      const res = await installerService.preflight({ installRoot: root, useUv: true, pythonPath: 'python' })
+      const res = await installerService.preflight({
+        installRoot: root,
+        useUv: true,
+        pythonPath: 'python'
+      })
       expect(res.ok).toBe(true) // fixables are not hard fails
       const git = res.checks.find((c) => c.id === 'git')
       expect(git?.fixId).toBe('bootstrap-mingit')
@@ -316,7 +335,11 @@ describe('installer service internals', () => {
         if (args[0] === '--version') queueMicrotask(() => cb(null, 'Python 3.9.13', ''))
         return { pid: 1, exitCode: null, kill: () => undefined }
       }
-      let res = await installerService.preflight({ installRoot: root, useUv: false, pythonPath: 'python' })
+      let res = await installerService.preflight({
+        installRoot: root,
+        useUv: false,
+        pythonPath: 'python'
+      })
       const py = res.checks.find((c) => c.id === 'python')
       expect(py?.ok).toBe(false)
       expect(py?.fixId).toBe('bootstrap-python')
@@ -325,7 +348,11 @@ describe('installer service internals', () => {
         queueMicrotask(() => cb(new Error('ENOENT'), '', ''))
         return { pid: 1, exitCode: null, kill: () => undefined }
       }
-      res = await installerService.preflight({ installRoot: root, useUv: false, pythonPath: 'missing-py' })
+      res = await installerService.preflight({
+        installRoot: root,
+        useUv: false,
+        pythonPath: 'missing-py'
+      })
       const py2 = res.checks.find((c) => c.id === 'python')
       expect(py2?.ok).toBe(false)
       expect(py2?.detail).toContain('missing-py')
@@ -334,7 +361,11 @@ describe('installer service internals', () => {
         queueMicrotask(() => cb(null, 'Jython 2.7', ''))
         return { pid: 1, exitCode: null, kill: () => undefined }
       }
-      res = await installerService.preflight({ installRoot: root, useUv: false, pythonPath: 'python' })
+      res = await installerService.preflight({
+        installRoot: root,
+        useUv: false,
+        pythonPath: 'python'
+      })
       const py3 = res.checks.find((c) => c.id === 'python')
       expect(py3?.ok).toBe(false)
       expect(py3?.fixId).toBe('bootstrap-python')
@@ -348,7 +379,11 @@ describe('installer service internals', () => {
       const { installerService } = await import('../../src/main/services/installer')
       const root = join(ROOT, 'preflight-empty')
       mkdirSync(root, { recursive: true })
-      const res = await installerService.preflight({ installRoot: root, useUv: false, pythonPath: 'python' })
+      const res = await installerService.preflight({
+        installRoot: root,
+        useUv: false,
+        pythonPath: 'python'
+      })
       expect(res.checks.find((c) => c.id === 'python')?.detail).toBe('python')
     })
 
@@ -360,7 +395,11 @@ describe('installer service internals', () => {
       const { installerService } = await import('../../src/main/services/installer')
       const root = join(ROOT, 'preflight-nouv')
       mkdirSync(root, { recursive: true })
-      const res = await installerService.preflight({ installRoot: root, useUv: false, pythonPath: 'python' })
+      const res = await installerService.preflight({
+        installRoot: root,
+        useUv: false,
+        pythonPath: 'python'
+      })
       expect(res.checks.find((c) => c.id === 'uv')).toBeUndefined()
     })
   })
@@ -527,7 +566,9 @@ describe('installer service internals', () => {
       const anySvc = installerService as unknown as {
         flattenArchiveRoot: (d: string) => Promise<void>
       }
-      await expect(anySvc.flattenArchiveRoot(join(ROOT, 'does-not-exist-flat'))).resolves.toBeUndefined()
+      await expect(
+        anySvc.flattenArchiveRoot(join(ROOT, 'does-not-exist-flat'))
+      ).resolves.toBeUndefined()
     })
   })
 
@@ -564,14 +605,18 @@ describe('installer service internals', () => {
       const { installerService } = await import('../../src/main/services/installer')
       const anySvc = installerService as unknown as { fetchComfyZip: (d: string) => Promise<void> }
       h.fetchImpl = async () => new Response('nope', { status: 404 })
-      await expect(anySvc.fetchComfyZip(join(ROOT, 'zip-fail', 'ComfyUI'))).rejects.toThrow(/HTTP 404/)
+      await expect(anySvc.fetchComfyZip(join(ROOT, 'zip-fail', 'ComfyUI'))).rejects.toThrow(
+        /HTTP 404/
+      )
     })
   })
 
   describe('installStarter', () => {
     it('rejects unknown starter id', async () => {
       const { installerService } = await import('../../src/main/services/installer')
-      await expect(installerService.installStarter({ id: 'nope' })).rejects.toThrow(/Unknown starter/)
+      await expect(installerService.installStarter({ id: 'nope' })).rejects.toThrow(
+        /Unknown starter/
+      )
     })
 
     it('rejects when no instance registered / instance id not found', async () => {
@@ -586,7 +631,10 @@ describe('installer service internals', () => {
         ).rejects.toThrow(/No instance registered/)
       }
       await expect(
-        installerService.installStarter({ id: 'sd15-v1-5-pruned-emaonly', instanceId: 'missing-id' })
+        installerService.installStarter({
+          id: 'sd15-v1-5-pruned-emaonly',
+          instanceId: 'missing-id'
+        })
       ).rejects.toThrow(/not found/)
     })
 
@@ -611,7 +659,9 @@ describe('installer service internals', () => {
         pinned: false
       })
       const modelMod = await import('../../src/main/services/model')
-      const spy = vi.spyOn(modelMod.modelService, 'download').mockResolvedValue({ ok: true } as never)
+      const spy = vi
+        .spyOn(modelMod.modelService, 'download')
+        .mockResolvedValue({ ok: true } as never)
       const res = await installerService.installStarter({
         id: 'sd15-v1-5-pruned-emaonly',
         instanceId: 'starter-test-inst'

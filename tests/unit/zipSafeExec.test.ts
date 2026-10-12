@@ -25,7 +25,7 @@ const { fakeExecFile, listState } = vi.hoisted(() => {
   }
 
   // Must match Node's execFile custom promisify shape {stdout,stderr}
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+
   const util = require('util') as typeof import('util')
   ;(fakeExecFile as unknown as Record<symbol, unknown>)[util.promisify.custom] = async (
     _cmd: string,

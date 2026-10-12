@@ -3,7 +3,7 @@
  * start concurrency, the full runUpdate pipeline (preflight �?stop �?backup �? * fetch �?requirements �?torch �?verify �?done/rollback), cancel/killTree,
  * copyCoreTree/overlayTree, stampInstallMeta, venvPython and pipArgs.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { pathKey } from '../helpers/pathKey'
 import { join, dirname } from 'path'
 
@@ -22,7 +22,15 @@ const h = vi.hoisted(() => {
       pipIndex: '',
       torchIndexMirror: '',
       githubEndpoint: '',
-      proxy: { enabled: false, protocol: 'http', host: '', port: 7890, bypass: '', username: '', password: '' }
+      proxy: {
+        enabled: false,
+        protocol: 'http',
+        host: '',
+        port: 7890,
+        bypass: '',
+        username: '',
+        password: ''
+      }
     } as Record<string, unknown>,
     execHandler: null as ExecHandler | null,
     execSyncOut: 'v0.0.1-1-gabc1234',
@@ -32,7 +40,10 @@ const h = vi.hoisted(() => {
     stopCalls: [] as string[],
     launchCalls: [] as Array<{ id: string; opts: unknown }>,
     checkPortQueue: [] as boolean[],
-    doctorResult: null as { checks: Array<{ severity: string; title: string }>; summary: { pass: number; warn: number } } | null,
+    doctorResult: null as {
+      checks: Array<{ severity: string; title: string }>
+      summary: { pass: number; warn: number }
+    } | null,
     doctorErr: null as Error | null,
     uvInstalled: false,
     uvPath: 'C:/fake/uv.exe',
@@ -332,7 +343,6 @@ import {
 } from '../../src/main/services/updater'
 import type { UpdateProgress, ComfyUpdateOptions } from '../../src/shared/types'
 import { bootstrapService } from '../../src/main/services/bootstrap'
-import { resolveTorchIndex, officialTorchIndex } from '../../src/main/services/installer'
 
 const svc = comfyUpdaterService as unknown as {
   copyCoreTree: (src: string, dest: string) => number
@@ -341,7 +351,11 @@ const svc = comfyUpdaterService as unknown as {
   performRollback: (comfyDir: string, backupPath: string, kind: 'git' | 'files') => Promise<boolean>
   venvPython: (venvPath: string) => string
   pipArgs: (base: string[]) => string[]
-  killTree: (child: { pid?: number; exitCode: number | null; kill: (s: string) => void }) => Promise<void>
+  killTree: (child: {
+    pid?: number
+    exitCode: number | null
+    kill: (s: string) => void
+  }) => Promise<void>
   setStep: (id: string, status: string, detail?: string) => void
   log: (id: string, line: string) => void
   emitProgress: (message?: string) => void
@@ -363,7 +377,9 @@ function fget(p: string): string | undefined {
 }
 function fhas(p: string): boolean {
   const s = key(p)
-  return h.state.files.has(s) || h.state.dirs.has(s) || h.state.isDir.has(s) || h.state.exists.has(s)
+  return (
+    h.state.files.has(s) || h.state.dirs.has(s) || h.state.isDir.has(s) || h.state.exists.has(s)
+  )
 }
 function dhas(p: string): boolean {
   return h.state.dirs.has(key(p)) || h.state.isDir.has(key(p))
@@ -398,7 +414,15 @@ function resetState(): void {
     pipIndex: '',
     torchIndexMirror: '',
     githubEndpoint: '',
-    proxy: { enabled: false, protocol: 'http', host: '', port: 7890, bypass: '', username: '', password: '' }
+    proxy: {
+      enabled: false,
+      protocol: 'http',
+      host: '',
+      port: 7890,
+      bypass: '',
+      username: '',
+      password: ''
+    }
   }
   h.state.instances = [
     {
@@ -579,7 +603,10 @@ describe('probeComfyVersion', () => {
 
   it('reads the stamp from the parent directory as a fallback', () => {
     h.writeFile(join(COMFY, 'main.py'), 'x')
-    h.writeFile(join(dirname(COMFY), '.comfypilot-env.json'), JSON.stringify({ comfyCommit: 'abcdef1234567890' }))
+    h.writeFile(
+      join(dirname(COMFY), '.comfypilot-env.json'),
+      JSON.stringify({ comfyCommit: 'abcdef1234567890' })
+    )
     expect(probeComfyVersion(COMFY)).toBe('abcdef123456')
   })
 
@@ -676,11 +703,17 @@ describe('check()', () => {
 
   it('flags a zip install when the remote sha differs', async () => {
     seedZipInstall()
-    h.writeFile(join(COMFY, '.comfypilot-env.json'), JSON.stringify({ comfyCommit: 'aaaaaaaaaaaa' }))
+    h.writeFile(
+      join(COMFY, '.comfypilot-env.json'),
+      JSON.stringify({ comfyCommit: 'aaaaaaaaaaaa' })
+    )
     h.state.sessionFetch = async () => ({
       ok: true,
       status: 200,
-      json: async () => ({ sha: 'bbbbbbbbbbbbcccc', commit: { committer: { date: '2024-06-01T00:00:00Z' } } })
+      json: async () => ({
+        sha: 'bbbbbbbbbbbbcccc',
+        commit: { committer: { date: '2024-06-01T00:00:00Z' } }
+      })
     })
     const info = await comfyUpdaterService.check('inst-1')
     expect(info.source).toBe('zip')
@@ -690,11 +723,17 @@ describe('check()', () => {
 
   it('does not flag a zip install already at the remote sha', async () => {
     seedZipInstall()
-    h.writeFile(join(COMFY, '.comfypilot-env.json'), JSON.stringify({ comfyCommit: 'bbbbbbbbbbbb' }))
+    h.writeFile(
+      join(COMFY, '.comfypilot-env.json'),
+      JSON.stringify({ comfyCommit: 'bbbbbbbbbbbb' })
+    )
     h.state.sessionFetch = async () => ({
       ok: true,
       status: 200,
-      json: async () => ({ sha: 'bbbbbbbbbbbbcccc', commit: { committer: { date: '2024-06-01T00:00:00Z' } } })
+      json: async () => ({
+        sha: 'bbbbbbbbbbbbcccc',
+        commit: { committer: { date: '2024-06-01T00:00:00Z' } }
+      })
     })
     const info = await comfyUpdaterService.check('inst-1')
     expect(info.updatable).toBe(false)
@@ -702,7 +741,10 @@ describe('check()', () => {
 
   it('compares fetch dates for date-stamped zip installs', async () => {
     seedZipInstall()
-    h.writeFile(join(COMFY, '.comfypilot-env.json'), JSON.stringify({ comfyFetchedAt: Date.UTC(2024, 0, 1) }))
+    h.writeFile(
+      join(COMFY, '.comfypilot-env.json'),
+      JSON.stringify({ comfyFetchedAt: Date.UTC(2024, 0, 1) })
+    )
     h.state.sessionFetch = async () => ({
       ok: true,
       status: 200,
@@ -749,7 +791,8 @@ describe('start()', () => {
   it('rejects a second concurrent update', async () => {
     seedGitInstall({ withVenv: true, withReq: false })
     // Hang only on pull so cancel can still complete the rollback afterwards.
-    h.state.execHandler = (cmd, args) => (args.includes('pull') ? { hang: true } : { stdout: 'sha\n' })
+    h.state.execHandler = (cmd, args) =>
+      args.includes('pull') ? { hang: true } : { stdout: 'sha\n' }
     const finished = waitFinished()
     await comfyUpdaterService.start('inst-1')
     await expect(comfyUpdaterService.start('inst-1')).rejects.toThrow(/already running/i)
@@ -765,7 +808,17 @@ describe('start()', () => {
     expect(p.instanceId).toBe('inst-1')
     expect(p.status).toBe('running')
     const ids = p.steps.map((s) => s.id)
-    for (const id of ['preflight', 'stop', 'backup', 'fetch', 'requirements', 'torch', 'verify', 'rollback', 'done']) {
+    for (const id of [
+      'preflight',
+      'stop',
+      'backup',
+      'fetch',
+      'requirements',
+      'torch',
+      'verify',
+      'rollback',
+      'done'
+    ]) {
       expect(ids).toContain(id)
     }
     await finished
@@ -795,7 +848,10 @@ describe('runUpdate pipeline', () => {
     seedGitInstall({ withVenv: true, withReq: false })
     h.state.execHandler = (cmd, args) => {
       if (args.includes('pull')) {
-        return { error: new Error('local changes would be overwritten'), stderr: 'local changes would be overwritten' }
+        return {
+          error: new Error('local changes would be overwritten'),
+          stderr: 'local changes would be overwritten'
+        }
       }
       return { stdout: 'abc1234\n' }
     }
@@ -880,7 +936,12 @@ describe('runUpdate pipeline', () => {
     h.writeFile(join(COMFY, 'comfy', 'model.py'), 'x')
     h.mkdirPath(join(COMFY, '.cp-backup-123'))
     // Fail the fetch step so the files backup is NOT cleaned up and can be inspected.
-    h.state.sessionFetch = async () => ({ ok: false, status: 500, headers: { get: () => '0' }, arrayBuffer: async () => new ArrayBuffer(0) })
+    h.state.sessionFetch = async () => ({
+      ok: false,
+      status: 500,
+      headers: { get: () => '0' },
+      arrayBuffer: async () => new ArrayBuffer(0)
+    })
     const p = await runUpdate({ updateDeps: false })
     expect(p.status).toBe('failed')
     const backupDir = p.backupPath!
@@ -1112,7 +1173,10 @@ describe('runUpdate pipeline', () => {
 
   it('passes verify when doctor is clean', async () => {
     seedGitInstall({ withVenv: true, withReq: false })
-    h.state.doctorResult = { checks: [{ severity: 'ok', title: 'all good' }], summary: { pass: 8, warn: 0 } }
+    h.state.doctorResult = {
+      checks: [{ severity: 'ok', title: 'all good' }],
+      summary: { pass: 8, warn: 0 }
+    }
     routeExec([{ match: '', result: () => ({ stdout: 'sha\n' }) }])
     const p = await runUpdate({ updateDeps: false })
     expect(p.status).toBe('done')
@@ -1181,7 +1245,9 @@ describe('runUpdate pipeline', () => {
     seedGitInstall({ withVenv: true, withReq: false })
     routeExec([{ match: '', result: () => ({ stdout: 'sha\n' }) }])
     const { instanceService } = await import('../../src/main/services/instance')
-    ;(instanceService.launch as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('port busy'))
+    ;(instanceService.launch as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('port busy')
+    )
     const p = await runUpdate({ updateDeps: false, open: 'embed' })
     expect(p.status).toBe('done')
     expect(p.steps.find((s) => s.id === 'done')?.log.join('\n')).toMatch(/relaunch failed/)
@@ -1246,7 +1312,12 @@ describe('runUpdate pipeline', () => {
 
   it('fails the run when the archive download returns HTTP error', async () => {
     seedZipInstall({ withVenv: true, withReq: false })
-    h.state.sessionFetch = async () => ({ ok: false, status: 404, headers: { get: () => '0' }, arrayBuffer: async () => new ArrayBuffer(0) })
+    h.state.sessionFetch = async () => ({
+      ok: false,
+      status: 404,
+      headers: { get: () => '0' },
+      arrayBuffer: async () => new ArrayBuffer(0)
+    })
     const p = await runUpdate({ updateDeps: false })
     expect(p.status).toBe('failed')
     expect(p.error).toMatch(/HTTP 404/)
@@ -1287,9 +1358,17 @@ describe('cancel()', () => {
           child.exitCode = 1
         }
       }
+      let taskkillArgs: string[] | null = null
+      h.state.execHandler = (cmd, args) => {
+        if (cmd === 'taskkill') taskkillArgs = [...args]
+        return { stdout: '' }
+      }
       await svc.killTree(child)
-      // win32 path goes through taskkill; child.kill is the fallback.
-      expect(kills.length + 1).toBeGreaterThanOrEqual(1)
+      // win32 path must really run `taskkill /PID <pid> /T /F`…
+      expect(taskkillArgs).not.toBeNull()
+      expect(taskkillArgs).toEqual(['/PID', '99', '/T', '/F'])
+      // …and then SIGKILL the child when it has not exited.
+      expect(kills).toContain('SIGKILL')
     } finally {
       Object.defineProperty(process, 'platform', { value: real, configurable: true })
     }
@@ -1478,7 +1557,9 @@ describe('fetchAndOverlayZip', () => {
 
   it('rejects an unsafe archive URL', async () => {
     const installer = await import('../../src/main/services/installer')
-    ;(installer.applyGithubMirror as ReturnType<typeof vi.fn>).mockReturnValueOnce('file:///etc/passwd')
+    ;(installer.applyGithubMirror as ReturnType<typeof vi.fn>).mockReturnValueOnce(
+      'file:///etc/passwd'
+    )
     await expect(svc.fetchAndOverlayZip(COMFY)).rejects.toThrow(/blocked/i)
   })
 })
@@ -1489,7 +1570,10 @@ describe('fetchAndOverlayZip', () => {
 describe('stampInstallMeta via a successful zip update', () => {
   it('writes comfySource=zip and clears comfyCommit', async () => {
     seedZipInstall({ withVenv: true, withReq: false })
-    h.writeFile(join(dirname(COMFY), '.comfypilot-env.json'), JSON.stringify({ comfyCommit: 'old', other: 1 }))
+    h.writeFile(
+      join(dirname(COMFY), '.comfypilot-env.json'),
+      JSON.stringify({ comfyCommit: 'old', other: 1 })
+    )
     h.state.sessionFetch = async () => ({
       ok: true,
       status: 200,
@@ -1694,17 +1778,26 @@ describe('edge branches', () => {
     h.state.sessionFetch = async () => ({
       ok: true,
       status: 200,
-      json: async () => ({ sha: 'abcdef123456', commit: { committer: { date: '2024-06-01T00:00:00Z' } } })
+      json: async () => ({
+        sha: 'abcdef123456',
+        commit: { committer: { date: '2024-06-01T00:00:00Z' } }
+      })
     })
     let info = await comfyUpdaterService.check('inst-1')
     expect(info.updatable).toBe(false)
 
     // latest is a prefix of current �� updatable
-    h.writeFile(join(COMFY, '.comfypilot-env.json'), JSON.stringify({ comfyCommit: 'abcdef1234567890' }))
+    h.writeFile(
+      join(COMFY, '.comfypilot-env.json'),
+      JSON.stringify({ comfyCommit: 'abcdef1234567890' })
+    )
     h.state.sessionFetch = async () => ({
       ok: true,
       status: 200,
-      json: async () => ({ sha: 'abcdef123456zzzz', commit: { committer: { date: '2024-06-01T00:00:00Z' } } })
+      json: async () => ({
+        sha: 'abcdef123456zzzz',
+        commit: { committer: { date: '2024-06-01T00:00:00Z' } }
+      })
     })
     info = await comfyUpdaterService.check('inst-1')
     expect(info.updatable).toBe(false)
@@ -1807,7 +1900,9 @@ describe('rollback safety branches', () => {
       {
         match: 'pip',
         result: () => ({
-          error: new Error('comfyui-workflow-templates-media-assets-02 was not found in the package registry'),
+          error: new Error(
+            'comfyui-workflow-templates-media-assets-02 was not found in the package registry'
+          ),
           stderr: 'No solution found when resolving dependencies'
         })
       },

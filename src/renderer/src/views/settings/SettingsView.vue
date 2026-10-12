@@ -2,13 +2,38 @@
 import { onMounted, ref, watch, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  NButton, NCard, NForm, NFormItem, NInput, NInputNumber, NSwitch, NSpace, useMessage,
-  NDivider, NSelect, NList, NListItem, NPopconfirm, NTag, NModal
+  NButton,
+  NCard,
+  NForm,
+  NFormItem,
+  NInput,
+  NInputNumber,
+  NSwitch,
+  NSpace,
+  useMessage,
+  NDivider,
+  NSelect,
+  NList,
+  NListItem,
+  NPopconfirm,
+  NTag,
+  NModal
 } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 import { ipc } from '@/composables/useIpc'
-import type { AppSettings, RemoteInstanceConfig, RemoteInstanceStatus, EnvProbe, ProxySettings } from '@shared/types'
-import { APP_VERSION, DEFAULT_SETTINGS, PIP_INDEX_PRESETS, TORCH_INDEX_PRESETS } from '@shared/constants'
+import type {
+  AppSettings,
+  RemoteInstanceConfig,
+  RemoteInstanceStatus,
+  EnvProbe,
+  ProxySettings
+} from '@shared/types'
+import {
+  APP_VERSION,
+  DEFAULT_SETTINGS,
+  PIP_INDEX_PRESETS,
+  TORCH_INDEX_PRESETS
+} from '@shared/constants'
 
 const pipIndexLabelKeys: Record<string, string> = {
   '': 'settings.pipOfficial',
@@ -43,7 +68,9 @@ const shortcuts = computed(() => [
 const defaultProxy: ProxySettings = { ...DEFAULT_SETTINGS.proxy }
 
 function cloneSettings(s: Partial<AppSettings> | null | undefined): AppSettings {
-  const base = (s && typeof s === 'object' ? JSON.parse(JSON.stringify(s)) : {}) as Partial<AppSettings>
+  const base = (
+    s && typeof s === 'object' ? JSON.parse(JSON.stringify(s)) : {}
+  ) as Partial<AppSettings>
   return {
     ...(DEFAULT_SETTINGS as AppSettings),
     ...(base as AppSettings),
@@ -178,7 +205,9 @@ async function applyProxy(): Promise<void> {
     const saved = await save({ silent: true })
     if (!saved) return
     const r = await ipc('proxy.apply')
-    message.success(r.enabled ? t('settings.proxyApplied', { url: r.url }) : t('settings.proxyDirect'))
+    message.success(
+      r.enabled ? t('settings.proxyApplied', { url: r.url }) : t('settings.proxyDirect')
+    )
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   }
@@ -250,7 +279,9 @@ async function testAllRemotes(): Promise<void> {
     remoteStatuses.value = map
     message.success(t('settings.testAllRemotes'))
   } catch (err) {
-    message.error(t('settings.remoteTestAllFailed', { error: err instanceof Error ? err.message : String(err) }))
+    message.error(
+      t('settings.remoteTestAllFailed', { error: err instanceof Error ? err.message : String(err) })
+    )
   } finally {
     testingRemotes.value = false
   }
@@ -287,290 +318,357 @@ onMounted(async () => {
         <h1 class="page-title">{{ t('settings.title') }}</h1>
         <p class="page-subtitle">{{ t('settings.subtitle') }}</p>
       </div>
-      <NButton type="primary" :loading="saving" @click="save()">{{ t('settings.saveSettings') }}</NButton>
+      <NButton type="primary" :loading="saving" @click="save()">{{
+        t('settings.saveSettings')
+      }}</NButton>
     </div>
 
     <div class="page-body">
-    <div class="grid settings-grid">
-      <NCard :title="t('settings.paths')" class="card" size="small">
-        <NForm label-placement="top">
-          <NFormItem :label="t('settings.modelScanRoots')">
-            <div class="scan-roots">
-              <div v-for="(r, idx) in form.modelScanRoots" :key="idx" class="scan-root-row">
-                <NInput :value="r" readonly size="small" />
-                <NButton size="tiny" secondary type="error" @click="form.modelScanRoots.splice(idx, 1)">
-                  {{ t('common.delete') }}
+      <div class="grid settings-grid">
+        <NCard :title="t('settings.paths')" class="card" size="small">
+          <NForm label-placement="top">
+            <NFormItem :label="t('settings.modelScanRoots')">
+              <div class="scan-roots">
+                <div v-for="(r, idx) in form.modelScanRoots" :key="idx" class="scan-root-row">
+                  <NInput :value="r" readonly size="small" :title="r" />
+                  <NButton
+                    size="tiny"
+                    secondary
+                    type="error"
+                    @click="form.modelScanRoots.splice(idx, 1)"
+                  >
+                    {{ t('common.delete') }}
+                  </NButton>
+                </div>
+                <NButton size="small" secondary @click="addScanRoot">
+                  {{ t('settings.addScanRoot') }}
                 </NButton>
+                <div class="hint">{{ t('settings.modelScanRootsHint') }}</div>
               </div>
-              <NButton size="small" secondary @click="addScanRoot">
-                {{ t('settings.addScanRoot') }}
-              </NButton>
-              <div class="hint">{{ t('settings.modelScanRootsHint') }}</div>
-            </div>
-          </NFormItem>
-        </NForm>
-      </NCard>
-      <NCard :title="t('settings.network')" class="card" size="small">
-        <NForm label-placement="top">
-          <NFormItem :label="t('settings.githubEndpoint')">
-            <NInput v-model:value="form.githubEndpoint" :placeholder="t('settings.optional')" />
-          </NFormItem>
-          <NFormItem label="HuggingFace Endpoint">
-            <NInput v-model:value="form.hfEndpoint" :placeholder="t('settings.hfEndpointPlaceholder')" />
-          </NFormItem>
-          <NFormItem label="Civitai Endpoint">
-            <NInput v-model:value="form.civitaiEndpoint" placeholder="https://civitai.com" />
-          </NFormItem>
-          <NFormItem :label="t('settings.pipIndexLabel')">
-            <NSelect
-              v-model:value="form.pipIndex"
-              :options="pipIndexOptions"
-              filterable
-              tag
-            />
-            <div class="hint">{{ t('settings.pipMirrorHint') }}</div>
-          </NFormItem>
-          <NFormItem :label="t('settings.torchIndexLabel')">
-            <NSelect
-              v-model:value="form.torchIndexMirror"
-              :options="torchIndexOptions"
-              filterable
-              tag
-            />
-            <div class="hint">{{ t('settings.torchIndexHint') }}</div>
-          </NFormItem>
-          <NFormItem :label="t('settings.networkMode')">
-            <NSelect
-              v-model:value="form.networkMode"
-              :options="[
-                { label: 'public', value: 'public' },
-                { label: 'private', value: 'private' },
-                { label: 'offline', value: 'offline' },
-                { label: 'personal_cloud', value: 'personal_cloud' }
-              ]"
-            />
-            <div class="hint">{{ t('settings.networkModeHint') }}</div>
-          </NFormItem>
-        </NForm>
-      </NCard>
-
-      <NCard :title="t('settings.security')" class="card" size="small">
-        <NForm label-placement="top">
-          <NFormItem label="security_level">
-            <NSelect
-              v-model:value="form.securityLevel"
-              :options="[
-                { label: 'strong', value: 'strong' },
-                { label: 'normal', value: 'normal' },
-                { label: 'normal-', value: 'normal-' },
-                { label: 'weak', value: 'weak' }
-              ]"
-            />
-            <div class="hint">{{ t('settings.securityLevelHint') }}</div>
-          </NFormItem>
-          <NFormItem label="allow_git_url_install">
-            <NSwitch v-model:value="form.allowGitUrlInstall" />
-            <div class="hint">{{ t('settings.allowGitHint') }}</div>
-          </NFormItem>
-          <NFormItem label="allow_pip_install">
-            <NSwitch v-model:value="form.allowPipInstall" />
-            <div class="hint">{{ t('settings.allowPipHint') }}</div>
-          </NFormItem>
-        </NForm>
-      </NCard>
-
-      <NCard :title="t('settings.download')" class="card" size="small">
-        <NForm label-placement="top">
-          <NFormItem :label="t('settings.useAria2')">
-            <NSwitch v-model:value="form.useAria2" />
-          </NFormItem>
-          <NFormItem :label="t('settings.aria2Path')">
-            <NInput v-model:value="form.aria2Path" :placeholder="t('settings.optional')" />
-          </NFormItem>
-        </NForm>
-      </NCard>
-
-      <NCard :title="t('settings.proxy')" class="card" size="small">
-        <NForm label-placement="top">
-          <NFormItem :label="t('settings.proxyEnabled')">
-            <NSwitch v-model:value="form.proxy.enabled" />
-          </NFormItem>
-          <div class="proxy-grid">
-            <NFormItem :label="t('settings.proxyProtocol')">
+            </NFormItem>
+          </NForm>
+        </NCard>
+        <NCard :title="t('settings.network')" class="card" size="small">
+          <NForm label-placement="top">
+            <NFormItem :label="t('settings.githubEndpoint')">
+              <NInput v-model:value="form.githubEndpoint" :placeholder="t('settings.optional')" />
+            </NFormItem>
+            <NFormItem :label="t('settings.hfEndpointLabel')">
+              <NInput
+                v-model:value="form.hfEndpoint"
+                :placeholder="t('settings.hfEndpointPlaceholder')"
+              />
+            </NFormItem>
+            <NFormItem :label="t('settings.civitaiEndpointLabel')">
+              <NInput v-model:value="form.civitaiEndpoint" placeholder="https://civitai.com" />
+            </NFormItem>
+            <NFormItem :label="t('settings.pipIndexLabel')">
+              <NSelect v-model:value="form.pipIndex" :options="pipIndexOptions" filterable tag />
+              <div class="hint">{{ t('settings.pipMirrorHint') }}</div>
+            </NFormItem>
+            <NFormItem :label="t('settings.torchIndexLabel')">
               <NSelect
-                v-model:value="form.proxy.protocol"
+                v-model:value="form.torchIndexMirror"
+                :options="torchIndexOptions"
+                filterable
+                tag
+              />
+              <div class="hint">{{ t('settings.torchIndexHint') }}</div>
+            </NFormItem>
+            <NFormItem :label="t('settings.networkMode')">
+              <NSelect
+                v-model:value="form.networkMode"
                 :options="[
-                  { label: 'HTTP', value: 'http' },
-                  { label: 'HTTPS', value: 'https' },
-                  { label: 'SOCKS5', value: 'socks5' }
+                  { label: 'public', value: 'public' },
+                  { label: 'private', value: 'private' },
+                  { label: 'offline', value: 'offline' },
+                  { label: 'personal_cloud', value: 'personal_cloud' }
                 ]"
               />
+              <div class="hint">{{ t('settings.networkModeHint') }}</div>
             </NFormItem>
-            <NFormItem :label="t('settings.proxyHost')">
-              <NInput v-model:value="form.proxy.host" placeholder="127.0.0.1" :disabled="!form.proxy.enabled" />
-            </NFormItem>
-            <NFormItem :label="t('settings.proxyPort')">
-              <NInputNumber v-model:value="form.proxy.port" :min="1" :max="65535" :disabled="!form.proxy.enabled" />
-            </NFormItem>
-            <NFormItem :label="t('settings.proxyUsername')">
-              <NInput v-model:value="form.proxy.username" :disabled="!form.proxy.enabled" />
-            </NFormItem>
-            <NFormItem :label="t('settings.proxyPassword')">
-              <NInput
-                v-model:value="form.proxy.password"
-                type="password"
-                show-password-on="click"
-                :disabled="!form.proxy.enabled"
-              />
-            </NFormItem>
-            <NFormItem :label="t('settings.proxyBypass')">
-              <NInput
-                v-model:value="form.proxy.bypass"
-                placeholder="localhost,127.0.0.1,::1"
-                :disabled="!form.proxy.enabled"
-              />
-            </NFormItem>
-          </div>
-          <NSpace>
-            <NButton secondary :loading="testingProxy" @click="testProxy">{{ t('settings.testConnection') }}</NButton>
-            <NButton secondary @click="applyProxy">{{ t('settings.applyNow') }}</NButton>
-          </NSpace>
-          <div v-if="proxyTestResult" class="meta" :class="proxyTestResult.ok ? 'pass-ink' : 'fail-ink'">
-            {{ proxyTestResult.ok ? '✓' : '✗' }} {{ proxyTestResult.via }} · {{ proxyTestResult.ms }}ms
-            <span v-if="proxyTestResult.error">{{ proxyTestResult.error }}</span>
-          </div>
-          <div class="meta">{{ t('settings.proxyHint') }}</div>
-        </NForm>
-      </NCard>
+          </NForm>
+        </NCard>
 
-      <NCard :title="t('settings.appBehavior')" class="card" size="small">
-        <NForm label-placement="top">
-          <NFormItem :label="t('settings.autoCheckUpdates')">
-            <NSwitch v-model:value="form.enableAutoCheckUpdates" />
-          </NFormItem>
-          <NFormItem :label="t('settings.embedFrontend')">
-            <NSwitch v-model:value="form.embedFrontend" />
-          </NFormItem>
-          <NFormItem :label="t('settings.launchOnBoot')">
-            <NSwitch v-model:value="form.launchOnBoot" @update:value="() => save({ silent: true })" />
-          </NFormItem>
-          <NFormItem :label="t('settings.minimizeToTray')">
-            <NSwitch v-model:value="form.minimizeToTray" />
-          </NFormItem>
-          <NFormItem :label="t('settings.autoStartInstances')">
-            <NSwitch v-model:value="form.autoStartInstancesOnLaunch" />
-          </NFormItem>
-          <NFormItem :label="t('settings.language')">
+        <NCard :title="t('settings.security')" class="card" size="small">
+          <NForm label-placement="top">
+            <NFormItem :label="t('settings.securityLevelLabel')">
+              <NSelect
+                v-model:value="form.securityLevel"
+                :options="[
+                  { label: 'strong', value: 'strong' },
+                  { label: 'normal', value: 'normal' },
+                  { label: 'normal-', value: 'normal-' },
+                  { label: 'weak', value: 'weak' }
+                ]"
+              />
+              <div class="hint">{{ t('settings.securityLevelHint') }}</div>
+            </NFormItem>
+            <NFormItem :label="t('settings.allowGitLabel')">
+              <NSwitch v-model:value="form.allowGitUrlInstall" />
+              <div class="hint">{{ t('settings.allowGitHint') }}</div>
+            </NFormItem>
+            <NFormItem :label="t('settings.allowPipLabel')">
+              <NSwitch v-model:value="form.allowPipInstall" />
+              <div class="hint">{{ t('settings.allowPipHint') }}</div>
+            </NFormItem>
+          </NForm>
+        </NCard>
+
+        <NCard :title="t('settings.download')" class="card" size="small">
+          <NForm label-placement="top">
+            <NFormItem :label="t('settings.useAria2')">
+              <NSwitch v-model:value="form.useAria2" />
+            </NFormItem>
+            <NFormItem :label="t('settings.aria2Path')">
+              <NInput v-model:value="form.aria2Path" :placeholder="t('settings.optional')" />
+            </NFormItem>
+          </NForm>
+        </NCard>
+
+        <NCard :title="t('settings.proxy')" class="card" size="small">
+          <NForm label-placement="top">
+            <NFormItem :label="t('settings.proxyEnabled')">
+              <NSwitch v-model:value="form.proxy.enabled" />
+            </NFormItem>
+            <div class="proxy-grid">
+              <NFormItem :label="t('settings.proxyProtocol')">
+                <NSelect
+                  v-model:value="form.proxy.protocol"
+                  :options="[
+                    { label: 'HTTP', value: 'http' },
+                    { label: 'HTTPS', value: 'https' },
+                    { label: 'SOCKS5', value: 'socks5' }
+                  ]"
+                />
+              </NFormItem>
+              <NFormItem :label="t('settings.proxyHost')">
+                <NInput
+                  v-model:value="form.proxy.host"
+                  placeholder="127.0.0.1"
+                  :disabled="!form.proxy.enabled"
+                />
+              </NFormItem>
+              <NFormItem :label="t('settings.proxyPort')">
+                <NInputNumber
+                  v-model:value="form.proxy.port"
+                  :min="1"
+                  :max="65535"
+                  :disabled="!form.proxy.enabled"
+                />
+              </NFormItem>
+              <NFormItem :label="t('settings.proxyUsername')">
+                <NInput v-model:value="form.proxy.username" :disabled="!form.proxy.enabled" />
+              </NFormItem>
+              <NFormItem :label="t('settings.proxyPassword')">
+                <NInput
+                  v-model:value="form.proxy.password"
+                  type="password"
+                  show-password-on="click"
+                  :disabled="!form.proxy.enabled"
+                />
+              </NFormItem>
+              <NFormItem :label="t('settings.proxyBypass')">
+                <NInput
+                  v-model:value="form.proxy.bypass"
+                  placeholder="localhost,127.0.0.1,::1"
+                  :disabled="!form.proxy.enabled"
+                />
+              </NFormItem>
+            </div>
             <NSpace>
-              <NButton :type="form.locale === 'zh-CN' ? 'primary' : 'default'" secondary @click="setLocale('zh-CN')">
-                {{ t('settings.langZhCN') }}
-              </NButton>
-              <NButton :type="form.locale === 'en-US' ? 'primary' : 'default'" secondary @click="setLocale('en-US')">
-                English
+              <NButton secondary :loading="testingProxy" @click="testProxy">{{
+                t('settings.testConnection')
+              }}</NButton>
+              <NButton secondary @click="applyProxy">{{ t('settings.applyNow') }}</NButton>
+            </NSpace>
+            <div
+              v-if="proxyTestResult"
+              class="meta"
+              :class="proxyTestResult.ok ? 'pass-ink' : 'fail-ink'"
+            >
+              {{ proxyTestResult.ok ? '✓' : '✗' }} {{ proxyTestResult.via }} ·
+              {{ proxyTestResult.ms }}ms
+              <span v-if="proxyTestResult.error">{{ proxyTestResult.error }}</span>
+            </div>
+            <div class="meta">{{ t('settings.proxyHint') }}</div>
+          </NForm>
+        </NCard>
+
+        <NCard :title="t('settings.appBehavior')" class="card" size="small">
+          <NForm label-placement="top">
+            <NFormItem :label="t('settings.autoCheckUpdates')">
+              <NSwitch v-model:value="form.enableAutoCheckUpdates" />
+            </NFormItem>
+            <NFormItem :label="t('settings.embedFrontend')">
+              <NSwitch v-model:value="form.embedFrontend" />
+            </NFormItem>
+            <NFormItem :label="t('settings.launchOnBoot')">
+              <NSwitch
+                v-model:value="form.launchOnBoot"
+                @update:value="() => save({ silent: true })"
+              />
+            </NFormItem>
+            <NFormItem :label="t('settings.minimizeToTray')">
+              <NSwitch v-model:value="form.minimizeToTray" />
+            </NFormItem>
+            <NFormItem :label="t('settings.autoStartInstances')">
+              <NSwitch v-model:value="form.autoStartInstancesOnLaunch" />
+            </NFormItem>
+            <NFormItem :label="t('settings.language')">
+              <NSpace>
+                <NButton
+                  :type="form.locale === 'zh-CN' ? 'primary' : 'default'"
+                  secondary
+                  @click="setLocale('zh-CN')"
+                >
+                  {{ t('settings.langZhCN') }}
+                </NButton>
+                <NButton
+                  :type="form.locale === 'en-US' ? 'primary' : 'default'"
+                  secondary
+                  @click="setLocale('en-US')"
+                >
+                  English
+                </NButton>
+              </NSpace>
+            </NFormItem>
+          </NForm>
+        </NCard>
+
+        <NCard :title="t('settings.remotes')" class="card" size="small">
+          <div class="remotes-head">
+            <NButton
+              size="small"
+              secondary
+              type="primary"
+              :loading="testingRemotes"
+              :disabled="!remotes.length"
+              @click="testAllRemotes"
+            >
+              {{ t('settings.testAllRemotes') }}
+            </NButton>
+          </div>
+          <NList v-if="remotes.length" bordered>
+            <NListItem v-for="r in remotes" :key="r.id">
+              <div class="row">
+                <div class="remote-main">
+                  <div class="name" :title="r.name">{{ r.name }}</div>
+                  <div class="meta mono">{{ r.baseUrl }}</div>
+                  <div v-if="remoteStatusOf(r.id)" class="remote-status">
+                    <NTag
+                      size="tiny"
+                      round
+                      :type="remoteStatusOf(r.id)?.online ? 'success' : 'error'"
+                    >
+                      {{
+                        remoteStatusOf(r.id)?.online
+                          ? t('settings.remoteOnline')
+                          : t('settings.remoteOffline')
+                      }}
+                    </NTag>
+                    <span v-if="remoteStatusOf(r.id)?.version" class="meta">
+                      {{
+                        t('settings.remoteStatusVersion', {
+                          version: remoteStatusOf(r.id)?.version || ''
+                        })
+                      }}
+                    </span>
+                    <span class="meta">
+                      {{
+                        t('settings.remoteQueueInfo', {
+                          running: remoteStatusOf(r.id)?.queueRunning ?? 0,
+                          pending: remoteStatusOf(r.id)?.queuePending ?? 0
+                        })
+                      }}
+                    </span>
+                    <span v-if="remoteStatusOf(r.id)?.error" class="meta remote-error">
+                      {{ t('settings.remoteErrorLabel') }}: {{ remoteStatusOf(r.id)?.error }}
+                    </span>
+                  </div>
+                </div>
+                <NSpace>
+                  <NButton size="tiny" secondary @click="testRemote(r.id)">{{
+                    t('settings.test')
+                  }}</NButton>
+                  <NPopconfirm @positive-click="removeRemote(r.id)">
+                    <template #trigger>
+                      <NButton size="tiny" type="error" secondary>{{ t('common.delete') }}</NButton>
+                    </template>
+                    {{ t('settings.deleteRemoteConfirm') }}
+                  </NPopconfirm>
+                </NSpace>
+              </div>
+            </NListItem>
+          </NList>
+          <div v-else class="meta">{{ t('settings.noRemotes') }}</div>
+          <NButton style="margin-top: 12px" secondary @click="openRemoteDialog">{{
+            t('settings.addRemote')
+          }}</NButton>
+        </NCard>
+
+        <NCard :title="t('settings.pythonEnv')" class="card" size="small">
+          <NButton secondary @click="probeEnv">{{ t('settings.probeEnv') }}</NButton>
+          <template v-if="envProbe">
+            <NDivider style="margin: 12px 0" />
+            <div class="meta">Python: {{ envProbe.pythonVersion }}</div>
+            <div class="meta">
+              Torch: {{ envProbe.torchVersion || '—' }} · CUDA: {{ envProbe.cudaVersion || '—' }}
+            </div>
+            <div class="meta">
+              MPS:
+              <NTag size="tiny" round>{{
+                envProbe.mpsAvailable ? t('common.yes') : t('common.no')
+              }}</NTag>
+              NPU:
+              <NTag size="tiny" round>{{
+                envProbe.npuAvailable ? t('common.yes') : t('common.no')
+              }}</NTag>
+            </div>
+            <div v-if="pythons.length" class="meta">
+              {{ t('settings.availablePythons', { n: pythons.length }) }}
+            </div>
+          </template>
+        </NCard>
+
+        <NCard :title="t('settings.shortcuts')" class="card" size="small">
+          <div class="shortcut-list">
+            <div v-for="s in shortcuts" :key="s.keys" class="shortcut-row">
+              <NTag size="small" round>{{ s.keys }}</NTag>
+              <span class="shortcut-desc">{{ s.desc }}</span>
+            </div>
+          </div>
+        </NCard>
+
+        <NCard :title="t('settings.about')" class="card" size="small">
+          <div class="about">
+            <div class="about-logo">ComfyPilot</div>
+            <div class="about-line">v{{ APP_VERSION }} · MIT License</div>
+            <div class="about-line">TypeScript · Vue 3 · Electron · Naive UI</div>
+            <div class="about-line">{{ t('settings.aboutStorage') }}</div>
+            <NDivider style="margin: 12px 0" />
+            <div class="about-line">{{ t('settings.aboutConfigDir', { path: configPath }) }}</div>
+            <div class="about-line">{{ t('settings.aboutTagline') }}</div>
+            <NSpace style="margin-top: 12px">
+              <NButton secondary @click="openConfigDir">{{ t('settings.openConfigDir') }}</NButton>
+              <NButton
+                secondary
+                @click="ipc('shell.openExternal', 'https://github.com/ThzxxArt/ComfyPilot')"
+              >
+                {{ t('settings.githubRepo') }}
               </NButton>
             </NSpace>
-          </NFormItem>
-        </NForm>
-      </NCard>
-
-      <NCard :title="t('settings.remotes')" class="card" size="small">
-        <div class="remotes-head">
-          <span class="meta">{{ t('settings.remotes') }}</span>
-          <NButton
-            size="small"
-            secondary
-            type="primary"
-            :loading="testingRemotes"
-            :disabled="!remotes.length"
-            @click="testAllRemotes"
-          >
-            {{ t('settings.testAllRemotes') }}
-          </NButton>
-        </div>
-        <NList v-if="remotes.length" bordered>
-          <NListItem v-for="r in remotes" :key="r.id">
-            <div class="row">
-              <div>
-                <div class="name">{{ r.name }}</div>
-                <div class="meta mono">{{ r.baseUrl }}</div>
-                <div v-if="remoteStatusOf(r.id)" class="remote-status">
-                  <NTag size="tiny" round :type="remoteStatusOf(r.id)?.online ? 'success' : 'error'">
-                    {{ remoteStatusOf(r.id)?.online ? t('settings.remoteOnline') : t('settings.remoteOffline') }}
-                  </NTag>
-                  <span v-if="remoteStatusOf(r.id)?.version" class="meta">
-                    {{ t('settings.remoteStatusVersion', { version: remoteStatusOf(r.id)?.version || '' }) }}
-                  </span>
-                  <span class="meta">
-                    {{ t('settings.remoteQueueInfo', {
-                      running: remoteStatusOf(r.id)?.queueRunning ?? 0,
-                      pending: remoteStatusOf(r.id)?.queuePending ?? 0
-                    }) }}
-                  </span>
-                  <span v-if="remoteStatusOf(r.id)?.error" class="meta remote-error">
-                    {{ t('settings.remoteErrorLabel') }}: {{ remoteStatusOf(r.id)?.error }}
-                  </span>
-                </div>
-              </div>
-              <NSpace>
-                <NButton size="tiny" secondary @click="testRemote(r.id)">{{ t('settings.test') }}</NButton>
-                <NPopconfirm @positive-click="removeRemote(r.id)">
-                  <template #trigger>
-                    <NButton size="tiny" type="error" secondary>{{ t('common.delete') }}</NButton>
-                  </template>
-                  {{ t('settings.deleteRemoteConfirm') }}
-                </NPopconfirm>
-              </NSpace>
-            </div>
-          </NListItem>
-        </NList>
-        <div v-else class="meta">{{ t('settings.noRemotes') }}</div>
-        <NButton style="margin-top: 12px" secondary @click="openRemoteDialog">{{ t('settings.addRemote') }}</NButton>
-      </NCard>
-
-      <NCard :title="t('settings.pythonEnv')" class="card" size="small">
-        <NButton secondary @click="probeEnv">{{ t('settings.probeEnv') }}</NButton>
-        <template v-if="envProbe">
-          <NDivider style="margin: 12px 0" />
-          <div class="meta">Python: {{ envProbe.pythonVersion }}</div>
-          <div class="meta">Torch: {{ envProbe.torchVersion || '—' }} · CUDA: {{ envProbe.cudaVersion || '—' }}</div>
-          <div class="meta">
-            MPS: <NTag size="tiny" round>{{ envProbe.mpsAvailable ? 'yes' : 'no' }}</NTag>
-            NPU: <NTag size="tiny" round>{{ envProbe.npuAvailable ? 'yes' : 'no' }}</NTag>
           </div>
-          <div v-if="pythons.length" class="meta">{{ t('settings.availablePythons', { n: pythons.length }) }}</div>
-        </template>
-      </NCard>
-
-      <NCard :title="t('settings.shortcuts')" class="card" size="small">
-        <div class="shortcut-list">
-          <div v-for="s in shortcuts" :key="s.keys" class="shortcut-row">
-            <NTag size="small" round>{{ s.keys }}</NTag>
-            <span class="shortcut-desc">{{ s.desc }}</span>
-          </div>
-        </div>
-      </NCard>
-
-      <NCard :title="t('settings.about')" class="card" size="small">
-        <div class="about">
-          <div class="about-logo">ComfyPilot</div>
-          <div class="about-line">v{{ APP_VERSION }} · MIT License</div>
-          <div class="about-line">TypeScript · Vue 3 · Electron · Naive UI</div>
-          <div class="about-line">{{ t('settings.aboutStorage') }}</div>
-          <NDivider style="margin: 12px 0" />
-          <div class="about-line">{{ t('settings.aboutConfigDir', { path: configPath }) }}</div>
-          <div class="about-line">{{ t('settings.aboutTagline') }}</div>
-          <NSpace style="margin-top: 12px">
-            <NButton secondary @click="openConfigDir">{{ t('settings.openConfigDir') }}</NButton>
-            <NButton secondary @click="ipc('shell.openExternal', 'https://github.com/ThzxxArt/ComfyPilot')">
-              {{ t('settings.githubRepo') }}
-            </NButton>
-          </NSpace>
-        </div>
-      </NCard>
-    </div>
+        </NCard>
+      </div>
     </div>
 
-    <NModal v-model:show="showRemote" preset="card" :title="t('settings.addRemote')" style="width: 480px; border-radius: 20px">
+    <NModal
+      v-model:show="showRemote"
+      preset="card"
+      :title="t('settings.addRemote')"
+      style="width: 480px; border-radius: 20px"
+    >
       <NSpace vertical>
         <NInput v-model:value="remoteDraft.name" :placeholder="t('settings.remoteName')" />
         <NInput v-model:value="remoteDraft.baseUrl" placeholder="http://192.168.1.10:8188" />
@@ -588,7 +686,16 @@ onMounted(async () => {
 
 <style lang="scss" scoped>
 @use '@/styles/variables.scss' as *;
-.settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.settings-grid {
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+}
+.hint {
+  font-size: 12px;
+  line-height: 1.6;
+  color: $color-text-muted-ink;
+  margin-top: 4px;
+  max-width: 640px;
+}
 .scan-roots {
   display: flex;
   flex-direction: column;
@@ -606,20 +713,76 @@ onMounted(async () => {
   gap: 0 12px;
 }
 .about-logo {
-  font-size: 20px; font-weight: 800;
+  font-size: 20px;
+  font-weight: 800;
   background: $gradient-primary;
-  -webkit-background-clip: text; background-clip: text; color: transparent;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
-.about-line { margin-top: 6px; font-size: 13px; color: $color-text-secondary; }
-.row { display: flex; justify-content: space-between; align-items: center; gap: 12px; width: 100%; }
-.name { font-size: 14px; font-weight: 700; }
-.meta { font-size: 12px; color: $color-text-muted; margin-top: 2px; word-break: break-all; }
-.shortcut-list { display: flex; flex-direction: column; gap: 10px; }
-.shortcut-row { display: flex; align-items: center; gap: 12px; }
-.shortcut-desc { font-size: 13px; color: $color-text-secondary; }
-.remotes-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-.remote-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 6px; }
-.remote-error { color: $color-danger; }
-.pass-ink { color: $color-success; }
-.fail-ink { color: $color-danger; }
+.about-line {
+  margin-top: 6px;
+  font-size: 13px;
+  color: $color-text-secondary;
+}
+.row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+.remote-main {
+  flex: 1;
+  min-width: 0;
+}
+.name {
+  font-size: 14px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.meta {
+  font-size: 12px;
+  color: $color-text-muted-ink;
+  margin-top: 2px;
+  word-break: break-all;
+}
+.shortcut-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.shortcut-desc {
+  font-size: 13px;
+  color: $color-text-secondary;
+}
+.remotes-head {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.remote-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.remote-error {
+  color: $color-danger;
+}
+.pass-ink {
+  color: $color-success;
+}
+.fail-ink {
+  color: $color-danger;
+}
 </style>

@@ -100,7 +100,10 @@ describe('batch produced semantics (behavioural)', () => {
     const src = read('src/main/services/p1p2.ts')
     // start() must reset produced/submitted/completed/failed for done/error, not only cancelled
     const startFn = src.slice(src.indexOf('async start('))
-    const body = startFn.slice(0, startFn.indexOf('async cancel') > 0 ? startFn.indexOf('async cancel') : 2500)
+    const body = startFn.slice(
+      0,
+      startFn.indexOf('async cancel') > 0 ? startFn.indexOf('async cancel') : 2500
+    )
     expect(body).toMatch(/done|error/)
     expect(body).toMatch(/produced\s*=\s*0/)
   })
@@ -127,14 +130,22 @@ describe('git-prefer install path', () => {
   it('resolveRepoUrl derives GitHub repo from archive download URL', async () => {
     const { resolveRepoUrl } = await import('../../src/main/services/nodePack')
     expect(
-      await resolveRepoUrl('', 'https://github.com/comfyanonymous/ComfyUI/archive/refs/heads/master.zip', 'x')
+      await resolveRepoUrl(
+        '',
+        'https://github.com/comfyanonymous/ComfyUI/archive/refs/heads/master.zip',
+        'x'
+      )
     ).toBe('https://github.com/comfyanonymous/ComfyUI.git')
     expect(
       await resolveRepoUrl('', 'https://codeload.github.com/owner/repo/zip/refs/heads/main', 'x')
     ).toBe('https://codeload.github.com/owner/repo.git')
     // Explicit repository wins
     expect(
-      await resolveRepoUrl('https://github.com/explicit/repo.git', 'https://github.com/other/repo/archive/x.zip', 'x')
+      await resolveRepoUrl(
+        'https://github.com/explicit/repo.git',
+        'https://github.com/other/repo/archive/x.zip',
+        'x'
+      )
     ).toBe('https://github.com/explicit/repo.git')
     // Non-GitHub URL with no repo → empty (registry index lookup also fails for 'x')
     expect(await resolveRepoUrl('', 'https://example.com/pack.zip', 'x')).toBe('')
@@ -153,10 +164,7 @@ describe('git-prefer install path', () => {
     // The registry install path must call installInner (not install) for the
     // internal git clone — install() would re-check assertInstallAllowed('git')
     // which is gated by allowGitUrlInstall (default false).
-    const registryGit = src.slice(
-      src.indexOf('resolveRepoUrl'),
-      src.indexOf('Using zip download')
-    )
+    const registryGit = src.slice(src.indexOf('resolveRepoUrl'), src.indexOf('Using zip download'))
     expect(registryGit).toContain('installInner')
     expect(registryGit).not.toMatch(/this\.install\(\{[^}]*source:\s*'git'/)
   })

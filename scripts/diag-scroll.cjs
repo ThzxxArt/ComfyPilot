@@ -2,8 +2,6 @@
  * Scroll diagnostic — boots the built app and reports scroll metrics.
  * Run: node scripts/diag-scroll.cjs
  */
-const { spawn } = require('child_process')
-const { existsSync, readFileSync, writeFileSync, mkdirSync } = require('fs')
 const { join } = require('path')
 const { app, BrowserWindow } = require('electron')
 

@@ -26,8 +26,7 @@ interface PreparedEntry {
 function dosDateTime(date = new Date()): { time: number; date: number } {
   const time =
     (date.getHours() << 11) | (date.getMinutes() << 5) | (Math.floor(date.getSeconds() / 2) & 0x1f)
-  const d =
-    ((date.getFullYear() - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate()
+  const d = ((date.getFullYear() - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate()
   return { time, date: d }
 }
 
@@ -65,7 +64,9 @@ export function writeZip(outPath: string, entries: ZipEntry[]): string {
   for (const e of prepared) {
     totalData += e.data.length
     if (e.data.length > 0xffffffff || e.compressed.length > 0xffffffff) {
-      throw new Error(`Entry ${e.name} exceeds 4GB — ZIP64 is not supported; export a smaller subset`)
+      throw new Error(
+        `Entry ${e.name} exceeds 4GB — ZIP64 is not supported; export a smaller subset`
+      )
     }
     if (totalData > 0xffffffff) {
       throw new Error('Archive would exceed 4GB — ZIP64 is not supported; export a smaller subset')

@@ -10,10 +10,16 @@ import type { DoctorCheck, DoctorReport, DoctorSeverity } from '@shared/types'
 import { loadInstanceConfigs, loadSettings } from './db'
 import { REGISTRY_API } from '@shared/constants'
 import { parseExtraModelPaths } from './model'
+import { resolveInstancePythonPath } from './instance'
 
 const execFileAsync = promisify(execFile)
 
-async function safeExec(cmd: string, args: string[], cwd?: string, timeoutMs = 10000): Promise<string> {
+async function safeExec(
+  cmd: string,
+  args: string[],
+  cwd?: string,
+  timeoutMs = 10000
+): Promise<string> {
   try {
     const { stdout } = await execFileAsync(cmd, args, {
       cwd,
@@ -83,19 +89,15 @@ export class DoctorService extends EventEmitter {
       fixable: false
     })
 
-    // 2. Python
-    const python = config?.venvPath
-      ? existsSync(join(config.venvPath, 'Scripts', 'python.exe'))
-        ? join(config.venvPath, 'Scripts', 'python.exe')
-        : existsSync(join(config.venvPath, 'bin', 'python'))
-          ? join(config.venvPath, 'bin', 'python')
-          : config?.pythonPath || 'python'
-      : config?.pythonPath || 'python'
+    // 2. Python — same resolver as instance launch / node pip (venv → explicit
+    // pythonPath → embedded incl. AKI sibling python/ → managed runtime).
+    const python = config ? resolveInstancePythonPath(config) : 'python'
     const pyOut = await safeExec(python, ['--version'])
     const pyMatch = pyOut.match(/python\s+3\.(\d+)/i)
     const pyMinor = pyMatch ? Number(pyMatch[1]) : null
     // 3.10+ pass; 3.9 warns; anything older (or unparseable) fails.
-    const pySeverity: DoctorSeverity = pyMinor == null ? 'fail' : pyMinor >= 10 ? 'pass' : pyMinor >= 9 ? 'warn' : 'fail'
+    const pySeverity: DoctorSeverity =
+      pyMinor == null ? 'fail' : pyMinor >= 10 ? 'pass' : pyMinor >= 9 ? 'warn' : 'fail'
     checks.push({
       id: 'python',
       group: 'Environment',
@@ -164,7 +166,9 @@ export class DoctorService extends EventEmitter {
       title: 'Models directory',
       severity: hasModels ? 'pass' : 'warn',
       detail: hasModels ? `Found ${modelRoot}` : 'models directory not found',
-      suggestion: hasModels ? undefined : 'Create models/ under the ComfyUI root or configure extra_model_paths.yaml.',
+      suggestion: hasModels
+        ? undefined
+        : 'Create models/ under the ComfyUI root or configure extra_model_paths.yaml.',
       fixable: !hasModels && Boolean(installPath),
       fixId: 'create-models-dir'
     })
@@ -197,7 +201,9 @@ export class DoctorService extends EventEmitter {
         detail: broken.length
           ? `Broken paths (${broken.length}): ${broken.slice(0, 3).join(', ')}${broken.length > 3 ? '…' : ''}`
           : `OK, ${empPaths.length} extra roots`,
-        suggestion: broken.length ? 'Remove or fix missing paths in extra_model_paths.yaml.' : undefined,
+        suggestion: broken.length
+          ? 'Remove or fix missing paths in extra_model_paths.yaml.'
+          : undefined,
         fixable: false
       })
     } else {
@@ -262,7 +268,9 @@ export class DoctorService extends EventEmitter {
           detail: broken.length
             ? `${packs.length} packs, ${broken.length} missing entry: ${broken.slice(0, 3).join(', ')}`
             : `${packs.length} packs found`,
-          suggestion: broken.length ? 'Remove or repair packs without __init__.py/pyproject.toml.' : undefined,
+          suggestion: broken.length
+            ? 'Remove or repair packs without __init__.py/pyproject.toml.'
+            : undefined,
           fixable: false
         })
       } catch {
@@ -292,7 +300,9 @@ export class DoctorService extends EventEmitter {
             title: `Disk free (${label})`,
             severity: low ? 'warn' : 'pass',
             detail: `${freeGb} GB free of ${(total / 1024 ** 3).toFixed(1)} GB`,
-            suggestion: low ? 'Low disk space — free up space before large model downloads.' : undefined,
+            suggestion: low
+              ? 'Low disk space — free up space before large model downloads.'
+              : undefined,
             fixable: false
           })
         }
@@ -339,9 +349,10 @@ export class DoctorService extends EventEmitter {
         : settings.networkMode === 'offline'
           ? 'Offline mode — skip registry checks'
           : 'Cannot reach Comfy Registry',
-      suggestion: registryOk || settings.networkMode === 'offline'
-        ? undefined
-        : 'Check proxy/firewall or set GitHub/HF endpoint in Settings.',
+      suggestion:
+        registryOk || settings.networkMode === 'offline'
+          ? undefined
+          : 'Check proxy/firewall or set GitHub/HF endpoint in Settings.',
       fixable: false
     })
 
@@ -399,7 +410,17 @@ export class DoctorService extends EventEmitter {
       case 'create-models-dir': {
         const dir = join(installPath, 'models')
         mkdirSync(dir, { recursive: true })
-        for (const sub of ['checkpoints', 'loras', 'vae', 'clip', 'controlnet', 'upscale_models', 'embeddings', 'unet', 'diffusion_models']) {
+        for (const sub of [
+          'checkpoints',
+          'loras',
+          'vae',
+          'clip',
+          'controlnet',
+          'upscale_models',
+          'embeddings',
+          'unet',
+          'diffusion_models'
+        ]) {
           mkdirSync(join(dir, sub), { recursive: true })
         }
         return { ok: true, message: `Created models tree at ${dir}` }
@@ -428,7 +449,9 @@ export class DoctorService extends EventEmitter {
           }
           return {
             ok: true,
-            message: fixed ? `Relaxed torch pins in ${fixed} requirements.txt` : 'No exact torch pins found'
+            message: fixed
+              ? `Relaxed torch pins in ${fixed} requirements.txt`
+              : 'No exact torch pins found'
           }
         } catch (e) {
           return { ok: false, message: e instanceof Error ? e.message : String(e) }

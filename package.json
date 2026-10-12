@@ -1,6 +1,6 @@
 {
   "name": "comfy-pilot",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "ComfyPilot - all-in-one control tower for ComfyUI instances, models, node packs, workflows, monitoring and diagnostics.",
   "main": "./out/main/bootstrap.cjs",
   "author": "ThzxxArt",
@@ -31,6 +31,7 @@
     "build:linux": "npm run build && electron-builder --linux",
     "typecheck": "vue-tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
     "lint": "eslint . --fix",
+    "lint:check": "eslint .",
     "format": "prettier --write \"src/**/*.{vue,ts,tsx,css,scss,json,md}\"",
     "preview": "electron-vite preview",
     "test": "vitest run",
@@ -38,11 +39,6 @@
     "test:coverage": "vitest run --coverage",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "test:all": "npm run typecheck && npm run test:coverage && npm run build && npm run test:e2e"
-  },
-  "publish": {
-    "provider": "github",
-    "owner": "ThzxxArt",
-    "repo": "ComfyPilot"
   },
   "dependencies": {
     "@vicons/ionicons5": "^0.13.0",
@@ -79,6 +75,7 @@
     "typescript": "^5.7.2",
     "vite": "^5.4.11",
     "vitest": "^2.1.8",
+    "vue-eslint-parser": "^9.4.3",
     "vue-tsc": "^2.1.10"
   },
   "engines": {

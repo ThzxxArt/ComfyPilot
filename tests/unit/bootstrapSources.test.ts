@@ -15,7 +15,12 @@ vi.mock('systeminformation', () => ({
   default: { graphics: async () => ({ controllers: [] }) }
 }))
 
-import { RUNTIME_SOURCES, TORCH_DISK_GB, STARTER_MODELS, COMFY_ZIP_URL } from '../../src/shared/constants'
+import {
+  RUNTIME_SOURCES,
+  TORCH_DISK_GB,
+  STARTER_MODELS,
+  COMFY_ZIP_URL
+} from '../../src/shared/constants'
 
 describe('runtime sources table', () => {
   it('covers win/linux/darwin uv and portable python', () => {
@@ -120,12 +125,12 @@ describe('APP_VERSION injection branches', () => {
     vi.resetModules()
     delete (globalThis as Record<string, unknown>)['__APP_VERSION__']
     const mod = await import('../../src/shared/constants')
-    expect(mod.APP_VERSION).toBe('0.1.7')
+    expect(mod.APP_VERSION).toBe('0.1.8')
 
     vi.resetModules()
     ;(globalThis as Record<string, unknown>)['__APP_VERSION__'] = ''
     const mod2 = await import('../../src/shared/constants')
-    expect(mod2.APP_VERSION).toBe('0.1.7')
+    expect(mod2.APP_VERSION).toBe('0.1.8')
     delete (globalThis as Record<string, unknown>)['__APP_VERSION__']
   })
 })

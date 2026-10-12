@@ -32,9 +32,7 @@ async function invoke<C extends IpcChannel>(
   ...args: IpcChannelMap[C]['args']
 ): Promise<IpcResult<IpcChannelMap[C]['result']>> {
   const plainArgs = args.map((a) => toPlainIpcArg(a)) as IpcChannelMap[C]['args']
-  return ipcRenderer.invoke(channel, ...plainArgs) as Promise<
-    IpcResult<IpcChannelMap[C]['result']>
-  >
+  return ipcRenderer.invoke(channel, ...plainArgs) as Promise<IpcResult<IpcChannelMap[C]['result']>>
 }
 
 function on(event: string, listener: (...args: unknown[]) => void): () => void {
@@ -56,4 +54,3 @@ const api = {
 export type ComfyPilotApi = typeof api
 
 contextBridge.exposeInMainWorld('comfyPilot', api)
-

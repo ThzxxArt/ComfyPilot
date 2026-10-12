@@ -1,61 +1,13 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { join } from 'path'
-import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'fs'
-import { tmpdir } from 'os'
+import { readFileSync } from 'fs'
 
-const readSrc = (rel: string): string =>
-  readFileSync(join(__dirname, '..', '..', rel), 'utf-8')
+const readSrc = (rel: string): string => readFileSync(join(__dirname, '..', '..', rel), 'utf-8')
 
-// ============ Batch parametric edge cases ============
-describe('batch: emptyItem defaults', () => {
-  const cases = [
-    { name: 'all-zero', count: 5, submitted: 0, completed: 0, failed: 0, submitFailed: 0, execFailed: 0 },
-    { name: 'some-progress', count: 10, submitted: 5, completed: 3, failed: 1, submitFailed: 1, execFailed: 0 },
-    { name: 'all-done', count: 3, submitted: 3, completed: 3, failed: 0, submitFailed: 0, execFailed: 0 },
-    { name: 'all-failed', count: 2, submitted: 2, completed: 0, failed: 2, submitFailed: 0, execFailed: 2 },
-    { name: 'mixed', count: 8, submitted: 6, completed: 2, failed: 3, submitFailed: 1, execFailed: 2 }
-  ]
-  for (const c of cases) {
-    it(`item accounting: ${c.name}`, () => {
-      // Pure logic test: submitted = completed + execFailed + unsettled
-      const unsettled = c.submitted - c.completed - c.execFailed
-      expect(c.completed + c.execFailed + unsettled).toBe(c.submitted)
-      // failed = submitFailed + execFailed
-      expect(c.submitFailed + c.execFailed).toBe(c.failed)
-    })
-  }
-})
-
-describe('batch: unsettled timeout detection', () => {
-  const cases = [
-    { submitted: 10, completed: 8, execFailed: 2, expectTimeout: false },
-    { submitted: 10, completed: 5, execFailed: 2, expectTimeout: true }, // 3 unsettled
-    { submitted: 10, completed: 10, execFailed: 0, expectTimeout: false },
-    { submitted: 5, completed: 0, execFailed: 5, expectTimeout: false },
-    { submitted: 10, completed: 0, execFailed: 0, expectTimeout: true }, // 10 unsettled
-  ]
-  for (const c of cases) {
-    it(`submitted=${c.submitted} completed=${c.completed} execFailed=${c.execFailed}`, () => {
-      const unsettled = c.submitted - c.completed - c.execFailed
-      const isTimeout = unsettled > 0
-      expect(isTimeout).toBe(c.expectTimeout)
-    })
-  }
-
-  it('submit failures do NOT mask timeouts (the bug fix)', () => {
-    // submitted=10, completed=7, execFailed=0, submitFailed=5
-    // OLD buggy: unsettled = 10-7-15 = -8 → NOT > 0 → wrongly marked done
-    // NEW correct: unsettled = 10-7-0 = 3 → timeout!
-    const submitted = 10, completed = 7, execFailed = 0, submitFailed = 5
-    const failed = submitFailed + execFailed
-    // Buggy formula
-    const buggyUnsettled = submitted - completed - failed
-    expect(buggyUnsettled).toBeLessThanOrEqual(0) // would NOT detect timeout
-    // Correct formula
-    const correctUnsettled = submitted - completed - execFailed
-    expect(correctUnsettled).toBeGreaterThan(0) // DOES detect timeout
-  })
-})
+// ============ Batch parametric accounting ============
+// 四桶计数与 unsettled 超时判定的真实行为测试在 p1p2Services.test.ts
+// （BatchService.start / awaitOutputs）；原先的“本地字面量自证”断言不 import
+// 任何产品代码、无法防回归，0.1.8 已删除。
 
 // ============ Security: safeResolveUnder parametric ============
 describe('security: safeResolveUnder blocks escapes', () => {
@@ -71,7 +23,10 @@ describe('security: safeResolveUnder blocks escapes', () => {
     it(`blocks: ${e}`, async () => {
       const { safeResolveUnder } = await import('@main/services/security')
       const result = safeResolveUnder('/safe/root', e)
-      expect(result === null || result === false).toBe(true)
+      // 契约：逃逸输入必须被拒绝（null），或按“根内相对路径”语义收敛到 root 内。
+      // 绝不能解析为系统绝对路径本体（如 /etc/passwd）。
+      expect(result === null || result.startsWith('/safe/root')).toBe(true)
+      expect(result).not.toBe('/etc/passwd')
     })
   }
 })
@@ -102,7 +57,7 @@ describe('DB: JSONC parse edge cases', () => {
     { name: 'with comments', input: '{\n  // c\n  "a": 1\n}', valid: true },
     { name: 'trailing comma', input: '{"a": 1,}', valid: true },
     { name: 'nested', input: '{"a": {"b": [1,2,3]}}', valid: true },
-    { name: 'unicode', input: '{"k": "中文测试"}', valid: true },
+    { name: 'unicode', input: '{"k": "中文测试"}', valid: true }
   ]
   for (const c of cases) {
     it(`parseJsonc: ${c.name}`, async () => {
@@ -119,8 +74,13 @@ describe('DB: JSONC parse edge cases', () => {
 // ============ Format: comprehensive ============
 describe('format: formatBytes all units', () => {
   const cases = [
-    [0, '0'], [1, '1'], [999, '999'], [1024, '1'], [1536, '1.5'],
-    [1024 * 1024, '1'], [1024 * 1024 * 1024, '1']
+    [0, '0'],
+    [1, '1'],
+    [999, '999'],
+    [1024, '1'],
+    [1536, '1.5'],
+    [1024 * 1024, '1'],
+    [1024 * 1024 * 1024, '1']
   ]
   for (const [bytes, _prefix] of cases) {
     it(`formatBytes(${bytes})`, async () => {
@@ -136,7 +96,17 @@ describe('format: formatBytes all units', () => {
 describe('type shapes match runtime data', () => {
   it('DownloadTask has required fields', () => {
     const src = readSrc('src/shared/types.ts')
-    const fields = ['id', 'url', 'destPath', 'fileName', 'totalBytes', 'receivedBytes', 'status', 'startedAt', 'source']
+    const fields = [
+      'id',
+      'url',
+      'destPath',
+      'fileName',
+      'totalBytes',
+      'receivedBytes',
+      'status',
+      'startedAt',
+      'source'
+    ]
     for (const f of fields) {
       expect(src).toContain(`${f}:`)
     }
@@ -152,7 +122,19 @@ describe('type shapes match runtime data', () => {
 
   it('WorkflowRecord has required fields', () => {
     const src = readSrc('src/shared/types.ts')
-    const fields = ['id', 'name', 'path', 'format', 'nodeCount', 'tags', 'updatedAt', 'missingNodes', 'version', 'params', 'origin']
+    const fields = [
+      'id',
+      'name',
+      'path',
+      'format',
+      'nodeCount',
+      'tags',
+      'updatedAt',
+      'missingNodes',
+      'version',
+      'params',
+      'origin'
+    ]
     for (const f of fields) {
       expect(src).toContain(`${f}:`)
     }
@@ -160,7 +142,21 @@ describe('type shapes match runtime data', () => {
 
   it('NodePackRecord has required fields', () => {
     const src = readSrc('src/shared/types.ts')
-    const fields = ['id', 'name', 'displayName', 'description', 'author', 'version', 'status', 'nodeCount', 'tags', 'installSource', 'issues', 'locked', 'nodeList']
+    const fields = [
+      'id',
+      'name',
+      'displayName',
+      'description',
+      'author',
+      'version',
+      'status',
+      'nodeCount',
+      'tags',
+      'installSource',
+      'issues',
+      'locked',
+      'nodeList'
+    ]
     for (const f of fields) {
       expect(src).toContain(`${f}:`)
     }
@@ -168,7 +164,22 @@ describe('type shapes match runtime data', () => {
 
   it('ComfyInstanceConfig has required fields', () => {
     const src = readSrc('src/shared/types.ts')
-    const fields = ['id', 'name', 'path', 'pythonPath', 'venvPath', 'port', 'listen', 'extraArgs', 'argTemplateId', 'enabled', 'notes', 'autoStart', 'frontendVersion', 'pinned']
+    const fields = [
+      'id',
+      'name',
+      'path',
+      'pythonPath',
+      'venvPath',
+      'port',
+      'listen',
+      'extraArgs',
+      'argTemplateId',
+      'enabled',
+      'notes',
+      'autoStart',
+      'frontendVersion',
+      'pinned'
+    ]
     for (const f of fields) {
       expect(src).toContain(`${f}:`)
     }
@@ -176,7 +187,27 @@ describe('type shapes match runtime data', () => {
 
   it('AppSettings has required fields', () => {
     const src = readSrc('src/shared/types.ts')
-    const fields = ['locale', 'modelScanRoots', 'githubEndpoint', 'hfEndpoint', 'civitaiEndpoint', 'enableAutoCheckUpdates', 'embedFrontend', 'securityLevel', 'allowGitUrlInstall', 'allowPipInstall', 'networkMode', 'aria2Path', 'useAria2', 'launchOnBoot', 'minimizeToTray', 'autoStartInstancesOnLaunch', 'proxy', 'pipIndex', 'torchIndexMirror']
+    const fields = [
+      'locale',
+      'modelScanRoots',
+      'githubEndpoint',
+      'hfEndpoint',
+      'civitaiEndpoint',
+      'enableAutoCheckUpdates',
+      'embedFrontend',
+      'securityLevel',
+      'allowGitUrlInstall',
+      'allowPipInstall',
+      'networkMode',
+      'aria2Path',
+      'useAria2',
+      'launchOnBoot',
+      'minimizeToTray',
+      'autoStartInstancesOnLaunch',
+      'proxy',
+      'pipIndex',
+      'torchIndexMirror'
+    ]
     for (const f of fields) {
       expect(src).toContain(`${f}:`)
     }
@@ -184,7 +215,17 @@ describe('type shapes match runtime data', () => {
 
   it('InstallPlan has required fields', () => {
     const src = readSrc('src/shared/types.ts')
-    const fields = ['installRoot', 'instanceName', 'useUv', 'pythonPath', 'torchChannel', 'comfyRepo', 'comfyBranch', 'createDesktopShortcut', 'autoStart']
+    const fields = [
+      'installRoot',
+      'instanceName',
+      'useUv',
+      'pythonPath',
+      'torchChannel',
+      'comfyRepo',
+      'comfyBranch',
+      'createDesktopShortcut',
+      'autoStart'
+    ]
     for (const f of fields) {
       expect(src).toContain(`${f}:`)
     }
@@ -192,7 +233,22 @@ describe('type shapes match runtime data', () => {
 
   it('BatchJob has required fields', () => {
     const src = readSrc('src/shared/types.ts')
-    const fields = ['id', 'name', 'instanceId', 'items', 'status', 'count', 'submitted', 'completed', 'failed', 'produced', 'createdAt', 'notes', 'params', 'workflowPath']
+    const fields = [
+      'id',
+      'name',
+      'instanceId',
+      'items',
+      'status',
+      'count',
+      'submitted',
+      'completed',
+      'failed',
+      'produced',
+      'createdAt',
+      'notes',
+      'params',
+      'workflowPath'
+    ]
     for (const f of fields) {
       expect(src).toContain(`${f}:`)
     }

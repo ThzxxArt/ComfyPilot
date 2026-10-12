@@ -26,10 +26,7 @@ describe('mergeGpuMemory', () => {
   })
 
   it('clamps used to total', () => {
-    const out = mergeGpuMemory(
-      [{ vram: 8192 }],
-      [{ used: 99999 * MB, total: 8192 * MB }]
-    )
+    const out = mergeGpuMemory([{ vram: 8192 }], [{ used: 99999 * MB, total: 8192 * MB }])
     expect(out[0].vramUsed).toBe(8192 * MB)
     expect(out[0].vramTotal).toBe(8192 * MB)
   })

@@ -1,8 +1,4 @@
-import type {
-  IpcChannel,
-  IpcChannelMap,
-  IpcResult
-} from '@shared/types'
+import type { IpcChannel, IpcChannelMap, IpcResult } from '@shared/types'
 import { IPC_EVENTS } from '@shared/types'
 
 const hasBridge = typeof window !== 'undefined' && Boolean(window.comfyPilot)

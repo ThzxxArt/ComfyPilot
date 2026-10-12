@@ -45,7 +45,7 @@ body {
 }
 
 ::selection {
-  background: rgba(79, 110, 247, 0.22);
+  background: rgba($color-primary, 0.22);
 }
 
 /* scrollbars — light */
@@ -57,15 +57,20 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.35);
+  background: rgba($color-text-muted, 0.35);
   border-radius: 999px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(79, 110, 247, 0.45);
+  background: rgba($color-primary, 0.45);
   background-clip: content-box;
   border: 2px solid transparent;
+}
+
+html {
+  scrollbar-width: thin;
+  scrollbar-color: rgba($color-text-muted, 0.45) transparent;
 }
 
 /* Shared UI atoms
@@ -87,6 +92,12 @@ body {
   gap: 16px;
   margin-bottom: 16px;
   flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+/* 头部左右两栏都必须能收缩，否则长标题/长路径会把右侧按钮顶出容器 */
+.page-header > * {
+  min-width: 0;
 }
 
 /* Internal scroll region — the only place a vertical scrollbar is allowed */
@@ -156,6 +167,7 @@ body {
   margin: 6px 0 0;
   color: $color-text-secondary;
   font-size: 13.5px;
+  overflow-wrap: anywhere;
 }
 
 .card {
@@ -200,30 +212,30 @@ body {
   font-size: 12px;
   font-weight: 600;
   line-height: 1.6;
-  background: rgba(79, 110, 247, 0.1);
+  background: rgba($color-primary, 0.1);
   color: $color-primary;
-  border: 1px solid rgba(79, 110, 247, 0.16);
+  border: 1px solid rgba($color-primary, 0.16);
 }
 
 .chip-success {
-  background: rgba(16, 185, 129, 0.12);
+  background: rgba($color-success, 0.12);
   color: $color-success;
-  border-color: rgba(16, 185, 129, 0.2);
+  border-color: rgba($color-success, 0.2);
 }
 .chip-warning {
-  background: rgba(245, 158, 11, 0.14);
+  background: rgba($color-warning, 0.14);
   color: $color-warning;
-  border-color: rgba(245, 158, 11, 0.22);
+  border-color: rgba($color-warning, 0.22);
 }
 .chip-danger {
-  background: rgba(239, 68, 68, 0.12);
+  background: rgba($color-danger, 0.12);
   color: $color-danger;
-  border-color: rgba(239, 68, 68, 0.2);
+  border-color: rgba($color-danger, 0.2);
 }
 .chip-muted {
-  background: rgba(148, 163, 184, 0.14);
-  color: $color-text-muted;
-  border-color: rgba(148, 163, 184, 0.2);
+  background: rgba($color-text-muted, 0.14);
+  color: $color-text-muted-ink;
+  border-color: rgba($color-text-muted, 0.2);
 }
 
 .stat-value {
@@ -237,7 +249,7 @@ body {
 .stat-label {
   margin-top: 4px;
   font-size: 12.5px;
-  color: $color-text-muted;
+  color: $color-text-muted-ink;
   font-weight: 500;
 }
 
@@ -245,9 +257,20 @@ body {
   font-family: $font-mono;
 }
 
-/* Naive overrides toward modern light look */
-.n-card {
-  --n-border-radius: 20px !important;
+/* 长文本规范（各视图复用）：
+ * 描述类：两行截断（.clamp-2）。名称/路径类在各视图内联命名省略/断行规则。 */
+.clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Naive overrides toward modern light look
+ * Card 圆角统一由 App.vue themeOverrides（Card.borderRadius = 20px）下发；
+ * 这里只给所有模态加宽度上限，窄窗口下弹窗不许横向溢出。 */
+.n-modal {
+  max-width: calc(100vw - 48px);
 }
 
 .n-button {
@@ -293,6 +316,18 @@ body {
   height: 8px;
   border-radius: 999px;
   background: $color-success;
-  box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.5);
+  box-shadow: 0 0 0 0 rgba($color-success, 0.5);
   animation: pulse-soft 1.8s ease-in-out infinite;
+}
+
+/* 无障碍：尊重系统"减弱动态效果" */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

@@ -2,12 +2,7 @@ import { EventEmitter } from 'events'
 import { execFile } from 'child_process'
 import si from 'systeminformation'
 import WebSocket from 'ws'
-import type {
-  ExecProgressEvent,
-  GpuInfo,
-  QueueSnapshot,
-  SystemSnapshot
-} from '@shared/types'
+import type { ExecProgressEvent, GpuInfo, QueueSnapshot, SystemSnapshot } from '@shared/types'
 import { ComfyApiClient, COMFY_CLIENT_ID } from './comfyApi'
 import { isLocalhostUrl } from './security'
 import { loadInstanceConfigs, listRemotes } from './db'
@@ -31,7 +26,8 @@ export function assertMonitorBaseUrl(baseUrl: string): void {
   const origin = parsed.origin
   for (const inst of loadInstanceConfigs()) {
     const host = inst.listen === '0.0.0.0' ? '127.0.0.1' : inst.listen
-    if (origin === `http://${host}:${inst.port}` || origin === `https://${host}:${inst.port}`) return
+    if (origin === `http://${host}:${inst.port}` || origin === `https://${host}:${inst.port}`)
+      return
   }
   for (const remote of listRemotes()) {
     try {
@@ -60,9 +56,9 @@ export async function sampleWindowsGpuMemory(): Promise<GpuMemAdapter[]> {
     "$ErrorActionPreference='SilentlyContinue'",
     "$u=Get-Counter '\\GPU Adapter Memory(*)\\Dedicated Usage' -ErrorAction SilentlyContinue",
     "$l=Get-Counter '\\GPU Adapter Memory(*)\\Dedicated Limit' -ErrorAction SilentlyContinue",
-    "$map=@{}",
-    "foreach($s in @($u.CounterSamples)){ $k=$s.InstanceName; if(-not $map[$k]){$map[$k]=@{used=0;total=0}}; $map[$k].used=[long]$s.CookedValue }",
-    "foreach($s in @($l.CounterSamples)){ $k=$s.InstanceName; if(-not $map[$k]){$map[$k]=@{used=0;total=0}}; $map[$k].total=[long]$s.CookedValue }",
+    '$map=@{}',
+    'foreach($s in @($u.CounterSamples)){ $k=$s.InstanceName; if(-not $map[$k]){$map[$k]=@{used=0;total=0}}; $map[$k].used=[long]$s.CookedValue }',
+    'foreach($s in @($l.CounterSamples)){ $k=$s.InstanceName; if(-not $map[$k]){$map[$k]=@{used=0;total=0}}; $map[$k].total=[long]$s.CookedValue }',
     "$map.GetEnumerator() | Sort-Object Name | ForEach-Object { Write-Output ($_.Name + ',' + $_.Value.used + ',' + $_.Value.total) }"
   ].join('; ')
   try {
@@ -91,7 +87,11 @@ export async function sampleWindowsGpuMemory(): Promise<GpuMemAdapter[]> {
 
 /** Merge controller + adapter memory into byte totals. Exported for tests. */
 export function mergeGpuMemory(
-  controllers: Array<{ vram?: number | null; memoryUsed?: number | null; memoryTotal?: number | null }>,
+  controllers: Array<{
+    vram?: number | null
+    memoryUsed?: number | null
+    memoryTotal?: number | null
+  }>,
   adapters: GpuMemAdapter[]
 ): Array<{ vramTotal: number; vramUsed: number }> {
   const free = adapters.map((a, i) => ({ ...a, i, taken: false }))
@@ -106,7 +106,13 @@ export function mergeGpuMemory(
     }
 
     // Match a perf-counter adapter by closest dedicated limit
-    let hit = free.find((a) => !a.taken && a.total > 0 && vramBytes > 0 && Math.abs(a.total - vramBytes) <= Math.max(vramBytes * 0.12, 64 * 1024 * 1024))
+    let hit = free.find(
+      (a) =>
+        !a.taken &&
+        a.total > 0 &&
+        vramBytes > 0 &&
+        Math.abs(a.total - vramBytes) <= Math.max(vramBytes * 0.12, 64 * 1024 * 1024)
+    )
     if (!hit) hit = free.find((a) => !a.taken && a.total > 0)
     if (!hit) hit = free.find((a) => !a.taken && a.used > 0)
     if (hit) {
@@ -160,7 +166,7 @@ export class MonitorService extends EventEmitter {
 
       const root = fsSize && fsSize[0]
       const snapshot: SystemSnapshot = {
-        cpuUsage: cpu ? Math.round(cpu.currentLoad * 10) / 10 : this.last?.cpuUsage ?? 0,
+        cpuUsage: cpu ? Math.round(cpu.currentLoad * 10) / 10 : (this.last?.cpuUsage ?? 0),
         ramTotal: mem?.total ?? this.last?.ramTotal ?? 0,
         ramUsed: mem?.used ?? this.last?.ramUsed ?? 0,
         diskFree: root?.available ?? this.last?.diskFree ?? 0,
@@ -238,7 +244,8 @@ export class MonitorService extends EventEmitter {
   }
 
   private openWs(baseUrl: string, gen: number): boolean {
-    const wsUrl = baseUrl.replace(/^http/, 'ws').replace(/\/$/, '') + '/ws?clientId=' + COMFY_CLIENT_ID
+    const wsUrl =
+      baseUrl.replace(/^http/, 'ws').replace(/\/$/, '') + '/ws?clientId=' + COMFY_CLIENT_ID
     try {
       const ws = new WebSocket(wsUrl)
       this.ws = ws

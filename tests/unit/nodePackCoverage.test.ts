@@ -27,7 +27,15 @@ const h = vi.hoisted(() => {
       securityLevel: 'normal',
       networkMode: 'public',
       pipIndex: '',
-      proxy: { enabled: false, protocol: 'http', host: '', port: 7890, bypass: '', username: '', password: '' }
+      proxy: {
+        enabled: false,
+        protocol: 'http',
+        host: '',
+        port: 7890,
+        bypass: '',
+        username: '',
+        password: ''
+      }
     } as Record<string, unknown>,
     renameFail: new Set<string>(),
     writeFail: new Set<string>(),
@@ -306,7 +314,9 @@ vi.mock('crypto', () => {
       h1 ^= s.charCodeAt(i)
       h1 = Math.imul(h1, 0x01000193)
     }
-    return ((h1 >>> 0).toString(16) + (s.length * 2654435761).toString(16)).slice(0, 16).padStart(16, '0')
+    return ((h1 >>> 0).toString(16) + (s.length * 2654435761).toString(16))
+      .slice(0, 16)
+      .padStart(16, '0')
   }
   let uuidCounter = 0
   return {
@@ -353,7 +363,11 @@ vi.mock('child_process', () => {
       if (result.error != null) {
         const err = result.error as Error & { code?: number }
         if (result.code != null && err && typeof err === 'object') err.code = result.code
-        finish(err, result.stdout || '', result.stderr || (err instanceof Error ? err.message : String(err)))
+        finish(
+          err,
+          result.stdout || '',
+          result.stderr || (err instanceof Error ? err.message : String(err))
+        )
       } else {
         finish(null, result.stdout || '', result.stderr || '')
       }
@@ -410,7 +424,10 @@ vi.mock('../../src/main/services/db', () => ({
   loadSettings: () => h.state.settings,
   loadInstanceConfigs: () => h.state.instances,
   listNodePacks: () => {
-    if (h.state.listNodePacksThrowAfter != null && h.state.listNodePacksCalls >= h.state.listNodePacksThrowAfter) {
+    if (
+      h.state.listNodePacksThrowAfter != null &&
+      h.state.listNodePacksCalls >= h.state.listNodePacksThrowAfter
+    ) {
       h.state.listNodePacksCalls++
       h.state.listNodePacksThrowAfter = null // throw only once so later list() calls succeed
       throw new Error('db listNodePacks down')
@@ -497,12 +514,28 @@ vi.mock('../../src/main/services/bootstrap', () => ({
   }
 }))
 
-vi.mock('../../src/main/services/instance', () => ({
-  resolveRuntimesPythonSync: () => {
-    if (h.state.runtimePythonThrow) throw h.state.runtimePythonThrow
-    return h.state.runtimePython
+vi.mock('../../src/main/services/instance', async () => {
+  const { existsSync } = await import('fs')
+  const { join } = await import('path')
+  return {
+    resolveRuntimesPythonSync: () => {
+      if (h.state.runtimePythonThrow) throw h.state.runtimePythonThrow
+      return h.state.runtimePython
+    },
+    // Mirrors the shared resolver against the mocked FS (venv → pythonPath → runtime).
+    resolveInstancePythonPath: (config: { venvPath?: string; pythonPath?: string }) => {
+      if (config.venvPath) {
+        const win = join(config.venvPath, 'Scripts', 'python.exe')
+        const unix = join(config.venvPath, 'bin', 'python')
+        if (existsSync(win)) return win
+        if (existsSync(unix)) return unix
+      }
+      if (config.pythonPath) return config.pythonPath
+      if (h.state.runtimePythonThrow) throw h.state.runtimePythonThrow
+      return h.state.runtimePython || 'python'
+    }
   }
-}))
+})
 
 vi.mock('../../src/main/services/registry', () => ({
   searchRegistry: vi.fn(async () => ({
@@ -595,7 +628,11 @@ const registryIndexMock = registryIndexMod as unknown as {
 const cpMock = cp as unknown as {
   execFile: (cmd: string, args: string[], opts: unknown, cb?: ExecCallback) => unknown
   __setExecHandler: (
-    fn: (cmd: string, args: string[], opts: unknown) => { stdout?: string; stderr?: string; error?: unknown; code?: number }
+    fn: (
+      cmd: string,
+      args: string[],
+      opts: unknown
+    ) => { stdout?: string; stderr?: string; error?: unknown; code?: number }
   ) => void
 }
 
@@ -645,7 +682,15 @@ function resetState(): void {
     securityLevel: 'normal',
     networkMode: 'public',
     pipIndex: '',
-    proxy: { enabled: false, protocol: 'http', host: '', port: 7890, bypass: '', username: '', password: '' }
+    proxy: {
+      enabled: false,
+      protocol: 'http',
+      host: '',
+      port: 7890,
+      bypass: '',
+      username: '',
+      password: ''
+    }
   }
   h.state.instances = [
     {
@@ -681,14 +726,19 @@ function setFetch(handler: (url: string) => Promise<unknown> | unknown): void {
   }
 }
 
-function makeRes(body: unknown, init?: { ok?: boolean; status?: number; headers?: Record<string, string> }): Response {
+function makeRes(
+  body: unknown,
+  init?: { ok?: boolean; status?: number; headers?: Record<string, string> }
+): Response {
   return {
     ok: init?.ok ?? true,
     status: init?.status ?? 200,
     json: async () => body,
-    arrayBuffer: async () => new TextEncoder().encode(typeof body === 'string' ? body : 'zip-bytes').buffer,
+    arrayBuffer: async () =>
+      new TextEncoder().encode(typeof body === 'string' ? body : 'zip-bytes').buffer,
     headers: {
-      get: (k: string) => (init?.headers && k.toLowerCase() in init.headers ? init.headers[k.toLowerCase()] : null)
+      get: (k: string) =>
+        init?.headers && k.toLowerCase() in init.headers ? init.headers[k.toLowerCase()] : null
     }
   } as unknown as Response
 }
@@ -806,7 +856,11 @@ describe('op progress surface', () => {
       }
       return { stdout: '' }
     })
-    await nodePackService.install({ id: 'https://github.com/u/ProgPack.git', source: 'git', instanceId: 'inst-1' })
+    await nodePackService.install({
+      id: 'https://github.com/u/ProgPack.git',
+      source: 'git',
+      instanceId: 'inst-1'
+    })
     expect(nodePackService.getOpProgress()).not.toBeNull()
     expect(nodePackService.getOpProgress()?.instanceId).toBe('inst-1')
   })
@@ -850,9 +904,15 @@ describe('resolveNestedPackDir via registry unzip', () => {
   it('flattens nested dir with only pyproject.toml', async () => {
     seedRegistryApi({ url: 'https://cdn.example/pack.zip' })
     zipSafeMock.safeUnzip.mockImplementation(async (_z: string, dest?: string) => {
-      unzipInto(dest || join(ROOT, 'PyOnly'), { 'pyproject.toml': 'name = "PyOnly"\nversion = "2.0.0"\n' })
+      unzipInto(dest || join(ROOT, 'PyOnly'), {
+        'pyproject.toml': 'name = "PyOnly"\nversion = "2.0.0"\n'
+      })
     })
-    const rec = await nodePackService.install({ id: 'PyOnly', source: 'registry', instanceId: 'inst-1' })
+    const rec = await nodePackService.install({
+      id: 'PyOnly',
+      source: 'registry',
+      instanceId: 'inst-1'
+    })
     expect(rec.name).toBe('PyOnly')
     // After flattening, the pack lives at dest/ directly — no nested Wrapper/.
     expect(rec.path).not.toContain('Wrapper')
@@ -863,7 +923,11 @@ describe('resolveNestedPackDir via registry unzip', () => {
     zipSafeMock.safeUnzip.mockImplementation(async (_z: string, dest?: string) => {
       unzipInto(dest || join(ROOT, 'ReqOnly'), { 'requirements.txt': 'numpy\n' })
     })
-    const rec = await nodePackService.install({ id: 'ReqOnly', source: 'registry', instanceId: 'inst-1' })
+    const rec = await nodePackService.install({
+      id: 'ReqOnly',
+      source: 'registry',
+      instanceId: 'inst-1'
+    })
     expect(rec.path).not.toContain('Wrapper')
   })
 
@@ -877,7 +941,11 @@ describe('resolveNestedPackDir via registry unzip', () => {
       // fail readdir on the PUBLISHED dest (after rename), not the tmp dir
       h.state.readdirFail.add('ReadErr')
     })
-    const rec = await nodePackService.install({ id: 'ReadErr', source: 'registry', instanceId: 'inst-1' })
+    const rec = await nodePackService.install({
+      id: 'ReadErr',
+      source: 'registry',
+      instanceId: 'inst-1'
+    })
     expect(rec.name).toBe('ReadErr')
     // When readdir fails, flatten cannot run but resolveNestedPackDir may
     // still find the nested dir via the mock fs — either layout is valid.
@@ -934,7 +1002,11 @@ describe('registry install prefers git clone', () => {
       }
       return { stdout: '' }
     })
-    const rec = await nodePackService.install({ id: 'GitReg', source: 'registry', instanceId: 'inst-1' })
+    const rec = await nodePackService.install({
+      id: 'GitReg',
+      source: 'registry',
+      instanceId: 'inst-1'
+    })
     expect(cloneArgs).toHaveLength(1)
     expect(cloneArgs[0]).toContain('clone')
     expect(rec.name).toBe('GitReg')
@@ -966,7 +1038,11 @@ describe('registry install prefers git clone', () => {
       h.mkdirPath(d)
       h.writeFile(join(d, 'pyproject.toml'), 'name = "ZipFall"\nversion = "4.0.0"\n')
     })
-    const rec = await nodePackService.install({ id: 'ZipFall', source: 'registry', instanceId: 'inst-1' })
+    const rec = await nodePackService.install({
+      id: 'ZipFall',
+      source: 'registry',
+      instanceId: 'inst-1'
+    })
     expect(rec.name).toBe('ZipFall')
     expect(rec.installSource).toBe('registry')
     expect(rec.version).toBe('4.0.0')
@@ -984,7 +1060,11 @@ describe('registry install prefers git clone', () => {
       h.mkdirPath(d)
       h.writeFile(join(d, 'pyproject.toml'), 'name = "NoGit"\nversion = "1.2.0"\n')
     })
-    const rec = await nodePackService.install({ id: 'NoGit', source: 'registry', instanceId: 'inst-1' })
+    const rec = await nodePackService.install({
+      id: 'NoGit',
+      source: 'registry',
+      instanceId: 'inst-1'
+    })
     expect(rec.installSource).toBe('registry')
     expect(rec.version).toBe('1.2.0')
   })
@@ -997,7 +1077,11 @@ describe('unsafe destination guards', () => {
   it('rejects a git install whose dest resolves outside root', async () => {
     h.state.resolveThrowOn = 'EvilGit'
     await expect(
-      nodePackService.install({ id: 'https://github.com/u/EvilGit.git', source: 'git', instanceId: 'inst-1' })
+      nodePackService.install({
+        id: 'https://github.com/u/EvilGit.git',
+        source: 'git',
+        instanceId: 'inst-1'
+      })
     ).rejects.toThrow(/unsafe destination/i)
     h.state.resolveThrowOn = ''
   })
@@ -1005,7 +1089,11 @@ describe('unsafe destination guards', () => {
   it('rejects an unsafe temp clone path', async () => {
     h.state.resolveThrowOn = '_clone_tmp_'
     await expect(
-      nodePackService.install({ id: 'https://github.com/u/TmpGit.git', source: 'git', instanceId: 'inst-1' })
+      nodePackService.install({
+        id: 'https://github.com/u/TmpGit.git',
+        source: 'git',
+        instanceId: 'inst-1'
+      })
     ).rejects.toThrow(/unsafe temp clone path/i)
     h.state.resolveThrowOn = ''
   })
@@ -1013,9 +1101,9 @@ describe('unsafe destination guards', () => {
   it('rejects a registry zip install whose dest resolves outside root and unlinks the tmp zip', async () => {
     seedRegistryApi({ url: 'https://cdn.example/pack.zip' })
     h.state.resolveThrowOn = 'EvilZip'
-    await expect(nodePackService.install({ id: 'EvilZip', source: 'registry', instanceId: 'inst-1' })).rejects.toThrow(
-      /unsafe destination/i
-    )
+    await expect(
+      nodePackService.install({ id: 'EvilZip', source: 'registry', instanceId: 'inst-1' })
+    ).rejects.toThrow(/unsafe destination/i)
     const leftovers = [...h.state.files.keys()].filter((k) => k.includes('._install_'))
     expect(leftovers).toEqual([])
     h.state.resolveThrowOn = ''
@@ -1025,9 +1113,9 @@ describe('unsafe destination guards', () => {
     seedRegistryApi({ url: 'https://cdn.example/pack.zip' })
     h.state.resolveThrowOn = 'EvilZip2'
     h.state.unlinkFail.add('._install_')
-    await expect(nodePackService.install({ id: 'EvilZip2', source: 'registry', instanceId: 'inst-1' })).rejects.toThrow(
-      /unsafe destination/i
-    )
+    await expect(
+      nodePackService.install({ id: 'EvilZip2', source: 'registry', instanceId: 'inst-1' })
+    ).rejects.toThrow(/unsafe destination/i)
     h.state.resolveThrowOn = ''
     h.state.unlinkFail.clear()
   })
@@ -1035,9 +1123,9 @@ describe('unsafe destination guards', () => {
   it('rejects an unsafe temp unzip path and unlinks the tmp zip', async () => {
     seedRegistryApi({ url: 'https://cdn.example/pack.zip' })
     h.state.resolveThrowOn = '_unzip_tmp_'
-    await expect(nodePackService.install({ id: 'EvilTmp', source: 'registry', instanceId: 'inst-1' })).rejects.toThrow(
-      /unsafe temp unzip path/i
-    )
+    await expect(
+      nodePackService.install({ id: 'EvilTmp', source: 'registry', instanceId: 'inst-1' })
+    ).rejects.toThrow(/unsafe temp unzip path/i)
     const leftovers = [...h.state.files.keys()].filter((k) => k.includes('._install_'))
     expect(leftovers).toEqual([])
     h.state.resolveThrowOn = ''
@@ -1047,9 +1135,9 @@ describe('unsafe destination guards', () => {
     seedRegistryApi({ url: 'https://cdn.example/pack.zip' })
     h.state.resolveThrowOn = '_unzip_tmp_'
     h.state.unlinkFail.add('._install_')
-    await expect(nodePackService.install({ id: 'EvilTmp2', source: 'registry', instanceId: 'inst-1' })).rejects.toThrow(
-      /unsafe temp unzip path/i
-    )
+    await expect(
+      nodePackService.install({ id: 'EvilTmp2', source: 'registry', instanceId: 'inst-1' })
+    ).rejects.toThrow(/unsafe temp unzip path/i)
     h.state.resolveThrowOn = ''
     h.state.unlinkFail.clear()
   })
@@ -1071,7 +1159,11 @@ describe('destination collisions and cleanup resilience', () => {
       return { stdout: '' }
     })
     await expect(
-      nodePackService.install({ id: 'https://github.com/u/Taken.git', source: 'git', instanceId: 'inst-1' })
+      nodePackService.install({
+        id: 'https://github.com/u/Taken.git',
+        source: 'git',
+        instanceId: 'inst-1'
+      })
     ).rejects.toThrow(/already exists/i)
     // pre-existing dest must survive
     expect(h.state.dirs.has(join(ROOT, 'Taken'))).toBe(true)
@@ -1090,7 +1182,11 @@ describe('destination collisions and cleanup resilience', () => {
     })
     h.state.rmFail.add('_clone_tmp_')
     await expect(
-      nodePackService.install({ id: 'https://github.com/u/RmFail.git', source: 'git', instanceId: 'inst-1' })
+      nodePackService.install({
+        id: 'https://github.com/u/RmFail.git',
+        source: 'git',
+        instanceId: 'inst-1'
+      })
     ).rejects.toThrow(/clone exploded/)
     h.state.rmFail.clear()
   })
@@ -1104,9 +1200,9 @@ describe('destination collisions and cleanup resilience', () => {
       h.mkdirPath(d)
       h.writeFile(join(d, 'pyproject.toml'), 'name = "ZipTaken"\nversion = "9.9.9"\n')
     })
-    await expect(nodePackService.install({ id: 'ZipTaken', source: 'registry', instanceId: 'inst-1' })).rejects.toThrow(
-      /already exists/i
-    )
+    await expect(
+      nodePackService.install({ id: 'ZipTaken', source: 'registry', instanceId: 'inst-1' })
+    ).rejects.toThrow(/already exists/i)
     expect(h.state.dirs.has(join(ROOT, 'ZipTaken'))).toBe(true)
     const tmps = [...h.state.dirs.keys()].filter((k) => k.includes('_unzip_tmp_'))
     expect(tmps).toEqual([])
@@ -1120,9 +1216,9 @@ describe('destination collisions and cleanup resilience', () => {
       throw new Error('zip slip detected')
     })
     h.state.unlinkFail.add('._install_')
-    await expect(nodePackService.install({ id: 'UnzipFail', source: 'registry', instanceId: 'inst-1' })).rejects.toThrow(
-      /zip slip/i
-    )
+    await expect(
+      nodePackService.install({ id: 'UnzipFail', source: 'registry', instanceId: 'inst-1' })
+    ).rejects.toThrow(/zip slip/i)
     h.state.unlinkFail.clear()
   })
 
@@ -1134,9 +1230,9 @@ describe('destination collisions and cleanup resilience', () => {
       throw new Error('unzip boom')
     })
     h.state.rmFail.add('_unzip_tmp_')
-    await expect(nodePackService.install({ id: 'RmTmpFail', source: 'registry', instanceId: 'inst-1' })).rejects.toThrow(
-      /unzip boom/i
-    )
+    await expect(
+      nodePackService.install({ id: 'RmTmpFail', source: 'registry', instanceId: 'inst-1' })
+    ).rejects.toThrow(/unzip boom/i)
     h.state.rmFail.clear()
   })
 
@@ -1148,7 +1244,11 @@ describe('destination collisions and cleanup resilience', () => {
       h.writeFile(join(d, 'pyproject.toml'), 'name = "PostOk"\nversion = "1.0.0"\n')
     })
     h.state.unlinkFail.add('._install_')
-    const rec = await nodePackService.install({ id: 'PostOk', source: 'registry', instanceId: 'inst-1' })
+    const rec = await nodePackService.install({
+      id: 'PostOk',
+      source: 'registry',
+      instanceId: 'inst-1'
+    })
     expect(rec.name).toBe('PostOk')
     h.state.unlinkFail.clear()
   })
@@ -1171,7 +1271,11 @@ describe('afterInstall pip fallback runner', () => {
         h.writeFile(join(dest, 'pyproject.toml'), 'name = "PipFall"\nversion = "1.0.0"\n')
         return { stdout: '' }
       }
-      cmds.push({ cmd, args: [...args], timeout: (opts as { timeout?: number } | undefined)?.timeout })
+      cmds.push({
+        cmd,
+        args: [...args],
+        timeout: (opts as { timeout?: number } | undefined)?.timeout
+      })
       return { stdout: 'Successfully installed requests' }
     })
     const rec = await nodePackService.install({
@@ -1282,7 +1386,11 @@ describe('snapshot persistence catches', () => {
   })
 
   it('updateAll continues when the pre-update snapshot throws', async () => {
-    const dir = seedPack({ name: 'SnapAll', withGit: true, pyproject: 'name = "SnapAll"\nversion = "1.0.0"\n' })
+    const dir = seedPack({
+      name: 'SnapAll',
+      withGit: true,
+      pyproject: 'name = "SnapAll"\nversion = "1.0.0"\n'
+    })
     h.state.nodePacks = [
       {
         id: 'bbbbbbbbbbbbbbbb',
@@ -1312,7 +1420,11 @@ describe('snapshot persistence catches', () => {
   })
 
   it('update continues when the pre-update snapshot throws', async () => {
-    const dir = seedPack({ name: 'SnapUp', withGit: true, pyproject: 'name = "SnapUp"\nversion = "1.0.0"\n' })
+    const dir = seedPack({
+      name: 'SnapUp',
+      withGit: true,
+      pyproject: 'name = "SnapUp"\nversion = "1.0.0"\n'
+    })
     h.state.nodePacks = [
       {
         id: 'cccccccccccccccc',
@@ -1345,8 +1457,12 @@ describe('snapshot persistence catches', () => {
     h.state.insertSnapshotThrow = true
     h.state.writeFail.add('snapshots')
     const snap = nodePackService.createSnapshot('best-effort')
+    // Best-effort contract: a usable record is still returned (id/name/time + pack array)
+    // even though neither the DB row nor the snapshot file could be written.
     expect(snap.id).toBeTruthy()
-    expect(snap.packs.length).toBeGreaterThanOrEqual(0)
+    expect(snap.name).toBe('best-effort')
+    expect(snap.createdAt).toBeGreaterThan(0)
+    expect(Array.isArray(snap.packs)).toBe(true)
     h.state.insertSnapshotThrow = false
     h.state.writeFail.clear()
   })
@@ -1378,11 +1494,13 @@ describe('resolveRemovalTargets', () => {
     expect(targets).toEqual([packDir])
   })
 
-  it('returns only the pack when isPathInside(parent) is false', () => {
+  it('returns only the crafted path when the parent chain is outside custom_nodes', () => {
     const packDir = seedPack({ name: 'NotInside' })
-    // packPath not under parent: craft a path whose dirname is not its real parent
-    const targets = priv.resolveRemovalTargets(`${packDir}${dirname(packDir)}`, 'inst-1')
-    expect(targets.length).toBeGreaterThanOrEqual(1)
+    // Crafted path whose dirname() lands on the custom_nodes root itself —
+    // covers the parent === root early return (no shell collapse).
+    const crafted = `${packDir}${dirname(packDir)}`
+    const targets = priv.resolveRemovalTargets(crafted, 'inst-1')
+    expect(targets).toEqual([crafted])
   })
 
   it('returns only the pack when parentParent is not the custom_nodes root', () => {
@@ -1416,7 +1534,10 @@ describe('resolveRemovalTargets', () => {
 // =====================================================================
 describe('checkUpdates extra branches', () => {
   it('reports not-updatable via Registry or git for a local pack with a known remote', async () => {
-    const dir = seedPack({ name: 'LocalRemote', pyproject: 'name = "LocalRemote"\nversion = "1.0.0"\n' })
+    const dir = seedPack({
+      name: 'LocalRemote',
+      pyproject: 'name = "LocalRemote"\nversion = "1.0.0"\n'
+    })
     h.state.nodePacks = [
       {
         id: 'dddddddddddddddd',
@@ -1441,15 +1562,17 @@ describe('checkUpdates extra branches', () => {
       scanned: 1,
       clientFiltered: false
     })
-    toPageResult.mockImplementation((result: { raw?: unknown[] }, map: (n: unknown) => unknown) => ({
-      items: (result.raw || []).map(map),
-      total: 1,
-      page: 1,
-      pageSize: 50,
-      totalPages: 1,
-      scanned: 1,
-      clientFiltered: false
-    }))
+    toPageResult.mockImplementation(
+      (result: { raw?: unknown[] }, map: (n: unknown) => unknown) => ({
+        items: (result.raw || []).map(map),
+        total: 1,
+        page: 1,
+        pageSize: 50,
+        totalPages: 1,
+        scanned: 1,
+        clientFiltered: false
+      })
+    )
     mapRegistryPack.mockImplementation((n: Record<string, unknown>) => n)
     const results = await nodePackService.checkUpdates('inst-1')
     expect(results[0].updatable).toBe(false)
@@ -1484,15 +1607,17 @@ describe('checkUpdates extra branches', () => {
       scanned: 1,
       clientFiltered: false
     })
-    toPageResult.mockImplementation((result: { raw?: unknown[] }, map: (n: unknown) => unknown) => ({
-      items: (result.raw || []).map(map),
-      total: 1,
-      page: 1,
-      pageSize: 50,
-      totalPages: 1,
-      scanned: 1,
-      clientFiltered: false
-    }))
+    toPageResult.mockImplementation(
+      (result: { raw?: unknown[] }, map: (n: unknown) => unknown) => ({
+        items: (result.raw || []).map(map),
+        total: 1,
+        page: 1,
+        pageSize: 50,
+        totalPages: 1,
+        scanned: 1,
+        clientFiltered: false
+      })
+    )
     mapRegistryPack.mockImplementation((n: Record<string, unknown>) => n)
     h.state.upsertThrowOnce = true
     const results = await nodePackService.checkUpdates('inst-1')
@@ -1576,7 +1701,11 @@ describe('install error message fallbacks', () => {
     const events: Array<Record<string, unknown>> = []
     nodePackService.on('install-progress', (e: Record<string, unknown>) => events.push(e))
     await expect(
-      nodePackService.install({ id: 'https://github.com/u/StrFail.git', source: 'git', instanceId: 'inst-1' })
+      nodePackService.install({
+        id: 'https://github.com/u/StrFail.git',
+        source: 'git',
+        instanceId: 'inst-1'
+      })
     ).rejects.toBeTruthy()
     const errEvent = events.find((e) => e.phase === 'error')
     expect(errEvent).toBeTruthy()
@@ -1618,4 +1747,3 @@ describe('managerChannelList field fallbacks', () => {
     expect(bare.displayName).toBe('')
   })
 })
-

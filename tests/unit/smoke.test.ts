@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { LAUNCH_TEMPLATES, DEFAULT_SETTINGS, MODEL_CATEGORY_LABELS } from '../../src/shared/constants'
+import {
+  LAUNCH_TEMPLATES,
+  DEFAULT_SETTINGS,
+  MODEL_CATEGORY_LABELS
+} from '../../src/shared/constants'
 import { IPC_EVENTS } from '../../src/shared/types'
 
 describe('shared constants', () => {

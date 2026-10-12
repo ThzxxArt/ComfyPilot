@@ -62,9 +62,9 @@ describe('security: path safety', () => {
     try {
       const r = assertSafeRelativeFilename('..')
       expect(r).not.toContain('..')
-    } catch {
-      // also acceptable — throws for empty after sanitization
-      expect(true).toBe(true)
+    } catch (err) {
+      // throws for empty after sanitization — must be a real Error.
+      expect(err).toBeInstanceOf(Error)
     }
   })
 
@@ -73,9 +73,11 @@ describe('security: path safety', () => {
     // Should reject escaping
     const escape = safeResolveUnder('/a/b', '../../etc/passwd')
     expect(escape === null || escape === false).toBe(true)
-    // Absolute path is also rejected
+    // Absolute input is NOT honored as a system path: per the comfy-pilot:// protocol
+    // contract, leading separators are stripped and the result must stay under the root.
     const abs = safeResolveUnder('/a/b', '/etc/passwd')
-    expect(abs === null || abs === false).toBe(true)
+    expect(abs === null || abs.startsWith('/a/b')).toBe(true)
+    expect(abs).not.toBe('/etc/passwd')
   })
 })
 
@@ -84,7 +86,10 @@ describe('zipSafe: zip-slip protection', () => {
   it('module loads and exports safeUnzip', async () => {
     const mod = await import('@main/services/zipSafe')
     expect(mod).toBeDefined()
-    expect(typeof mod.safeUnzip === 'function' || typeof (mod as Record<string, unknown>).default === 'function').toBe(true)
+    expect(
+      typeof mod.safeUnzip === 'function' ||
+        typeof (mod as Record<string, unknown>).default === 'function'
+    ).toBe(true)
   })
 
   it('source contains path safety checks (contract)', () => {
@@ -161,7 +166,19 @@ describe('constants', () => {
 
   it('MODEL_CATEGORY_LABELS covers all categories', async () => {
     const { MODEL_CATEGORY_LABELS } = await import('@shared/constants')
-    const cats = ['checkpoints', 'diffusion_models', 'loras', 'vae', 'clip', 'controlnet', 'upscale_models', 'embeddings', 'text_encoders', 'unet', 'other']
+    const cats = [
+      'checkpoints',
+      'diffusion_models',
+      'loras',
+      'vae',
+      'clip',
+      'controlnet',
+      'upscale_models',
+      'embeddings',
+      'text_encoders',
+      'unet',
+      'other'
+    ]
     for (const c of cats) {
       expect(MODEL_CATEGORY_LABELS[c]).toBeTruthy()
     }
@@ -240,7 +257,10 @@ describe('workflowConvert', () => {
   it('module loads without errors', async () => {
     const mod = await import('@main/services/workflowConvert')
     expect(mod).toBeDefined()
-    expect(typeof mod.buildIterationPrompt === 'function' || typeof (mod as Record<string, unknown>).default === 'object').toBe(true)
+    expect(
+      typeof mod.buildIterationPrompt === 'function' ||
+        typeof (mod as Record<string, unknown>).default === 'object'
+    ).toBe(true)
   })
 })
 
@@ -442,11 +462,23 @@ describe('IPC_EVENTS constants', () => {
   it('all events are defined', async () => {
     const { IPC_EVENTS } = await import('@shared/types')
     const expected = [
-      'instanceStatus', 'instanceLog', 'modelScanProgress', 'downloadProgress',
-      'monitorTick', 'monitorWs', 'doctorProgress', 'batchProgress',
-      'nodeInstallProgress', 'installProgress', 'registryIndexProgress',
-      'notification', 'runtimeProgress', 'comfyUpdateProgress', 'nodeUpdateProgress',
-      'repairProgress', 'nodeOperationProgress'
+      'instanceStatus',
+      'instanceLog',
+      'modelScanProgress',
+      'downloadProgress',
+      'monitorTick',
+      'monitorWs',
+      'doctorProgress',
+      'batchProgress',
+      'nodeInstallProgress',
+      'installProgress',
+      'registryIndexProgress',
+      'notification',
+      'runtimeProgress',
+      'comfyUpdateProgress',
+      'nodeUpdateProgress',
+      'repairProgress',
+      'nodeOperationProgress'
     ]
     for (const e of expected) {
       expect(IPC_EVENTS[e as keyof typeof IPC_EVENTS]).toBeTruthy()

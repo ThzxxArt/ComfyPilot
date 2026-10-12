@@ -2,7 +2,15 @@ import { EventEmitter } from 'events'
 import { createHash, randomUUID } from 'crypto'
 import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'child_process'
 import { promisify } from 'util'
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, mkdirSync, rmSync } from 'fs'
+import {
+  existsSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  writeFileSync,
+  mkdirSync,
+  rmSync
+} from 'fs'
 import { join, dirname, resolve } from 'path'
 import { homedir } from 'os'
 import net from 'net'
@@ -66,6 +74,40 @@ export function resolveRuntimesPythonSync(): string | null {
   } catch {
     return null
   }
+}
+
+/**
+ * Shared interpreter resolution for an instance config.
+ * Order: venv → explicit pythonPath → portable embeds (incl. AKI/绘世 sibling
+ * `<root>/python/`) → ComfyPilot-managed runtime → bare `python`.
+ * Used by instance launch, env probe and node-pack pip installs so all three
+ * agree on one interpreter.
+ */
+export function resolveInstancePythonPath(config: ComfyInstanceConfig): string {
+  if (config.venvPath) {
+    const win = join(config.venvPath, 'Scripts', 'python.exe')
+    const unix = join(config.venvPath, 'bin', 'python')
+    if (existsSync(win)) return win
+    if (existsSync(unix)) return unix
+  }
+  if (config.pythonPath) return config.pythonPath
+  const parent = dirname(config.path)
+  const candidates = [
+    join(config.path, 'python_embeded', 'python.exe'),
+    join(config.path, 'python_embedded', 'python.exe'),
+    join(config.path, 'python', 'python.exe'),
+    join(config.path, 'python', 'bin', 'python3'),
+    join(parent, 'python', 'python.exe'),
+    join(parent, 'python', 'bin', 'python3'),
+    join(parent, 'python_embeded', 'python.exe'),
+    join(parent, 'python_embedded', 'python.exe')
+  ]
+  for (const c of candidates) {
+    if (existsSync(c)) return c
+  }
+  const runtimePy = resolveRuntimesPythonSync()
+  if (runtimePy) return runtimePy
+  return 'python'
 }
 
 interface RuntimeEntry {
@@ -158,9 +200,13 @@ export class InstanceService extends EventEmitter {
   private appendLogFile(id: string, line: ComfyLogLine): void {
     try {
       const file = join(logsDir(), `${id}.log`)
-      writeFileSync(file, `[${new Date(line.ts).toISOString()}] ${line.level.toUpperCase()} ${line.message}\n`, {
-        flag: 'a'
-      })
+      writeFileSync(
+        file,
+        `[${new Date(line.ts).toISOString()}] ${line.level.toUpperCase()} ${line.message}\n`,
+        {
+          flag: 'a'
+        }
+      )
     } catch {
       /* ignore */
     }
@@ -185,7 +231,10 @@ export class InstanceService extends EventEmitter {
     let version: string | undefined
     try {
       // Prefer the install stamp written by installer/updater (commit sha or fetch date).
-      const envCandidates = [join(installPath, '.comfypilot-env.json'), join(dirname(installPath), '.comfypilot-env.json')]
+      const envCandidates = [
+        join(installPath, '.comfypilot-env.json'),
+        join(dirname(installPath), '.comfypilot-env.json')
+      ]
       for (const f of envCandidates) {
         if (!existsSync(f)) continue
         const data = JSON.parse(readFileSync(f, 'utf-8')) as {
@@ -277,14 +326,15 @@ export class InstanceService extends EventEmitter {
     const { writeFileSync, mkdirSync } = await import('fs')
     const { dirname, join } = await import('path')
 
-    let target: string | undefined = opts?.dir
-      ? join(opts.dir, baseName + ext)
-      : undefined
+    let target: string | undefined = opts?.dir ? join(opts.dir, baseName + ext) : undefined
     if (!target) {
       const win = await dialog.showSaveDialog({
         title: 'Export launch script',
         defaultPath: join(preview.cwd, baseName + ext),
-        filters: kind === 'bat' ? [{ name: 'Batch', extensions: ['bat'] }] : [{ name: 'Shell', extensions: ['sh'] }]
+        filters:
+          kind === 'bat'
+            ? [{ name: 'Batch', extensions: ['bat'] }]
+            : [{ name: 'Shell', extensions: ['sh'] }]
       })
       if (win.canceled || !win.filePath) throw new Error('Cancelled')
       target = win.filePath
@@ -415,11 +465,23 @@ export class InstanceService extends EventEmitter {
   ): void {
     const hasMainPy = existsSync(join(path, 'main.py'))
     const hasRequirements = existsSync(join(path, 'requirements.txt'))
+    // venv / portable embeds — including the AKI/绘世 sibling `python/` folder.
+    // Only real interpreter layout counts (named dirs with python.exe/bin/python3),
+    // never a bare `bin/python3` which would false-positive on ordinary projects.
+    const embeddedDirs = ['python', 'python_embeded', 'python_embedded']
+    const hasLocalPython = embeddedDirs.some(
+      (d) => existsSync(join(path, d, 'python.exe')) || existsSync(join(path, d, 'bin', 'python3'))
+    )
+    const parent = dirname(path)
+    const hasParentPython = embeddedDirs.some(
+      (d) =>
+        existsSync(join(parent, d, 'python.exe')) || existsSync(join(parent, d, 'bin', 'python3'))
+    )
     const hasVenv =
+      hasLocalPython ||
+      hasParentPython ||
       existsSync(join(path, 'venv')) ||
-      existsSync(join(path, '.venv')) ||
-      existsSync(join(path, 'python_embeded')) ||
-      existsSync(join(path, 'python_embedded'))
+      existsSync(join(path, '.venv'))
     if (!hasMainPy && !hasRequirements) return
     if (out.some((c) => c.path === path)) return
     let isRegistered = false
@@ -430,7 +492,11 @@ export class InstanceService extends EventEmitter {
     }
     out.push({
       path,
-      score: (hasMainPy ? 50 : 0) + (hasRequirements ? 20 : 0) + (hasVenv ? 30 : 0) - (isRegistered ? 100 : 0),
+      score:
+        (hasMainPy ? 50 : 0) +
+        (hasRequirements ? 20 : 0) +
+        (hasVenv ? 30 : 0) -
+        (isRegistered ? 100 : 0),
       reason: isRegistered
         ? 'Already registered'
         : hasMainPy
@@ -521,9 +587,7 @@ export class InstanceService extends EventEmitter {
     const configs = loadInstanceConfigs()
     const config = configs.find((c) => c.id === id)
     // Same platform-aware lookup as launch (venv Scripts/bin, embeds, fallback).
-    const pythonPath = config
-      ? this.resolvePython(config)
-      : 'python'
+    const pythonPath = config ? this.resolvePython(config) : 'python'
     const errors: string[] = []
     let pythonVersion = ''
     let torchVersion: string | undefined
@@ -683,27 +747,11 @@ export class InstanceService extends EventEmitter {
   }
 
   /**
-   * Resolve the interpreter for an instance.
-   * Order: venv → pythonPath → portable embeds under the install →
-   * ComfyPilot runtimes (zero-prereq bootstrap) → bare `python`.
+   * Resolve the interpreter for an instance (shared implementation —
+   * instance launch / env probe / node-pack pip all use the same rules).
    */
   private resolvePython(config: ComfyInstanceConfig): string {
-    if (config.venvPath) {
-      const win = join(config.venvPath, 'Scripts', 'python.exe')
-      const unix = join(config.venvPath, 'bin', 'python')
-      if (existsSync(win)) return win
-      if (existsSync(unix)) return unix
-    }
-    if (config.pythonPath) return config.pythonPath
-    // Portable embeds shipped next to ComfyUI
-    const embed = join(config.path, 'python_embeded', 'python.exe')
-    if (existsSync(embed)) return embed
-    const embed2 = join(config.path, 'python_embedded', 'python.exe')
-    if (existsSync(embed2)) return embed2
-    // ComfyPilot-managed portable Python (downloaded by bootstrap)
-    const runtimePy = resolveRuntimesPythonSync()
-    if (runtimePy) return runtimePy
-    return 'python'
+    return resolveInstancePythonPath(config)
   }
 
   private buildArgs(config: ComfyInstanceConfig): string[] {
@@ -753,7 +801,10 @@ export class InstanceService extends EventEmitter {
     return waited.info
   }
 
-  async waitReady(id: string, timeoutMs = READY_TIMEOUT_MS + READY_EXTEND_MS + 5_000): Promise<WaitReadyResult> {
+  async waitReady(
+    id: string,
+    timeoutMs = READY_TIMEOUT_MS + READY_EXTEND_MS + 5_000
+  ): Promise<WaitReadyResult> {
     const rt = this.runtimes.get(id)
     const started = Date.now()
     if (!rt) {
@@ -849,7 +900,10 @@ export class InstanceService extends EventEmitter {
       try {
         const res = await fetch(`${base}/system_stats`, { signal: AbortSignal.timeout(1200) })
         if (res.ok) {
-          const data = (await res.json().catch(() => null)) as { system?: unknown; devices?: unknown } | null
+          const data = (await res.json().catch(() => null)) as {
+            system?: unknown
+            devices?: unknown
+          } | null
           if (data && typeof data === 'object' && ('system' in data || 'devices' in data)) {
             if (rt.generation !== gen) return
             rt.ready = true
@@ -1037,7 +1091,11 @@ export class InstanceService extends EventEmitter {
         rt.status = intentional ? 'stopped' : code === 0 ? 'stopped' : 'error'
         if (!intentional && code !== 0) rt.lastError = `Exited with code ${code}`
         this.clearReadyProbe(rt)
-        this.pushLog(rt, code === 0 || intentional ? 'info' : 'error', `Process exited code=${code} signal=${signal}`)
+        this.pushLog(
+          rt,
+          code === 0 || intentional ? 'info' : 'error',
+          `Process exited code=${code} signal=${signal}`
+        )
       })
 
       this.beginReadyProbe(rt, gen)
@@ -1128,7 +1186,11 @@ export class InstanceService extends EventEmitter {
     } else if (!wasManaged && (wasReady || wasRunning)) {
       // We only adopted an external ComfyUI — be honest instead of pretending we killed it.
       adopted = true
-      this.pushLog(rt, 'warn', 'Stop requested for an adopted external process — it is still running outside ComfyPilot')
+      this.pushLog(
+        rt,
+        'warn',
+        'Stop requested for an adopted external process — it is still running outside ComfyPilot'
+      )
     }
     rt.managed = false
     this.emitStatus(rt)
@@ -1181,7 +1243,11 @@ export class InstanceService extends EventEmitter {
     } else if (!wasManaged && (wasReady || rt.status === 'running')) {
       // Live external ComfyUI we refused to kill — tell the UI we only signalled state.
       adopted = true
-      this.pushLog(rt, 'warn', 'Force-kill requested for an adopted external process — refusing to kill an unowned PID')
+      this.pushLog(
+        rt,
+        'warn',
+        'Force-kill requested for an adopted external process — refusing to kill an unowned PID'
+      )
     }
     rt.status = 'stopped'
     rt.managed = false

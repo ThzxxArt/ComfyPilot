@@ -2,17 +2,22 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  MedkitOutline, CheckmarkCircleOutline, WarningOutline, CloseCircleOutline,
-  FlashOutline, ConstructOutline
+  MedkitOutline,
+  CheckmarkCircleOutline,
+  WarningOutline,
+  CloseCircleOutline,
+  FlashOutline,
+  ConstructOutline
 } from '@vicons/ionicons5'
 import { NButton, NIcon, NSpace, NSpin, NTag, useMessage, NEmpty, NProgress } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 import { ipc, onDoctorProgress } from '@/composables/useIpc'
+import ListSkeleton from '@/components/ListSkeleton.vue'
 import type { DoctorCheck, DoctorReport } from '@shared/types'
 
 const store = useAppStore()
 const message = useMessage()
-const { t } = useI18n()
+const { t, te } = useI18n()
 const running = ref(false)
 const fixing = ref(false)
 const progress = ref<{ done?: number; total?: number; title?: string } | null>(null)
@@ -29,6 +34,20 @@ function toneFor(s: DoctorCheck['severity']): string {
   if (s === 'pass') return 'chip-success'
   if (s === 'warn' || s === 'info') return 'chip-warning'
   return 'chip-danger'
+}
+
+/** Localized severity chip (raw enum must not leak). */
+function sevLabel(s: DoctorCheck['severity']): string {
+  if (s === 'pass') return t('doctor.pass')
+  if (s === 'warn') return t('doctor.warn')
+  if (s === 'fail') return t('doctor.fail')
+  return t('doctor.info')
+}
+
+/** Localized check group (main emits English group names). */
+function groupLabel(g: string): string {
+  const key = `doctor.group.${g}`
+  return te(key) ? t(key) : g
 }
 
 async function run(): Promise<void> {
@@ -100,104 +119,204 @@ onUnmounted(() => offProgress?.())
     </div>
 
     <div class="page-body">
-    <div v-if="running && progress" class="doctor-progress card">
-      <NProgress
-        type="line"
-        :percentage="progress.total ? Math.min(100, Math.round(((progress.done || 0) / progress.total) * 100)) : 0"
-        :height="8"
-        processing
-      />
-      <div class="doctor-progress-meta">
-        {{ progress.title || t('doctor.run') }}
-        <span v-if="progress.total"> — {{ progress.done || 0 }} / {{ progress.total }}</span>
+      <div v-if="running && progress" class="doctor-progress card">
+        <NProgress
+          type="line"
+          :percentage="
+            progress.total
+              ? Math.min(100, Math.round(((progress.done || 0) / progress.total) * 100))
+              : 0
+          "
+          :height="8"
+          processing
+        />
+        <div class="doctor-progress-meta">
+          {{ progress.title || t('doctor.run') }}
+          <span v-if="progress.total"> — {{ progress.done || 0 }} / {{ progress.total }}</span>
+        </div>
       </div>
-    </div>
-    <NSpin :show="running || fixing">
-      <template v-if="report">
-        <div class="summary card">
-          <div class="sum-item">
-            <div class="sum-num pass-ink">{{ report.summary.pass }}</div>
-            <div class="sum-label">{{ t('doctor.pass') }}</div>
+      <NSpin :show="(running || fixing) && !!report" :stroke-width="0">
+        <ListSkeleton v-if="(running || fixing) && !report" :rows="6" variant="card" />
+        <template v-else-if="report">
+          <div class="summary card">
+            <div class="sum-item">
+              <div class="sum-num pass-ink">{{ report.summary.pass }}</div>
+              <div class="sum-label">{{ t('doctor.pass') }}</div>
+            </div>
+            <div class="sum-item">
+              <div class="sum-num warn-ink">{{ report.summary.warn }}</div>
+              <div class="sum-label">{{ t('doctor.warn') }}</div>
+            </div>
+            <div class="sum-item">
+              <div class="sum-num fail-ink">{{ report.summary.fail }}</div>
+              <div class="sum-label">{{ t('doctor.fail') }}</div>
+            </div>
+            <div class="sum-item">
+              <div class="sum-num">{{ (report.durationMs / 1000).toFixed(1) }}s</div>
+              <div class="sum-label">{{ t('doctor.duration') }}</div>
+            </div>
           </div>
-          <div class="sum-item">
-            <div class="sum-num warn-ink">{{ report.summary.warn }}</div>
-            <div class="sum-label">{{ t('doctor.warn') }}</div>
-          </div>
-          <div class="sum-item">
-            <div class="sum-num fail-ink">{{ report.summary.fail }}</div>
-            <div class="sum-label">{{ t('doctor.fail') }}</div>
-          </div>
-          <div class="sum-item">
-            <div class="sum-num">{{ (report.durationMs / 1000).toFixed(1) }}s</div>
-            <div class="sum-label">{{ t('doctor.duration') }}</div>
-          </div>
-        </div>
 
-        <div class="grid checks">
-          <article v-for="check in report.checks" :key="check.id" class="card check">
-            <div class="check-top">
-              <div class="check-icon" :class="check.severity">
-                <NIcon :size="20" :component="iconFor(check.severity)" />
-              </div>
-              <div style="flex:1">
-                <div class="check-title">{{ check.title }}</div>
-                <div class="check-group">
-                  <NTag size="tiny" round>{{ check.group }}</NTag>
-                  <span class="chip" :class="toneFor(check.severity)">{{ check.severity }}</span>
+          <div class="grid checks">
+            <article v-for="check in report.checks" :key="check.id" class="card check">
+              <div class="check-top">
+                <div class="check-icon" :class="check.severity">
+                  <NIcon :size="20" :component="iconFor(check.severity)" />
                 </div>
+                <div class="check-main">
+                  <div class="check-title">{{ check.title }}</div>
+                  <div class="check-group">
+                    <NTag size="tiny" round>{{ groupLabel(check.group) }}</NTag>
+                    <span class="chip" :class="toneFor(check.severity)">{{
+                      sevLabel(check.severity)
+                    }}</span>
+                  </div>
+                </div>
+                <NButton
+                  v-if="check.fixable && check.fixId"
+                  size="tiny"
+                  type="primary"
+                  secondary
+                  :disabled="fixing || running"
+                  @click="fix(check)"
+                >
+                  <template #icon><NIcon :component="ConstructOutline" /></template>
+                  {{ t('doctor.fix') }}
+                </NButton>
               </div>
-              <NButton
-                v-if="check.fixable && check.fixId"
-                size="tiny"
-                type="primary"
-                secondary
-                @click="fix(check)"
-              >
-                <template #icon><NIcon :component="ConstructOutline" /></template>
-                {{ t('doctor.fix') }}
-              </NButton>
-            </div>
-            <div class="check-detail mono">{{ check.detail }}</div>
-            <div v-if="check.suggestion" class="check-fix">
-              <NIcon :size="14" :component="MedkitOutline" />
-              {{ check.suggestion }}
-            </div>
-          </article>
-        </div>
-      </template>
-      <NEmpty v-else :description="t('doctor.empty')" class="empty">
-        <template #icon>
-          <NIcon :size="48" :component="MedkitOutline" class="medkit-icon" />
+              <div class="check-detail mono">{{ check.detail }}</div>
+              <div v-if="check.suggestion" class="check-fix">
+                <NIcon :size="14" :component="MedkitOutline" />
+                {{ check.suggestion }}
+              </div>
+            </article>
+          </div>
         </template>
-      </NEmpty>
-    </NSpin>
+        <NEmpty v-else :description="t('doctor.empty')" class="empty">
+          <template #icon>
+            <NIcon :size="48" :component="MedkitOutline" class="medkit-icon" />
+          </template>
+        </NEmpty>
+      </NSpin>
     </div>
   </div>
 </template>
 
 <style lang="scss" scoped>
 @use '@/styles/variables.scss' as *;
-.summary { display: grid; grid-template-columns: repeat(4, 1fr); padding: 20px; margin-bottom: 16px; text-align: center; }
-.doctor-progress { padding: 12px 16px; margin-bottom: 12px; }
-.doctor-progress-meta { margin-top: 6px; font-size: 12px; color: #6b7280; }
-.sum-num { font-size: 30px; font-weight: 800; letter-spacing: -0.03em; }
-.sum-label { margin-top: 4px; font-size: 12.5px; color: $color-text-muted; }
-.checks { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
-.check { padding: 18px; }
-.check-top { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 10px; }
-.check-icon {
-  width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center;
-  &.pass { background: rgba(16, 185, 129, 0.14); color: $color-success; }
-  &.warn, &.info { background: rgba(245, 158, 11, 0.16); color: $color-warning; }
-  &.fail { background: rgba(239, 68, 68, 0.12); color: $color-danger; }
+.summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  padding: 20px;
+  margin-bottom: 16px;
+  text-align: center;
 }
-.check-title { font-size: 15px; font-weight: 700; }
-.check-group { display: flex; gap: 6px; margin-top: 6px; align-items: center; }
-.check-detail { font-size: 12.5px; color: $color-text-secondary; background: $color-surface-2; border-radius: 10px; padding: 10px 12px; line-height: 1.55; word-break: break-all; }
-.check-fix { margin-top: 10px; display: flex; gap: 6px; align-items: flex-start; font-size: 12.5px; color: $color-primary; line-height: 1.5; }
-.pass-ink { color: $color-success; }
-.warn-ink { color: $color-warning; }
-.fail-ink { color: $color-danger; }
-.medkit-icon { color: $color-primary-2; }
-.empty { padding: 72px 0; }
+.doctor-progress {
+  padding: 12px 16px;
+  margin-bottom: 12px;
+}
+.doctor-progress-meta {
+  margin-top: 6px;
+  font-size: 12px;
+  color: $color-text-muted-ink;
+}
+.sum-num {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+.sum-label {
+  margin-top: 4px;
+  font-size: 12.5px;
+  color: $color-text-muted-ink;
+}
+.checks {
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  grid-auto-rows: 1fr;
+}
+.check {
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+}
+.check-top {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 10px;
+}
+.check-main {
+  flex: 1;
+  min-width: 0;
+}
+.check-top > .n-button {
+  flex-shrink: 0;
+}
+.check-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  &.pass {
+    background: rgba($color-success, 0.14);
+    color: $color-success;
+  }
+  &.warn,
+  &.info {
+    background: rgba($color-warning, 0.16);
+    color: $color-warning;
+  }
+  &.fail {
+    background: rgba($color-danger, 0.12);
+    color: $color-danger;
+  }
+}
+.check-title {
+  font-size: 15px;
+  font-weight: 700;
+}
+.check-group {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  align-items: center;
+}
+.check-detail {
+  font-size: 12.5px;
+  color: $color-text-secondary;
+  background: $color-surface-2;
+  border-radius: 10px;
+  padding: 10px 12px;
+  line-height: 1.55;
+  word-break: break-all;
+  margin-top: auto;
+}
+.check-fix {
+  margin-top: 10px;
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  font-size: 12.5px;
+  color: $color-primary;
+  line-height: 1.5;
+}
+.pass-ink {
+  color: $color-success;
+}
+.warn-ink {
+  color: $color-warning;
+}
+.fail-ink {
+  color: $color-danger;
+}
+.medkit-icon {
+  color: $color-primary-2;
+}
+.empty {
+  padding: 64px 0;
+}
 </style>

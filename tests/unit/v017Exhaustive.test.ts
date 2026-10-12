@@ -1,18 +1,26 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { join } from 'path'
 import { readFileSync } from 'fs'
 
-const readSrc = (rel: string): string =>
-  readFileSync(join(__dirname, '..', '..', rel), 'utf-8')
+const readSrc = (rel: string): string => readFileSync(join(__dirname, '..', '..', rel), 'utf-8')
 
 // ============ Security comprehensive tests ============
 describe('security: URL safety exhaustive', () => {
   it('blocks dangerous schemes', async () => {
     const { isSafeExternalUrl } = await import('@main/services/security')
     const bad = [
-      'file:///etc/passwd', 'ftp://x', 'javascript:alert(1)', 'data:text/html,<script>',
-      'vbscript:msgbox', 'chrome://settings', 'res://x', 'blob:x',
-      'ws://x', 'wss://x', 'jar:', 'view-source:'
+      'file:///etc/passwd',
+      'ftp://x',
+      'javascript:alert(1)',
+      'data:text/html,<script>',
+      'vbscript:msgbox',
+      'chrome://settings',
+      'res://x',
+      'blob:x',
+      'ws://x',
+      'wss://x',
+      'jar:',
+      'view-source:'
     ]
     for (const u of bad) {
       expect(isSafeExternalUrl(u), u).toBe(false)
@@ -22,8 +30,11 @@ describe('security: URL safety exhaustive', () => {
   it('allows http and https', async () => {
     const { isSafeExternalUrl } = await import('@main/services/security')
     const good = [
-      'https://example.com', 'http://example.com', 'https://a.b.c.d/path?query=1#frag',
-      'https://127.0.0.1:8188', 'http://localhost:3000'
+      'https://example.com',
+      'http://example.com',
+      'https://a.b.c.d/path?query=1#frag',
+      'https://127.0.0.1:8188',
+      'http://localhost:3000'
     ]
     for (const u of good) {
       expect(isSafeExternalUrl(u), u).toBe(true)
@@ -122,7 +133,17 @@ describe('installer: assertSafeGitUrl exhaustive', () => {
 describe('installer: assertSafeBranch exhaustive', () => {
   it('allows valid branches', async () => {
     const { assertSafeBranch } = await import('@main/services/installer')
-    const good = ['main', 'master', 'dev', 'feature/foo', 'release/1.0', 'v1.0.0', 'a.b.c', 'user-branch', '']
+    const good = [
+      'main',
+      'master',
+      'dev',
+      'feature/foo',
+      'release/1.0',
+      'v1.0.0',
+      'a.b.c',
+      'user-branch',
+      ''
+    ]
     for (const b of good) {
       expect(assertSafeBranch(b), b).toBe(b)
     }
@@ -130,7 +151,19 @@ describe('installer: assertSafeBranch exhaustive', () => {
 
   it('blocks dangerous branches', async () => {
     const { assertSafeBranch } = await import('@main/services/installer')
-    const bad = ['--upload-pack', '-x', '../evil', 'a b', 'a;b', 'a|b', 'a&b', 'a`b', 'a$b', '..', '...']
+    const bad = [
+      '--upload-pack',
+      '-x',
+      '../evil',
+      'a b',
+      'a;b',
+      'a|b',
+      'a&b',
+      'a`b',
+      'a$b',
+      '..',
+      '...'
+    ]
     for (const b of bad) {
       expect(() => assertSafeBranch(b), b).toThrow()
     }
@@ -141,7 +174,18 @@ describe('installer: assertSafeBranch exhaustive', () => {
 describe('format: formatBytes', () => {
   it('formats various sizes', async () => {
     const { formatBytes } = await import('@/utils/format')
-    const sizes = [0, 1, 512, 1023, 1024, 1536, 1024 * 1024, 1024 * 1024 * 1.5, 1024 ** 3, 1024 ** 4]
+    const sizes = [
+      0,
+      1,
+      512,
+      1023,
+      1024,
+      1536,
+      1024 * 1024,
+      1024 * 1024 * 1.5,
+      1024 ** 3,
+      1024 ** 4
+    ]
     for (const s of sizes) {
       const result = formatBytes(s)
       expect(typeof result).toBe('string')
@@ -154,8 +198,17 @@ describe('format: clampPercent exhaustive', () => {
   it('clamps various values', async () => {
     const { clampPercent } = await import('@/utils/format')
     const cases: Array<[number, number | 'edge']> = [
-      [-100, 0], [-1, 0], [0, 0], [1, 1], [50, 50], [99, 99],
-      [100, 100], [101, 100], [200, 100], [1000, 100], [NaN, 0]
+      [-100, 0],
+      [-1, 0],
+      [0, 0],
+      [1, 1],
+      [50, 50],
+      [99, 99],
+      [100, 100],
+      [101, 100],
+      [200, 100],
+      [1000, 100],
+      [NaN, 0]
     ]
     for (const [input, expected] of cases) {
       const result = clampPercent(input)
@@ -215,8 +268,13 @@ describe('proxy: proxyEnv exhaustive', () => {
   it('sets all proxy vars when enabled with auth', async () => {
     const { proxyEnv } = await import('@main/services/proxy')
     const env = proxyEnv({
-      enabled: true, protocol: 'socks5', host: 'p.example.com', port: 1080,
-      username: 'user', password: 'pass', bypass: 'localhost,127.0.0.1'
+      enabled: true,
+      protocol: 'socks5',
+      host: 'p.example.com',
+      port: 1080,
+      username: 'user',
+      password: 'pass',
+      bypass: 'localhost,127.0.0.1'
     })
     expect(env.ALL_PROXY || env.HTTPS_PROXY || env.HTTP_PROXY).toBeTruthy()
     expect(env.NO_PROXY).toContain('localhost')
@@ -226,8 +284,13 @@ describe('proxy: proxyEnv exhaustive', () => {
   it('returns empty proxy vars when disabled', async () => {
     const { proxyEnv } = await import('@main/services/proxy')
     const env = proxyEnv({
-      enabled: false, protocol: 'http', host: 'x', port: 1,
-      username: 'u', password: 'p', bypass: ''
+      enabled: false,
+      protocol: 'http',
+      host: 'x',
+      port: 1,
+      username: 'u',
+      password: 'p',
+      bypass: ''
     })
     // No HTTP_PROXY/HTTPS_PROXY/ALL_PROXY when disabled (other env vars like
     // NPM_CONFIG_NOPROXY may still be set)
@@ -241,16 +304,29 @@ describe('proxy: proxyEnv exhaustive', () => {
 describe('zipWrite', () => {
   it('exports createWorkflowZip', async () => {
     const mod = await import('@main/services/zipWrite')
-    expect(typeof mod.createWorkflowZip === 'function' || typeof (mod as Record<string, unknown>).default === 'function').toBe(true)
+    expect(
+      typeof mod.createWorkflowZip === 'function' ||
+        typeof (mod as Record<string, unknown>).default === 'function'
+    ).toBe(true)
   })
 })
 
 // ============ Workflow convert buildIterationPrompt ============
 describe('workflowConvert: buildIterationPrompt', () => {
-  it('is exported or module has it', async () => {
-    const mod = await import('@main/services/workflowConvert')
-    const keys = Object.keys(mod)
-    expect(keys.length).toBeGreaterThan(0)
+  it('applies increment seeds against the base seed (real call)', async () => {
+    const { buildIterationPrompt } = await import('@main/services/workflowConvert')
+    const graph = { '3': { class_type: 'KSampler', inputs: { seed: 1, steps: 20 } } }
+    const { prompt, seed } = buildIterationPrompt(graph, {
+      iteration: 2,
+      seedMode: 'increment',
+      baseSeed: 1000
+    })
+    expect(seed).toBe(1002)
+    expect((prompt as Record<string, { inputs: Record<string, unknown> }>)['3'].inputs.seed).toBe(
+      1002
+    )
+    // 原对象不得被就地修改
+    expect(graph['3'].inputs.seed).toBe(1)
   })
 })
 
@@ -436,7 +512,7 @@ describe('source quality: i18n key uniqueness', () => {
   it('zh-CN has no duplicate top-level keys', () => {
     const src = readSrc('src/renderer/src/i18n/locales/zh-CN.ts')
     // Extract top-level keys (2-space indent, ending with colon)
-    const keys = [...src.matchAll(/^  ([a-zA-Z]+):\s*\{/gm)].map((m) => m[1])
+    const keys = [...src.matchAll(/^ {2}([a-zA-Z]+):\s*\{/gm)].map((m) => m[1])
     const seen = new Set<string>()
     for (const k of keys) {
       expect(seen.has(k), `duplicate key: ${k}`).toBe(false)
@@ -447,7 +523,7 @@ describe('source quality: i18n key uniqueness', () => {
 
   it('en-US has no duplicate top-level keys', () => {
     const src = readSrc('src/renderer/src/i18n/locales/en-US.ts')
-    const keys = [...src.matchAll(/^  ([a-zA-Z]+):\s*\{/gm)].map((m) => m[1])
+    const keys = [...src.matchAll(/^ {2}([a-zA-Z]+):\s*\{/gm)].map((m) => m[1])
     const seen = new Set<string>()
     for (const k of keys) {
       expect(seen.has(k), `duplicate key: ${k}`).toBe(false)
@@ -475,9 +551,9 @@ describe('source quality: test files exist for all new features', () => {
 
 // ============ Readme consistency ============
 describe('README consistency', () => {
-  it('README mentions v0.1.7', () => {
-    const src = readSrc('README.md')
-    expect(src).toContain('0.1.7')
+  it('README mentions v0.1.8', () => {
+    const src = readFileSync(join(__dirname, '../../README.md'), 'utf-8')
+    expect(src).toContain('0.1.8')
   })
 
   it('README does not claim 257 tests', () => {
@@ -492,7 +568,7 @@ describe('package.json', () => {
   it('has correct metadata', () => {
     const pkg = JSON.parse(readSrc('package.json'))
     expect(pkg.name).toBe('comfy-pilot')
-    expect(pkg.version).toBe('0.1.7')
+    expect(pkg.version).toBe('0.1.8')
     expect(pkg.license).toBe('MIT')
     expect(pkg.author).toBe('ThzxxArt')
     expect(pkg.main).toBeTruthy()

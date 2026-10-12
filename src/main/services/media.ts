@@ -2,7 +2,17 @@ import { existsSync, mkdirSync, writeFileSync, readFileSync, renameSync } from '
 import { join, basename, dirname, extname, resolve } from 'path'
 import { createHash } from 'crypto'
 import { execFile } from 'child_process'
-import { cacheDir, loadSettings, listModels, upsertModel, loadInstanceConfigs, deleteModel as dbDeleteModel, workflowLibraryDir, listOutputAssetsAll, mergeUpsertOutputAsset } from './db'
+import {
+  cacheDir,
+  loadSettings,
+  listModels,
+  upsertModel,
+  loadInstanceConfigs,
+  deleteModel as dbDeleteModel,
+  workflowLibraryDir,
+  listOutputAssetsAll,
+  mergeUpsertOutputAsset
+} from './db'
 import { assertSafeRelativeFilename, isSafeExternalUrl, isPathInside } from './security'
 import type { ModelRecord } from '@shared/types'
 
@@ -147,9 +157,7 @@ export class ThumbnailService {
       const maxDim = 320
       const scale = Math.min(1, maxDim / Math.max(size.width || 1, size.height || 1))
       const resized =
-        scale < 1
-          ? img.resize({ width: Math.max(1, Math.round(size.width * scale)) })
-          : img
+        scale < 1 ? img.resize({ width: Math.max(1, Math.round(size.width * scale)) }) : img
       writeFileSync(out, resized.toPNG())
       this.persistOutputThumb(assetPath, out)
       return out
@@ -296,7 +304,9 @@ export class RenameService {
       // Prevent path escape via pattern content + Win32 reserved names
       let safeBase: string
       try {
-        safeBase = assertSafeRelativeFilename(basename(newName.replace(/[\\/]/g, '_')).slice(0, 120))
+        safeBase = assertSafeRelativeFilename(
+          basename(newName.replace(/[\\/]/g, '_')).slice(0, 120)
+        )
       } catch (e) {
         results.push({
           from: rec.path,

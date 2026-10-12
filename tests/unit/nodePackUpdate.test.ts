@@ -7,7 +7,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { EventEmitter } from 'events'
 
 const h = vi.hoisted(() => {
-  type Dirent = { name: string; isDirectory: () => boolean }
   const state = {
     dirs: new Map<string, string[]>(),
     files: new Map<string, string>(),
@@ -68,7 +67,15 @@ vi.mock('../../src/main/services/db', () => ({
     securityLevel: 'normal',
     networkMode: 'public',
     pipIndex: '',
-    proxy: { enabled: false, protocol: 'http', host: '', port: 7890, bypass: '', username: '', password: '' }
+    proxy: {
+      enabled: false,
+      protocol: 'http',
+      host: '',
+      port: 7890,
+      bypass: '',
+      username: '',
+      password: ''
+    }
   })),
   loadInstanceConfigs: vi.fn(() => h.state.instances),
   listNodePacks: vi.fn(() => h.state.nodePacks),
@@ -111,7 +118,9 @@ vi.mock('../../src/main/services/bootstrap', () => ({
 }))
 
 vi.mock('../../src/main/services/instance', () => ({
-  resolveRuntimesPythonSync: vi.fn(() => null)
+  resolveRuntimesPythonSync: vi.fn(() => null),
+  // Mirrors the shared resolver contract used by nodePack's pip path.
+  resolveInstancePythonPath: (config: { pythonPath?: string }) => config.pythonPath || 'python'
 }))
 
 vi.mock('../../src/main/services/registry', () => ({
@@ -124,7 +133,15 @@ vi.mock('../../src/main/services/registry', () => ({
     scanned: 0,
     clientFiltered: false
   })),
-  toPageResult: vi.fn(() => ({ items: [], total: 0, page: 1, pageSize: 50, totalPages: 0, scanned: 0, clientFiltered: false })),
+  toPageResult: vi.fn(() => ({
+    items: [],
+    total: 0,
+    page: 1,
+    pageSize: 50,
+    totalPages: 0,
+    scanned: 0,
+    clientFiltered: false
+  })),
   mapRegistryPack: vi.fn((n: Record<string, unknown>) => n),
   matchesQuery: vi.fn(() => true),
   fetchRegistryPage: vi.fn(async () => ({ nodes: [], total: 0, page: 1, totalPages: 0, limit: 50 }))
@@ -204,7 +221,10 @@ function seedPack(opts: { name: string; nested?: boolean; withGit?: boolean }): 
   } else {
     h.state.dirs.set(shell, ['__init__.py'])
   }
-  h.state.files.set(join(packDir, '__init__.py'), `NODE_CLASS_MAPPINGS = {"${opts.name}Node": None}\n`)
+  h.state.files.set(
+    join(packDir, '__init__.py'),
+    `NODE_CLASS_MAPPINGS = {"${opts.name}Node": None}\n`
+  )
   h.state.files.set(join(packDir, 'pyproject.toml'), `name = "${opts.name}"\nversion = "1.0.0"\n`)
   if (opts.withGit) {
     h.state.isDir.add(join(packDir, '.git'))
@@ -265,7 +285,9 @@ describe('resolveGitBinary', () => {
 
   it('prefers PATH git over portable MinGit (never shadow system git)', async () => {
     const bootstrap = await import('../../src/main/services/bootstrap')
-    ;(bootstrap.findInRuntimes as ReturnType<typeof vi.fn>).mockReturnValue('C:/runtimes/cmd/git.exe')
+    ;(bootstrap.findInRuntimes as ReturnType<typeof vi.fn>).mockReturnValue(
+      'C:/runtimes/cmd/git.exe'
+    )
     // Sync hint always returns 'git' — actual probing happens in resolveGitBinaryAsync.
     expect(resolveGitBinary()).toBe('git')
   })
@@ -340,7 +362,9 @@ describe('NodePackService.update guards', () => {
         nodeList: []
       }
     ]
-    await expect(nodePackService.update('PackA', undefined, 'inst-1')).rejects.toThrow(/not updatable/i)
+    await expect(nodePackService.update('PackA', undefined, 'inst-1')).rejects.toThrow(
+      /not updatable/i
+    )
   })
 
   it('throws not found for unknown pack names', async () => {

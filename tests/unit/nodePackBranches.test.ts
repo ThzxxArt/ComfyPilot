@@ -5,7 +5,7 @@
  * snapshot persistence failures, non-Error throw messages, and install without
  * instanceId (the `|| 'default'` side of every emit payload).
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 
 const h = vi.hoisted(() => {
   const state = {
@@ -21,7 +21,15 @@ const h = vi.hoisted(() => {
       securityLevel: 'normal',
       networkMode: 'public',
       pipIndex: '',
-      proxy: { enabled: false, protocol: 'http', host: '', port: 7890, bypass: '', username: '', password: '' }
+      proxy: {
+        enabled: false,
+        protocol: 'http',
+        host: '',
+        port: 7890,
+        bypass: '',
+        username: '',
+        password: ''
+      }
     } as Record<string, unknown>,
     insertSnapshotThrows: false,
     writeFileSyncThrows: false,
@@ -29,52 +37,61 @@ const h = vi.hoisted(() => {
     execSyncErr: null as Error | null
   }
 
+  /** All virtual keys use forward slashes — normalize before map lookups. */
+  function norm(p: string): string {
+    return String(p).replace(/\\/g, '/')
+  }
+
   function detachFromParent(p: string): void {
-    const parts = p.split(/[\\/]/)
-    const base = parts[parts.length - 1]
-    const parent = parts.slice(0, -1).join('\\')
+    const s = norm(p)
+    const idx = s.lastIndexOf('/')
+    if (idx < 0) return
+    const base = s.slice(idx + 1)
+    const parent = s.slice(0, idx)
     const children = state.dirs.get(parent)
     if (children) {
-      const idx = children.indexOf(base)
-      if (idx >= 0) children.splice(idx, 1)
+      const found = children.indexOf(base)
+      if (found >= 0) children.splice(found, 1)
     }
   }
 
   function rmPath(p: string): void {
+    const key = norm(p)
     // recurse into children first
-    const children = state.dirs.get(p)
+    const children = state.dirs.get(key)
     if (children) {
       for (const c of [...children]) {
-        const childPath = p.endsWith('\\') || p.endsWith('/') ? p + c : p + '\\' + c
-        rmPath(childPath)
+        rmPath(key + '/' + c)
       }
     }
-    state.dirs.delete(p)
-    state.files.delete(p)
-    state.isDir.delete(p)
-    state.exists.delete(p)
-    detachFromParent(p)
+    state.dirs.delete(key)
+    state.files.delete(key)
+    state.isDir.delete(key)
+    state.exists.delete(key)
+    detachFromParent(key)
   }
 
   function renamePath(from: string, to: string): void {
     if (state.renameFail) throw new Error('rename failed')
+    const f = norm(from)
+    const t = norm(to)
     // shallow move: copy entries then remove source
-    const children = state.dirs.get(from)
+    const children = state.dirs.get(f)
     if (children) {
-      state.dirs.set(to, [...children])
-      state.isDir.add(to)
-      state.exists.add(to)
+      state.dirs.set(t, [...children])
+      state.isDir.add(t)
+      state.exists.add(t)
     }
     // collect matching file keys FIRST — mutating the Map while iterating it
     // visits the newly-inserted keys and loops forever.
     const moves: Array<[string, string]> = []
     for (const [k, v] of state.files) {
-      if (k === from || k.startsWith(from + '\\') || k.startsWith(from + '/')) {
-        moves.push([to + k.slice(from.length), v])
+      if (k === f || k.startsWith(f + '/')) {
+        moves.push([t + k.slice(f.length), v])
       }
     }
     for (const [k, v] of moves) state.files.set(k, v)
-    rmPath(from)
+    rmPath(f)
   }
 
   return { state, rmPath, renamePath }
@@ -183,11 +200,16 @@ vi.mock('../../src/main/services/installer', () => ({
 
 vi.mock('../../src/main/services/bootstrap', () => ({
   findInRuntimes: () => null,
-  bootstrapService: { ensure: vi.fn(async () => ({ pythonPath: 'python', components: [] })), cancelAll: vi.fn() }
+  bootstrapService: {
+    ensure: vi.fn(async () => ({ pythonPath: 'python', components: [] })),
+    cancelAll: vi.fn()
+  }
 }))
 
 vi.mock('../../src/main/services/instance', () => ({
-  resolveRuntimesPythonSync: () => null
+  resolveRuntimesPythonSync: () => null,
+  resolveInstancePythonPath: (config: { venvPath?: string; pythonPath?: string }) =>
+    config.pythonPath || 'python'
 }))
 
 vi.mock('../../src/main/services/registry', () => ({
@@ -304,7 +326,11 @@ function seedRoot(): string {
   return root
 }
 
-function seedPackDir(name: string, files: Record<string, string> = {}, nestedUnder?: string): string {
+function seedPackDir(
+  name: string,
+  files: Record<string, string> = {},
+  nestedUnder?: string
+): string {
   const root = seedRoot()
   const shell = nestedUnder ? join(root, nestedUnder) : join(root, name)
   const packDir = nestedUnder ? join(shell, name) : shell
@@ -435,17 +461,28 @@ describe('managerChannelList field fallbacks', () => {
   it('uses title as id/name when id and name are missing; skips empty ids and dupes', async () => {
     const { session } = await import('electron')
     const fetchMock = session.defaultSession.fetch as ReturnType<typeof vi.fn>
-    fetchMock.mockImplementation(async () =>
-      new Response(
-        JSON.stringify([
-          { title: 'OnlyTitle', description: 'd' },
-          { title: 'OnlyTitle', description: 'dup' },
-          { name: 'OnlyName', description: 'd' },
-          { id: '', title: '', name: '' },
-          { id: 'HasId', name: 'HasName', title: 'HasTitle', version: '1', tags: ['a'], downloads: 5, repository: 'r', author: 'au', description: 'dd' }
-        ]),
-        { status: 200 }
-      )
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify([
+            { title: 'OnlyTitle', description: 'd' },
+            { title: 'OnlyTitle', description: 'dup' },
+            { name: 'OnlyName', description: 'd' },
+            { id: '', title: '', name: '' },
+            {
+              id: 'HasId',
+              name: 'HasName',
+              title: 'HasTitle',
+              version: '1',
+              tags: ['a'],
+              downloads: 5,
+              repository: 'r',
+              author: 'au',
+              description: 'dd'
+            }
+          ]),
+          { status: 200 }
+        )
     )
     const list = await nodePackService.managerChannelList()
     const ids = list.map((x) => x.id)
@@ -729,7 +766,9 @@ describe('install without instanceId (emit fallbacks)', () => {
     nodePackService.removeAllListeners()
     const opEvents = events.filter((e) => e.__op)
     expect(opEvents.length).toBeGreaterThan(0)
-    expect(opEvents.some((e) => (e.__op as { instanceId?: string }).instanceId === 'default')).toBe(true)
+    expect(opEvents.some((e) => (e.__op as { instanceId?: string }).instanceId === 'default')).toBe(
+      true
+    )
     delete process.env.COMFYUI_PATH
   })
 
@@ -834,19 +873,17 @@ describe('smokeTest nodeList iteration', () => {
     ]
     const { execFile } = await import('child_process')
     const execMock = execFile as ReturnType<typeof vi.fn>
-    execMock.mockImplementation(
-      (_c: string, _a: string[], _o: unknown, cb?: unknown) => {
-        if (typeof cb === 'function') (cb as (e: null, o: string, s: string) => void)(null, 'ok', '')
-        return { pid: 1 }
-      }
-    )
+    execMock.mockImplementation((_c: string, _a: string[], _o: unknown, cb?: unknown) => {
+      if (typeof cb === 'function') (cb as (e: null, o: string, s: string) => void)(null, 'ok', '')
+      return { pid: 1 }
+    })
     const issues = await nodePackService.smokeTest('ListNodes', 'inst-1')
     expect(issues).toEqual([])
   })
 })
 
 describe('toggle name.disabled edge', () => {
-  it('enabling a name.disabled pack when the clean name already exists is a no-op rename', () => {
+  it('throws ENABLE_CONFLICT when enabling a name.disabled pack and the clean name already exists', () => {
     reset()
     const root = seedRoot()
     process.env.COMFYUI_PATH = 'C:/fake/ComfyUI'
@@ -861,11 +898,11 @@ describe('toggle name.disabled edge', () => {
     const packs = nodePackService.list()
     const disabled = packs.find((p) => p.status === 'disabled')
     expect(disabled).toBeTruthy()
-    // toggle by the disabled folder's listed name
-    const out = nodePackService.toggle(disabled!.name, true)
-    expect(out).toBeTruthy()
-    // the clean pack remains untouched
+    // toggle by the disabled folder's listed name — must refuse, not silently diverge.
+    expect(() => nodePackService.toggle(disabled!.name, true)).toThrow(/already exists/)
+    // both directories remain untouched
     expect(h.state.dirs.has(cleanDir)).toBe(true)
+    expect(h.state.dirs.has(disabledDir)).toBe(true)
     delete process.env.COMFYUI_PATH
   })
 })
@@ -965,7 +1002,9 @@ describe('git pack update hits afterInstall fallbacks', () => {
     nodePackService.removeAllListeners()
     expect(events.length).toBeGreaterThan(0)
     const opEvents = events.filter((e) => e.__op)
-    expect(opEvents.some((e) => (e.__op as { instanceId?: string }).instanceId === 'default')).toBe(true)
+    expect(opEvents.some((e) => (e.__op as { instanceId?: string }).instanceId === 'default')).toBe(
+      true
+    )
     delete process.env.COMFYUI_PATH
   })
 
@@ -988,20 +1027,19 @@ describe('git pack update hits afterInstall fallbacks', () => {
     ]
     const cp = await import('child_process')
     const execMock = cp.execFile as ReturnType<typeof vi.fn>
-    execMock.mockImplementation(
-      (_c: string, _a: string[], _o: unknown, cb?: unknown) => {
-        if (typeof cb === 'function') (cb as (e: Error, o: string, s: string) => void)(new Error('pull failed'), '', '')
-        return { pid: 1 }
-      }
+    execMock.mockImplementation((_c: string, _a: string[], _o: unknown, cb?: unknown) => {
+      if (typeof cb === 'function')
+        (cb as (e: Error, o: string, s: string) => void)(new Error('pull failed'), '', '')
+      return { pid: 1 }
+    })
+    await expect(nodePackService.update('GitFail', undefined, 'inst-1')).rejects.toThrow(
+      'git pull failed'
     )
-    await expect(nodePackService.update('GitFail', undefined, 'inst-1')).rejects.toThrow('git pull failed')
     // restore
-    execMock.mockImplementation(
-      (_c: string, _a: string[], _o: unknown, cb?: unknown) => {
-        if (typeof cb === 'function') (cb as (e: null, o: string, s: string) => void)(null, 'ok', '')
-        return { pid: 1 }
-      }
-    )
+    execMock.mockImplementation((_c: string, _a: string[], _o: unknown, cb?: unknown) => {
+      if (typeof cb === 'function') (cb as (e: null, o: string, s: string) => void)(null, 'ok', '')
+      return { pid: 1 }
+    })
   })
 })
 
@@ -1027,7 +1065,6 @@ describe('non-Error throw message fallback', () => {
     const { session } = await import('electron')
     const fetchMock = session.defaultSession.fetch as ReturnType<typeof vi.fn>
     fetchMock.mockImplementation(async () => {
-      // eslint-disable-next-line no-throw-literal
       throw 'string-error-happened'
     })
     try {

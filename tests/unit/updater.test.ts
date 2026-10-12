@@ -19,7 +19,15 @@ vi.mock('../../src/main/services/db', () => ({
     pipIndex: '',
     torchIndexMirror: '',
     githubEndpoint: '',
-    proxy: { enabled: false, protocol: 'http', host: '', port: 7890, bypass: '', username: '', password: '' }
+    proxy: {
+      enabled: false,
+      protocol: 'http',
+      host: '',
+      port: 7890,
+      bypass: '',
+      username: '',
+      password: ''
+    }
   })),
   loadInstanceConfigs: vi.fn(() => [
     {

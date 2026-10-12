@@ -19,9 +19,7 @@ function walk(dir, acc) {
 
 const files = walk(path.join(__dirname, '../src/renderer/src'), [])
 // Shared constants feed the UI — Chinese data there leaks via bindings.
-const extra = [
-  path.join(__dirname, '../src/shared/constants.ts')
-].filter((p) => fs.existsSync(p))
+const extra = [path.join(__dirname, '../src/shared/constants.ts')].filter((p) => fs.existsSync(p))
 let bad = 0
 for (const f of [...files, ...extra]) {
   const lines = fs.readFileSync(f, 'utf8').split(/\r?\n/)

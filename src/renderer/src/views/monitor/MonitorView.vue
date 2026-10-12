@@ -2,8 +2,19 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { PulseOutline, HardwareChipOutline } from '@vicons/ionicons5'
-import { NButton, NSpace, NProgress, NEmpty, NTag, NTabs, NTabPane, NScrollbar, useMessage } from 'naive-ui'
+import {
+  NButton,
+  NSpace,
+  NProgress,
+  NEmpty,
+  NTag,
+  NTabs,
+  NTabPane,
+  NScrollbar,
+  useMessage
+} from 'naive-ui'
 import StatCard from '@/components/StatCard.vue'
+import ListSkeleton from '@/components/ListSkeleton.vue'
 import { useAppStore } from '@/stores/app'
 import { ipc, onMonitorTick } from '@/composables/useIpc'
 import { clampPercent, formatBytes, formatPercent } from '@/utils/format'
@@ -14,6 +25,7 @@ const store = useAppStore()
 const { t } = useI18n()
 const message = useMessage()
 const queue = ref<QueueSnapshot | null>(null)
+const queueError = ref(false)
 const history = ref<number[]>([])
 
 // monitor.history — task history for the active instance
@@ -35,12 +47,22 @@ async function refreshQueue(): Promise<void> {
       // Switching to an instance without a URL must not show the previous
       // instance's queue.
       queue.value = null
+      queueError.value = false
+      return
+    }
+    if (inst.status !== 'running') {
+      // Stopped/starting: no queue endpoint to poll — show the empty state,
+      // not a scary "load failed" banner on every 3s tick.
+      queue.value = null
+      queueError.value = false
       return
     }
     queue.value = await ipc('monitor.queue', inst.url)
+    queueError.value = false
   } catch {
     // Offline: clear stale data instead of leaving the old queue on screen.
     queue.value = null
+    queueError.value = true
   }
 }
 
@@ -51,12 +73,20 @@ async function refreshHistory(): Promise<void> {
     historySnapshot.value = null
     return
   }
+  if (inst.status !== 'running') {
+    // Same policy as the queue tab: no endpoint to poll, no error-toast spam.
+    historySnapshot.value = null
+    historyLoading.value = false
+    return
+  }
   historyLoading.value = true
   try {
     historySnapshot.value = await ipc('monitor.history', inst.url)
   } catch (err) {
     historySnapshot.value = null
-    message.error(t('monitor.historyLoadFailed', { error: err instanceof Error ? err.message : String(err) }))
+    message.error(
+      t('monitor.historyLoadFailed', { error: err instanceof Error ? err.message : String(err) })
+    )
   } finally {
     historyLoading.value = false
   }
@@ -130,122 +160,151 @@ onUnmounted(() => {
     </div>
 
     <div class="page-body">
-    <div class="grid stats">
-      <StatCard
-        :label="$t('monitor.cpuUsage')"
-        :value="formatPercent(store.system?.cpuUsage ?? 0, 1)"
-        :icon="PulseOutline"
-        tone="primary"
-        :hint="$t('monitor.cpuHint')"
-      />
-      <StatCard
-        :label="$t('monitor.memory')"
-        :value="formatBytes(store.system?.ramUsed || 0)"
-        :icon="HardwareChipOutline"
-        tone="success"
-        :hint="`/ ${formatBytes(store.system?.ramTotal || 0)}`"
-      />
-      <StatCard
-        :label="$t('monitor.diskFree')"
-        :value="formatBytes(store.system?.diskFree || 0)"
-        :icon="HardwareChipOutline"
-        tone="warning"
-        :hint="$t('monitor.diskTotalHint', { n: formatBytes(store.system?.diskTotal || 0) })"
-      />
-      <StatCard
-        :label="$t('monitor.queueTasks')"
-        :value="(queue?.running?.length || 0) + (queue?.pending?.length || 0)"
-        :icon="PulseOutline"
-        :hint="$t('monitor.queueHint', { running: queue?.running?.length || 0, pending: queue?.pending?.length || 0 })"
-      />
-    </div>
+      <div class="grid stats">
+        <StatCard
+          :label="$t('monitor.cpuUsage')"
+          :value="formatPercent(store.system?.cpuUsage ?? 0, 1)"
+          :icon="PulseOutline"
+          tone="primary"
+          :hint="$t('monitor.cpuHint')"
+        />
+        <StatCard
+          :label="$t('monitor.memory')"
+          :value="formatBytes(store.system?.ramUsed || 0)"
+          :icon="HardwareChipOutline"
+          tone="success"
+          :hint="`/ ${formatBytes(store.system?.ramTotal || 0)}`"
+        />
+        <StatCard
+          :label="$t('monitor.diskFree')"
+          :value="formatBytes(store.system?.diskFree || 0)"
+          :icon="HardwareChipOutline"
+          tone="warning"
+          :hint="$t('monitor.diskTotalHint', { n: formatBytes(store.system?.diskTotal || 0) })"
+        />
+        <StatCard
+          :label="$t('monitor.queueTasks')"
+          :value="(queue?.running?.length || 0) + (queue?.pending?.length || 0)"
+          :icon="PulseOutline"
+          :hint="
+            $t('monitor.queueHint', {
+              running: queue?.running?.length || 0,
+              pending: queue?.pending?.length || 0
+            })
+          "
+        />
+      </div>
 
-    <div class="grid lower">
-      <section class="card panel">
-        <div class="panel-title">{{ $t('monitor.cpuTrend') }}</div>
-        <div class="chart">
-          <div v-for="(v, i) in cpuHistory" :key="i" class="bar" :style="{ height: `${Math.max(4, v)}%` }" />
-        </div>
-      </section>
+      <div class="grid lower">
+        <section class="card panel">
+          <div class="panel-title">{{ $t('monitor.cpuTrend') }}</div>
+          <div class="chart">
+            <div
+              v-for="(v, i) in cpuHistory"
+              :key="i"
+              class="bar"
+              :style="{ height: `${Math.max(4, v)}%` }"
+            />
+          </div>
+        </section>
 
-      <section class="card panel">
-        <div class="panel-title">{{ $t('monitor.gpuTitle') }}</div>
-        <div v-if="store.system?.gpus?.length" class="gpu-list">
-          <div v-for="gpu in store.system.gpus" :key="gpu.index" class="gpu-item">
-            <div class="gpu-name">{{ gpu.model }}</div>
-            <div class="gpu-metrics">
-              <NProgress
-                type="line"
-                :percentage="pct(gpu.vramUsed, gpu.vramTotal)"
-                :height="10"
-                indicator-placement="inside"
-                :color="COLORS.primary"
-              />
-              <div class="gpu-sub">
-                VRAM {{ formatBytes(gpu.vramUsed) }} / {{ formatBytes(gpu.vramTotal) }}
-                <span v-if="gpu.utilization"> · GPU {{ formatPercent(gpu.utilization) }}</span>
-                <span v-if="gpu.temperature"> · {{ gpu.temperature }}°C</span>
+        <section class="card panel">
+          <div class="panel-title">{{ $t('monitor.gpuTitle') }}</div>
+          <div v-if="store.system?.gpus?.length" class="gpu-list">
+            <div v-for="gpu in store.system.gpus" :key="gpu.index" class="gpu-item">
+              <div class="gpu-name">{{ gpu.model }}</div>
+              <div class="gpu-metrics">
+                <NProgress
+                  type="line"
+                  :percentage="pct(gpu.vramUsed, gpu.vramTotal)"
+                  :height="10"
+                  indicator-placement="inside"
+                  :color="COLORS.primary"
+                />
+                <div class="gpu-sub">
+                  VRAM {{ formatBytes(gpu.vramUsed) }} / {{ formatBytes(gpu.vramTotal) }}
+                  <span v-if="gpu.utilization"> · GPU {{ formatPercent(gpu.utilization) }}</span>
+                  <span v-if="gpu.temperature"> · {{ gpu.temperature }}°C</span>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-        <NEmpty v-else :description="$t('monitor.noGpu')" />
-      </section>
-    </div>
+          <NEmpty v-else :description="$t('monitor.noGpu')" />
+        </section>
+      </div>
 
-    <section class="card panel queue-panel">
-      <NTabs v-model:value="queueTab" type="line" @update:value="(v: string) => { if (v === 'history') void refreshHistory() }">
-        <NTabPane name="queue" :tab="$t('monitor.tabQueue')">
-          <div class="panel-title">{{ $t('monitor.queueTitle') }}</div>
-          <div v-if="!queue || (!queue.running.length && !queue.pending.length)" class="queue-empty">
-            {{ $t('monitor.queueEmpty') }}
-          </div>
-          <div v-else class="queue-list">
-            <div v-for="r in queue.running" :key="r.promptId" class="queue-row">
-              <span class="chip chip-success">{{ $t('status.running') }}</span>
-              <span class="mono">{{ r.promptId }}</span>
+      <section class="card panel queue-panel">
+        <NTabs
+          v-model:value="queueTab"
+          type="line"
+          @update:value="
+            (v: string) => {
+              if (v === 'history') void refreshHistory()
+            }
+          "
+        >
+          <NTabPane name="queue" :tab="$t('monitor.tabQueue')">
+            <div class="panel-title">{{ $t('monitor.queueTitle') }}</div>
+            <ListSkeleton
+              v-if="!queue && !queueError && store.activeInstance?.status === 'running'"
+              :rows="3"
+            />
+            <div
+              v-else-if="!queue || (!queue.running.length && !queue.pending.length)"
+              class="queue-empty"
+            >
+              {{ queueError ? $t('monitor.queueLoadFailed') : $t('monitor.queueEmpty') }}
             </div>
-            <div v-for="p in queue.pending" :key="p.promptId" class="queue-row">
-              <span class="chip chip-warning">{{ $t('monitor.pending') }}</span>
-              <span class="mono">{{ p.promptId }}</span>
-            </div>
-          </div>
-        </NTabPane>
-        <NTabPane name="history" :tab="$t('monitor.tabHistory')">
-          <div class="panel-head">
-            <div class="panel-title">{{ $t('monitor.historyTitle') }}</div>
-            <NSpace :size="8" align="center">
-              <span v-if="historySnapshot?.history?.length" class="meta">
-                {{ $t('monitor.historyCount', { n: historySnapshot.history.length }) }}
-              </span>
-              <NButton size="tiny" secondary :loading="historyLoading" @click="refreshHistory">
-                {{ $t('monitor.historyRefresh') }}
-              </NButton>
-            </NSpace>
-          </div>
-          <div v-if="!store.activeInstance?.url" class="queue-empty">
-            {{ $t('monitor.needInstanceUrl') }}
-          </div>
-          <div v-else-if="historyLoading && !historySnapshot" class="queue-empty">
-            {{ $t('monitor.historyRefresh') }}
-          </div>
-          <div v-else-if="!historySnapshot?.history?.length" class="queue-empty">
-            {{ $t('monitor.historyEmpty') }}
-          </div>
-          <NScrollbar v-else style="max-height: 320px">
-            <div class="queue-list">
-              <div v-for="h in historySnapshot.history" :key="h.promptId" class="queue-row history-row">
-                <NTag size="small" round :type="historyStatusType(h.status)">
-                  {{ historyStatusLabel(h.status) }}
-                </NTag>
-                <span class="mono history-prompt">{{ h.promptId }}</span>
-                <span class="meta history-time">{{ formatHistoryTime(h.completedAt) }}</span>
+            <div v-else class="queue-list">
+              <div v-for="r in queue.running" :key="r.promptId" class="queue-row">
+                <span class="chip chip-success">{{ $t('status.running') }}</span>
+                <span class="mono">{{ r.promptId }}</span>
+              </div>
+              <div v-for="p in queue.pending" :key="p.promptId" class="queue-row">
+                <span class="chip chip-warning">{{ $t('monitor.pending') }}</span>
+                <span class="mono">{{ p.promptId }}</span>
               </div>
             </div>
-          </NScrollbar>
-        </NTabPane>
-      </NTabs>
-    </section>
+          </NTabPane>
+          <NTabPane name="history" :tab="$t('monitor.tabHistory')">
+            <div class="panel-head">
+              <div class="panel-title">{{ $t('monitor.historyTitle') }}</div>
+              <NSpace :size="8" align="center">
+                <span v-if="historySnapshot?.history?.length" class="meta">
+                  {{ $t('monitor.historyCount', { n: historySnapshot.history.length }) }}
+                </span>
+                <NButton size="tiny" secondary :loading="historyLoading" @click="refreshHistory">
+                  {{ $t('monitor.historyRefresh') }}
+                </NButton>
+              </NSpace>
+            </div>
+            <div v-if="!store.activeInstance?.url" class="queue-empty">
+              {{ $t('monitor.needInstanceUrl') }}
+            </div>
+            <div v-else-if="historyLoading && !historySnapshot" class="queue-empty">
+              {{ $t('monitor.loading') }}
+            </div>
+            <div v-else-if="!historySnapshot?.history?.length" class="queue-empty">
+              {{ $t('monitor.historyEmpty') }}
+            </div>
+            <NScrollbar v-else style="max-height: 320px">
+              <div class="queue-list">
+                <div
+                  v-for="h in historySnapshot.history"
+                  :key="h.promptId"
+                  class="queue-row history-row"
+                >
+                  <NTag size="small" round :type="historyStatusType(h.status)">
+                    {{ historyStatusLabel(h.status) }}
+                  </NTag>
+                  <span class="mono history-prompt">{{ h.promptId }}</span>
+                  <span class="meta history-time">{{ formatHistoryTime(h.completedAt) }}</span>
+                </div>
+              </div>
+            </NScrollbar>
+          </NTabPane>
+        </NTabs>
+      </section>
     </div>
   </div>
 </template>
@@ -254,12 +313,18 @@ onUnmounted(() => {
 @use '@/styles/variables.scss' as *;
 
 .stats {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
 }
 
 .lower {
   margin-top: 16px;
   grid-template-columns: 1.2fr 1fr;
+}
+
+@media (max-width: 1280px) {
+  .lower {
+    grid-template-columns: 1fr;
+  }
 }
 
 .panel {
@@ -299,12 +364,16 @@ onUnmounted(() => {
 .gpu-name {
   font-weight: 700;
   margin-bottom: 8px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .gpu-sub {
   margin-top: 6px;
   font-size: 12px;
-  color: $color-text-muted;
+  color: $color-text-muted-ink;
 }
 
 .queue-panel {
@@ -312,7 +381,7 @@ onUnmounted(() => {
 }
 
 .queue-empty {
-  color: $color-text-muted;
+  color: $color-text-muted-ink;
   font-size: 13.5px;
   padding: 12px 0 8px;
 }
@@ -341,7 +410,7 @@ onUnmounted(() => {
 
 .meta {
   font-size: 12px;
-  color: $color-text-muted;
+  color: $color-text-muted-ink;
 }
 
 .history-row {

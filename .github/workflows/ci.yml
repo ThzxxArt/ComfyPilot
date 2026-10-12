@@ -34,11 +34,23 @@ jobs:
       - name: Hardcoded Chinese gate
         run: node scripts/check-hardcoded-zh.cjs
 
+      - name: ESLint (no fix)
+        run: npm run lint:check
+
       - name: Unit & integration tests
         run: npx vitest run --coverage
 
-      - name: Build
-        run: npx electron-vite build
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.os }}
+          path: coverage
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Build (includes postbuild bootstrap copy)
+        run: npm run build
 
       - name: E2E smoke
         if: runner.os == 'Windows'

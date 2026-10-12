@@ -76,11 +76,15 @@ export const useAppStore = defineStore('app', () => {
     notificationSeq.value += 1
   }
 
-  /** Drop a stale activeInstanceId when its instance disappeared. */
+  /**
+   * Drop a stale activeInstanceId when its instance disappeared.
+   * Never auto-select a local instance while a remote is active — that would
+   * make both `activeInstance` and `activeRemote` truthy at once.
+   */
   function pruneActiveInstance(): void {
     if (!activeInstanceId.value) return
     if (!instances.value.some((i) => i.id === activeInstanceId.value)) {
-      activeInstanceId.value = instances.value[0]?.id ?? null
+      activeInstanceId.value = activeRemoteId.value ? null : (instances.value[0]?.id ?? null)
     }
   }
 
@@ -90,7 +94,7 @@ export const useAppStore = defineStore('app', () => {
       instances.value = await ipc('instance.list')
       remotes.value = await ipc('remote.list')
       if (!opts?.keepSelection || !activeInstanceId.value) {
-        activeInstanceId.value = instances.value[0]?.id ?? null
+        if (!activeRemoteId.value) activeInstanceId.value = instances.value[0]?.id ?? null
       }
       pruneActiveInstance()
       system.value = await ipc('monitor.system')
@@ -104,7 +108,7 @@ export const useAppStore = defineStore('app', () => {
 
   async function refreshInstances(): Promise<void> {
     instances.value = await ipc('instance.list')
-    if (!activeInstanceId.value && instances.value[0]) {
+    if (!activeInstanceId.value && !activeRemoteId.value && instances.value[0]) {
       activeInstanceId.value = instances.value[0].id
     }
     pruneActiveInstance()

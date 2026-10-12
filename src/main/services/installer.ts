@@ -1,5 +1,14 @@
 import { EventEmitter } from 'events'
-import { existsSync, mkdirSync, writeFileSync, rmSync, statSync, readdirSync, renameSync, createWriteStream } from 'fs'
+import {
+  existsSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+  statSync,
+  readdirSync,
+  renameSync,
+  createWriteStream
+} from 'fs'
 import { join, dirname, resolve, basename } from 'path'
 import { execFile, spawn, type ChildProcess } from 'child_process'
 import { randomUUID } from 'crypto'
@@ -21,8 +30,21 @@ import {
   TORCH_DISK_GB,
   TORCH_INDEX_PRESETS
 } from '@shared/constants'
-import { loadInstanceConfigs, upsertInstanceConfig, loadSettings, userDataDir, saveInstallRun, loadLatestInstallRun } from './db'
-import { hasParentHop, normalizePathEverySegment, isPathInside, isSafeExternalUrl, normalizeForCompare } from './security'
+import {
+  loadInstanceConfigs,
+  upsertInstanceConfig,
+  loadSettings,
+  userDataDir,
+  saveInstallRun,
+  loadLatestInstallRun
+} from './db'
+import {
+  hasParentHop,
+  normalizePathEverySegment,
+  isPathInside,
+  isSafeExternalUrl,
+  normalizeForCompare
+} from './security'
 import { proxyEnv } from './proxy'
 import { bootstrapService } from './bootstrap'
 
@@ -44,7 +66,11 @@ const TORCH_INDEX: Record<TorchChannel, string> = {
 
 const COMFY_REPO = 'https://github.com/comfyanonymous/ComfyUI.git'
 
-function nowStep(id: InstallStepId, title: string, status: InstallStep['status'] = 'pending'): InstallStep {
+function nowStep(
+  id: InstallStepId,
+  title: string,
+  status: InstallStep['status'] = 'pending'
+): InstallStep {
   return { id, title, status, detail: '', log: [] }
 }
 
@@ -231,7 +257,11 @@ export class InstallerService extends EventEmitter {
     })
   }
 
-  private async run(cmd: string, args: string[], opts?: { cwd?: string; timeout?: number }): Promise<string> {
+  private async run(
+    cmd: string,
+    args: string[],
+    opts?: { cwd?: string; timeout?: number }
+  ): Promise<string> {
     this.assertNotCancelled()
     return new Promise((resolvePromise, reject) => {
       const onReject = (err: Error): void => {
@@ -270,12 +300,16 @@ export class InstallerService extends EventEmitter {
   private emitProgress(message = ''): void {
     if (!this.progress) return
     const total = this.progress.steps.length
-    const done = this.progress.steps.filter((s) => s.status === 'done' || s.status === 'skipped').length
+    const done = this.progress.steps.filter(
+      (s) => s.status === 'done' || s.status === 'skipped'
+    ).length
     this.progress.percent = Math.round((done / total) * 100)
     this.progress.message = message
     this.emit('progress', { ...this.progress })
     // Persist so a restart can restore the run (status/percent/steps/logs).
-    saveInstallRun(this.progress as unknown as { runId: string; status: string } & Record<string, unknown>)
+    saveInstallRun(
+      this.progress as unknown as { runId: string; status: string } & Record<string, unknown>
+    )
   }
 
   private setBytes(bytes?: InstallStepByteProgress): void {
@@ -348,7 +382,8 @@ export class InstallerService extends EventEmitter {
               : 'Windows AMD needs official ROCm PyTorch — falling back to CPU unless overridden'
           notesKey = process.platform === 'linux' ? 'gpu.amdLinux' : 'gpu.amdWindows'
         } else if (vendor.includes('intel') || /arc|xe/i.test(model)) {
-          recommendedTorch = process.platform === 'win32' || process.platform === 'linux' ? 'xpu' : 'cpu'
+          recommendedTorch =
+            process.platform === 'win32' || process.platform === 'linux' ? 'xpu' : 'cpu'
           notes = 'Intel GPU — XPU build available'
           notesKey = 'gpu.intel'
         } else if (process.platform === 'darwin') {
@@ -452,7 +487,12 @@ export class InstallerService extends EventEmitter {
         })
       }
     } catch {
-      checks.push({ id: 'disk', ok: true, detail: 'Disk probe unavailable', detailKey: 'preflight.diskUnknown' })
+      checks.push({
+        id: 'disk',
+        ok: true,
+        detail: 'Disk probe unavailable',
+        detailKey: 'preflight.diskUnknown'
+      })
     }
 
     // git — optional when using zip install (default). Only warn.
@@ -463,7 +503,8 @@ export class InstallerService extends EventEmitter {
       checks.push({
         id: 'git',
         ok: true,
-        detail: 'git not found — zip install works without Git; download portable Git for git node installs',
+        detail:
+          'git not found — zip install works without Git; download portable Git for git node installs',
         detailKey: 'preflight.gitMissing',
         fixId: 'bootstrap-mingit',
         fixLabel: 'Download portable Git',
@@ -568,7 +609,9 @@ export class InstallerService extends EventEmitter {
       return { path: fallback, freeGb: 0 }
     }
     const base =
-      process.platform === 'win32' ? join(best.path, 'ComfyPilotRuntimes', 'comfy-main') : join(best.path, 'comfy-main')
+      process.platform === 'win32'
+        ? join(best.path, 'ComfyPilotRuntimes', 'comfy-main')
+        : join(best.path, 'comfy-main')
     return { path: base, freeGb: best.freeGb }
   }
 
@@ -642,20 +685,31 @@ export class InstallerService extends EventEmitter {
       // Prefer uv when asked OR when it is the only viable bootstrap path.
       // Do NOT force uv merely because it happens to be installed.
       const pythonAvailable =
-        bootstrap.pythonOrigin !== 'missing' && Boolean(bootstrap.pythonPath && bootstrap.pythonPath !== 'python')
+        bootstrap.pythonOrigin !== 'missing' &&
+        Boolean(bootstrap.pythonPath && bootstrap.pythonPath !== 'python')
       const useUv = plan.useUv || (!pythonAvailable && Boolean(uvComp?.path))
-      this.log('bootstrap', useUv ? `uv: ${uvComp?.path || 'will download'}` : 'using python -m venv')
+      this.log(
+        'bootstrap',
+        useUv ? `uv: ${uvComp?.path || 'will download'}` : 'using python -m venv'
+      )
       this.setStep('bootstrap', 'done', 'Runtimes ready', undefined, 'stepMsg.bootstrapDone')
       this.assertNotCancelled()
 
       // 1. preflight (soft on python/git — bootstrap already ran)
-      this.setStep('preflight', 'running', 'Checking environment…', undefined, 'stepMsg.preflightRun')
+      this.setStep(
+        'preflight',
+        'running',
+        'Checking environment…',
+        undefined,
+        'stepMsg.preflightRun'
+      )
       // Explicit plan.pythonPath wins over whatever bootstrap discovered.
-      const pythonForPlan = this.resolvePython(plan) !== 'python'
-        ? this.resolvePython(plan)
-        : bootstrap.pythonOrigin !== 'missing' && bootstrap.pythonPath !== 'python'
-          ? bootstrap.pythonPath
-          : 'python'
+      const pythonForPlan =
+        this.resolvePython(plan) !== 'python'
+          ? this.resolvePython(plan)
+          : bootstrap.pythonOrigin !== 'missing' && bootstrap.pythonPath !== 'python'
+            ? bootstrap.pythonPath
+            : 'python'
       const pre = await this.preflight({
         installRoot: plan.installRoot,
         useUv: plan.useUv,
@@ -677,7 +731,11 @@ export class InstallerService extends EventEmitter {
       const pythonOk = /Python\s+3\.\d+/i.test(pyVer)
       if (pythonOk) {
         this.setStep('python', 'done', pyVer.trim() || python)
-      } else if (bootstrap.pythonPath && bootstrap.pythonPath !== 'python' && bootstrap.pythonPath !== python) {
+      } else if (
+        bootstrap.pythonPath &&
+        bootstrap.pythonPath !== 'python' &&
+        bootstrap.pythonPath !== python
+      ) {
         python = bootstrap.pythonPath
         const retryVer = await this.run(python, ['--version'], { timeout: 8000 }).catch(() => '')
         if (/Python\s+3\.\d+/i.test(retryVer)) {
@@ -703,7 +761,13 @@ export class InstallerService extends EventEmitter {
       // A system 3.14+ interpreter has no torch wheels yet; 3.13 is the current sweet spot.
       mkdirSync(installRoot, { recursive: true })
       const venvPath = join(installRoot, '.venv')
-      this.setStep('venv', 'running', useUv ? 'uv venv…' : 'python -m venv…', undefined, useUv ? 'stepMsg.venvUv' : 'stepMsg.venvPy')
+      this.setStep(
+        'venv',
+        'running',
+        useUv ? 'uv venv…' : 'python -m venv…',
+        undefined,
+        useUv ? 'stepMsg.venvUv' : 'stepMsg.venvPy'
+      )
       if (useUv && uvComp?.path) {
         // Ensure uv has a 3.13 interpreter, then build the venv from it.
         try {
@@ -712,11 +776,15 @@ export class InstallerService extends EventEmitter {
         } catch (e) {
           this.log('venv', `uv python install 3.13: ${e instanceof Error ? e.message : String(e)}`)
         }
-        await this.run(uvComp.path, ['venv', venvPath, '--python', '3.13', '--seed'], { timeout: 180000 })
+        await this.run(uvComp.path, ['venv', venvPath, '--python', '3.13', '--seed'], {
+          timeout: 180000
+        })
       } else {
         // Prefer an explicit 3.10–3.13 interpreter; reject nothing here but log.
         await this.run(python, ['-m', 'venv', venvPath], { timeout: 180000 })
-        const verOut = await this.run(this.venvPython(venvPath), ['--version'], { timeout: 8000 }).catch(() => '')
+        const verOut = await this.run(this.venvPython(venvPath), ['--version'], {
+          timeout: 8000
+        }).catch(() => '')
         if (/Python\s+3\.(1[4-9]|\d{2,})/i.test(verOut)) {
           this.log(
             'venv',
@@ -731,22 +799,35 @@ export class InstallerService extends EventEmitter {
 
       // 4. ComfyUI source — zip (default, no Git) or git clone
       const comfyDir = join(installRoot, 'ComfyUI')
-      this.setStep('comfyui', 'running', comfySource === 'git' ? 'Cloning ComfyUI…' : 'Downloading ComfyUI archive…', undefined, comfySource === 'git' ? 'stepMsg.comfyGit' : 'stepMsg.comfyZip')
+      this.setStep(
+        'comfyui',
+        'running',
+        comfySource === 'git' ? 'Cloning ComfyUI…' : 'Downloading ComfyUI archive…',
+        undefined,
+        comfySource === 'git' ? 'stepMsg.comfyGit' : 'stepMsg.comfyZip'
+      )
       if (existsSync(join(comfyDir, 'main.py'))) {
         this.log('comfyui', 'ComfyUI already present — skipping fetch')
         if (plan.comfyBranch && comfySource === 'git') {
-          this.log('comfyui', `Note: reused existing dir — did not switch to branch ${plan.comfyBranch}`)
+          this.log(
+            'comfyui',
+            `Note: reused existing dir — did not switch to branch ${plan.comfyBranch}`
+          )
         }
         this.setStep('comfyui', 'done', 'Reused existing ComfyUI', undefined, 'stepMsg.comfyReuse')
       } else {
         if (existsSync(comfyDir)) {
-          if (!isPathInside(comfyDir, installRoot)) throw new Error('Refusing to remove ComfyUI outside install root')
+          if (!isPathInside(comfyDir, installRoot))
+            throw new Error('Refusing to remove ComfyUI outside install root')
           // Only remove debris WE created: either a prior ComfyPilot install
           // (marker file present) or a directory that looks like a crashed clone
           // (no foreign top-level content besides typical ComfyUI names).
           const marker = existsSync(join(installRoot, '.comfypilot-env.json'))
           const foreign = readdirSync(comfyDir).filter(
-            (n) => !/^(main\.py|requirements\.txt|comfy|comfyui|app|web|custom_nodes|models|input|output|user|script_examples|\.git|\.github|LICENSE|README)/i.test(n)
+            (n) =>
+              !/^(main\.py|requirements\.txt|comfy|comfyui|app|web|custom_nodes|models|input|output|user|script_examples|\.git|\.github|LICENSE|README)/i.test(
+                n
+              )
           )
           if (!marker && foreign.length) {
             throw new Error(
@@ -771,13 +852,22 @@ export class InstallerService extends EventEmitter {
           // zip extracts to ComfyUI-master/ — flatten if needed
           await this.flattenArchiveRoot(comfyDir)
         }
-        if (!existsSync(join(comfyDir, 'main.py'))) throw new Error('ComfyUI fetch finished but main.py is missing')
-        this.setStep('comfyui', 'done', comfySource === 'git' ? 'Cloned ComfyUI' : 'Extracted ComfyUI archive', undefined, comfySource === 'git' ? 'stepMsg.comfyCloned' : 'stepMsg.comfyExtracted')
+        if (!existsSync(join(comfyDir, 'main.py')))
+          throw new Error('ComfyUI fetch finished but main.py is missing')
+        this.setStep(
+          'comfyui',
+          'done',
+          comfySource === 'git' ? 'Cloned ComfyUI' : 'Extracted ComfyUI archive',
+          undefined,
+          comfySource === 'git' ? 'stepMsg.comfyCloned' : 'stepMsg.comfyExtracted'
+        )
       }
       this.assertNotCancelled()
 
       // 5. torch — try configured index, fall back to official on "not found"
-      this.setStep('torch', 'running', plan.torchChannel, undefined, 'stepMsg.torchRun', { channel: plan.torchChannel })
+      this.setStep('torch', 'running', plan.torchChannel, undefined, 'stepMsg.torchRun', {
+        channel: plan.torchChannel
+      })
       const index = resolveTorchIndex(plan.torchChannel)
       const official = officialTorchIndex(plan.torchChannel)
       this.log('torch', `torch index: ${index}`)
@@ -785,17 +875,38 @@ export class InstallerService extends EventEmitter {
         if (useUv && uvComp?.path) {
           await this.run(
             uvComp.path,
-            ['pip', 'install', '--python', vpy, 'torch', 'torchvision', 'torchaudio', '--index-url', idx],
+            [
+              'pip',
+              'install',
+              '--python',
+              vpy,
+              'torch',
+              'torchvision',
+              'torchaudio',
+              '--index-url',
+              idx
+            ],
             { timeout: 30 * 60 * 1000 }
           )
         } else {
           // uv-created venvs have no pip — seed it first.
           const { ensurePip } = await import('./env')
           await ensurePip(vpy, (c, a, o) => this.run(c, a, o))
-          await this.run(vpy, this.pipArgs(['-m', 'pip', 'install', '--upgrade', 'pip']), { timeout: 120000 })
+          await this.run(vpy, this.pipArgs(['-m', 'pip', 'install', '--upgrade', 'pip']), {
+            timeout: 120000
+          })
           await this.run(
             vpy,
-            this.pipArgs(['-m', 'pip', 'install', 'torch', 'torchvision', 'torchaudio', '--index-url', idx]),
+            this.pipArgs([
+              '-m',
+              'pip',
+              'install',
+              'torch',
+              'torchvision',
+              'torchaudio',
+              '--index-url',
+              idx
+            ]),
             { timeout: 30 * 60 * 1000 }
           )
         }
@@ -805,14 +916,23 @@ export class InstallerService extends EventEmitter {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         if (index === official) throw err
-        this.log('torch', `index ${index} failed (${msg.slice(0, 160)}) — retrying official ${official}`)
+        this.log(
+          'torch',
+          `index ${index} failed (${msg.slice(0, 160)}) — retrying official ${official}`
+        )
         await installTorchWith(official)
       }
       this.setStep('torch', 'done', plan.torchChannel)
       this.assertNotCancelled()
 
       // 6. requirements
-      this.setStep('requirements', 'running', 'Installing requirements…', undefined, 'stepMsg.reqRun')
+      this.setStep(
+        'requirements',
+        'running',
+        'Installing requirements…',
+        undefined,
+        'stepMsg.reqRun'
+      )
       const reqFile = join(comfyDir, 'requirements.txt')
       if (existsSync(reqFile)) {
         // Shared helper: uv first (works without pip), then ensurepip + pip,
@@ -872,11 +992,14 @@ export class InstallerService extends EventEmitter {
           2
         )
       )
-      this.setStep('register', 'done', config.name, undefined, 'stepMsg.regDone', { name: config.name })
+      this.setStep('register', 'done', config.name, undefined, 'stepMsg.regDone', {
+        name: config.name
+      })
 
       if (plan.createDesktopShortcut) {
         try {
-          const { createDesktopShortcut, appExecutablePath, appIconPath } = await import('./desktop')
+          const { createDesktopShortcut, appExecutablePath, appIconPath } =
+            await import('./desktop')
           const shortcutPath = await createDesktopShortcut({
             targetPath: appExecutablePath(),
             name: plan.instanceName || 'ComfyPilot',
@@ -885,15 +1008,30 @@ export class InstallerService extends EventEmitter {
           })
           this.log('register', `Desktop shortcut: ${shortcutPath}`)
         } catch (e) {
-          this.log('register', `Desktop shortcut failed: ${e instanceof Error ? e.message : String(e)}`)
+          this.log(
+            'register',
+            `Desktop shortcut failed: ${e instanceof Error ? e.message : String(e)}`
+          )
         }
       }
 
       // 8. starter model guidance (optional download of the recommended pack)
       if (plan.skipStarter) {
-        this.setStep('starter', 'skipped', 'Skipped starter model', undefined, 'stepMsg.starterSkip')
+        this.setStep(
+          'starter',
+          'skipped',
+          'Skipped starter model',
+          undefined,
+          'stepMsg.starterSkip'
+        )
       } else {
-        this.setStep('starter', 'running', 'Preparing starter models…', undefined, 'stepMsg.starterRun')
+        this.setStep(
+          'starter',
+          'running',
+          'Preparing starter models…',
+          undefined,
+          'stepMsg.starterRun'
+        )
         if (plan.fullAuto) {
           // Batteries-included: kick off the recommended starter pack so the
           // user can generate right after install. Download is async (model
@@ -905,7 +1043,10 @@ export class InstallerService extends EventEmitter {
               await this.installStarter({ id: recommended.id, instanceId: config.id })
               this.log('starter', `Starter download started: ${recommended.name}`)
             } catch (e) {
-              this.log('starter', `Starter auto-download failed: ${e instanceof Error ? e.message : String(e)}`)
+              this.log(
+                'starter',
+                `Starter auto-download failed: ${e instanceof Error ? e.message : String(e)}`
+              )
             }
           }
         } else {
@@ -923,7 +1064,13 @@ export class InstallerService extends EventEmitter {
           this.setStep('done', 'done', 'Installed and started', undefined, 'stepMsg.doneStarted')
         } catch (e) {
           this.log('done', `Auto-start failed: ${e instanceof Error ? e.message : String(e)}`)
-          this.setStep('done', 'done', 'Installed (auto-start failed)', undefined, 'stepMsg.doneStartFail')
+          this.setStep(
+            'done',
+            'done',
+            'Installed (auto-start failed)',
+            undefined,
+            'stepMsg.doneStartFail'
+          )
         }
       } else {
         this.setStep('done', 'done', 'Installed — ready to launch', undefined, 'stepMsg.done')
@@ -943,12 +1090,19 @@ export class InstallerService extends EventEmitter {
       try {
         const root = resolve(normalizePathEverySegment(plan.installRoot))
         const comfyDir = join(root, 'ComfyUI')
-        if (isPathInside(comfyDir, root) && existsSync(comfyDir) && !existsSync(join(comfyDir, 'main.py'))) {
+        if (
+          isPathInside(comfyDir, root) &&
+          existsSync(comfyDir) &&
+          !existsSync(join(comfyDir, 'main.py'))
+        ) {
           // Same debris rule as the fetch step: never delete foreign content here,
           // otherwise the "refuse to delete non-install dirs" guard is defeated.
           const marker = existsSync(join(root, '.comfypilot-env.json'))
           const foreign = readdirSync(comfyDir).filter(
-            (n) => !/^(main\.py|requirements\.txt|comfy|comfyui|app|web|custom_nodes|models|input|output|user|script_examples|\.git|\.github|LICENSE|README)/i.test(n)
+            (n) =>
+              !/^(main\.py|requirements\.txt|comfy|comfyui|app|web|custom_nodes|models|input|output|user|script_examples|\.git|\.github|LICENSE|README)/i.test(
+                n
+              )
           )
           if (marker || !foreign.length) {
             rmSync(comfyDir, { recursive: true, force: true })
@@ -956,7 +1110,11 @@ export class InstallerService extends EventEmitter {
           }
         }
         const venvPath = join(root, '.venv')
-        if (isPathInside(venvPath, root) && existsSync(venvPath) && !existsSync(this.venvPython(venvPath))) {
+        if (
+          isPathInside(venvPath, root) &&
+          existsSync(venvPath) &&
+          !existsSync(this.venvPython(venvPath))
+        ) {
           rmSync(venvPath, { recursive: true, force: true })
           cleaned.push('.venv')
         }
@@ -1095,9 +1253,7 @@ export class InstallerService extends EventEmitter {
     if (!starter) throw new Error(`Unknown starter model: ${opts.id}`)
     const configs = loadInstanceConfigs()
     // Explicit id wins; never silently fall back to configs[0] when an id was given.
-    const config = opts.instanceId
-      ? configs.find((c) => c.id === opts.instanceId)
-      : configs[0]
+    const config = opts.instanceId ? configs.find((c) => c.id === opts.instanceId) : configs[0]
     if (!config) {
       throw new Error(
         opts.instanceId

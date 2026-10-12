@@ -38,7 +38,9 @@ export async function fetchRegistryPage(page: number, limit: number): Promise<Re
   const total = Number(data.total || nodes.length)
   const limitOut = Number(data.limit || safeLimit)
   const pageOut = Number(data.page || safePage)
-  const totalPages = Number(data.totalPages || Math.max(1, Math.ceil(total / (limitOut || safeLimit))))
+  const totalPages = Number(
+    data.totalPages || Math.max(1, Math.ceil(total / (limitOut || safeLimit)))
+  )
   return { nodes, total, page: pageOut, totalPages, limit: limitOut }
 }
 
@@ -61,7 +63,9 @@ function textOf(n: RawNode): string {
 }
 
 export function matchesQuery(n: RawNode, query: string): boolean {
-  const q = String(query || '').trim().toLowerCase()
+  const q = String(query || '')
+    .trim()
+    .toLowerCase()
   if (!q) return true
   // support multi-word AND
   return q.split(/\s+/).every((w) => textOf(n).includes(w))
@@ -119,15 +123,20 @@ export function packKeyVariants(s: string): string[] {
   return [...new Set([raw, raw.toLowerCase()])]
 }
 
-export function mapMarketItem(n: RawNode, installed: Set<string>, categoryFallback = 'tools'): MarketItem {
+export function mapMarketItem(
+  n: RawNode,
+  installed: Set<string>,
+  categoryFallback = 'tools'
+): MarketItem {
   const name = String(n.name || '')
   const id = String(n.id || name)
   const display = String(n.displayName || n.title || name)
   // Match against every normalized form of name / id / displayName.
-  const isInstalled =
-    [...packKeyVariants(name), ...packKeyVariants(id), ...packKeyVariants(display)].some((k) =>
-      installed.has(k)
-    )
+  const isInstalled = [
+    ...packKeyVariants(name),
+    ...packKeyVariants(id),
+    ...packKeyVariants(display)
+  ].some((k) => installed.has(k))
   return {
     id,
     name,
@@ -203,7 +212,15 @@ export async function searchRegistry(opts: SearchOpts = {}): Promise<{
 }
 
 export function toPageResult<T>(
-  o: { raw: RawNode[]; total: number; page: number; pageSize: number; totalPages: number; scanned: number; clientFiltered: boolean },
+  o: {
+    raw: RawNode[]
+    total: number
+    page: number
+    pageSize: number
+    totalPages: number
+    scanned: number
+    clientFiltered: boolean
+  },
   map: (n: RawNode) => T
 ): RegistryPageResult<T> {
   return {

@@ -4,6 +4,10 @@ copyright: Copyright © 2026 ComfyPilot Contributors
 directories:
   buildResources: resources
   output: release
+publish:
+  provider: github
+  owner: ThzxxArt
+  repo: ComfyPilot
 files:
   - out/**
   - package.json

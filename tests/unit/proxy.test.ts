@@ -87,9 +87,7 @@ describe('buildProxyUrl', () => {
   })
 
   it('omits password separator when only username is set', () => {
-    expect(buildProxyUrl({ ...base, username: 'u', password: '' })).toBe(
-      'http://u@127.0.0.1:7890'
-    )
+    expect(buildProxyUrl({ ...base, username: 'u', password: '' })).toBe('http://u@127.0.0.1:7890')
   })
 
   it('redactProxyUrl never includes password', () => {
@@ -282,7 +280,6 @@ describe('applyProxyToElectron / testProxy / syncProxyFromSettings', () => {
 
   it('testProxy treats non-Error throws as strings', async () => {
     sessionState.fetchImpl = async () => {
-      // eslint-disable-next-line no-throw-literal
       throw 'boom'
     }
     const fail = await testProxy({})

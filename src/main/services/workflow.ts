@@ -304,7 +304,11 @@ function assertComfyWorkflow(graph: Record<string, unknown>): void {
     ) {
       return true
     }
-    if (g.workflow && typeof g.workflow === 'object' && check(g.workflow as Record<string, unknown>)) {
+    if (
+      g.workflow &&
+      typeof g.workflow === 'object' &&
+      check(g.workflow as Record<string, unknown>)
+    ) {
       return true
     }
     if (g.prompt && typeof g.prompt === 'object' && check(g.prompt as Record<string, unknown>)) {
@@ -334,7 +338,8 @@ function analyzeFile(full: string, ext: string): ParsedWorkflow {
     graph = parseWorkflowJson(String(textMeta.prompt))
   }
   const base = analyzeParsedGraph(graph)
-  const heuristicSeed = typeof base.params.heuristicSeed === 'number' ? base.params.heuristicSeed : undefined
+  const heuristicSeed =
+    typeof base.params.heuristicSeed === 'number' ? base.params.heuristicSeed : undefined
   const params: Record<string, unknown> = {
     ...base.params,
     pngMeta: Object.keys(textMeta)
@@ -367,7 +372,11 @@ function recordIdFor(path: string): string {
  */
 const analyzeCache = new Map<string, { size: number; mtimeMs: number; analyzed: ParsedWorkflow }>()
 
-function analyzeCached(full: string, ext: string, st: { size: number; mtimeMs: number }): ParsedWorkflow {
+function analyzeCached(
+  full: string,
+  ext: string,
+  st: { size: number; mtimeMs: number }
+): ParsedWorkflow {
   const hit = analyzeCache.get(full)
   if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.analyzed
   const analyzed = analyzeFile(full, ext)
@@ -537,8 +546,7 @@ export class WorkflowService {
   /** Instance workflows folder — the place ComfyUI actually reads. */
   instanceWorkflowsDir(instanceId?: string): string {
     const instances = loadInstanceConfigs()
-    const inst =
-      instances.find((i) => i.id === instanceId) || instances[0]
+    const inst = instances.find((i) => i.id === instanceId) || instances[0]
     if (!inst) throw new Error('No instance configured')
     return join(inst.path, 'user', 'default', 'workflows')
   }
@@ -575,9 +583,7 @@ export class WorkflowService {
       const raw = String(meta.workflow || meta.prompt || '')
       const parsed = raw ? parseWorkflowJson(raw) : null
       if (!parsed) {
-        throw new Error(
-          'Not a ComfyUI workflow: this PNG has no embedded workflow/prompt metadata'
-        )
+        throw new Error('Not a ComfyUI workflow: this PNG has no embedded workflow/prompt metadata')
       }
       graph = parsed
     } else {
@@ -859,7 +865,9 @@ export class WorkflowService {
     const instances = loadInstanceConfigs()
     const inst =
       instances.find((i) => i.id === instanceId) ||
-      instances.find((i) => i.id === (loadSettings() as { activeInstance?: string }).activeInstance) ||
+      instances.find(
+        (i) => i.id === (loadSettings() as { activeInstance?: string }).activeInstance
+      ) ||
       instances[0]
     if (!inst) throw new Error('No instance configured')
 
@@ -894,9 +902,7 @@ export class WorkflowService {
     const instances = loadInstanceConfigs()
     const inst = instances.find((i) => i.id === instanceId) || instances[0]
     // root = where imports land (instance workflows dir when available)
-    const root = inst
-      ? join(inst.path, 'user', 'default', 'workflows')
-      : this.libraryRoot()
+    const root = inst ? join(inst.path, 'user', 'default', 'workflows') : this.libraryRoot()
     const all = this.list({ includeMissing: true })
     return {
       root,

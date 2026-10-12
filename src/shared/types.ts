@@ -141,16 +141,38 @@ export interface DiagnosticPackage {
 }
 
 // ---------- Model ----------
+/**
+ * Canonical category set = ComfyUI's registered model folders (folder_paths.py)
+ * minus non-model internals. `clip` / `unet` are legacy aliases kept readable
+ * for old DB records only — scan() now maps them to text_encoders / diffusion_models.
+ */
 export type ModelCategory =
   | 'checkpoints'
   | 'diffusion_models'
   | 'loras'
   | 'vae'
-  | 'clip'
+  | 'text_encoders'
+  | 'clip_vision'
   | 'controlnet'
   | 'upscale_models'
   | 'embeddings'
-  | 'text_encoders'
+  | 'style_models'
+  | 'diffusers'
+  | 'vae_approx'
+  | 'gligen'
+  | 'latent_upscale_models'
+  | 'photomaker'
+  | 'classifiers'
+  | 'model_patches'
+  | 'audio_encoders'
+  | 'hypernetworks'
+  | 'background_removal'
+  | 'frame_interpolation'
+  | 'geometry_estimation'
+  | 'optical_flow'
+  | 'detection'
+  // Legacy aliases (pre-0.1.8 records only)
+  | 'clip'
   | 'unet'
   | 'other'
 
@@ -217,12 +239,7 @@ export interface DuplicateGroup {
 
 // ---------- Node Pack ----------
 export type NodePackStatus =
-  | 'installed'
-  | 'update-available'
-  | 'disabled'
-  | 'error'
-  | 'not-installed'
-  | 'installing'
+  'installed' | 'update-available' | 'disabled' | 'error' | 'not-installed' | 'installing'
 
 export interface NodePackRecord {
   id: string
@@ -610,14 +627,7 @@ export interface InstallStep {
   detailParams?: Record<string, string | number>
 }
 
-export type TorchChannel =
-  | 'cu130'
-  | 'cu126'
-  | 'cu124'
-  | 'rocm'
-  | 'xpu'
-  | 'mps'
-  | 'cpu'
+export type TorchChannel = 'cu130' | 'cu126' | 'cu124' | 'rocm' | 'xpu' | 'mps' | 'cpu'
 
 export interface InstallPlan {
   installRoot: string
@@ -826,7 +836,10 @@ export type IpcChannelMap = {
   'settings.launchTemplates': { args: []; result: LaunchArgTemplate[] }
   'settings.dataDir': { args: []; result: string }
   'proxy.apply': { args: []; result: { enabled: boolean; url: string; bypass: string } }
-  'proxy.test': { args: [{ url?: string }?]; result: { ok: boolean; via: string; ms: number; error?: string } }
+  'proxy.test': {
+    args: [{ url?: string }?]
+    result: { ok: boolean; via: string; ms: number; error?: string }
+  }
 
   // instances
   'instance.list': { args: []; result: ComfyInstanceInfo[] }
@@ -875,26 +888,59 @@ export type IpcChannelMap = {
   'model.parseExtraPaths': { args: [string?]; result: string[] }
   'model.fetchCivitaiMeta': { args: [string]; result: Record<string, unknown> | null }
   'model.ensureThumbs': { args: []; result: number }
-  'model.batchRename': { args: [{ ids: string[]; pattern: string; dryRun?: boolean }]; result: Array<{ from: string; to: string; ok: boolean; error?: string }> }
+  'model.batchRename': {
+    args: [{ ids: string[]; pattern: string; dryRun?: boolean }]
+    result: Array<{ from: string; to: string; ok: boolean; error?: string }>
+  }
 
   // node packs
   'node.list': { args: [string?]; result: NodePackRecord[] }
   'node.refresh': { args: [string?]; result: NodePackRecord[] }
   'registry.indexStatus': {
     args: []
-    result: { ready: boolean; updatedAt: number; total: number; pages: number; count: number; skippedPages?: number }
+    result: {
+      ready: boolean
+      updatedAt: number
+      total: number
+      pages: number
+      count: number
+      skippedPages?: number
+    }
   }
   'registry.refreshIndex': {
     args: []
-    result: { ready: boolean; updatedAt: number; total: number; pages: number; count: number; skippedPages?: number }
+    result: {
+      ready: boolean
+      updatedAt: number
+      total: number
+      pages: number
+      count: number
+      skippedPages?: number
+    }
   }
   'registry.ensureIndex': {
     args: []
-    result: { ready: boolean; updatedAt: number; total: number; pages: number; count: number; skippedPages?: number }
+    result: {
+      ready: boolean
+      updatedAt: number
+      total: number
+      pages: number
+      count: number
+      skippedPages?: number
+    }
   }
   'node.managerChannel': { args: []; result: RegistryNodePack[] }
   'node.install': {
-    args: [{ id: string; version?: string; source: 'registry' | 'git' | 'manager'; url?: string; branch?: string; instanceId?: string }]
+    args: [
+      {
+        id: string
+        version?: string
+        source: 'registry' | 'git' | 'manager'
+        url?: string
+        branch?: string
+        instanceId?: string
+      }
+    ]
     result: NodePackRecord
   }
   'node.uninstall': {
@@ -952,7 +998,10 @@ export type IpcChannelMap = {
       missing: number
     }
   }
-  'workflow.queue': { args: [{ workflowPath: string; instanceId: string; seed?: number }]; result: string | null }
+  'workflow.queue': {
+    args: [{ workflowPath: string; instanceId: string; seed?: number }]
+    result: string | null
+  }
   'workflow.parsePngMeta': { args: [string]; result: Record<string, unknown> | null }
 
   // monitor
@@ -982,7 +1031,9 @@ export type IpcChannelMap = {
   // installer
   'installer.detectGpu': { args: []; result: GpuCapability[] }
   'installer.preflight': {
-    args: [{ installRoot: string; useUv: boolean; pythonPath?: string; torchChannel?: TorchChannel }?]
+    args: [
+      { installRoot: string; useUv: boolean; pythonPath?: string; torchChannel?: TorchChannel }?
+    ]
     result: {
       ok: boolean
       checks: Array<{
@@ -1027,7 +1078,14 @@ export type IpcChannelMap = {
       torchLabel: string
       githubEndpoint: string
       githubLabel: string
-      probes: Array<{ id: string; label: string; url: string; ok: boolean; latencyMs: number; error?: string }>
+      probes: Array<{
+        id: string
+        label: string
+        url: string
+        ok: boolean
+        latencyMs: number
+        error?: string
+      }>
     }
   }
 
@@ -1096,7 +1154,9 @@ export type IpcChannelMap = {
 
   // market
   'market.list': {
-    args: [{ query?: string; category?: string; limit?: number; page?: number; instanceId?: string }?]
+    args: [
+      { query?: string; category?: string; limit?: number; page?: number; instanceId?: string }?
+    ]
     result: RegistryPageResult<MarketItem>
   }
   'market.install': {
@@ -1109,14 +1169,23 @@ export type IpcChannelMap = {
   'shell.openPath': { args: [string]; result: boolean }
   'shell.reveal': { args: [string]; result: boolean }
   'shell.pickDirectory': { args: []; result: string | null }
-  'shell.pickFile': { args: [{ filters?: Array<{ name: string; extensions: string[] }> }?]; result: string | null }
-  'shell.pickFiles': { args: [{ filters?: Array<{ name: string; extensions: string[] }> }?]; result: string[] }
+  'shell.pickFile': {
+    args: [{ filters?: Array<{ name: string; extensions: string[] }> }?]
+    result: string | null
+  }
+  'shell.pickFiles': {
+    args: [{ filters?: Array<{ name: string; extensions: string[] }> }?]
+    result: string[]
+  }
   'shell.writeClipboard': { args: [string]; result: boolean }
 
   // frontend embed
   'embed.open': { args: [{ url: string; title?: string }]; result: boolean }
   'embed.close': { args: []; result: boolean }
-  'embed.resize': { args: [{ x: number; y: number; width: number; height: number }]; result: boolean }
+  'embed.resize': {
+    args: [{ x: number; y: number; width: number; height: number }]
+    result: boolean
+  }
 }
 
 export type IpcChannel = keyof IpcChannelMap

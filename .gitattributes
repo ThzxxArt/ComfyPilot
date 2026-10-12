@@ -1,0 +1,4 @@
+# 全仓统一 LF：仓库内文本文件一律 LF 入库、LF 检出。
+# 背景：本仓库在 WSL 开发、Windows 侧打包（rsync 到 win-tmp），
+# 若不固定行尾会让每次 Windows 工具链触碰过的文件产生全文件 CRLF 假 diff。
+* text=auto eol=lf

@@ -2,8 +2,11 @@
 import { computed, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  CheckmarkCircleOutline, CloseCircleOutline, EllipsisHorizontalCircleOutline,
-  PlayCircleOutline, RemoveCircleOutline
+  CheckmarkCircleOutline,
+  CloseCircleOutline,
+  EllipsisHorizontalCircleOutline,
+  PlayCircleOutline,
+  RemoveCircleOutline
 } from '@vicons/ionicons5'
 import { NButton, NIcon, NModal, NProgress, NScrollbar, NSpace, NTag } from 'naive-ui'
 import type { InstallStepStatus, UpdateStep } from '@shared/types'
@@ -29,7 +32,9 @@ const percent = computed(() => Math.max(0, Math.min(100, Math.round(progress.val
 const steps = computed<UpdateStep[]>(() => progress.value?.steps || [])
 const failed = computed(() => progress.value?.status === 'failed')
 const done = computed(() => progress.value?.status === 'done' && progress.value?.step === 'done')
-const canCancel = computed(() => updating.value && !cancelling.value && !failed.value && !done.value)
+/** Cancel button stays visible while cancelling (shows its loading state) — it must not vanish. */
+const cancelVisible = computed(() => updating.value && !failed.value && !done.value)
+const cancelDisabled = computed(() => cancelling.value)
 
 function statusIcon(status: InstallStepStatus): Component {
   switch (status) {
@@ -39,6 +44,7 @@ function statusIcon(status: InstallStepStatus): Component {
       return PlayCircleOutline
     case 'failed':
       return CloseCircleOutline
+    case 'cancelled':
     case 'skipped':
       return RemoveCircleOutline
     default:
@@ -54,6 +60,7 @@ function statusClass(status: InstallStepStatus): string {
       return 'st-run'
     case 'failed':
       return 'st-fail'
+    case 'cancelled':
     case 'skipped':
       return 'st-skip'
     default:
@@ -65,7 +72,8 @@ function detail(s: UpdateStep): string {
   return updateDetailOf(t, s)
 }
 
-function title(s: UpdateStep): string {
+/** Step label — named stepTitle to avoid colliding with the `title` prop. */
+function stepTitle(s: UpdateStep): string {
   return updateStepTitle(t, s)
 }
 
@@ -92,9 +100,13 @@ async function onCancel(): Promise<void> {
         :processing="updating && !failed"
       />
       <div class="upd-msg">
-        <NTag v-if="failed" size="small" type="error" round>{{ t('common.status') }}: {{ t('status.error') }}</NTag>
+        <NTag v-if="failed" size="small" type="error" round
+          >{{ t('common.status') }}: {{ t('status.error') }}</NTag
+        >
         <NTag v-else-if="done" size="small" type="success" round>{{ t('update.stepDone') }}</NTag>
-        <NTag v-else-if="updating" size="small" type="info" round>{{ t('instance.updating') }}</NTag>
+        <NTag v-else-if="updating" size="small" type="info" round>{{
+          t('instance.updating')
+        }}</NTag>
         <span class="upd-message-text">{{ progress?.message || '' }}</span>
       </div>
     </div>
@@ -103,7 +115,7 @@ async function onCancel(): Promise<void> {
       <div v-for="s in steps" :key="s.id" class="upd-step" :class="statusClass(s.status)">
         <NIcon :size="18" :component="statusIcon(s.status)" class="st-icon" />
         <div class="st-body">
-          <div class="st-title">{{ title(s) }}</div>
+          <div class="st-title">{{ stepTitle(s) }}</div>
           <div v-if="detail(s)" class="st-detail">{{ detail(s) }}</div>
           <div v-if="s.log?.length" class="st-log mono">{{ s.log[s.log.length - 1] }}</div>
         </div>
@@ -117,7 +129,14 @@ async function onCancel(): Promise<void> {
 
     <template #footer>
       <NSpace justify="end">
-        <NButton v-if="canCancel" secondary type="warning" :loading="cancelling" @click="onCancel">
+        <NButton
+          v-if="cancelVisible"
+          secondary
+          type="warning"
+          :loading="cancelling"
+          :disabled="cancelDisabled"
+          @click="onCancel"
+        >
           {{ t('common.cancel') }}
         </NButton>
         <NButton type="primary" :disabled="updating" @click="visible = false">
@@ -210,7 +229,7 @@ async function onCancel(): Promise<void> {
 
 .st-log {
   font-size: 11px;
-  color: $color-text-muted;
+  color: $color-text-muted-ink;
   margin-top: 2px;
   word-break: break-all;
 }
@@ -218,7 +237,7 @@ async function onCancel(): Promise<void> {
 .upd-backup {
   margin-top: 10px;
   font-size: 11px;
-  color: $color-text-muted;
+  color: $color-text-muted-ink;
   word-break: break-all;
 }
 

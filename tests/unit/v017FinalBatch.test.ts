@@ -2,17 +2,36 @@ import { describe, it, expect } from 'vitest'
 import { join } from 'path'
 import { readFileSync } from 'fs'
 
-const readSrc = (rel: string): string =>
-  readFileSync(join(__dirname, '..', '..', rel), 'utf-8')
+const readSrc = (rel: string): string => readFileSync(join(__dirname, '..', '..', rel), 'utf-8')
 
 // ============ Comprehensive security pattern scan ============
 describe('security patterns across all main services', () => {
   const files = [
-    'backup.ts', 'bootstrap.ts', 'comfyApi.ts', 'db.ts', 'desktop.ts',
-    'doctor.ts', 'env.ts', 'installer.ts', 'instance.ts', 'media.ts',
-    'model.ts', 'monitor.ts', 'netProbe.ts', 'nodePack.ts', 'p1p2.ts',
-    'proxy.ts', 'registry.ts', 'registryIndex.ts', 'security.ts', 'tray.ts',
-    'updater.ts', 'workflow.ts', 'workflowConvert.ts', 'zipSafe.ts', 'zipWrite.ts'
+    'backup.ts',
+    'bootstrap.ts',
+    'comfyApi.ts',
+    'db.ts',
+    'desktop.ts',
+    'doctor.ts',
+    'env.ts',
+    'installer.ts',
+    'instance.ts',
+    'media.ts',
+    'model.ts',
+    'monitor.ts',
+    'netProbe.ts',
+    'nodePack.ts',
+    'p1p2.ts',
+    'proxy.ts',
+    'registry.ts',
+    'registryIndex.ts',
+    'security.ts',
+    'tray.ts',
+    'updater.ts',
+    'workflow.ts',
+    'workflowConvert.ts',
+    'zipSafe.ts',
+    'zipWrite.ts'
   ]
   for (const f of files) {
     it(`${f} has no shell:true`, () => {
@@ -59,7 +78,22 @@ describe('no obvious dead code in shared types', () => {
 describe('services properly import from each other', () => {
   it('handlers.ts imports all services', () => {
     const src = readSrc('src/main/ipc/handlers.ts')
-    const services = ['instanceService', 'modelService', 'nodePackService', 'workflowService', 'monitorService', 'doctorService', 'bootstrapService', 'backupService', 'envService', 'batchService', 'outputService', 'remoteService', 'marketService', 'installerService']
+    const services = [
+      'instanceService',
+      'modelService',
+      'nodePackService',
+      'workflowService',
+      'monitorService',
+      'doctorService',
+      'bootstrapService',
+      'backupService',
+      'envService',
+      'batchService',
+      'outputService',
+      'remoteService',
+      'marketService',
+      'installerService'
+    ]
     for (const s of services) {
       expect(src, `missing ${s}`).toContain(s)
     }
@@ -71,11 +105,18 @@ describe('test suite is substantial', () => {
   it('project has many test files', () => {
     // Verify by checking known test files exist
     const known = [
-      'v016Collaboration.test.ts', 'v017Contracts.test.ts', 'v017DeepAudit.test.ts',
-      'v017SecurityAndUtils.test.ts', 'v017RuntimeAndCoverage.test.ts',
-      'v017Exhaustive.test.ts', 'v017ParametricAndSecurity.test.ts',
-      'v017TypeSystem.test.ts', 'v017SourceContracts.test.ts',
-      'v017TypeFields.test.ts', 'v017FinalPush.test.ts', 'v017FinalBatch.test.ts'
+      'v016Collaboration.test.ts',
+      'v017Contracts.test.ts',
+      'v017DeepAudit.test.ts',
+      'v017SecurityAndUtils.test.ts',
+      'v017RuntimeAndCoverage.test.ts',
+      'v017Exhaustive.test.ts',
+      'v017ParametricAndSecurity.test.ts',
+      'v017TypeSystem.test.ts',
+      'v017SourceContracts.test.ts',
+      'v017TypeFields.test.ts',
+      'v017FinalPush.test.ts',
+      'v017FinalBatch.test.ts'
     ]
     for (const f of known) {
       expect(() => readSrc(`tests/unit/${f}`)).not.toThrow()
@@ -85,7 +126,20 @@ describe('test suite is substantial', () => {
 
 // ============ README feature completeness ============
 describe('README documents all 8 domains', () => {
-  const domains = ['Dashboard', 'Install', 'Instances', 'Models', 'Node Packs', 'Market', 'Workflows', 'Batch', 'Output', 'Monitor', 'Doctor', 'Backup']
+  const domains = [
+    'Dashboard',
+    'Install',
+    'Instances',
+    'Models',
+    'Node Packs',
+    'Market',
+    'Workflows',
+    'Batch',
+    'Output',
+    'Monitor',
+    'Doctor',
+    'Backup'
+  ]
   for (const d of domains) {
     it(`README mentions ${d}`, () => {
       const src = readSrc('README.md')

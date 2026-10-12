@@ -31,6 +31,7 @@ import {
   NCheckbox,
   NSwitch,
   NText,
+  NDatePicker,
   useMessage,
   useDialog,
   NPagination
@@ -38,6 +39,8 @@ import {
 import { ipc, onIpc, IPC_EVENTS } from '@/composables/useIpc'
 import { useAppStore } from '@/stores/app'
 import { formatBytes } from '@/utils/format'
+import { COLORS } from '@/styles/tokens'
+import ListSkeleton from '@/components/ListSkeleton.vue'
 import type { OutputAsset, WorkflowRecord } from '@shared/types'
 
 const { t } = useI18n()
@@ -50,7 +53,7 @@ const loading = ref(false)
 const assets = ref<OutputAsset[]>([])
 const total = ref(0)
 const page = ref(1)
-const pageSize = 60
+const pageSize = ref(60)
 const root = ref('')
 const type = ref('all')
 const sort = ref<'createdAt' | 'size' | 'name'>('createdAt')
@@ -95,6 +98,24 @@ const lightboxAsset = ref<OutputAsset | null>(null)
 const refreshing = ref(false)
 let reqSeq = 0
 
+/** Distinguish "no data at all" from "filters matched nothing". */
+const hasFilter = computed(
+  () =>
+    type.value !== 'all' ||
+    onlyFavorites.value ||
+    Boolean(batchFilter.value) ||
+    Boolean(workflowFilter.value) ||
+    Boolean(dateRange.value)
+)
+
+function clearFilters(): void {
+  type.value = 'all'
+  onlyFavorites.value = false
+  batchFilter.value = ''
+  workflowFilter.value = ''
+  dateRange.value = null
+}
+
 async function refresh(): Promise<void> {
   const seq = ++reqSeq
   loading.value = true
@@ -103,8 +124,8 @@ async function refresh(): Promise<void> {
     const result = await ipc('output.list', {
       root: root.value || undefined,
       type: type.value === 'all' ? undefined : type.value,
-      limit: pageSize,
-      offset: (page.value - 1) * pageSize,
+      limit: pageSize.value,
+      offset: (page.value - 1) * pageSize.value,
       favorite: onlyFavorites.value ? true : undefined,
       batchJobId: batchFilter.value || undefined,
       workflowId: workflowFilter.value || undefined,
@@ -344,6 +365,11 @@ watch(root, () => {
 
 watch(page, () => void refresh())
 
+watch(pageSize, () => {
+  page.value = 1
+  void refresh()
+})
+
 let offBatch: (() => void) | null = null
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -400,7 +426,11 @@ onUnmounted(() => {
         <p class="page-subtitle">{{ $t('output.subtitle') }}</p>
       </div>
       <NSpace align="center">
-        <NInput v-model:value="root" :placeholder="$t('output.rootPlaceholder')" style="width: 220px">
+        <NInput
+          v-model:value="root"
+          :placeholder="$t('output.rootPlaceholder')"
+          style="width: 220px"
+        >
           <template #suffix>
             <NButton size="tiny" secondary @click="pickRoot">{{ $t('output.browse') }}</NButton>
           </template>
@@ -429,7 +459,7 @@ onUnmounted(() => {
           <template #checked>{{ $t('output.favOnly') }}</template>
           <template #unchecked>{{ $t('output.favAll') }}</template>
         </NSwitch>
-        <NButton type="primary" @click="refresh">
+        <NButton type="primary" :loading="refreshing" @click="refresh">
           <template #icon><NIcon :component="RefreshOutline" /></template>{{ $t('output.scan') }}
         </NButton>
       </NSpace>
@@ -448,7 +478,11 @@ onUnmounted(() => {
       </NSpace>
       <NSpace>
         <NButton size="small" secondary @click="toggleSelectAll">
-          {{ assets.length && selected.size === assets.length ? $t('output.clearSelection') : $t('output.selectAll') }}
+          {{
+            assets.length && selected.size === assets.length
+              ? $t('output.clearSelection')
+              : $t('output.selectAll')
+          }}
         </NButton>
         <NText v-if="selected.size" depth="3" style="align-self: center">
           {{ $t('output.selected', { n: selected.size }) }}
@@ -461,12 +495,13 @@ onUnmounted(() => {
     </NSpace>
 
     <div class="page-body">
-      <NSpin :show="loading">
-        <div v-if="assets.length">
+      <NSpin :show="loading && assets.length > 0">
+        <ListSkeleton v-if="loading && !assets.length" :rows="8" variant="card" />
+        <div v-else-if="assets.length">
           <NGrid cols="2 600:3 900:4 1200:5" :x-gap="14" :y-gap="14">
             <NGi v-for="a in assets" :key="a.id">
               <div
-                class="card asset"
+                class="card card-interactive asset"
                 :class="{ selected: selected.has(a.id) }"
                 @click="openDetail(a)"
               >
@@ -480,8 +515,16 @@ onUnmounted(() => {
                   <div class="thumb-check" @click.stop="toggleSelect(a.id)">
                     <NCheckbox :checked="selected.has(a.id)" />
                   </div>
-                  <button class="fav-btn" type="button" @click.stop="toggleFavorite(a)">
-                    <NIcon :component="a.favorite ? Heart : HeartOutline" :color="a.favorite ? '#e2557a' : '#fff'" />
+                  <button
+                    class="fav-btn"
+                    type="button"
+                    :aria-label="$t('output.favOnly')"
+                    @click.stop="toggleFavorite(a)"
+                  >
+                    <NIcon
+                      :component="a.favorite ? Heart : HeartOutline"
+                      :color="a.favorite ? COLORS.danger : '#fff'"
+                    />
                   </button>
                 </div>
                 <div class="asset-name">{{ a.fileName }}</div>
@@ -489,9 +532,18 @@ onUnmounted(() => {
                   {{ formatBytes(a.size) }}
                   <span v-if="a.seed != null"> ·{{ $t('output.seed') }} {{ a.seed }}</span>
                 </div>
-                <div class="asset-meta" v-if="a.workflowName || a.batchJobId">
-                  <NTag v-if="a.workflowName" size="tiny" round style="cursor: pointer" @click.stop="a.workflowId && (workflowFilter = a.workflowId)">{{ a.workflowName }}</NTag>
-                  <NTag v-if="a.batchJobId" size="tiny" round type="info">{{ $t('output.fromBatch') }}</NTag>
+                <div v-if="a.workflowName || a.batchJobId" class="asset-meta">
+                  <NTag
+                    v-if="a.workflowName"
+                    size="tiny"
+                    round
+                    style="cursor: pointer"
+                    @click.stop="a.workflowId && (workflowFilter = a.workflowId)"
+                    >{{ a.workflowName }}</NTag
+                  >
+                  <NTag v-if="a.batchJobId" size="tiny" round type="info">{{
+                    $t('output.fromBatch')
+                  }}</NTag>
                 </div>
                 <NSpace justify="center">
                   <NButton size="tiny" secondary @click.stop="safeOpen(a.path)">
@@ -500,7 +552,9 @@ onUnmounted(() => {
                   <NButton size="tiny" secondary @click.stop="safeReveal(a.path)">
                     <template #icon><NIcon :component="FolderOpenOutline" /></template>
                   </NButton>
-                  <NButton size="tiny" secondary @click.stop="openDetail(a)">{{ $t('output.params') }}</NButton>
+                  <NButton size="tiny" secondary @click.stop="openDetail(a)">{{
+                    $t('output.params')
+                  }}</NButton>
                   <NButton size="tiny" type="error" secondary @click.stop="confirmDeleteAsset(a)">
                     {{ $t('output.delete') }}
                   </NButton>
@@ -511,14 +565,23 @@ onUnmounted(() => {
           <NSpace justify="center" style="margin-top: 18px">
             <NPagination
               v-model:page="page"
+              v-model:page-size="pageSize"
               :page-count="Math.max(1, Math.ceil(total / pageSize))"
-              :page-size="pageSize"
+              :page-sizes="[40, 60, 100, 200]"
+              show-size-picker
             />
           </NSpace>
         </div>
-        <NEmpty v-else :description="$t('output.empty')" class="empty">
+        <NEmpty
+          v-else
+          :description="hasFilter ? $t('common.noMatch') : $t('output.empty')"
+          class="empty"
+        >
           <template #extra>
-            <NButton type="primary" @click="pickRoot">{{ $t('output.browse') }}</NButton>
+            <NButton v-if="hasFilter" secondary @click="clearFilters">{{
+              $t('common.clearFilters')
+            }}</NButton>
+            <NButton v-else type="primary" @click="pickRoot">{{ $t('output.browse') }}</NButton>
           </template>
         </NEmpty>
       </NSpin>
@@ -542,8 +605,12 @@ onUnmounted(() => {
           <NIcon v-else :size="48" :component="ImageOutline" />
         </div>
         <div class="detail-meta">
-          <div><b>{{ $t('output.size') }}</b> {{ formatBytes(detail.size) }}</div>
-          <div v-if="detail.seed != null"><b>{{ $t('output.seed') }}</b> <NTag size="tiny" round>{{ detail.seed }}</NTag></div>
+          <div>
+            <b>{{ $t('output.size') }}</b> {{ formatBytes(detail.size) }}
+          </div>
+          <div v-if="detail.seed != null">
+            <b>{{ $t('output.seed') }}</b> <NTag size="tiny" round>{{ detail.seed }}</NTag>
+          </div>
           <div v-if="detail.workflowName">
             <b>{{ $t('output.fromWorkflow') }}</b> {{ detail.workflowName }}
           </div>
@@ -559,7 +626,9 @@ onUnmounted(() => {
               {{ detail.batchJobId.slice(0, 8) }}
             </NTag>
           </div>
-          <div v-if="detail.promptId" class="mono"><b>{{ $t('output.promptId') }}</b> {{ detail.promptId }}</div>
+          <div v-if="detail.promptId" class="mono">
+            <b>{{ $t('output.promptId') }}</b> {{ detail.promptId }}
+          </div>
           <div class="mono detail-path">{{ detail.path }}</div>
         </div>
 
@@ -577,25 +646,18 @@ onUnmounted(() => {
       <template #footer>
         <NSpace justify="end">
           <NButton @click="showDetail = false">{{ $t('output.close') }}</NButton>
-          <NButton secondary @click="detail && safeOpen(detail.path)">{{ $t('output.openFile') }}</NButton>
+          <NButton secondary @click="detail && safeOpen(detail.path)">{{
+            $t('output.openFile')
+          }}</NButton>
           <NButton secondary @click="detail && safeReveal(detail.path)">
             <template #icon><NIcon :component="FolderOpenOutline" /></template>
             {{ $t('output.reveal') }}
           </NButton>
-          <NButton
-            v-if="detail?.type === 'image'"
-            type="primary"
-            @click="restoreWorkflow"
-          >
+          <NButton v-if="detail?.type === 'image'" type="primary" @click="restoreWorkflow">
             <template #icon><NIcon :component="GitBranchOutline" /></template>
             {{ $t('output.restoreWorkflow') }}
           </NButton>
-          <NButton
-            v-if="detail"
-            type="error"
-            secondary
-            @click="confirmDeleteAsset(detail)"
-          >
+          <NButton v-if="detail" type="error" secondary @click="confirmDeleteAsset(detail)">
             {{ $t('output.delete') }}
           </NButton>
         </NSpace>
@@ -603,25 +665,22 @@ onUnmounted(() => {
     </NModal>
 
     <!-- Lightbox -->
-    <NModal v-model:show="lightbox" preset="card" style="width: 90vw; max-width: 1100px; border-radius: 20px">
+    <NModal
+      v-model:show="lightbox"
+      preset="card"
+      style="width: 90vw; max-width: 1100px; border-radius: 20px"
+    >
       <div class="lightbox">
-        <NButton
-          class="lb-nav lb-prev"
-          secondary
-          circle
-          size="large"
-          @click="lightboxPrev"
-        >
+        <NButton class="lb-nav lb-prev" secondary circle size="large" @click="lightboxPrev">
           <template #icon><NIcon :component="ChevronBackOutline" /></template>
         </NButton>
-        <img v-if="lightboxSrc" :src="lightboxSrc" class="lightbox-img" />
-        <NButton
-          class="lb-nav lb-next"
-          secondary
-          circle
-          size="large"
-          @click="lightboxNext"
-        >
+        <img
+          v-if="lightboxSrc"
+          :src="lightboxSrc"
+          class="lightbox-img"
+          :alt="lightboxAsset?.fileName || ''"
+        />
+        <NButton class="lb-nav lb-next" secondary circle size="large" @click="lightboxNext">
           <template #icon><NIcon :component="ChevronForwardOutline" /></template>
         </NButton>
       </div>
@@ -633,10 +692,7 @@ onUnmounted(() => {
           </NSpace>
           <NSpace>
             <NButton @click="lightbox = false">{{ $t('output.close') }}</NButton>
-            <NButton
-              secondary
-              @click="lightboxAsset && safeOpen(lightboxAsset.path)"
-            >
+            <NButton secondary @click="lightboxAsset && safeOpen(lightboxAsset.path)">
               <template #icon><NIcon :component="DownloadOutline" /></template>
               {{ $t('output.openFile') }}
             </NButton>
@@ -654,6 +710,9 @@ onUnmounted(() => {
   text-align: center;
   cursor: pointer;
   position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 .asset.selected {
   outline: 2px solid $color-primary;
@@ -679,29 +738,52 @@ onUnmounted(() => {
   position: absolute;
   left: 6px;
   top: 6px;
+  padding: 2px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.85);
+  display: grid;
+  place-items: center;
 }
 .fav-btn {
   position: absolute;
   right: 6px;
   top: 6px;
   border: none;
-  background: rgba(0, 0, 0, 0.28);
+  background: rgba(0, 0, 0, 0.32);
   border-radius: 999px;
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   display: grid;
   place-items: center;
   cursor: pointer;
+  transition:
+    transform 0.15s ease,
+    background 0.15s ease;
+
+  &:hover {
+    transform: scale(1.08);
+    background: rgba(0, 0, 0, 0.45);
+  }
+
+  &:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.9);
+    outline-offset: 1px;
+  }
 }
 .asset-name {
   font-size: 12.5px;
   font-weight: 600;
   word-break: break-all;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .asset-meta {
   font-size: 11px;
-  color: $color-text-muted;
+  color: $color-text-muted-ink;
   margin: 6px 0 10px;
+  min-height: 15px;
 }
 .empty {
   padding: 64px 0;
@@ -734,7 +816,7 @@ onUnmounted(() => {
 }
 .detail-path {
   font-size: 11px;
-  color: $color-text-muted;
+  color: $color-text-muted-ink;
   word-break: break-all;
 }
 .params-title {

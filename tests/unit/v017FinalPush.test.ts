@@ -1,20 +1,26 @@
 import { describe, it, expect } from 'vitest'
 import { join } from 'path'
-import { readFileSync } from 'fs'
+import { readFileSync, readdirSync } from 'fs'
 
-const readSrc = (rel: string): string =>
-  readFileSync(join(__dirname, '..', '..', rel), 'utf-8')
+const readSrc = (rel: string): string => readFileSync(join(__dirname, '..', '..', rel), 'utf-8')
 
 // ============ All views have proper Vue SFC structure ============
 describe('Vue SFC structure', () => {
   const views = [
-    'dashboard/DashboardView.vue', 'instances/InstancesView.vue',
-    'instances/InstanceDetailView.vue', 'models/ModelsView.vue',
-    'nodes/NodesView.vue', 'nodes/MarketView.vue',
-    'workflows/WorkflowsView.vue', 'workflows/BatchView.vue',
-    'output/OutputView.vue', 'monitor/MonitorView.vue',
-    'doctor/DoctorView.vue', 'install/InstallView.vue',
-    'backup/BackupView.vue', 'settings/SettingsView.vue',
+    'dashboard/DashboardView.vue',
+    'instances/InstancesView.vue',
+    'instances/InstanceDetailView.vue',
+    'models/ModelsView.vue',
+    'nodes/NodesView.vue',
+    'nodes/MarketView.vue',
+    'workflows/WorkflowsView.vue',
+    'workflows/BatchView.vue',
+    'output/OutputView.vue',
+    'monitor/MonitorView.vue',
+    'doctor/DoctorView.vue',
+    'install/InstallView.vue',
+    'backup/BackupView.vue',
+    'settings/SettingsView.vue',
     'embed/EmbedView.vue'
   ]
   for (const v of views) {
@@ -29,15 +35,21 @@ describe('Vue SFC structure', () => {
 // ============ All services use proper imports ============
 describe('service imports from shared types', () => {
   const services = [
-    'src/main/services/db.ts', 'src/main/services/model.ts',
-    'src/main/services/workflow.ts', 'src/main/services/p1p2.ts',
-    'src/main/services/nodePack.ts', 'src/main/services/installer.ts',
-    'src/main/services/updater.ts', 'src/main/services/backup.ts'
+    'src/main/services/db.ts',
+    'src/main/services/model.ts',
+    'src/main/services/workflow.ts',
+    'src/main/services/p1p2.ts',
+    'src/main/services/nodePack.ts',
+    'src/main/services/installer.ts',
+    'src/main/services/updater.ts',
+    'src/main/services/backup.ts'
   ]
   for (const f of services) {
     it(`${f.split('/').pop()} imports from @shared/types`, () => {
       const src = readSrc(f)
-      expect(src).toMatch(/from ['"]@?\.?\.?\/?shared\/types['"]|from ['"]@shared\/types['"]|from ['"].*types['"]/)
+      expect(src).toMatch(
+        /from ['"]@?\.?\.?\/?shared\/types['"]|from ['"]@shared\/types['"]|from ['"].*types['"]/
+      )
     })
   }
 })
@@ -107,7 +119,21 @@ describe('main/index.ts structure', () => {
 describe('app store structure', () => {
   it('has all state refs', () => {
     const src = readSrc('src/renderer/src/stores/app.ts')
-    const refs = ['ready', 'settings', 'instances', 'activeInstanceId', 'instanceSwitchTick', 'system', 'wsEvents', 'lastWsProgress', 'doctorReport', 'notifications', 'notificationSeq', 'remotes', 'activeRemoteId']
+    const refs = [
+      'ready',
+      'settings',
+      'instances',
+      'activeInstanceId',
+      'instanceSwitchTick',
+      'system',
+      'wsEvents',
+      'lastWsProgress',
+      'doctorReport',
+      'notifications',
+      'notificationSeq',
+      'remotes',
+      'activeRemoteId'
+    ]
     for (const r of refs) {
       expect(src, `missing ${r}`).toContain(r)
     }
@@ -123,7 +149,15 @@ describe('app store structure', () => {
 
   it('has all functions', () => {
     const src = readSrc('src/renderer/src/stores/app.ts')
-    const fns = ['bootstrap', 'refreshInstances', 'refreshRemotes', 'bindLive', 'pushNotification', 'pruneActiveInstance', 'syncWs']
+    const fns = [
+      'bootstrap',
+      'refreshInstances',
+      'refreshRemotes',
+      'bindLive',
+      'pushNotification',
+      'pruneActiveInstance',
+      'syncWs'
+    ]
     for (const f of fns) {
       expect(src, `missing ${f}`).toContain(f)
     }
@@ -134,7 +168,15 @@ describe('app store structure', () => {
 describe('useComfyUpdate structure', () => {
   it('has all state', () => {
     const src = readSrc('src/renderer/src/composables/useComfyUpdate.ts')
-    const states = ['progress', 'progressKind', 'updating', 'updatingInstanceId', 'cancelling', 'nodeUpdatingPack', 'nodeInstallingPack']
+    const states = [
+      'progress',
+      'progressKind',
+      'updating',
+      'updatingInstanceId',
+      'cancelling',
+      'nodeUpdatingPack',
+      'nodeInstallingPack'
+    ]
     for (const s of states) {
       expect(src, `missing ${s}`).toContain(s)
     }
@@ -142,7 +184,13 @@ describe('useComfyUpdate structure', () => {
 
   it('has all actions', () => {
     const src = readSrc('src/renderer/src/composables/useComfyUpdate.ts')
-    const actions = ['checkComfyUpdate', 'startUpdate', 'cancelUpdate', 'repairEnv', 'clearProgress']
+    const actions = [
+      'checkComfyUpdate',
+      'startUpdate',
+      'cancelUpdate',
+      'repairEnv',
+      'clearProgress'
+    ]
     for (const a of actions) {
       expect(src, `missing ${a}`).toContain(a)
     }
@@ -194,12 +242,22 @@ describe('i18n: key counts are stable', () => {
 
 // ============ Error codes in main services ============
 describe('machine-readable error codes', () => {
-  const codes = ['PORT_IN_USE', 'SETTING_OFFLINE', 'SETTING_GIT_INSTALL', 'SETTING_SECURITY_STRONG', 'OP_CANCELLED']
+  const codes = [
+    'PORT_IN_USE',
+    'SETTING_OFFLINE',
+    'SETTING_GIT_INSTALL',
+    'SETTING_SECURITY_STRONG',
+    'OP_CANCELLED'
+  ]
   const allSrc = [
-    'src/main/services/instance.ts', 'src/main/services/nodePack.ts',
-    'src/main/services/installer.ts', 'src/main/services/updater.ts',
+    'src/main/services/instance.ts',
+    'src/main/services/nodePack.ts',
+    'src/main/services/installer.ts',
+    'src/main/services/updater.ts',
     'src/main/ipc/handlers.ts'
-  ].map((f) => readSrc(f)).join('\n')
+  ]
+    .map((f) => readSrc(f))
+    .join('\n')
 
   for (const code of codes) {
     it(`code '${code}' is used`, () => {
@@ -210,36 +268,45 @@ describe('machine-readable error codes', () => {
 
 // ============ Version consistency ============
 describe('version consistency across files', () => {
-  it('package.json, constants.ts agree on 0.1.7', () => {
+  it('package.json, constants.ts agree on 0.1.8', () => {
     const pkg = JSON.parse(readSrc('package.json'))
     const constants = readSrc('src/shared/constants.ts')
-    expect(pkg.version).toBe('0.1.7')
-    expect(constants).toContain('0.1.7')
+    expect(pkg.version).toBe('0.1.8')
+    expect(constants).toContain('0.1.8')
   })
 })
 
 // ============ Test file names match patterns ============
 describe('test file naming', () => {
-  const files = [
-    'v016Collaboration.test.ts', 'v017Contracts.test.ts',
-    'v017DeepAudit.test.ts', 'v017SecurityAndUtils.test.ts',
-    'v017RuntimeAndCoverage.test.ts', 'v017Exhaustive.test.ts',
-    'v017ParametricAndSecurity.test.ts', 'v017TypeSystem.test.ts',
-    'v017SourceContracts.test.ts', 'v017TypeFields.test.ts',
-    'v017FinalPush.test.ts'
-  ]
-  for (const f of files) {
-    it(`${f} follows naming convention`, () => {
-      expect(f).toMatch(/^v\d+[A-Z].*\.test\.ts$/)
-    })
-  }
+  it('every test file in tests/unit follows the *.test.ts convention', () => {
+    // 真实目录扫描（只校验文件，跳过 __snapshots__ 之类的子目录）。
+    const files = readdirSync(join(__dirname), { withFileTypes: true })
+      .filter((e) => e.isFile())
+      .map((e) => e.name)
+    expect(files.length).toBeGreaterThan(40)
+    // Report the exact offenders instead of a bare regex mismatch per file.
+    expect(files.filter((f) => !f.endsWith('.test.ts'))).toEqual([])
+  })
 })
 
 // ============ Composable: useIpc structure ============
 describe('useIpc structure', () => {
   it('exports all needed helpers', () => {
     const src = readSrc('src/renderer/src/composables/useIpc.ts')
-    const exports = ['toPlainIpcArg', 'ComfyPilotIpcError', 'ipc', 'onIpc', 'onInstanceStatus', 'onMonitorTick', 'onDownloadProgress', 'onModelScanProgress', 'onNotification', 'onDoctorProgress', 'onBatchProgress', 'onRegistryIndexProgress']
+    const exports = [
+      'toPlainIpcArg',
+      'ComfyPilotIpcError',
+      'ipc',
+      'onIpc',
+      'onInstanceStatus',
+      'onMonitorTick',
+      'onDownloadProgress',
+      'onModelScanProgress',
+      'onNotification',
+      'onDoctorProgress',
+      'onBatchProgress',
+      'onRegistryIndexProgress'
+    ]
     for (const e of exports) {
       expect(src, `missing ${e}`).toContain(e)
     }

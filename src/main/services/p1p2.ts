@@ -33,9 +33,10 @@ import { assertSafeRelativeFilename } from './security'
 // ---------- helpers ----------
 
 function instanceUrl(inst: { listen: string; port: number }): string {
-  const host = inst.listen === '0.0.0.0' || inst.listen === '::' || inst.listen === '[::]'
-    ? '127.0.0.1'
-    : inst.listen
+  const host =
+    inst.listen === '0.0.0.0' || inst.listen === '::' || inst.listen === '[::]'
+      ? '127.0.0.1'
+      : inst.listen
   return `http://${host}:${inst.port}`
 }
 
@@ -124,7 +125,8 @@ function normalizeLegacyJob(raw: Record<string, unknown>): BatchJob {
       submitted: raw.submitted != null ? Number(raw.submitted) : sum((i) => i.submitted),
       completed: raw.completed != null ? Number(raw.completed) : sum((i) => i.completed),
       failed: raw.failed != null ? Number(raw.failed) : sum((i) => i.failed),
-      submitFailed: raw.submitFailed != null ? Number(raw.submitFailed) : sum((i) => i.submitFailed),
+      submitFailed:
+        raw.submitFailed != null ? Number(raw.submitFailed) : sum((i) => i.submitFailed),
       execFailed: raw.execFailed != null ? Number(raw.execFailed) : sum((i) => i.execFailed),
       produced: raw.produced != null ? Number(raw.produced) : 0,
       createdAt: Number(raw.createdAt) || Date.now(),
@@ -370,7 +372,10 @@ export class BatchService extends EventEmitter {
             job.failed += 1
             iteration += 1
             const msg = err instanceof Error ? err.message : String(err)
-            job.notes = [job.notes, `#${li + 1}.${i + 1} ${msg}`].filter(Boolean).join('; ').slice(-800)
+            job.notes = [job.notes, `#${li + 1}.${i + 1} ${msg}`]
+              .filter(Boolean)
+              .join('; ')
+              .slice(-800)
           }
           upsertBatchJob(job)
           this.emit('progress', job)
@@ -760,7 +765,9 @@ export class OutputService {
     // also holds other instances / older roots).
     if (opts?.root) {
       const root = opts.root.replace(/[\\/]+$/, '')
-      all = all.filter((a) => a.path === root || a.path.startsWith(root + '/') || a.path.startsWith(root + '\\'))
+      all = all.filter(
+        (a) => a.path === root || a.path.startsWith(root + '/') || a.path.startsWith(root + '\\')
+      )
     }
     if (opts?.type && opts.type !== 'all') all = all.filter((a) => a.type === opts.type)
     if (opts?.favorite) all = all.filter((a) => a.favorite)
@@ -941,7 +948,10 @@ export class OutputService {
    * Restore an output PNG's embedded workflow into the TARGET INSTANCE's
    * workflows folder (same as a normal import — one .json artifact).
    */
-  async importToWorkflow(path: string, instanceId?: string): Promise<import('@shared/types').WorkflowRecord | null> {
+  async importToWorkflow(
+    path: string,
+    instanceId?: string
+  ): Promise<import('@shared/types').WorkflowRecord | null> {
     const { workflowService } = await import('./workflow')
     const meta = await workflowService.parsePngMeta(path)
     const hasGraph = Boolean(meta?.workflow || meta?.prompt)
@@ -1004,7 +1014,8 @@ export class RemoteService {
         headers,
         signal: AbortSignal.timeout(4000)
       })
-      if (!res.ok) return { id, online: false, queueRunning: 0, queuePending: 0, error: `HTTP ${res.status}` }
+      if (!res.ok)
+        return { id, online: false, queueRunning: 0, queuePending: 0, error: `HTTP ${res.status}` }
       let queueRunning = 0
       let queuePending = 0
       try {
@@ -1058,7 +1069,8 @@ export class MarketService {
   }) {
     const settings = loadSettings()
     try {
-      const { searchRegistry, toPageResult, mapMarketItem, packKeyVariants } = await import('./registry')
+      const { searchRegistry, toPageResult, mapMarketItem, packKeyVariants } =
+        await import('./registry')
       const result = await searchRegistry({
         query: opts?.query,
         limit: opts?.limit,
@@ -1116,10 +1128,14 @@ function readdirSafe(instancePath: string): string[] {
  * of the directory basename. Metadata names / registryIds are merged in by the
  * caller once nodePack is loaded.
  */
-function collectInstalledKeys(instancePath: string, variants: (s: string) => string[]): Set<string> {
+function collectInstalledKeys(
+  instancePath: string,
+  variants: (s: string) => string[]
+): Set<string> {
   const keys = new Set<string>()
   for (const n of readdirSafe(instancePath)) {
-    if (n.startsWith('.') || n === '__pycache__' || n === '__MACOSX' || n === 'node_modules') continue
+    if (n.startsWith('.') || n === '__pycache__' || n === '__MACOSX' || n === 'node_modules')
+      continue
     for (const v of variants(n)) keys.add(v)
   }
   return keys

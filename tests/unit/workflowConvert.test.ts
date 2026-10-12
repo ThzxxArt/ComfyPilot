@@ -79,7 +79,12 @@ describe('uiWorkflowToApiPrompt', () => {
       nodes: [
         { id: 1, type: 'Note', widgets_values: [] },
         { id: 2, type: 'Reroute', inputs: [], outputs: [] },
-        { id: 3, type: 'KSampler', mode: 2, widgets_values: [1, 'fixed', 10, 7, 'euler', 'normal', 1] },
+        {
+          id: 3,
+          type: 'KSampler',
+          mode: 2,
+          widgets_values: [1, 'fixed', 10, 7, 'euler', 'normal', 1]
+        },
         { id: 4, type: 'CLIPTextEncode', mode: 4, widgets_values: ['hi'] },
         { id: 5, type: 'SaveImage', widgets_values: ['out'] }
       ]
@@ -452,7 +457,10 @@ describe('uiWorkflowToApiPrompt', () => {
         {
           id: 13,
           type: 'T13',
-          inputs: [{ name: 'a', type: 'INT' }, { name: 'b', type: 'INT' }],
+          inputs: [
+            { name: 'a', type: 'INT' },
+            { name: 'b', type: 'INT' }
+          ],
           widgets_values: [{ x: 1 }]
         }
       ]
@@ -554,9 +562,7 @@ describe('toApiPrompt wrappers', () => {
     })
     expect(fromWrapper['2'].inputs.text).toBe('hi')
 
-    expect(() => toApiPrompt({ nodes: [{ id: 1, type: 'Note' }] })).toThrow(
-      /no executable nodes/i
-    )
+    expect(() => toApiPrompt({ nodes: [{ id: 1, type: 'Note' }] })).toThrow(/no executable nodes/i)
   })
 
   it('ignores malformed link table entries and empty graphs', () => {

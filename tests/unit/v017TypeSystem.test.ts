@@ -2,8 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { join } from 'path'
 import { readFileSync } from 'fs'
 
-const readSrc = (rel: string): string =>
-  readFileSync(join(__dirname, '..', '..', rel), 'utf-8')
+const readSrc = (rel: string): string => readFileSync(join(__dirname, '..', '..', rel), 'utf-8')
 
 // ============ IPC channels: every channel has type + handler ============
 describe('IPC channel coverage', () => {
@@ -117,23 +116,44 @@ describe('main/index.ts event wiring', () => {
 // ============ Service singleton exports ============
 describe('service singleton pattern', () => {
   const services = [
-    'instanceService', 'modelService', 'nodePackService', 'workflowService',
-    'monitorService', 'doctorService', 'bootstrapService', 'backupService',
-    'envService', 'batchService', 'outputService', 'remoteService', 'marketService',
-    'installerService', 'comfyUpdaterService', 'thumbnailService', 'renameService',
-    'aria2Service', 'registryIndex'
+    'instanceService',
+    'modelService',
+    'nodePackService',
+    'workflowService',
+    'monitorService',
+    'doctorService',
+    'bootstrapService',
+    'backupService',
+    'envService',
+    'batchService',
+    'outputService',
+    'remoteService',
+    'marketService',
+    'installerService',
+    'comfyUpdaterService',
+    'thumbnailService',
+    'renameService',
+    'aria2Service',
+    'registryIndex'
   ]
   for (const s of services) {
     it(`${s} is exported`, () => {
       // Check at least one source file exports it
       const found = [
-        'src/main/services/instance.ts', 'src/main/services/model.ts',
-        'src/main/services/nodePack.ts', 'src/main/services/workflow.ts',
-        'src/main/services/monitor.ts', 'src/main/services/doctor.ts',
-        'src/main/services/bootstrap.ts', 'src/main/services/backup.ts',
-        'src/main/services/env.ts', 'src/main/services/p1p2.ts',
-        'src/main/services/installer.ts', 'src/main/services/updater.ts',
-        'src/main/services/media.ts', 'src/main/services/registryIndex.ts'
+        'src/main/services/instance.ts',
+        'src/main/services/model.ts',
+        'src/main/services/nodePack.ts',
+        'src/main/services/workflow.ts',
+        'src/main/services/monitor.ts',
+        'src/main/services/doctor.ts',
+        'src/main/services/bootstrap.ts',
+        'src/main/services/backup.ts',
+        'src/main/services/env.ts',
+        'src/main/services/p1p2.ts',
+        'src/main/services/installer.ts',
+        'src/main/services/updater.ts',
+        'src/main/services/media.ts',
+        'src/main/services/registryIndex.ts'
       ].some((f) => readSrc(f).includes(`export const ${s}`))
       expect(found, `${s} not found in any service`).toBe(true)
     })
@@ -143,19 +163,40 @@ describe('service singleton pattern', () => {
 // ============ Settings field usage verification ============
 describe('settings fields are used in business logic', () => {
   const fields = [
-    'locale', 'modelScanRoots', 'githubEndpoint', 'hfEndpoint', 'civitaiEndpoint',
-    'enableAutoCheckUpdates', 'embedFrontend', 'securityLevel', 'allowGitUrlInstall',
-    'allowPipInstall', 'networkMode', 'aria2Path', 'useAria2', 'launchOnBoot',
-    'minimizeToTray', 'autoStartInstancesOnLaunch', 'pipIndex', 'torchIndexMirror'
+    'locale',
+    'modelScanRoots',
+    'githubEndpoint',
+    'hfEndpoint',
+    'civitaiEndpoint',
+    'enableAutoCheckUpdates',
+    'embedFrontend',
+    'securityLevel',
+    'allowGitUrlInstall',
+    'allowPipInstall',
+    'networkMode',
+    'aria2Path',
+    'useAria2',
+    'launchOnBoot',
+    'minimizeToTray',
+    'autoStartInstancesOnLaunch',
+    'pipIndex',
+    'torchIndexMirror'
   ]
   const mainSrc = [
-    'src/main/services/model.ts', 'src/main/services/nodePack.ts',
-    'src/main/services/installer.ts', 'src/main/services/updater.ts',
-    'src/main/services/bootstrap.ts', 'src/main/services/proxy.ts',
-    'src/main/services/registry.ts', 'src/main/services/registryIndex.ts',
-    'src/main/services/p1p2.ts', 'src/main/index.ts',
+    'src/main/services/model.ts',
+    'src/main/services/nodePack.ts',
+    'src/main/services/installer.ts',
+    'src/main/services/updater.ts',
+    'src/main/services/bootstrap.ts',
+    'src/main/services/proxy.ts',
+    'src/main/services/registry.ts',
+    'src/main/services/registryIndex.ts',
+    'src/main/services/p1p2.ts',
+    'src/main/index.ts',
     'src/main/ipc/handlers.ts'
-  ].map((f) => readSrc(f)).join('\n')
+  ]
+    .map((f) => readSrc(f))
+    .join('\n')
 
   for (const field of fields) {
     it(`'${field}' is read in main process`, () => {
@@ -167,14 +208,21 @@ describe('settings fields are used in business logic', () => {
 // ============ Error code consistency ============
 describe('error codes are machine-readable', () => {
   const codes = [
-    'PORT_IN_USE', 'SETTING_OFFLINE', 'SETTING_GIT_INSTALL',
-    'SETTING_SECURITY_STRONG', 'OP_CANCELLED'
+    'PORT_IN_USE',
+    'SETTING_OFFLINE',
+    'SETTING_GIT_INSTALL',
+    'SETTING_SECURITY_STRONG',
+    'OP_CANCELLED'
   ]
   const allSrc = [
-    'src/main/services/instance.ts', 'src/main/services/nodePack.ts',
-    'src/main/services/installer.ts', 'src/main/services/updater.ts',
+    'src/main/services/instance.ts',
+    'src/main/services/nodePack.ts',
+    'src/main/services/installer.ts',
+    'src/main/services/updater.ts',
     'src/main/ipc/handlers.ts'
-  ].map((f) => readSrc(f)).join('\n')
+  ]
+    .map((f) => readSrc(f))
+    .join('\n')
 
   for (const code of codes) {
     it(`error code '${code}' exists`, () => {
@@ -210,7 +258,18 @@ describe('batch statuses', () => {
 describe('install steps', () => {
   it('all install step IDs are defined', () => {
     const src = readSrc('src/shared/types.ts')
-    const steps = ['bootstrap', 'preflight', 'python', 'venv', 'comfyui', 'torch', 'requirements', 'register', 'starter', 'done']
+    const steps = [
+      'bootstrap',
+      'preflight',
+      'python',
+      'venv',
+      'comfyui',
+      'torch',
+      'requirements',
+      'register',
+      'starter',
+      'done'
+    ]
     for (const s of steps) {
       expect(src).toContain(`'${s}'`)
     }
@@ -219,7 +278,21 @@ describe('install steps', () => {
 
   it('all update step IDs are defined', () => {
     const src = readSrc('src/shared/types.ts')
-    const steps = ['preflight', 'venv', 'stop', 'backup', 'fetch', 'download', 'clone', 'unpack', 'requirements', 'torch', 'verify', 'rollback', 'done']
+    const steps = [
+      'preflight',
+      'venv',
+      'stop',
+      'backup',
+      'fetch',
+      'download',
+      'clone',
+      'unpack',
+      'requirements',
+      'torch',
+      'verify',
+      'rollback',
+      'done'
+    ]
     for (const s of steps) {
       expect(src).toContain(`'${s}'`)
     }
@@ -231,7 +304,19 @@ describe('install steps', () => {
 describe('model categories', () => {
   it('all categories are defined', () => {
     const src = readSrc('src/shared/types.ts')
-    const cats = ['checkpoints', 'diffusion_models', 'loras', 'vae', 'clip', 'controlnet', 'upscale_models', 'embeddings', 'text_encoders', 'unet', 'other']
+    const cats = [
+      'checkpoints',
+      'diffusion_models',
+      'loras',
+      'vae',
+      'clip',
+      'controlnet',
+      'upscale_models',
+      'embeddings',
+      'text_encoders',
+      'unet',
+      'other'
+    ]
     for (const c of cats) {
       expect(src).toContain(`'${c}'`)
     }
@@ -255,7 +340,14 @@ describe('torch channels', () => {
 describe('node pack statuses', () => {
   it('all statuses are defined', () => {
     const src = readSrc('src/shared/types.ts')
-    const statuses = ['installed', 'update-available', 'disabled', 'error', 'not-installed', 'installing']
+    const statuses = [
+      'installed',
+      'update-available',
+      'disabled',
+      'error',
+      'not-installed',
+      'installing'
+    ]
     for (const s of statuses) {
       expect(src).toContain(`'${s}'`)
     }

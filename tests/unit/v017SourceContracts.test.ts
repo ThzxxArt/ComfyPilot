@@ -2,17 +2,36 @@ import { describe, it, expect } from 'vitest'
 import { join } from 'path'
 import { readFileSync } from 'fs'
 
-const readSrc = (rel: string): string =>
-  readFileSync(join(__dirname, '..', '..', rel), 'utf-8')
+const readSrc = (rel: string): string => readFileSync(join(__dirname, '..', '..', rel), 'utf-8')
 
 // ============ Every main service file exists and is non-trivial ============
 describe('main service files exist with real code', () => {
   const services = [
-    'backup.ts', 'bootstrap.ts', 'comfyApi.ts', 'db.ts', 'desktop.ts',
-    'doctor.ts', 'env.ts', 'installer.ts', 'instance.ts', 'media.ts',
-    'model.ts', 'monitor.ts', 'netProbe.ts', 'nodePack.ts', 'p1p2.ts',
-    'proxy.ts', 'registry.ts', 'registryIndex.ts', 'security.ts', 'tray.ts',
-    'updater.ts', 'workflow.ts', 'workflowConvert.ts', 'zipSafe.ts', 'zipWrite.ts'
+    'backup.ts',
+    'bootstrap.ts',
+    'comfyApi.ts',
+    'db.ts',
+    'desktop.ts',
+    'doctor.ts',
+    'env.ts',
+    'installer.ts',
+    'instance.ts',
+    'media.ts',
+    'model.ts',
+    'monitor.ts',
+    'netProbe.ts',
+    'nodePack.ts',
+    'p1p2.ts',
+    'proxy.ts',
+    'registry.ts',
+    'registryIndex.ts',
+    'security.ts',
+    'tray.ts',
+    'updater.ts',
+    'workflow.ts',
+    'workflowConvert.ts',
+    'zipSafe.ts',
+    'zipWrite.ts'
   ]
   for (const f of services) {
     it(`${f} exists with substantial code`, () => {
@@ -26,13 +45,20 @@ describe('main service files exist with real code', () => {
 // ============ Every renderer view exists ============
 describe('renderer views exist', () => {
   const views = [
-    'dashboard/DashboardView.vue', 'instances/InstancesView.vue',
-    'instances/InstanceDetailView.vue', 'models/ModelsView.vue',
-    'nodes/NodesView.vue', 'nodes/MarketView.vue',
-    'workflows/WorkflowsView.vue', 'workflows/BatchView.vue',
-    'output/OutputView.vue', 'monitor/MonitorView.vue',
-    'doctor/DoctorView.vue', 'install/InstallView.vue',
-    'backup/BackupView.vue', 'settings/SettingsView.vue',
+    'dashboard/DashboardView.vue',
+    'instances/InstancesView.vue',
+    'instances/InstanceDetailView.vue',
+    'models/ModelsView.vue',
+    'nodes/NodesView.vue',
+    'nodes/MarketView.vue',
+    'workflows/WorkflowsView.vue',
+    'workflows/BatchView.vue',
+    'output/OutputView.vue',
+    'monitor/MonitorView.vue',
+    'doctor/DoctorView.vue',
+    'install/InstallView.vue',
+    'backup/BackupView.vue',
+    'settings/SettingsView.vue',
     'embed/EmbedView.vue'
   ]
   for (const v of views) {
@@ -46,9 +72,7 @@ describe('renderer views exist', () => {
 
 // ============ Every component exists ============
 describe('renderer components exist', () => {
-  const components = [
-    'ComfyUpdateProgressModal.vue', 'StatCard.vue'
-  ]
+  const components = ['ComfyUpdateProgressModal.vue', 'StatCard.vue']
   for (const c of components) {
     it(`${c} exists`, () => {
       const src = readSrc(`src/renderer/src/components/${c}`)
@@ -61,9 +85,20 @@ describe('renderer components exist', () => {
 describe('router covers all views', () => {
   const src = readSrc('src/renderer/src/router/index.ts')
   const routes = [
-    'dashboard', 'instances', 'models', 'nodes', 'market',
-    'workflows', 'batch', 'output', 'monitor', 'doctor',
-    'install', 'backup', 'settings', 'embed'
+    'dashboard',
+    'instances',
+    'models',
+    'nodes',
+    'market',
+    'workflows',
+    'batch',
+    'output',
+    'monitor',
+    'doctor',
+    'install',
+    'backup',
+    'settings',
+    'embed'
   ]
   for (const r of routes) {
     it(`route '${r}' is defined`, () => {
@@ -75,10 +110,14 @@ describe('router covers all views', () => {
 // ============ Source file encoding checks ============
 describe('source files are valid UTF-8', () => {
   const files = [
-    'src/main/services/db.ts', 'src/main/services/nodePack.ts',
-    'src/main/services/model.ts', 'src/main/services/workflow.ts',
-    'src/shared/types.ts', 'src/shared/constants.ts',
-    'src/renderer/src/App.vue', 'src/renderer/src/stores/app.ts'
+    'src/main/services/db.ts',
+    'src/main/services/nodePack.ts',
+    'src/main/services/model.ts',
+    'src/main/services/workflow.ts',
+    'src/shared/types.ts',
+    'src/shared/constants.ts',
+    'src/renderer/src/App.vue',
+    'src/renderer/src/stores/app.ts'
   ]
   for (const f of files) {
     it(`${f} has no replacement chars`, () => {
@@ -91,9 +130,12 @@ describe('source files are valid UTF-8', () => {
 // ============ No hardcoded Chinese in main process ============
 describe('no hardcoded Chinese in main services', () => {
   const services = [
-    'src/main/services/db.ts', 'src/main/services/model.ts',
-    'src/main/services/workflow.ts', 'src/main/services/p1p2.ts',
-    'src/main/services/installer.ts', 'src/main/services/updater.ts'
+    'src/main/services/db.ts',
+    'src/main/services/model.ts',
+    'src/main/services/workflow.ts',
+    'src/main/services/p1p2.ts',
+    'src/main/services/installer.ts',
+    'src/main/services/updater.ts'
   ]
   for (const f of services) {
     it(`${f.split('/').pop()} has no Chinese literals`, () => {
@@ -115,9 +157,12 @@ describe('no hardcoded Chinese in main services', () => {
 // ============ No console.log in production main services ============
 describe('no stray console.log in main services', () => {
   const services = [
-    'src/main/services/db.ts', 'src/main/services/model.ts',
-    'src/main/services/workflow.ts', 'src/main/services/p1p2.ts',
-    'src/main/services/nodePack.ts', 'src/main/services/backup.ts'
+    'src/main/services/db.ts',
+    'src/main/services/model.ts',
+    'src/main/services/workflow.ts',
+    'src/main/services/p1p2.ts',
+    'src/main/services/nodePack.ts',
+    'src/main/services/backup.ts'
   ]
   for (const f of services) {
     it(`${f.split('/').pop()} has no console.log (except in catch blocks)`, () => {
@@ -144,7 +189,16 @@ describe('no stray console.log in main services', () => {
 describe('key functions are exported', () => {
   it('security.ts exports all safety functions', () => {
     const src = readSrc('src/main/services/security.ts')
-    const fns = ['isPathInside', 'isSafeExternalUrl', 'isSafeOpenPath', 'sanitizeId', 'isLocalhostUrl', 'assertSafeRelativeFilename', 'safeResolveUnder', 'normalizePathSegment']
+    const fns = [
+      'isPathInside',
+      'isSafeExternalUrl',
+      'isSafeOpenPath',
+      'sanitizeId',
+      'isLocalhostUrl',
+      'assertSafeRelativeFilename',
+      'safeResolveUnder',
+      'normalizePathSegment'
+    ]
     for (const fn of fns) {
       expect(src).toContain(`export function ${fn}`)
     }
@@ -152,7 +206,24 @@ describe('key functions are exported', () => {
 
   it('db.ts exports all CRUD functions', () => {
     const src = readSrc('src/main/services/db.ts')
-    const fns = ['loadSettings', 'saveSettings', 'loadInstanceConfigs', 'upsertInstanceConfig', 'deleteInstanceConfig', 'listNodePacks', 'upsertNodePack', 'listWorkflows', 'upsertWorkflow', 'listModels', 'upsertModel', 'listBatchJobs', 'upsertBatchJob', 'listOutputAssetsAll', 'listBackups', 'listRemotes']
+    const fns = [
+      'loadSettings',
+      'saveSettings',
+      'loadInstanceConfigs',
+      'upsertInstanceConfig',
+      'deleteInstanceConfig',
+      'listNodePacks',
+      'upsertNodePack',
+      'listWorkflows',
+      'upsertWorkflow',
+      'listModels',
+      'upsertModel',
+      'listBatchJobs',
+      'upsertBatchJob',
+      'listOutputAssetsAll',
+      'listBackups',
+      'listRemotes'
+    ]
     for (const fn of fns) {
       expect(src, `missing ${fn}`).toContain(`export function ${fn}`)
     }
@@ -264,8 +335,12 @@ describe('test coverage distribution', () => {
 
   it('total test files exceed 45', () => {
     const { readdirSync } = require('fs')
-    const unit = readdirSync(join(__dirname, '..', '..', 'tests/unit')).filter((f: string) => f.endsWith('.test.ts'))
-    const integration = readdirSync(join(__dirname, '..', '..', 'tests/integration')).filter((f: string) => f.endsWith('.test.ts'))
+    const unit = readdirSync(join(__dirname, '..', '..', 'tests/unit')).filter((f: string) =>
+      f.endsWith('.test.ts')
+    )
+    const integration = readdirSync(join(__dirname, '..', '..', 'tests/integration')).filter(
+      (f: string) => f.endsWith('.test.ts')
+    )
     expect(unit.length + integration.length).toBeGreaterThanOrEqual(45)
   })
 })
@@ -309,7 +384,21 @@ describe('preload API surface', () => {
 describe('App shell navigation', () => {
   it('has all nav items', () => {
     const src = readSrc('src/renderer/src/App.vue')
-    const items = ['dashboard', 'instances', 'workflows', 'batch', 'output', 'models', 'nodes', 'market', 'monitor', 'doctor', 'install', 'backup', 'settings']
+    const items = [
+      'dashboard',
+      'instances',
+      'workflows',
+      'batch',
+      'output',
+      'models',
+      'nodes',
+      'market',
+      'monitor',
+      'doctor',
+      'install',
+      'backup',
+      'settings'
+    ]
     for (const item of items) {
       expect(src).toContain(`'${item}'`)
     }
@@ -328,7 +417,32 @@ describe('App shell navigation', () => {
 describe('locale file structure', () => {
   it('zh-CN has all top-level sections', () => {
     const src = readSrc('src/renderer/src/i18n/locales/zh-CN.ts')
-    const sections = ['common', 'status', 'nav', 'header', 'dashboard', 'settings', 'instance', 'install', 'models', 'nodes', 'market', 'output', 'batch', 'workflows', 'monitor', 'doctor', 'backup', 'notify', 'stepMsg', 'update', 'launch', 'starterModels', 'embed', 'app']
+    const sections = [
+      'common',
+      'status',
+      'nav',
+      'header',
+      'dashboard',
+      'settings',
+      'instance',
+      'install',
+      'models',
+      'nodes',
+      'market',
+      'output',
+      'batch',
+      'workflows',
+      'monitor',
+      'doctor',
+      'backup',
+      'notify',
+      'stepMsg',
+      'update',
+      'launch',
+      'starterModels',
+      'embed',
+      'app'
+    ]
     for (const s of sections) {
       expect(src, `missing section ${s}`).toContain(`${s}:`)
     }
@@ -336,7 +450,32 @@ describe('locale file structure', () => {
 
   it('en-US has all top-level sections', () => {
     const src = readSrc('src/renderer/src/i18n/locales/en-US.ts')
-    const sections = ['common', 'status', 'nav', 'header', 'dashboard', 'settings', 'instance', 'install', 'models', 'nodes', 'market', 'output', 'batch', 'workflows', 'monitor', 'doctor', 'backup', 'notify', 'stepMsg', 'update', 'launch', 'starterModels', 'embed', 'app']
+    const sections = [
+      'common',
+      'status',
+      'nav',
+      'header',
+      'dashboard',
+      'settings',
+      'instance',
+      'install',
+      'models',
+      'nodes',
+      'market',
+      'output',
+      'batch',
+      'workflows',
+      'monitor',
+      'doctor',
+      'backup',
+      'notify',
+      'stepMsg',
+      'update',
+      'launch',
+      'starterModels',
+      'embed',
+      'app'
+    ]
     for (const s of sections) {
       expect(src, `missing section ${s}`).toContain(`${s}:`)
     }
@@ -375,7 +514,20 @@ describe('dynamic i18n key domains', () => {
 describe('workflow library operations (source contract)', () => {
   it('supports import, list, rename, delete, favorite, tag, exportZip, copyToInstance, openInFrontend', () => {
     const src = readSrc('src/main/services/workflow.ts')
-    const ops = ['importFile', 'importMany', 'list(', 'rename(', 'remove(', 'favorite(', 'tag(', 'exportZip', 'copyToInstance', 'openInFrontend', 'prepareFrontend', 'queue(']
+    const ops = [
+      'importFile',
+      'importMany',
+      'list(',
+      'rename(',
+      'remove(',
+      'favorite(',
+      'tag(',
+      'exportZip',
+      'copyToInstance',
+      'openInFrontend',
+      'prepareFrontend',
+      'queue('
+    ]
     for (const op of ops) {
       expect(src, `missing ${op}`).toContain(op)
     }
@@ -408,7 +560,21 @@ describe('output operations (source contract)', () => {
 describe('nodePack operations (source contract)', () => {
   it('supports install, uninstall, update, toggle, lock, checkIssues, smokeTest, snapshots, checkUpdates, updateAll', () => {
     const src = readSrc('src/main/services/nodePack.ts')
-    const ops = ['install(', 'uninstall(', 'update(', 'toggle(', 'lock(', 'checkIssues(', 'smokeTest(', 'snapshots(', 'createSnapshot(', 'restoreSnapshot(', 'checkUpdates(', 'updateAll(', 'cancelOp(']
+    const ops = [
+      'install(',
+      'uninstall(',
+      'update(',
+      'toggle(',
+      'lock(',
+      'checkIssues(',
+      'smokeTest(',
+      'snapshots(',
+      'createSnapshot(',
+      'restoreSnapshot(',
+      'checkUpdates(',
+      'updateAll(',
+      'cancelOp('
+    ]
     for (const op of ops) {
       expect(src, `missing ${op}`).toContain(op)
     }
@@ -419,7 +585,17 @@ describe('nodePack operations (source contract)', () => {
 describe('model operations (source contract)', () => {
   it('supports list, scan, delete, move, symlink, rename, tag, download, findDuplicates', () => {
     const src = readSrc('src/main/services/model.ts')
-    const ops = ['list(', 'scan(', 'remove(', 'move(', 'symlink(', 'rename(', 'tag(', 'download(', 'findDuplicates(']
+    const ops = [
+      'list(',
+      'scan(',
+      'remove(',
+      'move(',
+      'symlink(',
+      'rename(',
+      'tag(',
+      'download(',
+      'findDuplicates('
+    ]
     for (const op of ops) {
       expect(src, `missing ${op}`).toContain(op)
     }
@@ -430,7 +606,17 @@ describe('model operations (source contract)', () => {
 describe('instance operations (source contract)', () => {
   it('supports list, save, remove, start, launch, stop, restart, forceKill, getLogs', () => {
     const src = readSrc('src/main/services/instance.ts')
-    const ops = ['list(', 'save(', 'remove(', 'start(', 'launch(', 'stop(', 'restart(', 'forceKill(', 'getLogs(']
+    const ops = [
+      'list(',
+      'save(',
+      'remove(',
+      'start(',
+      'launch(',
+      'stop(',
+      'restart(',
+      'forceKill(',
+      'getLogs('
+    ]
     for (const op of ops) {
       expect(src, `missing ${op}`).toContain(op)
     }
@@ -483,7 +669,14 @@ describe('env operations (source contract)', () => {
 describe('installer operations (source contract)', () => {
   it('supports detectGpu, preflight, start, cancel, suggestInstallRoot, installStarter', () => {
     const src = readSrc('src/main/services/installer.ts')
-    const ops = ['detectGpu(', 'preflight(', 'start(', 'cancel(', 'suggestInstallRoot(', 'installStarter(']
+    const ops = [
+      'detectGpu(',
+      'preflight(',
+      'start(',
+      'cancel(',
+      'suggestInstallRoot(',
+      'installStarter('
+    ]
     for (const op of ops) {
       expect(src, `missing ${op}`).toContain(op)
     }

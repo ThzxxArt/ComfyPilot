@@ -16,16 +16,7 @@ import {
   GitBranchOutline,
   AlertCircleOutline
 } from '@vicons/ionicons5'
-import {
-  NButton,
-  NIcon,
-  NSpace,
-  NTag,
-  NProgress,
-  NSpin,
-  useDialog,
-  useMessage
-} from 'naive-ui'
+import { NButton, NIcon, NSpace, NTag, NProgress, NSpin, useDialog, useMessage } from 'naive-ui'
 import StatCard from '@/components/StatCard.vue'
 import { useAppStore } from '@/stores/app'
 import { ipc, onIpc, IPC_EVENTS } from '@/composables/useIpc'
@@ -52,6 +43,7 @@ const loading = ref(true)
 const nodePacks = ref<NodePackRecord[]>([])
 const models = ref<ModelRecord[]>([])
 const queue = ref<QueueSnapshot | null>(null)
+const queueError = ref(false)
 const statsError = ref('')
 
 /** Seconds since the active instance entered `starting` — ticks only while starting. */
@@ -76,9 +68,7 @@ const stats = computed(() => {
 
 const storageBytes = computed(() => models.value.reduce((s, m) => s + m.size, 0))
 
-const activeStatus = computed<InstanceStatus>(
-  () => store.activeInstance?.status ?? 'unknown'
-)
+const activeStatus = computed<InstanceStatus>(() => store.activeInstance?.status ?? 'unknown')
 
 function statusLabel(s: InstanceStatus | undefined): string {
   return t(`status.${s || 'unknown'}`)
@@ -101,11 +91,14 @@ async function refreshQueue(): Promise<void> {
     const inst = store.activeInstance
     if (!inst?.url || inst.status !== 'running') {
       queue.value = null
+      queueError.value = false
       return
     }
     queue.value = await ipc('monitor.queue', inst.url)
+    queueError.value = false
   } catch {
     queue.value = null
+    queueError.value = true
   }
 }
 
@@ -274,235 +267,283 @@ async function runDoctor(): Promise<void> {
     </div>
 
     <div class="page-body">
-    <NSpin :show="loading">
-      <!-- Onboarding: no instance yet -->
-      <section v-if="!hasInstances" class="card onboarding">
-        <div class="onboard-title">{{ $t('dashboard.onboarding.title') }}</div>
-        <ol class="onboard-steps">
-          <li class="onboard-step">
-            <span class="step-num">1</span>
-            <div class="step-body">
-              <div class="step-text">{{ $t('dashboard.onboarding.step1') }}</div>
-            </div>
-            <NButton type="primary" size="small" @click="router.push('/install')">
-              {{ $t('dashboard.onboarding.goInstall') }}
-            </NButton>
-          </li>
-          <li class="onboard-step">
-            <span class="step-num">2</span>
-            <div class="step-body">
-              <div class="step-text">{{ $t('dashboard.onboarding.step2') }}</div>
-            </div>
-            <NButton size="small" secondary @click="router.push('/instances')">
-              {{ $t('dashboard.onboarding.goLaunch') }}
-            </NButton>
-          </li>
-          <li class="onboard-step">
-            <span class="step-num">3</span>
-            <div class="step-body">
-              <div class="step-text">{{ $t('dashboard.onboarding.step3') }}</div>
-            </div>
-            <NButton size="small" secondary @click="router.push('/models')">
-              {{ $t('dashboard.onboarding.goModels') }}
-            </NButton>
-          </li>
-        </ol>
-      </section>
-
-      <!-- Launcher hero -->
-      <section v-else class="card hero">
-        <div class="hero-left">
-          <div class="hero-kicker">{{ $t('dashboard.currentInstance') }}</div>
-          <div class="hero-name">{{ store.activeInstance?.name || $t('dashboard.noInstance') }}</div>
-          <div class="hero-meta">
-            <NTag size="small" round :type="statusTagType(activeStatus)">
-              {{ statusLabel(activeStatus) }}
-            </NTag>
-            <span v-if="store.activeInstance" class="mono hero-url">{{ store.activeInstance.url }}</span>
-            <span v-if="store.activeInstance" class="hero-port">
-              {{ $t('dashboard.portLabel', { port: store.activeInstance.port }) }}
-            </span>
-          </div>
-          <div v-if="queue" class="hero-queue">
-            {{ $t('dashboard.queueStatus', { running: queue.running.length, pending: queue.pending.length }) }}
-          </div>
-          <div v-if="store.activeInstance?.lastError" class="hero-error">
-            <NIcon :size="14" :component="AlertCircleOutline" />
-            {{ store.activeInstance.lastError }}
-          </div>
-          <div v-if="activeStatus === 'starting'" class="hero-starting">
-            <div class="hero-starting-label">
-              <NIcon :size="14" :component="PulseOutline" class="spin-slow" />
-              {{ $t('dashboard.starting', { s: startElapsed }) }}
-            </div>
-            <div v-if="tailLogs.length" class="hero-logs mono">
-              <div class="hero-logs-title">{{ $t('dashboard.startingLogs') }}</div>
-              <div v-for="(line, i) in tailLogs" :key="i" class="hero-log-line">{{ line.message }}</div>
-            </div>
-          </div>
-        </div>
-        <div class="hero-actions">
-          <NButton
-            v-if="activeStatus !== 'running'"
-            type="primary"
-            size="large"
-            :loading="busy[store.activeInstance?.id || '']"
-            @click="launchActive"
-          >
-            <template #icon><NIcon :component="RocketOutline" /></template>
-            {{ $t('header.launchAndOpen') }}
-          </NButton>
-          <NButton
-            v-else
-            type="primary"
-            size="large"
-            @click="store.activeInstance?.url && router.push({ path: '/embed', query: { url: store.activeInstance.url } })"
-          >
-            <template #icon><NIcon :component="PlayOutline" /></template>
-            {{ $t('dashboard.openFrontend') }}
-          </NButton>
-          <NButton
-            v-if="activeStatus === 'running' || activeStatus === 'starting'"
-            secondary
-            size="large"
-            @click="stopActive"
-          >
-            <template #icon><NIcon :component="StopOutline" /></template>
-            {{ $t('header.stop') }}
-          </NButton>
-          <NButton secondary size="large" @click="router.push('/instances')">
-            {{ $t('dashboard.switchInstance') }}
-          </NButton>
-        </div>
-      </section>
-
-      <!-- Instances exist but no model yet — keep the step-3 hint visible -->
-      <section v-if="needsModels" class="card model-hint">
-        <NIcon :size="18" :component="CheckmarkCircleOutline" class="model-hint-icon" />
-        <div class="model-hint-text">{{ $t('dashboard.onboarding.step3') }}</div>
-        <NButton type="primary" size="small" @click="router.push('/models')">
-          {{ $t('dashboard.onboarding.goModels') }}
-        </NButton>
-      </section>
-
-      <div v-if="statsError" class="stats-error">
-        <NIcon :size="14" :component="AlertCircleOutline" />
-        {{ $t('dashboard.statsError') }} — {{ statsError }}
-      </div>
-
-      <div class="grid stats">
-        <StatCard
-          :label="$t('dashboard.runningInstances')"
-          :value="`${stats.running} / ${stats.instances}`"
-          :icon="ServerOutline"
-          tone="success"
-          :hint="$t('dashboard.instancesHint')"
-        />
-        <StatCard
-          :label="$t('dashboard.modelAssets')"
-          :value="stats.models"
-          :icon="FolderOpenOutline"
-          :hint="formatBytes(storageBytes)"
-        />
-        <StatCard
-          :label="$t('dashboard.nodePacks')"
-          :value="stats.nodes"
-          :icon="ExtensionPuzzleOutline"
-          :hint="$t('dashboard.nodesHint')"
-        />
-        <StatCard
-          :label="$t('dashboard.systemLoad')"
-          :value="formatPercent(stats.cpu)"
-          :icon="PulseOutline"
-          tone="warning"
-          :hint="$t('dashboard.memUsage', { pct: formatPercent(stats.ram) })"
-        />
-      </div>
-
-      <div class="grid lower">
-        <section class="panel card">
-          <div class="panel-head">
-            <div>
-              <div class="panel-title">{{ $t('dashboard.resourcePulse') }}</div>
-              <div class="panel-sub">{{ $t('dashboard.resourceSub') }}</div>
-            </div>
-            <NButton text type="primary" @click="router.push('/monitor')">
-              {{ $t('dashboard.viewMonitor') }}
-            </NButton>
-          </div>
-          <div class="meter-rows">
-            <div class="meter">
-              <div class="meter-label">CPU</div>
-              <NProgress type="line" :percentage="stats.cpu" :height="10" indicator-placement="inside" processing />
-            </div>
-            <div class="meter">
-              <div class="meter-label">Memory</div>
-              <NProgress type="line" :percentage="stats.ram" :height="10" indicator-placement="inside" />
-            </div>
-            <div v-for="gpu in store.system?.gpus || []" :key="gpu.index" class="meter">
-              <div class="meter-label">
-                {{ gpu.model }}
-                <span v-if="gpu.vramTotal" class="meter-sub">
-                  {{ $t('dashboard.vramLabel', { used: formatBytes(gpu.vramUsed), total: formatBytes(gpu.vramTotal) }) }}
-                </span>
+      <NSpin :show="loading">
+        <!-- Onboarding: no instance yet -->
+        <section v-if="!hasInstances" class="card onboarding">
+          <div class="onboard-title">{{ $t('dashboard.onboarding.title') }}</div>
+          <ol class="onboard-steps">
+            <li class="onboard-step">
+              <span class="step-num">1</span>
+              <div class="step-body">
+                <div class="step-text">{{ $t('dashboard.onboarding.step1') }}</div>
               </div>
-              <NProgress
-                type="line"
-                :percentage="vramPercent(gpu)"
-                :height="10"
-                indicator-placement="inside"
-                :color="COLORS.primary2"
-              />
+              <NButton type="primary" size="small" @click="router.push('/install')">
+                {{ $t('dashboard.onboarding.goInstall') }}
+              </NButton>
+            </li>
+            <li class="onboard-step">
+              <span class="step-num">2</span>
+              <div class="step-body">
+                <div class="step-text">{{ $t('dashboard.onboarding.step2') }}</div>
+              </div>
+              <NButton size="small" secondary @click="router.push('/instances')">
+                {{ $t('dashboard.onboarding.goLaunch') }}
+              </NButton>
+            </li>
+            <li class="onboard-step">
+              <span class="step-num">3</span>
+              <div class="step-body">
+                <div class="step-text">{{ $t('dashboard.onboarding.step3') }}</div>
+              </div>
+              <NButton size="small" secondary @click="router.push('/models')">
+                {{ $t('dashboard.onboarding.goModels') }}
+              </NButton>
+            </li>
+          </ol>
+        </section>
+
+        <!-- Launcher hero -->
+        <section v-else class="card hero">
+          <div class="hero-left">
+            <div class="hero-kicker">{{ $t('dashboard.currentInstance') }}</div>
+            <div class="hero-name" :title="store.activeInstance?.name">
+              {{ store.activeInstance?.name || $t('dashboard.noInstance') }}
             </div>
-            <div v-if="!(store.system?.gpus || []).length" class="empty-gpu">
-              <TrendingUpOutline style="opacity: 0.5" />
-              {{ $t('dashboard.waitingGpu') }}
+            <div class="hero-meta">
+              <NTag size="small" round :type="statusTagType(activeStatus)">
+                {{ statusLabel(activeStatus) }}
+              </NTag>
+              <span v-if="store.activeInstance" class="mono hero-url">{{
+                store.activeInstance.url
+              }}</span>
+              <span v-if="store.activeInstance" class="hero-port">
+                {{ $t('dashboard.portLabel', { port: store.activeInstance.port }) }}
+              </span>
             </div>
+            <div v-if="queue" class="hero-queue">
+              {{
+                $t('dashboard.queueStatus', {
+                  running: queue.running.length,
+                  pending: queue.pending.length
+                })
+              }}
+            </div>
+            <div
+              v-else-if="queueError && activeStatus === 'running'"
+              class="hero-queue hero-queue-error"
+            >
+              {{ $t('dashboard.queueError') }}
+            </div>
+            <div v-if="store.activeInstance?.lastError" class="hero-error">
+              <NIcon :size="14" :component="AlertCircleOutline" />
+              {{ store.activeInstance.lastError }}
+            </div>
+            <div v-if="activeStatus === 'starting'" class="hero-starting">
+              <div class="hero-starting-label">
+                <NIcon :size="14" :component="PulseOutline" class="spin-slow" />
+                {{ $t('dashboard.starting', { s: startElapsed }) }}
+              </div>
+              <div v-if="tailLogs.length" class="hero-logs mono">
+                <div class="hero-logs-title">{{ $t('dashboard.startingLogs') }}</div>
+                <div v-for="(line, i) in tailLogs" :key="i" class="hero-log-line">
+                  {{ line.message }}
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="hero-actions">
+            <NButton
+              v-if="activeStatus === 'starting'"
+              type="primary"
+              size="large"
+              loading
+              disabled
+            >
+              <template #icon><NIcon :component="RocketOutline" /></template>
+              {{ $t('dashboard.starting', { s: startElapsed }) }}
+            </NButton>
+            <NButton
+              v-else-if="activeStatus !== 'running'"
+              type="primary"
+              size="large"
+              :loading="busy[store.activeInstance?.id || '']"
+              @click="launchActive"
+            >
+              <template #icon><NIcon :component="RocketOutline" /></template>
+              {{ $t('header.launchAndOpen') }}
+            </NButton>
+            <NButton
+              v-else
+              type="primary"
+              size="large"
+              @click="
+                store.activeInstance?.url &&
+                router.push({ path: '/embed', query: { url: store.activeInstance.url } })
+              "
+            >
+              <template #icon><NIcon :component="PlayOutline" /></template>
+              {{ $t('dashboard.openFrontend') }}
+            </NButton>
+            <NButton
+              v-if="activeStatus === 'running' || activeStatus === 'starting'"
+              secondary
+              size="large"
+              @click="stopActive"
+            >
+              <template #icon><NIcon :component="StopOutline" /></template>
+              {{ $t('header.stop') }}
+            </NButton>
+            <NButton secondary size="large" @click="router.push('/instances')">
+              {{ $t('dashboard.switchInstance') }}
+            </NButton>
           </div>
         </section>
 
-        <section class="panel card">
-          <div class="panel-head">
-            <div>
-              <div class="panel-title">{{ $t('dashboard.quickLinks') }}</div>
-              <div class="panel-sub">{{ $t('dashboard.quickSub') }}</div>
-            </div>
-          </div>
-          <div class="quick-grid">
-            <button class="quick" @click="router.push('/models')">
-              <NIcon :size="22" :component="FolderOpenOutline" />
-              <span>{{ $t('dashboard.modelLibrary') }}</span>
-            </button>
-            <button class="quick" @click="router.push('/nodes')">
-              <NIcon :size="22" :component="ExtensionPuzzleOutline" />
-              <span>{{ $t('dashboard.nodeManage') }}</span>
-            </button>
-            <button class="quick" @click="router.push('/market')">
-              <NIcon :size="22" :component="FlashOutline" />
-              <span>{{ $t('nav.market') }}</span>
-            </button>
-            <button class="quick" @click="router.push('/workflows')">
-              <NIcon :size="22" :component="GitBranchOutline" />
-              <span>{{ $t('nav.workflows') }}</span>
-            </button>
-            <button class="quick" @click="router.push('/batch')">
-              <NIcon :size="22" :component="PlayOutline" />
-              <span>{{ $t('nav.batch') }}</span>
-            </button>
-            <button class="quick" @click="router.push('/doctor')">
-              <NIcon :size="22" :component="MedkitOutline" />
-              <span>{{ $t('dashboard.healthCheck') }}</span>
-            </button>
-          </div>
-          <div class="tip card">
-            <NTag type="info" round size="small">{{ $t('dashboard.proTip') }}</NTag>
-            <div class="tip-text">
-              {{ $t('dashboard.embedTipText') }}
-            </div>
-          </div>
+        <!-- Instances exist but no model yet — keep the step-3 hint visible -->
+        <section v-if="needsModels" class="card model-hint">
+          <NIcon :size="18" :component="CheckmarkCircleOutline" class="model-hint-icon" />
+          <div class="model-hint-text">{{ $t('dashboard.onboarding.step3') }}</div>
+          <NButton type="primary" size="small" @click="router.push('/models')">
+            {{ $t('dashboard.onboarding.goModels') }}
+          </NButton>
         </section>
-      </div>
-    </NSpin>
+
+        <div v-if="statsError" class="stats-error">
+          <NIcon :size="14" :component="AlertCircleOutline" />
+          {{ $t('dashboard.statsError') }} — {{ statsError }}
+        </div>
+
+        <div class="grid stats">
+          <StatCard
+            :label="$t('dashboard.runningInstances')"
+            :value="`${stats.running} / ${stats.instances}`"
+            :icon="ServerOutline"
+            tone="success"
+            :hint="$t('dashboard.instancesHint')"
+          />
+          <StatCard
+            :label="$t('dashboard.modelAssets')"
+            :value="stats.models"
+            :icon="FolderOpenOutline"
+            :hint="formatBytes(storageBytes)"
+          />
+          <StatCard
+            :label="$t('dashboard.nodePacks')"
+            :value="stats.nodes"
+            :icon="ExtensionPuzzleOutline"
+            :hint="$t('dashboard.nodesHint')"
+          />
+          <StatCard
+            :label="$t('dashboard.systemLoad')"
+            :value="formatPercent(stats.cpu)"
+            :icon="PulseOutline"
+            tone="warning"
+            :hint="$t('dashboard.memUsage', { pct: formatPercent(stats.ram) })"
+          />
+        </div>
+
+        <div class="grid lower">
+          <section class="panel card">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">{{ $t('dashboard.resourcePulse') }}</div>
+                <div class="panel-sub">{{ $t('dashboard.resourceSub') }}</div>
+              </div>
+              <NButton text type="primary" @click="router.push('/monitor')">
+                {{ $t('dashboard.viewMonitor') }}
+              </NButton>
+            </div>
+            <div class="meter-rows">
+              <div class="meter">
+                <div class="meter-label"><span>CPU</span></div>
+                <NProgress
+                  type="line"
+                  :percentage="stats.cpu"
+                  :height="10"
+                  indicator-placement="inside"
+                  processing
+                />
+              </div>
+              <div class="meter">
+                <div class="meter-label">
+                  <span>{{ $t('dashboard.memLabel') }}</span>
+                </div>
+                <NProgress
+                  type="line"
+                  :percentage="stats.ram"
+                  :height="10"
+                  indicator-placement="inside"
+                />
+              </div>
+              <div v-for="gpu in store.system?.gpus || []" :key="gpu.index" class="meter">
+                <div class="meter-label">
+                  <span class="meter-name" :title="gpu.model">{{ gpu.model }}</span>
+                  <span v-if="gpu.vramTotal" class="meter-sub">
+                    {{
+                      $t('dashboard.vramLabel', {
+                        used: formatBytes(gpu.vramUsed),
+                        total: formatBytes(gpu.vramTotal)
+                      })
+                    }}
+                  </span>
+                </div>
+                <NProgress
+                  type="line"
+                  :percentage="vramPercent(gpu)"
+                  :height="10"
+                  indicator-placement="inside"
+                  :color="COLORS.primary2"
+                />
+              </div>
+              <div v-if="!(store.system?.gpus || []).length" class="empty-gpu">
+                <TrendingUpOutline style="opacity: 0.5" />
+                {{ $t('dashboard.waitingGpu') }}
+              </div>
+            </div>
+          </section>
+
+          <section class="panel card">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">{{ $t('dashboard.quickLinks') }}</div>
+                <div class="panel-sub">{{ $t('dashboard.quickSub') }}</div>
+              </div>
+            </div>
+            <div class="quick-grid">
+              <button class="quick" @click="router.push('/models')">
+                <NIcon :size="22" :component="FolderOpenOutline" />
+                <span>{{ $t('dashboard.modelLibrary') }}</span>
+              </button>
+              <button class="quick" @click="router.push('/nodes')">
+                <NIcon :size="22" :component="ExtensionPuzzleOutline" />
+                <span>{{ $t('dashboard.nodeManage') }}</span>
+              </button>
+              <button class="quick" @click="router.push('/market')">
+                <NIcon :size="22" :component="FlashOutline" />
+                <span>{{ $t('nav.market') }}</span>
+              </button>
+              <button class="quick" @click="router.push('/workflows')">
+                <NIcon :size="22" :component="GitBranchOutline" />
+                <span>{{ $t('nav.workflows') }}</span>
+              </button>
+              <button class="quick" @click="router.push('/batch')">
+                <NIcon :size="22" :component="PlayOutline" />
+                <span>{{ $t('nav.batch') }}</span>
+              </button>
+              <button class="quick" @click="router.push('/doctor')">
+                <NIcon :size="22" :component="MedkitOutline" />
+                <span>{{ $t('dashboard.healthCheck') }}</span>
+              </button>
+            </div>
+            <div class="tip card">
+              <NTag type="info" round size="small">{{ $t('dashboard.proTip') }}</NTag>
+              <div class="tip-text">
+                {{ $t('dashboard.embedTipText') }}
+              </div>
+            </div>
+          </section>
+        </div>
+      </NSpin>
     </div>
   </div>
 </template>
@@ -518,7 +559,12 @@ async function runDoctor(): Promise<void> {
   padding: 22px 24px;
   margin-bottom: 16px;
   background: $gradient-soft;
-  border: 1px solid rgba(79, 110, 247, 0.22);
+  border: 1px solid rgba($color-primary, 0.22);
+}
+
+.hero-left {
+  flex: 1;
+  min-width: 0;
 }
 
 .hero-kicker {
@@ -534,6 +580,10 @@ async function runDoctor(): Promise<void> {
   font-weight: 800;
   letter-spacing: -0.02em;
   margin-top: 4px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .hero-meta {
@@ -547,8 +597,9 @@ async function runDoctor(): Promise<void> {
 }
 
 .hero-url {
-  color: $color-text-muted;
+  color: $color-text-muted-ink;
   font-size: 12px;
+  word-break: break-all;
 }
 
 .hero-port {
@@ -559,6 +610,10 @@ async function runDoctor(): Promise<void> {
   margin-top: 8px;
   font-size: 12px;
   color: $color-text-secondary;
+}
+
+.hero-queue-error {
+  color: $color-warning;
 }
 
 .hero-error {
@@ -578,7 +633,7 @@ async function runDoctor(): Promise<void> {
   margin-bottom: 12px;
   padding: 8px 12px;
   border-radius: 10px;
-  background: rgba(220, 38, 38, 0.08);
+  background: rgba($color-danger, 0.08);
   color: $color-danger;
   font-size: 12px;
 }
@@ -613,7 +668,7 @@ async function runDoctor(): Promise<void> {
   font-family: $font-sans;
   font-size: 10.5px;
   font-weight: 600;
-  color: $color-text-muted;
+  color: $color-text-muted-ink;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   margin-bottom: 4px;
@@ -643,7 +698,7 @@ async function runDoctor(): Promise<void> {
   padding: 22px 24px;
   margin-bottom: 16px;
   background: $gradient-soft;
-  border: 1px solid rgba(79, 110, 247, 0.22);
+  border: 1px solid rgba($color-primary, 0.22);
 }
 
 .onboard-title {
@@ -681,7 +736,7 @@ async function runDoctor(): Promise<void> {
   font-size: 12.5px;
   font-weight: 700;
   color: $color-primary;
-  background: rgba(79, 110, 247, 0.12);
+  background: rgba($color-primary, 0.12);
 }
 
 .step-body {
@@ -702,7 +757,7 @@ async function runDoctor(): Promise<void> {
   gap: 12px;
   padding: 12px 16px;
   margin-bottom: 16px;
-  border: 1px dashed rgba(79, 110, 247, 0.28);
+  border: 1px dashed rgba($color-primary, 0.28);
   background: $color-surface;
 }
 
@@ -718,12 +773,18 @@ async function runDoctor(): Promise<void> {
 }
 
 .stats {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
 }
 
 .lower {
   margin-top: 16px;
   grid-template-columns: 1.35fr 1fr;
+}
+
+@media (max-width: 1280px) {
+  .lower {
+    grid-template-columns: 1fr;
+  }
 }
 
 .panel {
@@ -745,7 +806,7 @@ async function runDoctor(): Promise<void> {
 .panel-sub {
   margin-top: 4px;
   font-size: 12.5px;
-  color: $color-text-muted;
+  color: $color-text-muted-ink;
 }
 
 .meter-rows {
@@ -764,14 +825,22 @@ async function runDoctor(): Promise<void> {
   gap: 8px;
 }
 
+.meter-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .meter-sub {
   font-weight: 500;
-  color: $color-text-muted;
+  color: $color-text-muted-ink;
   font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
 }
 
 .empty-gpu {
-  color: $color-text-muted;
+  color: $color-text-muted-ink;
   font-size: 13px;
   display: flex;
   gap: 8px;
@@ -800,10 +869,15 @@ async function runDoctor(): Promise<void> {
 
   &:hover {
     transform: translateY(-2px);
-    border-color: rgba(79, 110, 247, 0.35);
+    border-color: rgba($color-primary, 0.35);
     color: $color-primary;
     box-shadow: $shadow-md;
     background: $color-surface;
+  }
+
+  &:focus-visible {
+    outline: 2px solid rgba($color-primary, 0.55);
+    outline-offset: 2px;
   }
 }
 
@@ -814,7 +888,7 @@ async function runDoctor(): Promise<void> {
   gap: 10px;
   align-items: flex-start;
   background: $gradient-soft;
-  border: 1px dashed rgba(79, 110, 247, 0.28);
+  border: 1px dashed rgba($color-primary, 0.28);
 }
 
 .tip-text {

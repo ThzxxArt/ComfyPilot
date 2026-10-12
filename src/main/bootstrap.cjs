@@ -8,7 +8,7 @@ function log(msg) {
     const dir = path.join(os.homedir(), 'AppData', 'Roaming', 'ComfyPilot', 'logs')
     fs.mkdirSync(dir, { recursive: true })
     fs.appendFileSync(path.join(dir, 'boot.log'), `[${new Date().toISOString()}] ${msg}\n`)
-  } catch (e) {
+  } catch {
     /* ignore */
   }
 }

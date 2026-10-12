@@ -32,23 +32,44 @@ async function main() {
       } catch (e) {
         console.log('page', pg, 'fail', e.message)
       }
-      if (pg % 10 === 0) console.log(`progress page=${pg}/${totalPages} collected=${collected.length} ms=${Date.now() - t0}`)
+      if (pg % 10 === 0)
+        console.log(
+          `progress page=${pg}/${totalPages} collected=${collected.length} ms=${Date.now() - t0}`
+        )
     }
   })
   await Promise.all(workers)
 
   const hits = collected.filter((n) => {
-    const text = [n.name, n.displayName, n.description, (n.publisher || {}).name, (n.tags || []).join(' ')]
+    const text = [
+      n.name,
+      n.displayName,
+      n.description,
+      (n.publisher || {}).name,
+      (n.tags || []).join(' ')
+    ]
       .join(' ')
       .toLowerCase()
     return text.includes('controlnet')
   })
 
   console.log('---')
-  console.log('collected', collected.length, 'unique-ish', new Set(collected.map((n) => n.id || n.name)).size)
-  console.log('controlnet hits', hits.length, hits.slice(0, 15).map((n) => n.name))
+  console.log(
+    'collected',
+    collected.length,
+    'unique-ish',
+    new Set(collected.map((n) => n.id || n.name)).size
+  )
+  console.log(
+    'controlnet hits',
+    hits.length,
+    hits.slice(0, 15).map((n) => n.name)
+  )
   console.log('total ms', Date.now() - t0)
-  console.log('json bytes', JSON.stringify(collected.map((n) => ({ id: n.id, name: n.name, d: n.description }))).length)
+  console.log(
+    'json bytes',
+    JSON.stringify(collected.map((n) => ({ id: n.id, name: n.name, d: n.description }))).length
+  )
 }
 
 main().catch((e) => {

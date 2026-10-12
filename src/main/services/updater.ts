@@ -77,7 +77,11 @@ export const PRESERVE_ENTRIES = new Set([
   'python_embedded'
 ])
 
-function nowStep(id: UpdateStepId, title: string, status: UpdateStep['status'] = 'pending'): UpdateStep {
+function nowStep(
+  id: UpdateStepId,
+  title: string,
+  status: UpdateStep['status'] = 'pending'
+): UpdateStep {
   return { id, title, status, detail: '', log: [] }
 }
 
@@ -196,7 +200,12 @@ export function probeComfyVersion(comfyDir: string): string {
 /** Persist provenance next to the install so future probes can report a version. */
 function stampInstallMeta(
   comfyDir: string,
-  patch: { comfyCommit?: string; comfyFetchedAt?: number; comfyVersion?: string; comfySource?: string }
+  patch: {
+    comfyCommit?: string
+    comfyFetchedAt?: number
+    comfyVersion?: string
+    comfySource?: string
+  }
 ): void {
   try {
     const f = join(dirname(comfyDir), '.comfypilot-env.json')
@@ -293,7 +302,11 @@ export class ComfyUpdaterService extends EventEmitter {
     })
   }
 
-  private async run(cmd: string, args: string[], opts?: { cwd?: string; timeout?: number }): Promise<string> {
+  private async run(
+    cmd: string,
+    args: string[],
+    opts?: { cwd?: string; timeout?: number }
+  ): Promise<string> {
     this.assertNotCancelled()
     return new Promise((resolveP, reject) => {
       const onReject = (err: Error): void => {
@@ -332,7 +345,9 @@ export class ComfyUpdaterService extends EventEmitter {
   private emitProgress(message = ''): void {
     if (!this.progress) return
     const total = this.progress.steps.length
-    const done = this.progress.steps.filter((s) => s.status === 'done' || s.status === 'skipped').length
+    const done = this.progress.steps.filter(
+      (s) => s.status === 'done' || s.status === 'skipped'
+    ).length
     this.progress.percent = Math.round((done / total) * 100)
     this.progress.message = message
     this.emit('progress', { ...this.progress })
@@ -385,7 +400,11 @@ export class ComfyUpdaterService extends EventEmitter {
    * Run a command WITHOUT the cancel gate. Used exclusively by rollback —
    * a cancelled update must still be able to restore the previous state.
    */
-  private async runRaw(cmd: string, args: string[], opts?: { cwd?: string; timeout?: number }): Promise<string> {
+  private async runRaw(
+    cmd: string,
+    args: string[],
+    opts?: { cwd?: string; timeout?: number }
+  ): Promise<string> {
     return new Promise((resolveP, reject) => {
       execFile(
         cmd,
@@ -429,15 +448,27 @@ export class ComfyUpdaterService extends EventEmitter {
         // remote URL for informational purposes / mirror rewrite is NOT applied
         // to fetch (the local remote is already configured at clone time).
         await this.run(gitBin, ['-C', comfyDir, 'fetch', '--quiet', '--tags'], { timeout: 60000 })
-        const behindOut = await this.run(gitBin, ['-C', comfyDir, 'rev-list', '--count', 'HEAD..@{u}'], {
-          timeout: 10000
-        })
+        const behindOut = await this.run(
+          gitBin,
+          ['-C', comfyDir, 'rev-list', '--count', 'HEAD..@{u}'],
+          {
+            timeout: 10000
+          }
+        )
         const behind = Number(behindOut.trim()) || 0
         let latestCommit = ''
         let latest = ''
         try {
-          latestCommit = (await this.run(gitBin, ['-C', comfyDir, 'rev-parse', '--short', '@{u}'], { timeout: 5000 })).trim()
-          latest = (await this.run(gitBin, ['-C', comfyDir, 'describe', '--tags', '--always', '@{u}'], { timeout: 5000 })).trim()
+          latestCommit = (
+            await this.run(gitBin, ['-C', comfyDir, 'rev-parse', '--short', '@{u}'], {
+              timeout: 5000
+            })
+          ).trim()
+          latest = (
+            await this.run(gitBin, ['-C', comfyDir, 'describe', '--tags', '--always', '@{u}'], {
+              timeout: 5000
+            })
+          ).trim()
         } catch {
           latest = latestCommit || current
         }
@@ -466,14 +497,19 @@ export class ComfyUpdaterService extends EventEmitter {
     if (source === 'zip') {
       // Compare against GitHub master archive commit via the API (lightweight).
       try {
-        const url = applyGithubMirror('https://api.github.com/repos/comfyanonymous/ComfyUI/commits/master')
+        const url = applyGithubMirror(
+          'https://api.github.com/repos/comfyanonymous/ComfyUI/commits/master'
+        )
         const { session } = await import('electron')
         const res = await session.defaultSession.fetch(url, {
           headers: { 'User-Agent': 'ComfyPilot/0.1', Accept: 'application/vnd.github+json' },
           signal: AbortSignal.timeout(15000)
         })
         if (!res.ok) throw new Error(`GitHub API HTTP ${res.status}`)
-        const data = (await res.json()) as { sha?: string; commit?: { committer?: { date?: string } } }
+        const data = (await res.json()) as {
+          sha?: string
+          commit?: { committer?: { date?: string } }
+        }
         const latestCommit = (data.sha || '').slice(0, 12)
         const latestDate = data.commit?.committer?.date
         // Local stamp (if any) is a commit sha or a fetch date.
@@ -557,7 +593,9 @@ export class ComfyUpdaterService extends EventEmitter {
         this.log('preflight', `Warning: venv python missing at ${vpy} — dependency steps will fail`)
       }
       this.log('preflight', `source=${source} dir=${comfyDir}`)
-      this.setStep('preflight', 'done', `Source: ${source}`, undefined, 'update.msgPreflightDone', { source })
+      this.setStep('preflight', 'done', `Source: ${source}`, undefined, 'update.msgPreflightDone', {
+        source
+      })
       this.assertNotCancelled()
 
       // 1. stop instance if running
@@ -597,7 +635,9 @@ export class ComfyUpdaterService extends EventEmitter {
       if (source2 === 'git') {
         // git is self-versioned: record the current sha so rollback can reset.
         const gitBin = resolveGitBinary()
-        const sha = (await this.run(gitBin, ['-C', comfyDir, 'rev-parse', 'HEAD'], { timeout: 5000 })).trim()
+        const sha = (
+          await this.run(gitBin, ['-C', comfyDir, 'rev-parse', 'HEAD'], { timeout: 5000 })
+        ).trim()
         writeFileSync(join(backupPath, 'HEAD'), sha)
         // Also snapshot user-preserved dirs' *listings* only (not the data) for audit.
         writeFileSync(
@@ -617,7 +657,9 @@ export class ComfyUpdaterService extends EventEmitter {
         this.log('backup', `copied ${copied} core entries to ${backupPath}`)
       }
       if (this.progress) this.progress.backupPath = backupPath
-      this.setStep('backup', 'done', backupPath, undefined, 'update.msgBackup', { path: backupPath })
+      this.setStep('backup', 'done', backupPath, undefined, 'update.msgBackup', {
+        path: backupPath
+      })
       this.assertNotCancelled()
 
       // 3. fetch
@@ -637,8 +679,16 @@ export class ComfyUpdaterService extends EventEmitter {
           )
         }
         treeModified = true
-        const sha = (await this.run(gitBin, ['-C', comfyDir, 'rev-parse', '--short', 'HEAD'], { timeout: 5000 })).trim()
-        stampInstallMeta(comfyDir, { comfyCommit: sha, comfyFetchedAt: Date.now(), comfySource: 'git' })
+        const sha = (
+          await this.run(gitBin, ['-C', comfyDir, 'rev-parse', '--short', 'HEAD'], {
+            timeout: 5000
+          })
+        ).trim()
+        stampInstallMeta(comfyDir, {
+          comfyCommit: sha,
+          comfyFetchedAt: Date.now(),
+          comfySource: 'git'
+        })
         this.log('fetch', `updated to ${sha}`)
         this.setStep('fetch', 'done', `HEAD ${sha}`, undefined, 'update.msgFetchGitDone', { sha })
       } else {
@@ -659,11 +709,23 @@ export class ComfyUpdaterService extends EventEmitter {
         this.setStep('requirements', 'skipped', 'Skipped by user')
         this.setStep('torch', 'skipped', 'Skipped by user')
       } else {
-        this.setStep('requirements', 'running', 'Installing requirements…', undefined, 'update.msgReqRun')
+        this.setStep(
+          'requirements',
+          'running',
+          'Installing requirements…',
+          undefined,
+          'update.msgReqRun'
+        )
         const vpy2 = venvPython(config.venvPath || join(dirname(comfyDir), '.venv'))
         const reqFile = join(comfyDir, 'requirements.txt')
         if (!existsSync(reqFile)) {
-          this.setStep('requirements', 'skipped', 'No requirements.txt', undefined, 'update.msgReqSkip')
+          this.setStep(
+            'requirements',
+            'skipped',
+            'No requirements.txt',
+            undefined,
+            'update.msgReqSkip'
+          )
         } else if (!existsSync(vpy2)) {
           throw new Error(`Cannot install requirements — venv python missing at ${vpy2}`)
         } else {
@@ -672,7 +734,10 @@ export class ComfyUpdaterService extends EventEmitter {
           // expose official PyPI as an extra index so a mirror gap is not fatal.
           const OFFICIAL_PYPI = 'https://pypi.org/simple'
           const pipIndex = String(loadSettings().pipIndex || '').trim()
-          const bootstrap = await bootstrapService.ensure({ kinds: ['uv'], downloadIfMissing: false })
+          const bootstrap = await bootstrapService.ensure({
+            kinds: ['uv'],
+            downloadIfMissing: false
+          })
           const uvComp = bootstrap.components.find((c) => c.kind === 'uv' && c.installed)
           const installReq = async (): Promise<void> => {
             if (uvComp?.path) {
@@ -706,18 +771,40 @@ export class ComfyUpdaterService extends EventEmitter {
             // Retry once against official PyPI only — the mirror is the usual
             // reason a package "was not found in the package registry".
             if (pipIndex && pipIndex !== OFFICIAL_PYPI) {
-              this.log('requirements', `index ${pipIndex} failed (${msg.slice(0, 160)}) — retrying official PyPI`)
+              this.log(
+                'requirements',
+                `index ${pipIndex} failed (${msg.slice(0, 160)}) — retrying official PyPI`
+              )
               try {
                 if (uvComp?.path) {
                   await this.run(
                     uvComp.path,
-                    ['pip', 'install', '--python', vpy2, '-r', reqFile, '--index-url', OFFICIAL_PYPI],
+                    [
+                      'pip',
+                      'install',
+                      '--python',
+                      vpy2,
+                      '-r',
+                      reqFile,
+                      '--index-url',
+                      OFFICIAL_PYPI
+                    ],
                     { timeout: EXEC_OPTS.timeout }
                   )
                 } else {
                   await this.run(
                     vpy2,
-                    ['-m', 'pip', 'install', '-r', reqFile, '-i', OFFICIAL_PYPI, '--trusted-host', 'pypi.org'],
+                    [
+                      '-m',
+                      'pip',
+                      'install',
+                      '-r',
+                      reqFile,
+                      '-i',
+                      OFFICIAL_PYPI,
+                      '--trusted-host',
+                      'pypi.org'
+                    ],
                     { timeout: EXEC_OPTS.timeout }
                   )
                 }
@@ -737,7 +824,13 @@ export class ComfyUpdaterService extends EventEmitter {
               )
             }
           }
-          this.setStep('requirements', 'done', 'requirements installed', undefined, 'update.msgReqDone')
+          this.setStep(
+            'requirements',
+            'done',
+            'requirements installed',
+            undefined,
+            'update.msgReqDone'
+          )
         }
         this.assertNotCancelled()
 
@@ -751,9 +844,23 @@ export class ComfyUpdaterService extends EventEmitter {
             // uv-created venvs have no pip — seed it before the pip fallback.
             const { ensurePip } = await import('./env')
             await ensurePip(vpy3, (c, a, o) => this.run(c, a, o))
-            await this.run(vpy3, pipArgs(['-m', 'pip', 'install', '--upgrade', 'torch', 'torchvision', 'torchaudio', '--index-url', idx]), {
-              timeout: EXEC_OPTS.timeout
-            })
+            await this.run(
+              vpy3,
+              pipArgs([
+                '-m',
+                'pip',
+                'install',
+                '--upgrade',
+                'torch',
+                'torchvision',
+                'torchaudio',
+                '--index-url',
+                idx
+              ]),
+              {
+                timeout: EXEC_OPTS.timeout
+              }
+            )
           }
           try {
             await installTorchWith(index)
@@ -776,13 +883,20 @@ export class ComfyUpdaterService extends EventEmitter {
         const report = await doctorService.run(config.id)
         const fails = report.checks.filter((c) => c.severity === 'fail')
         if (fails.length) {
-          this.log('verify', `doctor reported ${fails.length} failure(s): ${fails.map((f) => f.title).join(', ')}`)
+          this.log(
+            'verify',
+            `doctor reported ${fails.length} failure(s): ${fails.map((f) => f.title).join(', ')}`
+          )
           // Verify failures are warnings for an update — the source did change —
           // but catastrophic (missing main.py) is handled below.
           if (!existsSync(join(comfyDir, 'main.py'))) {
             throw new Error('main.py missing after update')
           }
-          this.setStep('verify', 'done', `Doctor: ${fails.length} fail / ${report.summary.warn} warn`)
+          this.setStep(
+            'verify',
+            'done',
+            `Doctor: ${fails.length} fail / ${report.summary.warn} warn`
+          )
         } else {
           this.log('verify', `doctor pass=${report.summary.pass} warn=${report.summary.warn}`)
           this.setStep('verify', 'done', 'Health check passed', undefined, 'update.msgVerifyOk')
@@ -836,7 +950,9 @@ export class ComfyUpdaterService extends EventEmitter {
         this.setStep(
           'rollback',
           'skipped',
-          depsFailed ? 'Not needed — source update succeeded, only deps failed' : 'Not needed — source tree was not modified',
+          depsFailed
+            ? 'Not needed — source update succeeded, only deps failed'
+            : 'Not needed — source tree was not modified',
           undefined,
           'update.msgRollbackSkip'
         )
@@ -887,9 +1003,21 @@ export class ComfyUpdaterService extends EventEmitter {
         return
       }
       if (rollbackOk) {
-        this.setStep('rollback', 'done', 'Rolled back to previous version', undefined, 'update.msgRollback')
+        this.setStep(
+          'rollback',
+          'done',
+          'Rolled back to previous version',
+          undefined,
+          'update.msgRollback'
+        )
       } else {
-        this.setStep('rollback', 'failed', 'Rollback incomplete', undefined, 'update.msgRollbackFail')
+        this.setStep(
+          'rollback',
+          'failed',
+          'Rollback incomplete',
+          undefined,
+          'update.msgRollbackFail'
+        )
       }
       if (this.progress) {
         this.progress.status = 'failed'
@@ -978,7 +1106,9 @@ export class ComfyUpdaterService extends EventEmitter {
    * files — same safety stance as the installer debris guard).
    */
   private async fetchAndOverlayZip(comfyDir: string): Promise<void> {
-    const url = applyGithubMirror('https://github.com/comfyanonymous/ComfyUI/archive/refs/heads/master.zip')
+    const url = applyGithubMirror(
+      'https://github.com/comfyanonymous/ComfyUI/archive/refs/heads/master.zip'
+    )
     if (!isSafeExternalUrl(url)) throw new Error('Blocked ComfyUI archive URL')
     const { session } = await import('electron')
     const tmpZip = join(dirname(comfyDir), `._comfyui_update_${Date.now()}.zip`)
@@ -1066,7 +1196,11 @@ export class ComfyUpdaterService extends EventEmitter {
    * be able to restore the previous state (otherwise cancel leaves a half-
    * updated tree with no way back).
    */
-  private async performRollback(comfyDir: string, backupPath: string, kind: 'git' | 'files'): Promise<boolean> {
+  private async performRollback(
+    comfyDir: string,
+    backupPath: string,
+    kind: 'git' | 'files'
+  ): Promise<boolean> {
     if (kind === 'git') {
       const shaFile = join(backupPath, 'HEAD')
       if (!existsSync(shaFile)) throw new Error('Backup HEAD missing')

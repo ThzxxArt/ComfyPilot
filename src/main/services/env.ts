@@ -4,13 +4,24 @@ import { execFile, spawn } from 'child_process'
 import { promisify } from 'util'
 import { EventEmitter } from 'events'
 import { randomUUID } from 'crypto'
-import type { EnvCreateRequest, EnvProbe, UpdateProgress, UpdateStep, UpdateStepId } from '@shared/types'
+import type {
+  EnvCreateRequest,
+  EnvProbe,
+  UpdateProgress,
+  UpdateStep,
+  UpdateStepId
+} from '@shared/types'
 import { loadSettings } from './db'
 import { proxyEnv } from './proxy'
 
 const execFileAsync = promisify(execFile)
 
-async function safeExec(cmd: string, args: string[], cwd?: string, timeoutMs = 20000): Promise<string> {
+async function safeExec(
+  cmd: string,
+  args: string[],
+  cwd?: string,
+  timeoutMs = 20000
+): Promise<string> {
   try {
     // Must inherit app proxy settings — previously env-created venv/pip ignored them
     // while installer.ts honored them (inconsistent failure for proxy users).
@@ -29,7 +40,11 @@ async function safeExec(cmd: string, args: string[], cwd?: string, timeoutMs = 2
 
 const LONG_TIMEOUT_MS = 30 * 60 * 1000
 
-type ExecLike = (cmd: string, args: string[], opts?: { cwd?: string; timeout?: number }) => Promise<string>
+type ExecLike = (
+  cmd: string,
+  args: string[],
+  opts?: { cwd?: string; timeout?: number }
+) => Promise<string>
 
 /** Optional streaming hook so long pip/uv runs can surface output lines live. */
 type LineSink = (line: string) => void
@@ -54,17 +69,20 @@ export async function runStreaming(
       windowsHide: true,
       env: proxyEnv(loadSettings().proxy)
     })
-    const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true
-        try {
-          child.kill('SIGKILL')
-        } catch {
-          /* ignore */
+    const timer = setTimeout(
+      () => {
+        if (!settled) {
+          settled = true
+          try {
+            child.kill('SIGKILL')
+          } catch {
+            /* ignore */
+          }
+          reject(new Error(`timeout after ${opts.timeout || 0}ms`))
         }
-        reject(new Error(`timeout after ${opts.timeout || 0}ms`))
-      }
-    }, opts.timeout || 30 * 60 * 1000)
+      },
+      opts.timeout || 30 * 60 * 1000
+    )
     const feed = (buf: Buffer, isErr: boolean): void => {
       const text = buf.toString('utf-8')
       if (isErr) errOut += text
@@ -140,7 +158,10 @@ export async function installRequirements(
   const run = (c: string, a: string[], o?: { cwd?: string; timeout?: number }): Promise<string> =>
     runStreaming(c, a, { ...o, onLine }, exec).then((out) => {
       // pip/uv can print ERROR: and still exit 0 — treat that as failure too.
-      if (/ERROR:|error: failed/i.test(out) && !/Successfully installed|Requirement already satisfied/i.test(out)) {
+      if (
+        /ERROR:|error: failed/i.test(out) &&
+        !/Successfully installed|Requirement already satisfied/i.test(out)
+      ) {
         throw new Error(out.slice(0, 400))
       }
       return out
@@ -237,7 +258,8 @@ export class EnvService extends EventEmitter {
     }
     p.step = step
     p.message = message
-    p.status = status === 'done' && step === 'done' ? 'done' : status === 'failed' ? 'failed' : 'running'
+    p.status =
+      status === 'done' && step === 'done' ? 'done' : status === 'failed' ? 'failed' : 'running'
     const doneCount = p.steps.filter((x) => x.status === 'done' || x.status === 'skipped').length
     p.percent = Math.round((doneCount / p.steps.length) * 100)
     this.emit('progress', { ...p })
@@ -338,7 +360,12 @@ export class EnvService extends EventEmitter {
     }
     if (req.useUv) {
       // --seed installs pip into the venv so `python -m pip` works later.
-      await safeExec('uv', ['venv', venvPath, '--python', req.pythonPath, '--seed'], undefined, LONG_TIMEOUT_MS)
+      await safeExec(
+        'uv',
+        ['venv', venvPath, '--python', req.pythonPath, '--seed'],
+        undefined,
+        LONG_TIMEOUT_MS
+      )
     } else {
       await safeExec(req.pythonPath, ['-m', 'venv', venvPath], undefined, LONG_TIMEOUT_MS)
     }
@@ -352,7 +379,16 @@ export class EnvService extends EventEmitter {
     if (req.torchIndex) {
       await safeExec(
         python,
-        ['-m', 'pip', 'install', 'torch', 'torchvision', 'torchaudio', '--index-url', req.torchIndex],
+        [
+          '-m',
+          'pip',
+          'install',
+          'torch',
+          'torchvision',
+          'torchaudio',
+          '--index-url',
+          req.torchIndex
+        ],
         undefined,
         LONG_TIMEOUT_MS
       )
@@ -384,7 +420,8 @@ export class EnvService extends EventEmitter {
       'C:\\Python313\\python.exe',
       'C:\\Python312\\python.exe',
       'C:\\Python311\\python.exe',
-      process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'Programs', 'Python', 'Python313', 'python.exe')
+      process.env.LOCALAPPDATA &&
+        join(process.env.LOCALAPPDATA, 'Programs', 'Python', 'Python313', 'python.exe')
     ]) {
       if (p && existsSync(p)) {
         const v = await safeExec(p, ['--version'])
@@ -397,16 +434,7 @@ export class EnvService extends EventEmitter {
   async installTorch(opts: { pythonPath: string; index: string }): Promise<boolean> {
     const out = await safeExec(
       opts.pythonPath,
-      [
-        '-m',
-        'pip',
-        'install',
-        'torch',
-        'torchvision',
-        'torchaudio',
-        '--index-url',
-        opts.index
-      ],
+      ['-m', 'pip', 'install', 'torch', 'torchvision', 'torchaudio', '--index-url', opts.index],
       undefined,
       LONG_TIMEOUT_MS
     )
@@ -435,7 +463,14 @@ export class EnvService extends EventEmitter {
     const id = opts.instanceId
     // Reset any stale run so the UI gets a fresh progress stream.
     this.repairProgress = null
-    this.emitRepair(id, 'preflight', 'running', 'Locating Python…', undefined, 'update.msgPreflightRun')
+    this.emitRepair(
+      id,
+      'preflight',
+      'running',
+      'Locating Python…',
+      undefined,
+      'update.msgPreflightRun'
+    )
 
     try {
       const config = loadInstanceConfigs().find((c) => c.id === id)
@@ -463,7 +498,10 @@ export class EnvService extends EventEmitter {
       if (!existsSync(pythonInVenv)) {
         this.emitRepair(id, 'venv', 'running', 'Creating virtual env…')
         const { bootstrapService } = await import('./bootstrap')
-        const bootstrap = await bootstrapService.ensure({ kinds: ['uv', 'python'], downloadIfMissing: true })
+        const bootstrap = await bootstrapService.ensure({
+          kinds: ['uv', 'python'],
+          downloadIfMissing: true
+        })
         const uvComp = bootstrap.components.find((c) => c.kind === 'uv' && c.installed)
         mkdirSync(venvPath, { recursive: true })
         mkdirSync(join(venvPath, '..'), { recursive: true })
@@ -474,9 +512,17 @@ export class EnvService extends EventEmitter {
             /* interpreter may already be present */
           }
           // --seed installs pip/setuptools/wheel — without it `python -m pip` dies.
-          await safeExec(uvComp.path, ['venv', venvPath, '--python', '3.13', '--seed'], undefined, 180000)
+          await safeExec(
+            uvComp.path,
+            ['venv', venvPath, '--python', '3.13', '--seed'],
+            undefined,
+            180000
+          )
         } else {
-          const basePython = bootstrap.pythonPath && bootstrap.pythonPath !== 'python' ? bootstrap.pythonPath : 'python'
+          const basePython =
+            bootstrap.pythonPath && bootstrap.pythonPath !== 'python'
+              ? bootstrap.pythonPath
+              : 'python'
           await safeExec(basePython, ['-m', 'venv', venvPath], undefined, 180000)
         }
         if (!existsSync(pythonInVenv)) {
@@ -489,9 +535,17 @@ export class EnvService extends EventEmitter {
 
       // Optional torch
       if (opts.torchChannel) {
-        this.emitRepair(id, 'torch', 'running', `Installing PyTorch (${opts.torchChannel})…`, undefined, 'update.msgTorchRun', {
-          channel: opts.torchChannel
-        })
+        this.emitRepair(
+          id,
+          'torch',
+          'running',
+          `Installing PyTorch (${opts.torchChannel})…`,
+          undefined,
+          'update.msgTorchRun',
+          {
+            channel: opts.torchChannel
+          }
+        )
         const { resolveTorchIndex, officialTorchIndex } = await import('./installer')
         const channel = opts.torchChannel as Parameters<typeof resolveTorchIndex>[0]
         const index = resolveTorchIndex(channel)
@@ -504,7 +558,18 @@ export class EnvService extends EventEmitter {
           if (uvComp?.path) {
             await runStreaming(
               uvComp.path,
-              ['pip', 'install', '--python', pythonInVenv, '--upgrade', 'torch', 'torchvision', 'torchaudio', '--index-url', idx],
+              [
+                'pip',
+                'install',
+                '--python',
+                pythonInVenv,
+                '--upgrade',
+                'torch',
+                'torchvision',
+                'torchaudio',
+                '--index-url',
+                idx
+              ],
               { timeout: LONG_TIMEOUT_MS, onLine: sink },
               async (c, a, o) => safeExec(c, a, o?.cwd, o?.timeout)
             )
@@ -512,7 +577,17 @@ export class EnvService extends EventEmitter {
             await ensurePip(pythonInVenv, async (c, a, o) => safeExec(c, a, o?.cwd, o?.timeout))
             await runStreaming(
               pythonInVenv,
-              ['-m', 'pip', 'install', '--upgrade', 'torch', 'torchvision', 'torchaudio', '--index-url', idx],
+              [
+                '-m',
+                'pip',
+                'install',
+                '--upgrade',
+                'torch',
+                'torchvision',
+                'torchaudio',
+                '--index-url',
+                idx
+              ],
               { timeout: LONG_TIMEOUT_MS, onLine: sink },
               async (c, a, o) => safeExec(c, a, o?.cwd, o?.timeout)
             )
@@ -533,19 +608,45 @@ export class EnvService extends EventEmitter {
       // requirements
       const reqFile = join(comfyDir, 'requirements.txt')
       if (existsSync(reqFile)) {
-        this.emitRepair(id, 'requirements', 'running', 'Installing requirements…', undefined, 'update.msgReqRun')
+        this.emitRepair(
+          id,
+          'requirements',
+          'running',
+          'Installing requirements…',
+          undefined,
+          'update.msgReqRun'
+        )
         const settings = loadSettings()
         const { bootstrapService } = await import('./bootstrap')
         const bootstrap = await bootstrapService.ensure({ kinds: ['uv'], downloadIfMissing: false })
         const uvComp = bootstrap.components.find((c) => c.kind === 'uv' && c.installed)
-        await installRequirements(pythonInVenv, reqFile, async (c, a, o) => safeExec(c, a, o?.cwd, o?.timeout), {
-          uvPath: uvComp?.path,
-          pipIndex: String(settings.pipIndex || '').trim(),
-          onLine: (line) => this.repairLog(line)
-        })
-        this.emitRepair(id, 'requirements', 'done', 'requirements installed', undefined, 'update.msgReqDone')
+        await installRequirements(
+          pythonInVenv,
+          reqFile,
+          async (c, a, o) => safeExec(c, a, o?.cwd, o?.timeout),
+          {
+            uvPath: uvComp?.path,
+            pipIndex: String(settings.pipIndex || '').trim(),
+            onLine: (line) => this.repairLog(line)
+          }
+        )
+        this.emitRepair(
+          id,
+          'requirements',
+          'done',
+          'requirements installed',
+          undefined,
+          'update.msgReqDone'
+        )
       } else {
-        this.emitRepair(id, 'requirements', 'skipped', 'No requirements.txt', undefined, 'update.msgReqSkip')
+        this.emitRepair(
+          id,
+          'requirements',
+          'skipped',
+          'No requirements.txt',
+          undefined,
+          'update.msgReqSkip'
+        )
       }
 
       const probe = await this.probe({ pythonPath: pythonInVenv, venvPath })

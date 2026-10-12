@@ -90,12 +90,18 @@ describe('resolveInsideAnyRoot', () => {
   const allow = process.platform === 'win32' ? 'D:\\Downloads' : '/home/user/Downloads'
 
   it('rejects parent hop out of allowlist', () => {
-    expect(resolveInsideAnyRoot(allow + (process.platform === 'win32' ? '\\.. \\evil' : '/../evil'), [allow])).toBeNull()
+    expect(
+      resolveInsideAnyRoot(allow + (process.platform === 'win32' ? '\\.. \\evil' : '/../evil'), [
+        allow
+      ])
+    ).toBeNull()
     expect(resolveInsideAnyRoot(allow + '/../x', [allow])).toBeNull()
   })
 
   it('accepts path under root', () => {
-    const ok = resolveInsideAnyRoot(allow + (process.platform === 'win32' ? '\\sub' : '/sub'), [allow])
+    const ok = resolveInsideAnyRoot(allow + (process.platform === 'win32' ? '\\sub' : '/sub'), [
+      allow
+    ])
     expect(ok).toBeTruthy()
   })
 })

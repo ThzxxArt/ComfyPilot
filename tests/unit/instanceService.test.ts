@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { join, dirname } from 'path'
 import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
-import type { ComfyInstanceConfig, ComfyInstanceInfo, LaunchOptions } from '@shared/types'
+import type { ComfyInstanceConfig, LaunchOptions } from '@shared/types'
 
 // ---------------------------------------------------------------------------
 // hoisted mutable state shared with module mocks
@@ -77,7 +77,11 @@ const h = vi.hoisted(() => {
     fetchImpl: null as null | ((url: string) => Promise<unknown>),
     execHandler: null as
       | null
-      | ((cmd: string, args: string[], opts: unknown) => {
+      | ((
+          cmd: string,
+          args: string[],
+          opts: unknown
+        ) => {
           stdout?: string
           stderr?: string
           error?: Error
@@ -221,7 +225,7 @@ vi.mock('child_process', () => {
       })
   })
 
-  const spawn = (cmd: string, args: string[], opts: unknown): unknown => {
+  const spawn = (_cmd: string, _args: string[], _opts: unknown): unknown => {
     h.state.spawnCount += 1
     if (h.state.spawnFail) throw h.state.spawnFail
     const child = h.makeChild()
@@ -353,11 +357,7 @@ function childOf(svc: InstanceService, id: string): ReturnType<typeof h.makeChil
   return rt!.process!
 }
 
-function pokeRuntime(
-  svc: InstanceService,
-  id: string,
-  patch: Record<string, unknown>
-): void {
+function pokeRuntime(svc: InstanceService, id: string, patch: Record<string, unknown>): void {
   const rt = (
     svc as unknown as {
       runtimes: Map<string, Record<string, unknown>>
@@ -549,19 +549,14 @@ describe('list()', () => {
   })
 
   it('maps 0.0.0.0 listen to loopback URL and flags manager', () => {
-    register(
-      cfg({ id: 'm', name: 'Mgr', listen: '0.0.0.0', extraArgs: ['--enable-manager'] })
-    )
+    register(cfg({ id: 'm', name: 'Mgr', listen: '0.0.0.0', extraArgs: ['--enable-manager'] }))
     const [info] = svc.list()
     expect(info.url).toBe('http://127.0.0.1:8188')
     expect(info.managerEnabled).toBe(true)
   })
 
   it('keeps running entries ahead of stopped siblings', async () => {
-    register(
-      cfg({ id: 'run', name: 'zz-run' }),
-      cfg({ id: 'stop', name: 'aa-stop' })
-    )
+    register(cfg({ id: 'run', name: 'zz-run' }), cfg({ id: 'stop', name: 'aa-stop' }))
     // adopt 'run' so its status becomes running
     h.state.fetchImpl = okStats
     h.state.portsInUse.add(8188)
@@ -789,7 +784,7 @@ describe('exportLaunchScript()', () => {
 
   it('writes a .sh with single-quote escaping', async () => {
     const dir = join(ROOT, 'export-sh')
-    register(cfg({ id: 'sh', name: "it's", path: COMFY, extraArgs: ["--prompt", "it's"] }))
+    register(cfg({ id: 'sh', name: "it's", path: COMFY, extraArgs: ['--prompt', "it's"] }))
     const { path: out } = await svc.exportLaunchScript('sh', { dir, kind: 'sh' })
     const body = readFileSync(out, 'utf-8')
     expect(body.startsWith('#!/usr/bin/env bash')).toBe(true)
@@ -892,10 +887,7 @@ describe('version probe + cache', () => {
   })
 
   it('falls back to short commit sha', () => {
-    write(
-      join(COMFY, '.comfypilot-env.json'),
-      JSON.stringify({ comfyCommit: 'abcdef0123456789' })
-    )
+    write(join(COMFY, '.comfypilot-env.json'), JSON.stringify({ comfyCommit: 'abcdef0123456789' }))
     register(cfg({ id: 'ver' }))
     expect(svc.list()[0].version).toBe('abcdef012345')
   })
@@ -955,10 +947,7 @@ describe('version probe + cache', () => {
     register(cfg({ id: 'ver' }))
     expect(svc.list()[0].version).toBe('detected')
     // mutate the install — cached value must win
-    write(
-      join(COMFY, '.comfypilot-env.json'),
-      JSON.stringify({ comfyVersion: 'fresh' })
-    )
+    write(join(COMFY, '.comfypilot-env.json'), JSON.stringify({ comfyVersion: 'fresh' }))
     expect(svc.list()[0].version).toBe('detected')
     svc.invalidateVersionCache(COMFY)
     expect(svc.list()[0].version).toBe('fresh')
@@ -968,10 +957,7 @@ describe('version probe + cache', () => {
     write(join(COMFY, 'main.py'), 'print(1)')
     register(cfg({ id: 'ver' }))
     expect(svc.list()[0].version).toBe('detected')
-    write(
-      join(COMFY, '.comfypilot-env.json'),
-      JSON.stringify({ comfyVersion: 'fresh' })
-    )
+    write(join(COMFY, '.comfypilot-env.json'), JSON.stringify({ comfyVersion: 'fresh' }))
     svc.invalidateVersionCache()
     expect(svc.list()[0].version).toBe('fresh')
   })
@@ -1097,10 +1083,7 @@ describe('exportDiagnostics()', () => {
   })
 
   it('falls back to the on-disk log file when no runtime logs exist', async () => {
-    write(
-      join(LOGS, 'diag.log'),
-      '[2024-01-01T00:00:00.000Z] INFO hello\nnot-a-match\n'
-    )
+    write(join(LOGS, 'diag.log'), '[2024-01-01T00:00:00.000Z] INFO hello\nnot-a-match\n')
     register(cfg({ id: 'diag' }))
     h.state.execHandler = () => ({ error: new Error('no python') })
     const pkg = await svc.exportDiagnostics('diag')
@@ -1279,7 +1262,10 @@ describe('start()', () => {
     h.state.fetchImpl = failFetch
     await svc.start('logs')
     const child = childOf(svc, 'logs')
-    child.stdout.emit('data', Buffer.from('Traceback (most recent call last):\nWARN careful\nplain info\n'))
+    child.stdout.emit(
+      'data',
+      Buffer.from('Traceback (most recent call last):\nWARN careful\nplain info\n')
+    )
     child.stderr.emit('data', Buffer.from('error happened\nsoft warning\n'))
     const levels = svc.getLogs('logs', 200).map((l) => l.level)
     expect(levels).toContain('error')
@@ -1608,7 +1594,7 @@ describe('getLogs / clearLogs', () => {
     expect(logs[0].message).toContain('line 0')
     expect(logs[logs.length - 1].message).toContain('line 5000')
     // The in-memory ring itself still drops the oldest line.
-    const rt = (svc as unknown as { runtimes: Map<string, { logs: Array<{ message: string }> }> })
+    const rt = svc as unknown as { runtimes: Map<string, { logs: Array<{ message: string }> }> }
     const ring = rt.runtimes.get('cap')?.logs || []
     expect(ring.length).toBeLessThanOrEqual(5000)
     expect(ring[0].message).toContain('line 1')
@@ -1824,6 +1810,12 @@ describe('branch coverage extras', () => {
       extraArgs: ''
     } as unknown as Record<string, unknown>)
     const preview = svc.previewLaunch('empty-extra')
-    expect(preview.args).toEqual([join(COMFY, 'main.py'), '--port', '8188', '--listen', '127.0.0.1'])
+    expect(preview.args).toEqual([
+      join(COMFY, 'main.py'),
+      '--port',
+      '8188',
+      '--listen',
+      '127.0.0.1'
+    ])
   })
 })

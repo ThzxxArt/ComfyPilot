@@ -47,7 +47,9 @@ function applescriptQuote(s: string): string {
 /** Current app executable (packaged) or throw in dev — a shortcut to bare electron.exe cannot launch the app. */
 export function appExecutablePath(): string {
   if (app.isPackaged) return app.getPath('exe')
-  throw new Error('Desktop shortcut requires a packaged build (dev electron.exe cannot launch ComfyPilot alone)')
+  throw new Error(
+    'Desktop shortcut requires a packaged build (dev electron.exe cannot launch ComfyPilot alone)'
+  )
 }
 
 export function appIconPath(): string | undefined {
@@ -160,7 +162,11 @@ export function removeDesktopShortcut(name: string): boolean {
 
 /** Toggle "launch ComfyPilot when I sign in". */
 export function setLaunchOnBoot(enabled: boolean): void {
-  if (process.platform === 'win32' || process.platform === 'darwin' || process.platform === 'linux') {
+  if (
+    process.platform === 'win32' ||
+    process.platform === 'darwin' ||
+    process.platform === 'linux'
+  ) {
     app.setLoginItemSettings({
       openAtLogin: enabled,
       path: app.getPath('exe'),

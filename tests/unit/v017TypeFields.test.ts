@@ -2,8 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { join } from 'path'
 import { readFileSync } from 'fs'
 
-const readSrc = (rel: string): string =>
-  readFileSync(join(__dirname, '..', '..', rel), 'utf-8')
+const readSrc = (rel: string): string => readFileSync(join(__dirname, '..', '..', rel), 'utf-8')
 
 // ============ Every IPC channel in map has type signature ============
 describe('IPC channel type signatures', () => {
@@ -59,10 +58,30 @@ describe('i18n section parity', () => {
   const en = readSrc('src/renderer/src/i18n/locales/en-US.ts')
 
   const sections = [
-    'common', 'status', 'nav', 'header', 'dashboard', 'settings', 'instance',
-    'install', 'models', 'nodes', 'market', 'output', 'batch', 'workflows',
-    'monitor', 'doctor', 'backup', 'notify', 'stepMsg', 'update', 'launch',
-    'starterModels', 'embed', 'app'
+    'common',
+    'status',
+    'nav',
+    'header',
+    'dashboard',
+    'settings',
+    'instance',
+    'install',
+    'models',
+    'nodes',
+    'market',
+    'output',
+    'batch',
+    'workflows',
+    'monitor',
+    'doctor',
+    'backup',
+    'notify',
+    'stepMsg',
+    'update',
+    'launch',
+    'starterModels',
+    'embed',
+    'app'
   ]
   for (const s of sections) {
     it(`section '${s}' exists in both locales`, () => {
@@ -75,11 +94,16 @@ describe('i18n section parity', () => {
 // ============ Source file line count sanity ============
 describe('source files have substantial implementation', () => {
   const files = [
-    'src/main/services/nodePack.ts', 'src/main/services/installer.ts',
-    'src/main/services/instance.ts', 'src/main/services/updater.ts',
-    'src/main/services/workflow.ts', 'src/main/services/model.ts',
-    'src/main/services/p1p2.ts', 'src/main/services/db.ts',
-    'src/main/ipc/handlers.ts', 'src/main/index.ts',
+    'src/main/services/nodePack.ts',
+    'src/main/services/installer.ts',
+    'src/main/services/instance.ts',
+    'src/main/services/updater.ts',
+    'src/main/services/workflow.ts',
+    'src/main/services/model.ts',
+    'src/main/services/p1p2.ts',
+    'src/main/services/db.ts',
+    'src/main/ipc/handlers.ts',
+    'src/main/index.ts',
     'src/shared/types.ts'
   ]
   for (const f of files) {
@@ -94,8 +118,10 @@ describe('source files have substantial implementation', () => {
 // ============ Error message quality ============
 describe('error messages are descriptive', () => {
   const files = [
-    'src/main/services/nodePack.ts', 'src/main/services/installer.ts',
-    'src/main/services/instance.ts', 'src/main/services/backup.ts'
+    'src/main/services/nodePack.ts',
+    'src/main/services/installer.ts',
+    'src/main/services/instance.ts',
+    'src/main/services/backup.ts'
   ]
   for (const f of files) {
     it(`${f.split('/').pop()} has descriptive errors`, () => {
@@ -191,9 +217,12 @@ describe('views have empty states', () => {
 // ============ Security: no eval ============
 describe('no eval or Function constructor', () => {
   const files = [
-    'src/main/services/db.ts', 'src/main/services/model.ts',
-    'src/main/services/workflow.ts', 'src/main/services/nodePack.ts',
-    'src/main/services/p1p2.ts', 'src/main/services/installer.ts'
+    'src/main/services/db.ts',
+    'src/main/services/model.ts',
+    'src/main/services/workflow.ts',
+    'src/main/services/nodePack.ts',
+    'src/main/services/p1p2.ts',
+    'src/main/services/installer.ts'
   ]
   for (const f of files) {
     it(`${f.split('/').pop()} has no eval`, () => {
@@ -207,8 +236,10 @@ describe('no eval or Function constructor', () => {
 // ============ Security: no child_process shell:true ============
 describe('no shell:true in child_process calls', () => {
   const files = [
-    'src/main/services/env.ts', 'src/main/services/instance.ts',
-    'src/main/services/installer.ts', 'src/main/services/nodePack.ts',
+    'src/main/services/env.ts',
+    'src/main/services/instance.ts',
+    'src/main/services/installer.ts',
+    'src/main/services/nodePack.ts',
     'src/main/services/updater.ts'
   ]
   for (const f of files) {
@@ -224,8 +255,10 @@ describe('no shell:true in child_process calls', () => {
 // ============ Async/await patterns ============
 describe('async functions properly awaited', () => {
   const files = [
-    'src/main/services/nodePack.ts', 'src/main/services/workflow.ts',
-    'src/main/services/p1p2.ts', 'src/main/services/installer.ts'
+    'src/main/services/nodePack.ts',
+    'src/main/services/workflow.ts',
+    'src/main/services/p1p2.ts',
+    'src/main/services/installer.ts'
   ]
   for (const f of files) {
     it(`${f.split('/').pop()} has async/await patterns`, () => {
@@ -239,11 +272,16 @@ describe('async functions properly awaited', () => {
 // ============ EventEmitter pattern ============
 describe('services use EventEmitter for progress', () => {
   const services = [
-    'src/main/services/instance.ts', 'src/main/services/model.ts',
-    'src/main/services/nodePack.ts', 'src/main/services/p1p2.ts',
-    'src/main/services/installer.ts', 'src/main/services/updater.ts',
-    'src/main/services/env.ts', 'src/main/services/bootstrap.ts',
-    'src/main/services/doctor.ts', 'src/main/services/registryIndex.ts',
+    'src/main/services/instance.ts',
+    'src/main/services/model.ts',
+    'src/main/services/nodePack.ts',
+    'src/main/services/p1p2.ts',
+    'src/main/services/installer.ts',
+    'src/main/services/updater.ts',
+    'src/main/services/env.ts',
+    'src/main/services/bootstrap.ts',
+    'src/main/services/doctor.ts',
+    'src/main/services/registryIndex.ts',
     'src/main/services/monitor.ts'
   ]
   for (const f of services) {

@@ -147,7 +147,10 @@ function exeName(base: string): string {
   return process.platform === 'win32' ? `${base}.exe` : base
 }
 
-async function safeVersion(cmd: string, args: string[] = ['--version']): Promise<string | undefined> {
+async function safeVersion(
+  cmd: string,
+  args: string[] = ['--version']
+): Promise<string | undefined> {
   try {
     const { stdout } = await execFileAsync(cmd, args, {
       timeout: 8000,
@@ -170,7 +173,10 @@ async function which(cmd: string): Promise<string | null> {
       windowsHide: true,
       env: proxyEnv(loadSettings().proxy)
     })
-    const first = stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0]
+    const first = stdout
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean)[0]
     return first || null
   } catch {
     return null
@@ -289,7 +295,8 @@ export class BootstrapService extends EventEmitter {
       }
     }
     // 2) system PATH
-    const sysName = kind === 'mingit' ? 'git' : kind === 'python' ? 'python' : kind === 'uv' ? 'uv' : 'aria2c'
+    const sysName =
+      kind === 'mingit' ? 'git' : kind === 'python' ? 'python' : kind === 'uv' ? 'uv' : 'aria2c'
     const sys = await which(sysName)
     if (sys) {
       return {
@@ -379,7 +386,13 @@ export class BootstrapService extends EventEmitter {
   private runtimeSource(kind: RuntimeKind): { url: string; sizeHint: number } {
     const keys = platformKey()
     const id =
-      kind === 'uv' ? keys.uv : kind === 'python' ? keys.python : kind === 'mingit' ? keys.mingit : null
+      kind === 'uv'
+        ? keys.uv
+        : kind === 'python'
+          ? keys.python
+          : kind === 'mingit'
+            ? keys.mingit
+            : null
     if (!id || !RUNTIME_SOURCES[id]) {
       throw new Error(`No runtime source for ${kind} on ${process.platform}/${process.arch}`)
     }
@@ -426,7 +439,9 @@ export class BootstrapService extends EventEmitter {
       const expected = official || pinned
       if (expected && expected.toLowerCase() !== actual.toLowerCase()) {
         rmSync(cachePath, { force: true })
-        throw new Error(`Runtime checksum mismatch for ${kind} (expected ${expected.slice(0, 12)}…, got ${actual.slice(0, 12)}…)`)
+        throw new Error(
+          `Runtime checksum mismatch for ${kind} (expected ${expected.slice(0, 12)}…, got ${actual.slice(0, 12)}…)`
+        )
       }
       if (!pinned) {
         store[key] = actual

@@ -89,36 +89,38 @@ async function buildMenu(): Promise<Menu> {
   const running = instances.filter((i) => i.status === 'running')
   const stopped = instances.filter((i) => i.status !== 'running' && i.status !== 'starting')
 
-  const instanceItems: Electron.MenuItemConstructorOptions[] = instances.slice(0, 12).map((inst) => ({
-    label: `${inst.status === 'running' ? '●' : '○'} ${inst.name} :${inst.port}`,
-    submenu: [
-      {
-        label: inst.status === 'running' ? s.stop : s.launch,
-        click: () => {
-          void (async () => {
-            try {
-              if (inst.status === 'running') await instanceService.stop(inst.id)
-              else await instanceService.launch(inst.id)
-            } catch {
-              /* tray is best-effort */
-            }
-            refreshTray()
-          })()
+  const instanceItems: Electron.MenuItemConstructorOptions[] = instances
+    .slice(0, 12)
+    .map((inst) => ({
+      label: `${inst.status === 'running' ? '●' : '○'} ${inst.name} :${inst.port}`,
+      submenu: [
+        {
+          label: inst.status === 'running' ? s.stop : s.launch,
+          click: () => {
+            void (async () => {
+              try {
+                if (inst.status === 'running') await instanceService.stop(inst.id)
+                else await instanceService.launch(inst.id)
+              } catch {
+                /* tray is best-effort */
+              }
+              refreshTray()
+            })()
+          }
+        },
+        {
+          label: s.openFrontend,
+          enabled: Boolean(inst.url),
+          click: () => {
+            if (inst.url && isSafeExternalUrl(inst.url)) void shell.openExternal(inst.url)
+          }
+        },
+        {
+          label: s.showWindow,
+          click: () => onShowWindow?.()
         }
-      },
-      {
-        label: s.openFrontend,
-        enabled: Boolean(inst.url),
-        click: () => {
-          if (inst.url && isSafeExternalUrl(inst.url)) void shell.openExternal(inst.url)
-        }
-      },
-      {
-        label: s.showWindow,
-        click: () => onShowWindow?.()
-      }
-    ]
-  }))
+      ]
+    }))
 
   return Menu.buildFromTemplate([
     {

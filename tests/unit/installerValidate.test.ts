@@ -12,7 +12,9 @@ vi.mock('systeminformation', () => ({
 describe('assertSafeGitUrl', () => {
   it('accepts https / ssh / git@ remotes', async () => {
     const { assertSafeGitUrl } = await import('../../src/main/services/installer')
-    expect(assertSafeGitUrl('https://github.com/comfyanonymous/ComfyUI.git')).toContain('github.com')
+    expect(assertSafeGitUrl('https://github.com/comfyanonymous/ComfyUI.git')).toContain(
+      'github.com'
+    )
     expect(assertSafeGitUrl('ssh://git@github.com/x/y.git')).toBeTruthy()
     expect(assertSafeGitUrl('git@github.com:x/y.git')).toBeTruthy()
   })
@@ -31,7 +33,15 @@ describe('buildGitCloneArgs', () => {
   it('orders options before repo (regression: --branch after --depth broke installs)', async () => {
     const { buildGitCloneArgs } = await import('../../src/main/services/installer')
     const args = buildGitCloneArgs('https://github.com/a/b.git', '/dest/x', 'master')
-    expect(args).toEqual(['clone', '--depth', '1', '--branch', 'master', 'https://github.com/a/b.git', '/dest/x'])
+    expect(args).toEqual([
+      'clone',
+      '--depth',
+      '1',
+      '--branch',
+      'master',
+      'https://github.com/a/b.git',
+      '/dest/x'
+    ])
     const noBranch = buildGitCloneArgs('https://github.com/a/b.git', '/dest/x')
     expect(noBranch).toEqual(['clone', '--depth', '1', 'https://github.com/a/b.git', '/dest/x'])
   })

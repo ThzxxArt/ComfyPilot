@@ -40,33 +40,48 @@ import {
   stringifyJsonc,
   userDataDir
 } from './db'
-import {
-  resolveInsideAnyRoot,
-  assertSafeRelativeFilename,
-  isSafeExternalUrl
-} from './security'
+import { resolveInsideAnyRoot, assertSafeRelativeFilename, isSafeExternalUrl } from './security'
 
 const MODEL_EXT = new Set(['.safetensors', '.ckpt', '.pt', '.pth', '.bin', '.gguf', '.onnx'])
 
+/**
+ * Directory → category. Mirrors ComfyUI's `folder_paths.py` registered types;
+ * the legacy `clip` / `unet` folders map onto their canonical successors so a
+ * rescan never produces duplicate alias categories.
+ */
 const CATEGORY_BY_DIR: Record<string, ModelCategory> = {
   checkpoints: 'checkpoints',
   diffusion_models: 'diffusion_models',
-  unet: 'unet',
+  unet: 'diffusion_models',
   loras: 'loras',
   vae: 'vae',
-  clip: 'clip',
+  clip: 'text_encoders',
   text_encoders: 'text_encoders',
   controlnet: 'controlnet',
   upscale_models: 'upscale_models',
   embeddings: 'embeddings',
-  hypernetworks: 'other',
-  style_models: 'other'
+  clip_vision: 'clip_vision',
+  style_models: 'style_models',
+  diffusers: 'diffusers',
+  vae_approx: 'vae_approx',
+  gligen: 'gligen',
+  latent_upscale_models: 'latent_upscale_models',
+  photomaker: 'photomaker',
+  classifiers: 'classifiers',
+  model_patches: 'model_patches',
+  audio_encoders: 'audio_encoders',
+  hypernetworks: 'hypernetworks',
+  background_removal: 'background_removal',
+  frame_interpolation: 'frame_interpolation',
+  geometry_estimation: 'geometry_estimation',
+  optical_flow: 'optical_flow',
+  detection: 'detection'
 }
 
-function categorize(path: string): ModelCategory {
+export function categorize(path: string): ModelCategory {
   const norm = path.replace(/\\/g, '/').toLowerCase()
   for (const [key, cat] of Object.entries(CATEGORY_BY_DIR)) {
-    if (norm.includes(`/${key}/`) || norm.includes(`\\${key}\\`)) return cat
+    if (norm.includes(`/${key}/`)) return cat
   }
   return 'other'
 }
@@ -92,11 +107,59 @@ function detectSourceFromPath(path: string): ModelRecord['source'] {
 }
 
 /**
+ * extra_model_paths.yaml keys that map to a root folder. Mirrors ComfyUI's
+ * registered folder types plus the upstream example's extra keys (27 keys,
+ * including legacy `clip`/`unet` aliases and the non-model `custom_nodes` /
+ * `datasets` entries — the latter only matter for display, not model scans).
+ */
+const EXTRA_PATH_KEYS = new Set([
+  'checkpoints',
+  'configs',
+  'loras',
+  'vae',
+  'text_encoders',
+  'diffusion_models',
+  // Legacy folder names still accepted by ComfyUI (folder_paths.map_legacy).
+  'clip',
+  'unet',
+  'clip_vision',
+  'style_models',
+  'embeddings',
+  'diffusers',
+  'vae_approx',
+  'controlnet',
+  'gligen',
+  'upscale_models',
+  'latent_upscale_models',
+  'hypernetworks',
+  'photomaker',
+  'classifiers',
+  'model_patches',
+  'audio_encoders',
+  'background_removal',
+  'frame_interpolation',
+  'geometry_estimation',
+  'optical_flow',
+  'detection',
+  'custom_nodes',
+  'datasets'
+])
+
+/** Keys that are NOT model roots — never fed into the model scanner. */
+const NON_MODEL_PATH_KEYS = new Set(['custom_nodes', 'datasets'])
+
+/**
  * Parse extra_model_paths.yaml and return all configured roots (including missing).
  * When `filePath` is not given, auto-discovers the yaml in every configured
  * instance's ComfyUI root (`<instance>/extra_model_paths.yaml`).
+ * `modelOnly` skips custom_nodes/datasets — use it for scan roots so node-pack
+ * internals (.pt/.pth shipped by extension packs) never pollute the library.
  */
-export function parseExtraModelPaths(filePath?: string, includeMissing = true): string[] {
+export function parseExtraModelPaths(
+  filePath?: string,
+  includeMissing = true,
+  opts?: { modelOnly?: boolean }
+): string[] {
   const candidates: string[] = []
   if (filePath) {
     candidates.push(filePath)
@@ -120,25 +183,25 @@ export function parseExtraModelPaths(filePath?: string, includeMissing = true): 
       if (!doc) continue
       for (const section of Object.values(doc)) {
         if (!section || typeof section !== 'object') continue
+        const validBase =
+          typeof section.base_path === 'string' && section.base_path.trim()
+            ? section.base_path.trim()
+            : null
+        const sectionBase = validBase || dirname(file)
         for (const [key, val] of Object.entries(section)) {
-          if (key === 'base_path' && typeof val === 'string') roots.push(val)
-          if (
-            [
-              'checkpoints',
-              'loras',
-              'vae',
-              'clip',
-              'controlnet',
-              'upscale_models',
-              'embeddings',
-              'unet',
-              'diffusion_models',
-              'text_encoders'
-            ].includes(key) &&
-            typeof val === 'string'
-          ) {
-            const base = typeof section.base_path === 'string' ? section.base_path : ''
-            const full = val.match(/^[a-zA-Z]:[\\/]|^\//) ? val : join(base || dirname(file), val)
+          if (key === 'base_path') {
+            // Only a valid explicit base_path is a root; a malformed value must
+            // not silently add the yaml's own directory to the scan.
+            if (validBase) roots.push(validBase)
+            continue
+          }
+          if (!EXTRA_PATH_KEYS.has(key) || typeof val !== 'string') continue
+          if (opts?.modelOnly && NON_MODEL_PATH_KEYS.has(key)) continue
+          // Values may be YAML block scalars (`key: |`) — one path per line.
+          for (const raw of val.split(/\r?\n/)) {
+            const trimmed = raw.trim()
+            if (!trimmed) continue
+            const full = trimmed.match(/^[a-zA-Z]:[\\/]|^\//) ? trimmed : join(sectionBase, trimmed)
             if (includeMissing || existsSync(full)) roots.push(full)
           }
         }
@@ -258,11 +321,9 @@ export class ModelService extends EventEmitter {
     const instanceModels = loadInstanceConfigsSafe()
       .map((c) => c.path && join(c.path, 'models'))
       .filter(Boolean) as string[]
-    return [
-      join(homedir(), 'Downloads'),
-      ...settings.modelScanRoots,
-      ...instanceModels
-    ].filter(Boolean) as string[]
+    return [join(homedir(), 'Downloads'), ...settings.modelScanRoots, ...instanceModels].filter(
+      Boolean
+    ) as string[]
   }
 
   private assertSafeDestDir(destDir: string): string {
@@ -318,7 +379,9 @@ export class ModelService extends EventEmitter {
     if (opts?.roots?.length) {
       allRoots = [...new Set(opts.roots.filter(Boolean))]
     } else {
-      const extraRoots = parseExtraModelPaths(undefined, false).filter((p) => existsSync(p))
+      const extraRoots = parseExtraModelPaths(undefined, false, { modelOnly: true }).filter((p) =>
+        existsSync(p)
+      )
       const scanRoots = [...settings.modelScanRoots, ...extraRoots].filter(Boolean)
       // Default behaviour: settings roots + models/ under EVERY configured instance.
       const instanceModels = loadInstanceConfigsSafe()
@@ -625,7 +688,11 @@ export class ModelService extends EventEmitter {
     if (settings.hfEndpoint) {
       try {
         const u = new URL(url)
-        if (u.hostname === 'huggingface.co' || u.hostname === 'hf.co' || u.hostname === 'cdn-lfs.huggingface.co') {
+        if (
+          u.hostname === 'huggingface.co' ||
+          u.hostname === 'hf.co' ||
+          u.hostname === 'cdn-lfs.huggingface.co'
+        ) {
           const mirror = settings.hfEndpoint.replace(/\/+$/, '')
           url = mirror + u.pathname + u.search
         }
@@ -647,7 +714,10 @@ export class ModelService extends EventEmitter {
     const rawName = opts.fileName || basename(new URL(url).pathname) || `download-${Date.now()}`
     const fileName = assertSafeRelativeFilename(rawName)
     const destPath = join(destDir, fileName)
-    const id = createHash('sha1').update(url + destPath).digest('hex').slice(0, 12)
+    const id = createHash('sha1')
+      .update(url + destPath)
+      .digest('hex')
+      .slice(0, 12)
     // A fresh download() re-enables a previously cancelled id.
     this.cancelledIds.delete(id)
     const existing = this.downloads.get(id)
@@ -664,9 +734,7 @@ export class ModelService extends EventEmitter {
       status: 'queued',
       startedAt: Date.now(),
       source: this.detectDownloadSource(url),
-      expectedSha256: opts.expectedSha256
-        ? String(opts.expectedSha256).toLowerCase()
-        : undefined
+      expectedSha256: opts.expectedSha256 ? String(opts.expectedSha256).toLowerCase() : undefined
     }
     this.downloads.set(id, task)
     upsertDownloadTask(task)
@@ -755,7 +823,9 @@ export class ModelService extends EventEmitter {
         const free = Number(st.bsize) * Number(st.bavail)
         const need = task.totalBytes > 0 ? task.totalBytes * 1.05 : 2 * 1024 ** 3
         if (free < need) {
-          throw new Error(`Insufficient disk space: ${Math.round(free / 1024 ** 3)}GB free, need ~${Math.round(need / 1024 ** 3)}GB`)
+          throw new Error(
+            `Insufficient disk space: ${Math.round(free / 1024 ** 3)}GB free, need ~${Math.round(need / 1024 ** 3)}GB`
+          )
         }
       } catch (err) {
         if (err instanceof Error && err.message.startsWith('Insufficient')) throw err
@@ -893,7 +963,9 @@ export class ModelService extends EventEmitter {
             headers,
             signal: controller.signal
           } as never)) as unknown as Response)
-        : await (await import('./proxy')).proxyFetch(task.url, {
+        : await (
+            await import('./proxy')
+          ).proxyFetch(task.url, {
             headers,
             timeoutMs: 30 * 60 * 1000,
             signal: controller.signal
@@ -989,7 +1061,9 @@ export class ModelService extends EventEmitter {
 
       if (isCancelled()) return
       // Integrity: Content-Length must match received bytes; optional SHA256.
-      const finalSize = existsSync(task.destPath) ? statSync(task.destPath).size : task.receivedBytes
+      const finalSize = existsSync(task.destPath)
+        ? statSync(task.destPath).size
+        : task.receivedBytes
       if (task.totalBytes > 0 && finalSize !== task.totalBytes) {
         task.status = 'error'
         task.error = `Download incomplete: ${finalSize} of ${task.totalBytes} bytes`

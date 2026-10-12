@@ -51,12 +51,15 @@ describe('resolveTorchIndex mirror layout', () => {
 
   it('wheel-style mirror becomes <prefix>/<channel>', async () => {
     const { resolveTorchIndex } = await import('../../src/main/services/installer')
-    const { loadSettings, saveSettings, DEFAULT_SETTINGS } = await import('../../src/shared/constants').then(
-      async (m) => {
+    const { loadSettings, saveSettings, DEFAULT_SETTINGS } =
+      await import('../../src/shared/constants').then(async (m) => {
         const db = await import('../../src/main/services/db')
-        return { loadSettings: db.loadSettings, saveSettings: db.saveSettings, DEFAULT_SETTINGS: m.DEFAULT_SETTINGS }
-      }
-    )
+        return {
+          loadSettings: db.loadSettings,
+          saveSettings: db.saveSettings,
+          DEFAULT_SETTINGS: m.DEFAULT_SETTINGS
+        }
+      })
     void loadSettings
     saveSettings({ torchIndexMirror: 'https://mirror.sjtu.edu.cn/pytorch-wheels' })
     // PEP 503 simple index requires a trailing slash

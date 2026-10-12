@@ -38,7 +38,10 @@ vi.mock('electron', () => ({
         ok: h.fetchOk,
         status: h.fetchOk ? 200 : 503,
         headers: { get: () => '10' },
-        json: async () => ({ sha: 'deadbeefcafe', commit: { committer: { date: '2025-01-01T00:00:00Z' } } }),
+        json: async () => ({
+          sha: 'deadbeefcafe',
+          commit: { committer: { date: '2025-01-01T00:00:00Z' } }
+        }),
         arrayBuffer: async () => new ArrayBuffer(8)
       }))
     }
@@ -67,7 +70,8 @@ vi.mock('fs', () => {
     },
     readdirSync: (p: unknown) => {
       const s = norm(p)
-      if (s === 'C:/fake/ComfyUI') return ['main.py', 'requirements.txt', '.git', 'comfy', 'custom_nodes']
+      if (s === 'C:/fake/ComfyUI')
+        return ['main.py', 'requirements.txt', '.git', 'comfy', 'custom_nodes']
       return []
     },
     statSync: (p: unknown) => {
@@ -120,7 +124,15 @@ vi.mock('../../src/main/services/db', () => ({
     pipIndex: '',
     torchIndexMirror: '',
     githubEndpoint: '',
-    proxy: { enabled: false, protocol: 'http', host: '', port: 7890, bypass: '', username: '', password: '' }
+    proxy: {
+      enabled: false,
+      protocol: 'http',
+      host: '',
+      port: 7890,
+      bypass: '',
+      username: '',
+      password: ''
+    }
   })),
   loadInstanceConfigs: vi.fn(() => [h.instance]),
   upsertInstanceConfig: vi.fn()
@@ -213,6 +225,7 @@ describe('update IPC settle contract', () => {
 
   it('waitUntilSettled is a no-op when nothing is running', async () => {
     const p = await comfyUpdaterService.waitUntilSettled()
-    if (p) expect(p.status).not.toBe('running')
+    // Deterministic assertion (no conditional skip): settled state is null or non-running.
+    expect(p === null || p.status !== 'running').toBe(true)
   })
 })

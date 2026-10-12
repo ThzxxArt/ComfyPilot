@@ -4,7 +4,7 @@
  * MarketService.list offline fallback, normalizeLegacyJob / readWorkflowGraph.
  */
 import { describe, expect, it, vi, beforeAll, beforeEach, afterEach } from 'vitest'
-import { mkdirSync, writeFileSync, rmSync, existsSync, utimesSync } from 'fs'
+import { mkdirSync, writeFileSync, rmSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -92,7 +92,9 @@ function makeInstance(overrides: Record<string, unknown> = {}): Record<string, u
 
 type FetchCall = { url: string; method: string; body: unknown; headers: Record<string, string> }
 
-function stubFetch(handler: (url: string, init?: RequestInit) => Response | Promise<Response>): FetchCall[] {
+function stubFetch(
+  handler: (url: string, init?: RequestInit) => Response | Promise<Response>
+): FetchCall[] {
   const calls: FetchCall[] = []
   vi.stubGlobal(
     'fetch',
@@ -405,7 +407,12 @@ describe('p1p2 services', () => {
 
     it('uses non-wildcard listen host and input/other output types', async () => {
       const { batchService } = await freshP1p2()
-      await seedInstance({ id: 'inst-lan', listen: '192.168.1.5', port: 9000, path: join(ROOT, 'comfy') })
+      await seedInstance({
+        id: 'inst-lan',
+        listen: '192.168.1.5',
+        port: 9000,
+        path: join(ROOT, 'comfy')
+      })
       const p = join(ROOT, 'wf', 'lan.json')
       writeFileSync(p, uiGraph())
       const inAbs = join(ROOT, 'comfy', 'input', 'src.png')
@@ -450,8 +457,12 @@ describe('p1p2 services', () => {
       expect(result.items[0].outputPaths).toContain(otherAbs)
       expect(result.items[0].outputPaths).toContain(join(ROOT, 'comfy', 'output', 'clip.mp4'))
       expect(result.items[0].outputPaths).toContain(join(ROOT, 'comfy', 'output', 'a.wav'))
-      expect(result.items[0].outputPaths).not.toContain(join(ROOT, 'comfy', 'output', 'missing.png'))
-      expect(calls.find((c) => c.url.includes('/prompt'))!.url).toContain('http://192.168.1.5:9000/')
+      expect(result.items[0].outputPaths).not.toContain(
+        join(ROOT, 'comfy', 'output', 'missing.png')
+      )
+      expect(calls.find((c) => c.url.includes('/prompt'))!.url).toContain(
+        'http://192.168.1.5:9000/'
+      )
     })
 
     it('maps history status error to failed and still finishes', async () => {
@@ -1124,7 +1135,9 @@ describe('p1p2 services', () => {
     it('test online with queue counts and apiKey header', async () => {
       const { remoteService } = await freshP1p2()
       const { upsertRemote } = await import('../../src/main/services/db')
-      upsertRemote(seedRemote({ apiKey: 'secret-token', baseUrl: 'http://10.0.0.2:8188/' }) as never)
+      upsertRemote(
+        seedRemote({ apiKey: 'secret-token', baseUrl: 'http://10.0.0.2:8188/' }) as never
+      )
       const calls = stubFetch((url) => {
         if (url.includes('/system_stats')) return jsonResponse({ system: {} })
         if (url.includes('/queue')) {
@@ -1204,7 +1217,7 @@ describe('p1p2 services', () => {
   describe('MarketService', () => {
     it('maps registry items with installed detection from custom_nodes + nodePack', async () => {
       const { marketService } = await freshP1p2()
-      const { saveSettings, upsertInstanceConfig } = await import('../../src/main/services/db')
+      const { upsertInstanceConfig } = await import('../../src/main/services/db')
       const instPath = join(ROOT, 'mkt-inst')
       mkdirSync(join(instPath, 'custom_nodes', 'ComfyUI-Foo'), { recursive: true })
       mkdirSync(join(instPath, 'custom_nodes', '.git'), { recursive: true })
@@ -1267,7 +1280,10 @@ describe('p1p2 services', () => {
         return {
           ...actual,
           searchRegistry: vi.fn(async () => ({
-            raw: [{ id: 'Alt-Pack', name: 'Alt-Pack' }, { id: 'Default-Pack', name: 'Default-Pack' }],
+            raw: [
+              { id: 'Alt-Pack', name: 'Alt-Pack' },
+              { id: 'Default-Pack', name: 'Default-Pack' }
+            ],
             total: 2,
             page: 1,
             pageSize: 50,

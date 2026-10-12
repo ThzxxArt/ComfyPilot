@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, mkdtempSync } from 'fs'
+import { writeFileSync, readFileSync, rmSync, mkdtempSync } from 'fs'
 
 // Mock electron before any import of db.ts
 const tempDir = mkdtempSync(join(tmpdir(), 'cp-v017-'))
@@ -67,7 +67,7 @@ describe('DB: default settings', () => {
   })
 
   it('saveSettings merges partial patch', async () => {
-    const { saveSettings, loadSettings } = await import('@main/services/db')
+    const { saveSettings } = await import('@main/services/db')
     const next = saveSettings({ locale: 'en-US' })
     expect(next.locale).toBe('en-US')
     // Other fields preserved
@@ -218,8 +218,13 @@ describe('proxy: redactProxyUrl', () => {
   it('hides password in URL', async () => {
     const { redactProxyUrl } = await import('@main/services/proxy')
     const result = redactProxyUrl({
-      enabled: true, protocol: 'http', host: 'h', port: 1,
-      username: 'u', password: 'pw', bypass: ''
+      enabled: true,
+      protocol: 'http',
+      host: 'h',
+      port: 1,
+      username: 'u',
+      password: 'pw',
+      bypass: ''
     })
     expect(result).not.toContain('pw')
   })
@@ -227,8 +232,13 @@ describe('proxy: redactProxyUrl', () => {
   it('handles empty settings', async () => {
     const { redactProxyUrl } = await import('@main/services/proxy')
     const result = redactProxyUrl({
-      enabled: false, protocol: 'http', host: '', port: 0,
-      username: '', password: '', bypass: ''
+      enabled: false,
+      protocol: 'http',
+      host: '',
+      port: 0,
+      username: '',
+      password: '',
+      bypass: ''
     })
     expect(typeof result).toBe('string')
   })
@@ -237,15 +247,24 @@ describe('proxy: redactProxyUrl', () => {
 // ============ Version comparison ============
 describe('version comparison logic (source contract)', () => {
   it('nodePack has isUpdateAvailable or version compare', () => {
-    const src = readFileSync(join(__dirname, '..', '..', 'src', 'main', 'services', 'nodePack.ts'), 'utf-8')
+    const src = readFileSync(
+      join(__dirname, '..', '..', 'src', 'main', 'services', 'nodePack.ts'),
+      'utf-8'
+    )
     expect(src).toContain('isUpdateAvailable')
   })
 })
 
 // ============ i18n key coverage for new features ============
 describe('i18n keys for v0.1.7 features', () => {
-  const zhSrc = readFileSync(join(__dirname, '..', '..', 'src', 'renderer', 'src', 'i18n', 'locales', 'zh-CN.ts'), 'utf-8')
-  const enSrc = readFileSync(join(__dirname, '..', '..', 'src', 'renderer', 'src', 'i18n', 'locales', 'en-US.ts'), 'utf-8')
+  const zhSrc = readFileSync(
+    join(__dirname, '..', '..', 'src', 'renderer', 'src', 'i18n', 'locales', 'zh-CN.ts'),
+    'utf-8'
+  )
+  const enSrc = readFileSync(
+    join(__dirname, '..', '..', 'src', 'renderer', 'src', 'i18n', 'locales', 'en-US.ts'),
+    'utf-8'
+  )
 
   it('has notify.backupRestored', () => {
     expect(zhSrc).toContain('backupRestored')
@@ -380,14 +399,18 @@ describe('shared types completeness', () => {
     // Check market.install args
     const idx = typesSrc.indexOf("'market.install'")
     const chunk = typesSrc.slice(idx, idx + 200)
-    expect(chunk).toBeTruthy()
+    expect(chunk).toContain('version')
+    expect(chunk).toContain('repository')
   })
 })
 
 // ============ View feature presence ============
 describe('view feature completeness', () => {
   it('ModelsView has rename/symlink/tag/civitai/extraPaths', () => {
-    const src = readFileSync(join(__dirname, '..', '..', 'src', 'renderer', 'src', 'views', 'models', 'ModelsView.vue'), 'utf-8')
+    const src = readFileSync(
+      join(__dirname, '..', '..', 'src', 'renderer', 'src', 'views', 'models', 'ModelsView.vue'),
+      'utf-8'
+    )
     expect(src).toContain('model.rename')
     expect(src).toContain('model.symlink')
     expect(src).toContain('model.tag')
@@ -396,13 +419,19 @@ describe('view feature completeness', () => {
   })
 
   it('NodesView has checkIssues and branch', () => {
-    const src = readFileSync(join(__dirname, '..', '..', 'src', 'renderer', 'src', 'views', 'nodes', 'NodesView.vue'), 'utf-8')
+    const src = readFileSync(
+      join(__dirname, '..', '..', 'src', 'renderer', 'src', 'views', 'nodes', 'NodesView.vue'),
+      'utf-8'
+    )
     expect(src).toContain('node.checkIssues')
     expect(src).toContain('branch')
   })
 
   it('InstallView has runtime status and bootstrap.ensure', () => {
-    const src = readFileSync(join(__dirname, '..', '..', 'src', 'renderer', 'src', 'views', 'install', 'InstallView.vue'), 'utf-8')
+    const src = readFileSync(
+      join(__dirname, '..', '..', 'src', 'renderer', 'src', 'views', 'install', 'InstallView.vue'),
+      'utf-8'
+    )
     expect(src).toContain('bootstrap.status')
     expect(src).toContain('bootstrap.ensure')
     expect(src).toContain('userChoseMirror')
@@ -410,38 +439,86 @@ describe('view feature completeness', () => {
   })
 
   it('InstanceDetailView has createVenv/installTorch/copyDiagnostics', () => {
-    const src = readFileSync(join(__dirname, '..', '..', 'src', 'renderer', 'src', 'views', 'instances', 'InstanceDetailView.vue'), 'utf-8')
+    const src = readFileSync(
+      join(
+        __dirname,
+        '..',
+        '..',
+        'src',
+        'renderer',
+        'src',
+        'views',
+        'instances',
+        'InstanceDetailView.vue'
+      ),
+      'utf-8'
+    )
     expect(src).toContain('env.createVenv')
     expect(src).toContain('env.installTorch')
     expect(src).toContain('instance.copyDiagnostics')
   })
 
   it('MonitorView has history tab', () => {
-    const src = readFileSync(join(__dirname, '..', '..', 'src', 'renderer', 'src', 'views', 'monitor', 'MonitorView.vue'), 'utf-8')
+    const src = readFileSync(
+      join(__dirname, '..', '..', 'src', 'renderer', 'src', 'views', 'monitor', 'MonitorView.vue'),
+      'utf-8'
+    )
     expect(src).toContain('monitor.history')
   })
 
   it('SettingsView has remote.listStatus and modelScanRoots', () => {
-    const src = readFileSync(join(__dirname, '..', '..', 'src', 'renderer', 'src', 'views', 'settings', 'SettingsView.vue'), 'utf-8')
+    const src = readFileSync(
+      join(
+        __dirname,
+        '..',
+        '..',
+        'src',
+        'renderer',
+        'src',
+        'views',
+        'settings',
+        'SettingsView.vue'
+      ),
+      'utf-8'
+    )
     expect(src).toContain('remote.listStatus')
     expect(src).toContain('modelScanRoots')
   })
 
   it('OutputView has date filter and delete', () => {
-    const src = readFileSync(join(__dirname, '..', '..', 'src', 'renderer', 'src', 'views', 'output', 'OutputView.vue'), 'utf-8')
+    const src = readFileSync(
+      join(__dirname, '..', '..', 'src', 'renderer', 'src', 'views', 'output', 'OutputView.vue'),
+      'utf-8'
+    )
     expect(src).toContain('NDatePicker')
     expect(src).toContain('output.delete')
   })
 
   it('BatchView has per-item progress and cancelItem', () => {
-    const src = readFileSync(join(__dirname, '..', '..', 'src', 'renderer', 'src', 'views', 'workflows', 'BatchView.vue'), 'utf-8')
+    const src = readFileSync(
+      join(__dirname, '..', '..', 'src', 'renderer', 'src', 'views', 'workflows', 'BatchView.vue'),
+      'utf-8'
+    )
     expect(src).toContain('cancelItem')
     expect(src).toContain('useLaunch')
     expect(src).toContain('instanceNotRunning')
   })
 
   it('WorkflowsView has import error dialog and formatVersion', () => {
-    const src = readFileSync(join(__dirname, '..', '..', 'src', 'renderer', 'src', 'views', 'workflows', 'WorkflowsView.vue'), 'utf-8')
+    const src = readFileSync(
+      join(
+        __dirname,
+        '..',
+        '..',
+        'src',
+        'renderer',
+        'src',
+        'views',
+        'workflows',
+        'WorkflowsView.vue'
+      ),
+      'utf-8'
+    )
     expect(src).toContain('formatVersion')
     expect(src).toContain('modelUsed')
   })
@@ -449,7 +526,10 @@ describe('view feature completeness', () => {
 
 // ============ Handler feature presence ============
 describe('handler feature completeness', () => {
-  const src = readFileSync(join(__dirname, '..', '..', 'src', 'main', 'ipc', 'handlers.ts'), 'utf-8')
+  const src = readFileSync(
+    join(__dirname, '..', '..', 'src', 'main', 'ipc', 'handlers.ts'),
+    'utf-8'
+  )
 
   it('node.install broadcasts restartRequired', () => {
     expect(src).toContain('notify.restartRequired')

@@ -5,7 +5,7 @@
  *  - buildIterationPrompt seed modes + param overrides
  */
 import { describe, expect, it, vi, beforeAll, beforeEach } from 'vitest'
-import { mkdirSync, writeFileSync, utimesSync } from 'fs'
+import { mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -14,7 +14,11 @@ const ROOT = join(tmpdir(), `cp-batch-output-test-${process.pid}`)
 vi.mock('electron', async () => {
   return {
     app: { getPath: () => ROOT },
-    shell: { showItemInFolder: () => undefined, openExternal: async () => undefined, openPath: async () => '' }
+    shell: {
+      showItemInFolder: () => undefined,
+      openExternal: async () => undefined,
+      openPath: async () => ''
+    }
   }
 })
 
@@ -110,9 +114,7 @@ describe('BatchService multi-workflow', () => {
 
   it('rejects empty item list and missing files', async () => {
     const { batchService } = await import('../../src/main/services/p1p2')
-    expect(() =>
-      batchService.create({ name: 'x', instanceId: 'i', items: [] })
-    ).toThrow()
+    expect(() => batchService.create({ name: 'x', instanceId: 'i', items: [] })).toThrow()
     expect(() =>
       batchService.create({
         name: 'x',

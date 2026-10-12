@@ -1,4 +1,4 @@
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import type {
   ComfyUpdateInfo,
   ComfyUpdateOptions,
@@ -27,7 +27,6 @@ export const UPDATE_STEP_KEY: Record<UpdateStepId, string> = {
   done: 'update.stepDone'
 }
 
-// eslint-disable-next-line no-unused-vars
 type TranslateFn = (key: string, params?: Record<string, string | number>) => string
 
 /** Prefer the i18n detailKey emitted by main; fall back to the English detail. */
@@ -68,7 +67,14 @@ const progress = ref<UpdateProgress | null>(null)
  * each other when two long tasks run concurrently.
  */
 const progressKind = ref<'comfy-update' | 'repair' | 'node-op' | null>(null)
-const updating = ref(false)
+/** True once the current stream reached a terminal state — a new op may then claim the slot. */
+const progressFinished = ref(false)
+/** ComfyUI update in flight (own flag — repair must not clear it). */
+const updatingComfy = ref(false)
+/** Environment repair in flight. */
+const repairing = ref(false)
+/** Any long-running update/repair — kept for existing consumers (spinners, modal). */
+const updating = computed(() => updatingComfy.value || repairing.value)
 /** Instance id of the active update/repair — lets per-instance spinners stay correct. */
 const updatingInstanceId = ref<string | null>(null)
 const cancelling = ref(false)
@@ -78,11 +84,14 @@ let offNode: (() => void) | null = null
 let offInstall: (() => void) | null = null
 let offNodeOp: (() => void) | null = null
 
-/** Write into the shared progress slot only when this kind owns it (or slot is free). */
+/** Write into the shared progress slot only when this kind owns it (or slot is free/finished). */
 function writeProgress(kind: 'comfy-update' | 'repair' | 'node-op', payload: unknown): void {
-  if (progressKind.value === null || progressKind.value === kind) {
+  if (progressKind.value === null || progressKind.value === kind || progressFinished.value) {
     progressKind.value = kind
+    progressFinished.value = false
     progress.value = payload as UpdateProgress
+    const status = (payload as UpdateProgress | null)?.status
+    if (status === 'done' || status === 'failed') progressFinished.value = true
   }
 }
 
@@ -186,20 +195,23 @@ export function useComfyUpdate() {
       /* updateStatus is best-effort */
     }
     progressKind.value = 'comfy-update'
-    updating.value = true
+    progressFinished.value = false
+    updatingComfy.value = true
     updatingInstanceId.value = instanceId
     cancelling.value = false
     try {
       const result = await ipc('instance.updateComfy', instanceId, opts)
       progressKind.value = 'comfy-update'
       progress.value = result
+      progressFinished.value = result.status === 'done' || result.status === 'failed'
       return result
     } finally {
-      updating.value = false
+      updatingComfy.value = false
       updatingInstanceId.value = null
       cancelling.value = false
       // Release the slot so a subsequent node-op can claim it.
-      if (progressKind.value === 'comfy-update') progressKind.value = null
+      if (progressKind.value === 'comfy-update' && !progressFinished.value)
+        progressKind.value = null
     }
   }
 
@@ -215,26 +227,30 @@ export function useComfyUpdate() {
   async function repairEnv(instanceId: string, opts?: RepairEnvOptions): Promise<EnvProbe> {
     ensureRepairSubscribed()
     progressKind.value = 'repair'
-    updating.value = true
+    progressFinished.value = false
+    repairing.value = true
     updatingInstanceId.value = instanceId
     try {
       return await ipc('instance.repairEnv', instanceId, opts)
     } finally {
-      updating.value = false
+      repairing.value = false
       updatingInstanceId.value = null
-      if (progressKind.value === 'repair') progressKind.value = null
+      if (progressKind.value === 'repair' && !progressFinished.value) progressKind.value = null
     }
   }
 
   function clearProgress(): void {
     progress.value = null
     progressKind.value = null
+    progressFinished.value = false
   }
 
   return {
     progress,
     progressKind,
     updating,
+    updatingComfy,
+    repairing,
     updatingInstanceId,
     cancelling,
     nodeUpdatingPack,
@@ -261,6 +277,9 @@ export function describeNodeError(t: TranslateFn, err: unknown): string {
   if (code === 'SETTING_OFFLINE') return t('nodes.blockedOffline')
   if (code === 'SETTING_GIT_INSTALL') return t('nodes.blockedGitInstall')
   if (code === 'SETTING_SECURITY_STRONG') return t('nodes.blockedSecurityStrong')
+  if (code === 'NODE_DISABLED') return t('nodes.packDisabledUpdate')
+  if (code === 'DISABLE_CONFLICT') return t('nodes.disableConflict')
+  if (code === 'ENABLE_CONFLICT') return t('nodes.enableConflict')
   return msg
 }
 

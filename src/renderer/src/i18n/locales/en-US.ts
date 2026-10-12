@@ -43,7 +43,9 @@ export default {
     status: 'Status',
     version: 'Version',
     yes: 'Yes',
-    no: 'No'
+    no: 'No',
+    noMatch: 'No matching results',
+    clearFilters: 'Clear filters'
   },
   status: {
     stopped: 'Stopped',
@@ -77,6 +79,8 @@ export default {
     openFrontend: 'Open Frontend',
     portLabel: 'Port {port}',
     queueStatus: 'Running {running} · Pending {pending}',
+    memLabel: 'Memory',
+    queueError: 'Queue status unavailable (connection failed)',
     runningInstances: 'Running instances',
     instancesHint: 'ComfyUI process status',
     modelAssets: 'Models',
@@ -106,7 +110,8 @@ export default {
     language: 'Language',
     paths: 'Paths',
     modelScanRoots: 'Model scan roots',
-    modelScanRootsHint: 'Extra directories to scan besides instance models/. Saved roots are picked up by the model library.',
+    modelScanRootsHint:
+      'Extra directories to scan besides instance models/. Saved roots are picked up by the model library.',
     addScanRoot: 'Add directory',
     download: 'Download',
     launchOnBoot: 'Launch ComfyPilot at login',
@@ -129,16 +134,26 @@ export default {
     network: 'Network',
     githubEndpoint: 'GitHub mirror / proxy prefix',
     optional: 'Optional',
+    hfEndpointLabel: 'HuggingFace endpoint',
     hfEndpointPlaceholder: 'e.g. https://hf-mirror.com',
+    civitaiEndpointLabel: 'Civitai endpoint',
     pipIndexLabel: 'PyPI mirror (pip / uv)',
-    pipMirrorHint: 'In mainland China, Tsinghua/Aliyun mirrors greatly speed up torch and dependency installs.',
+    pipMirrorHint:
+      'In mainland China, Tsinghua/Aliyun mirrors greatly speed up torch and dependency installs.',
     torchIndexLabel: 'Torch mirror (optional)',
     networkMode: 'Network mode',
-    networkModeHint: 'Offline blocks every remote install (Market / Git / node updates). Blocked actions are reported, never skipped silently.',
+    networkModeHint:
+      'Offline blocks every remote install (Market / Git / node updates). Blocked actions are reported, never skipped silently.',
     security: 'Security policy (Manager semantics)',
-    securityLevelHint: 'strong forbids all remote node installs — attempts are blocked and reported. normal and below are for regular use.',
-    allowGitHint: 'When off, installing nodes via a Git URL is blocked and the install tells you where to turn it on.',
-    allowPipHint: 'When off, a node pack\u2019s Python dependencies are NOT installed automatically — you get a warning dialog after install. Keep this on unless you manage deps yourself.',
+    securityLevelLabel: 'Security level (security_level)',
+    securityLevelHint:
+      'strong forbids all remote node installs — attempts are blocked and reported. normal and below are for regular use.',
+    allowGitLabel: 'Allow Git URL install (allow_git_url_install)',
+    allowGitHint:
+      'When off, installing nodes via a Git URL is blocked and the install tells you where to turn it on.',
+    allowPipLabel: 'Allow auto dependency install (allow_pip_install)',
+    allowPipHint:
+      'When off, a node pack\u2019s Python dependencies are NOT installed automatically — you get a warning dialog after install. Keep this on unless you manage deps yourself.',
     useAria2: 'Download with aria2',
     aria2Path: 'aria2 path',
     proxy: 'Network proxy',
@@ -153,7 +168,8 @@ export default {
     applyNow: 'Apply now',
     proxyApplied: 'Proxy applied: {url}',
     proxyDirect: 'Switched to direct connection',
-    proxyHint: 'The proxy applies to in-app downloads, Registry, git/pip subprocesses and the embedded page.',
+    proxyHint:
+      'The proxy applies to in-app downloads, Registry, git/pip subprocesses and the embedded page.',
     appBehavior: 'App behavior',
     autoCheckUpdates: 'Check for updates on launch',
     embedFrontend: 'Prefer embedded ComfyUI Frontend',
@@ -181,7 +197,8 @@ export default {
     about: 'About',
     aboutStorage: 'Storage: JSONC config files (no SQLite / no native modules)',
     aboutConfigDir: 'Config dir: {path}',
-    aboutTagline: 'A control tower, not an editor. Sidecar management for ComfyUI production assets.',
+    aboutTagline:
+      'A control tower, not an editor. Sidecar management for ComfyUI production assets.',
     openConfigDir: 'Open config folder',
     githubRepo: 'GitHub repo',
     pipOfficial: 'Official PyPI',
@@ -196,6 +213,7 @@ export default {
   header: {
     embed: 'Embedded Frontend',
     embedTip: 'Embed the official ComfyUI Frontend in-app',
+    remoteNoControl: 'Remote instances cannot be started/stopped locally',
     openExternal: 'Open externally',
     crumb: 'ComfyUI control tower · MIT',
     instancePlaceholder: 'Current instance',
@@ -240,7 +258,8 @@ export default {
     browse: 'Browse',
     openFrontend: 'Open Frontend',
     confirmStartAllTitle: 'Start all',
-    confirmStartAll: 'This starts every enabled instance and may use significant resources. Continue?',
+    confirmStartAll:
+      'This starts every enabled instance and may use significant resources. Continue?',
     confirmStopAll: 'This stops every running instance. Unsaved queue work will be lost. Continue?',
     confirmForceKill: 'Force-kill the process? Unsaved queue work will be lost.',
     confirmRemove: 'Remove the registration only — files on disk are kept.',
@@ -295,6 +314,13 @@ export default {
     autoStartLabel: 'autoStart (launch on app start)',
     backToList: 'Back to instances',
     detailTitle: 'Instance details',
+    metaPid: 'PID',
+    metaAutoStart: 'Autostart',
+    metaManager: 'Manager',
+    pythonSystem: 'System default',
+    notFoundTitle: 'Instance not found',
+    notFoundHint:
+      'This instance may have been removed. Go back to the instances list and pick another one.',
     startOnly: 'Start only',
     basicInfo: 'Basic info',
     launchCmdTitle: 'Launch command (copyable)',
@@ -355,12 +381,22 @@ export default {
     pythonPath: 'Python interpreter (optional)',
     pythonPathHint: 'Leave empty to auto-detect or use the portable Python',
     repairSection: 'Repair existing instance environment',
-    repairHint: 'For registered instances missing a venv or deps — create the env (venv + torch + requirements) in one click',
+    repairHint:
+      'For registered instances missing a venv or deps — create the env (venv + torch + requirements) in one click',
     repairAction: 'Repair env',
     repairEmpty: 'No registered instances yet',
-    repairConfirm: 'Repair the Python environment for "{name}"? This creates the venv and installs requirements.',
+    repairConfirm:
+      'Repair the Python environment for "{name}"? This creates the venv and installs requirements.',
     probeMirrors: 'Probe & recommend mirrors',
     preflightBlocked: 'Preflight has hard failures — fix them before installing',
+    stepStatus: {
+      pending: 'Pending',
+      running: 'Running',
+      done: 'Done',
+      failed: 'Failed',
+      skipped: 'Skipped',
+      cancelled: 'Cancelled'
+    },
     preflight: 'Run preflight',
     start: 'Start install',
     cancel: 'Cancel install',
@@ -405,7 +441,8 @@ export default {
       cpu: 'cpu — no GPU'
     },
     runtimeStatus: 'Runtime status',
-    runtimeHint: 'Portable runtime components required by the installer. Missing ones can be installed in one click.',
+    runtimeHint:
+      'Portable runtime components required by the installer. Missing ones can be installed in one click.',
     runtimeRefresh: 'Refresh status',
     runtimeEnsure: 'Install missing',
     runtimeEnsureDone: 'Runtime components ready',
@@ -433,7 +470,8 @@ export default {
     approx: '~{size}',
     recommended: 'Recommended',
     title: 'Model library',
-    subtitle: 'Scan index, safetensors metadata, SHA256 dedup, resumable downloads and storage analysis.',
+    subtitle:
+      'Scan index, safetensors metadata, SHA256 dedup, resumable downloads and storage analysis.',
     searchPlaceholder: 'Search name / arch / tags',
     scan: 'Scan',
     scanHash: 'Scan + hash',
@@ -475,9 +513,33 @@ export default {
       controlnet: 'ControlNet',
       upscale_models: 'Upscaler',
       embeddings: 'Embedding',
+      clip_vision: 'CLIP Vision',
+      style_models: 'Style Model',
+      diffusers: 'Diffusers',
+      vae_approx: 'VAE Approx',
+      gligen: 'GLIGEN',
+      latent_upscale_models: 'Latent Upscaler',
+      photomaker: 'PhotoMaker',
+      classifiers: 'Classifier',
+      model_patches: 'Model Patch',
+      audio_encoders: 'Audio Encoder',
+      hypernetworks: 'Hypernetwork',
+      background_removal: 'BG Removal',
+      frame_interpolation: 'Frame Interpolation',
+      geometry_estimation: 'Geometry Estimation',
+      optical_flow: 'Optical Flow',
+      detection: 'Detection',
       other: 'Other'
     },
     moved: 'Moved',
+    dlStatus: {
+      queued: 'Queued',
+      running: 'Downloading',
+      paused: 'Paused',
+      done: 'Done',
+      error: 'Failed',
+      cancelled: 'Cancelled'
+    },
     moveAction: 'Move',
     scanDone: 'Scan complete — {n} model(s)',
     dupGroupsFound: 'Found {n} duplicate group(s)',
@@ -521,7 +583,8 @@ export default {
   },
   nodes: {
     title: 'Node manager',
-    subtitle: 'Local scan, conflict detection, snapshot alignment. Browse and install on the Market page.',
+    subtitle:
+      'Local scan, conflict detection, snapshot alignment. Browse and install on the Market page.',
     refresh: 'Refresh',
     createSnapshot: 'Create snapshot',
     gitInstall: 'Git install',
@@ -542,6 +605,12 @@ export default {
     branchPlaceholder: 'Branch (optional, defaults to the repo default)',
     healthIssues: 'Health hints ({n})',
     emptyInstalled: 'No matching custom_nodes packs found',
+    nodeCount: '{n} nodes',
+    sourceRegistry: 'Registry',
+    sourceGit: 'Git',
+    sourceManager: 'Manager',
+    sourceLocal: 'Local',
+    snapPackCount: '{n} packs',
     tabConflicts: 'Conflicts ({n})',
     emptyConflicts: 'No node-name conflicts found',
     tabSnapshots: 'Snapshots ({n})',
@@ -560,7 +629,8 @@ export default {
     smokePassed: 'Smoke test passed',
     snapshotDeleted: 'Snapshot deleted',
     snapshotCreated: 'Snapshot: {name}',
-    snapshotRestored: 'Enabled/disabled states aligned to snapshot (versions not rolled back, missing packs not reinstalled)',
+    snapshotRestored:
+      'Enabled/disabled states aligned to snapshot (versions not rolled back, missing packs not reinstalled)',
     uninstalled: 'Uninstalled',
     checkUpdates: 'Check updates',
     checking: 'Checking for updates…',
@@ -579,13 +649,25 @@ export default {
     confirmUpdateAll: 'Update {n} packs one by one? Failures will be skipped. Continue?',
     batchDone: 'Batch update done: ok {ok} · fail {fail} · skip {skip}',
     batchSummary: 'Batch update results',
-    restoreHint: 'Restoring a snapshot only aligns enable/disable state — versions are not rolled back and missing packs are not reinstalled',
-    blockedOffline: 'Network mode is Offline — remote installs are blocked. Go to Settings → Network → Network mode and switch to public or private, then retry.',
-    blockedGitInstall: 'Git URL install is disabled, so nothing was installed. Go to Settings → Security → allow_git_url_install and turn it on, then retry.',
-    blockedSecurityStrong: 'Security level is strong — remote installs are blocked. Go to Settings → Security → security_level and switch to normal, then retry.',
+    restoreHint:
+      'Restoring a snapshot only aligns enable/disable state — versions are not rolled back and missing packs are not reinstalled',
+    blockedOffline:
+      'Network mode is Offline — remote installs are blocked. Go to Settings → Network → Network mode and switch to public or private, then retry.',
+    blockedGitInstall:
+      'Git URL install is disabled, so nothing was installed. Go to Settings → Security → allow_git_url_install and turn it on, then retry.',
+    blockedSecurityStrong:
+      'Security level is strong — remote installs are blocked. Go to Settings → Security → security_level and switch to normal, then retry.',
+    packDisabledUpdate:
+      'This pack is disabled — enable it before updating (updating would silently move it back into custom_nodes).',
+    disableConflict:
+      'Disable failed: a folder with the same name already exists at the target location.',
+    enableConflict:
+      'Enable failed: a folder with the same name already exists at the target location.',
     depsNotInstalled: 'Dependencies not installed',
-    depsNotInstalledBody: '"{name}" ships a requirements.txt, but allow_pip_install is off in Settings, so its Python dependencies were NOT installed. The pack may not work.',
-    depsNotInstalledFix: 'Go to Settings → Security → turn on allow_pip_install, then hit "Repair env" on the Nodes page. Or run pip install -r requirements.txt manually.',
+    depsNotInstalledBody:
+      '"{name}" ships a requirements.txt, but allow_pip_install is off in Settings, so its Python dependencies were NOT installed. The pack may not work.',
+    depsNotInstalledFix:
+      'Go to Settings → Security → turn on allow_pip_install, then hit "Repair env" on the Nodes page. Or run pip install -r requirements.txt manually.',
     installWarnTitle: 'Installed, but there are things to note',
     uninstallDepsTitle: 'Uninstall options',
     uninstallDepsBody: 'Also uninstall Python dependencies of "{name}"?',
@@ -622,11 +704,13 @@ export default {
     managerHint: 'Node list from ComfyUI-Manager',
     managerCount: '{n} nodes total',
     managerPage: 'Page {page}/{pages}',
-    installedItem: 'Installed {name}'
+    installedItem: 'Installed {name}',
+    downloadsShort: '{n} DL'
   },
   output: {
     title: 'Output library',
-    subtitle: 'Index the output folder, restore PNG parameters and seeds, linked to workflows and batches.',
+    subtitle:
+      'Index the output folder, restore PNG parameters and seeds, linked to workflows and batches.',
     rootPlaceholder: 'output root folder',
     browse: 'Browse',
     typeAll: 'All',
@@ -646,7 +730,8 @@ export default {
     reveal: 'Reveal in folder',
     restoreWorkflow: 'Restore as workflow',
     restoredToInstance: 'Restored to the instance workflows folder: {name}',
-    needInstanceForRestore: 'Select an instance first — the workflow is restored into that instance\'s workflows folder',
+    needInstanceForRestore:
+      "Select an instance first — the workflow is restored into that instance's workflows folder",
     noEmbeddedWorkflow: 'No restorable workflow embedded in this file',
     sortCreatedAt: 'By time',
     sortSize: 'By size',
@@ -681,7 +766,8 @@ export default {
   },
   batch: {
     title: 'Batch',
-    subtitle: 'Pick workflows from the library, run multi-workflow parameter matrices, and track real outputs.',
+    subtitle:
+      'Pick workflows from the library, run multi-workflow parameter matrices, and track real outputs.',
     refresh: 'Refresh',
     newJob: 'New job',
     run: 'Run',
@@ -700,12 +786,15 @@ export default {
     defaultName: 'Batch render',
     selectWorkflow: 'Please choose at least one workflow',
     created: 'Created job {name}',
-    jobDone: 'Batch done: queued {submitted} · ok {completed} · produced {produced} · failed {failed}',
+    jobDone:
+      'Batch done: queued {submitted} · ok {completed} · produced {produced} · failed {failed}',
     jobCancelled: 'Job cancelled',
-    jobFinishedPartial: 'Batch finished incomplete: queued {submitted} · ok {completed} · failed {failed}',
+    jobFinishedPartial:
+      'Batch finished incomplete: queued {submitted} · ok {completed} · failed {failed}',
     cancelled: 'Cancelled (pending queue items dequeued when possible)',
     multiWorkflow: '{n} workflows',
-    progressLine: 'queued {submitted}/{count} · ok {completed} · produced {produced} · failed {failed}',
+    progressLine:
+      'queued {submitted}/{count} · ok {completed} · produced {produced} · failed {failed}',
     seedMode: 'Seed mode',
     seedRandom: 'Random',
     seedIncrement: 'Increment',
@@ -723,7 +812,8 @@ export default {
     itemCancelled: 'Cancelled',
     alreadyRunning: 'Job is already running',
     needRunningInstance: 'Requires a running instance — start it manually on the Instances page',
-    hintQueueVsDone: 'Run submits every prompt first, then waits for real images — produced may differ from submitted.',
+    hintQueueVsDone:
+      'Run submits every prompt first, then waits for real images — produced may differ from submitted.',
     status: {
       queued: 'Queued',
       submitting: 'Submitting',
@@ -737,7 +827,8 @@ export default {
   },
   workflows: {
     title: 'Workflows',
-    subtitle: 'Imports land in a real library folder — tags, favorites, export, sync to instance, queue to ComfyUI.',
+    subtitle:
+      'Imports land in a real library folder — tags, favorites, export, sync to instance, queue to ComfyUI.',
     searchPlaceholder: 'Search name / tag / path',
     refresh: 'Refresh',
     import: 'Import workflow',
@@ -756,10 +847,12 @@ export default {
     cancel: 'Cancel',
     enqueue: 'Enqueue',
     importedToInstance: 'Imported "{name}" → {root}',
-    needInstanceForImport: 'Select an instance first — workflows are imported into that instance\'s workflows folder',
+    needInstanceForImport:
+      "Select an instance first — workflows are imported into that instance's workflows folder",
     openRequested: 'Open workflow requested',
     queued: 'Queued {id}',
-    queuedHint: 'Workflow submitted to the ComfyUI queue. Outputs will appear in the library when done.',
+    queuedHint:
+      'Workflow submitted to the ComfyUI queue. Outputs will appear in the library when done.',
     queueFailed: 'Enqueue failed',
     libraryRoot: 'Instance workflows folder',
     openLibrary: 'Open library',
@@ -783,6 +876,8 @@ export default {
     deleteInstanceConfirm: 'Delete the source file from the instance workflows folder?',
     deleted: 'Unregistered',
     deletedWithFile: 'Record and source file deleted',
+    copyToInstanceLabel: 'Copy to instance',
+    exportZip: 'Export ZIP',
     exported: 'Exported: {path}',
     copiedToInstance: 'Copied to instance: {path}',
     openedInFrontend: 'Opened Frontend in the browser ({name})',
@@ -815,7 +910,8 @@ export default {
     cpuTrend: 'CPU trend',
     noGpu: 'No GPU info detected (admin rights required on some platforms)',
     queueTitle: 'ComfyUI queue',
-    queueEmpty: 'No queued tasks for the current instance. Launch ComfyUI and submit a workflow — this updates live.',
+    queueEmpty:
+      'No queued tasks for the current instance. Launch ComfyUI and submit a workflow — this updates live.',
     gpuTitle: 'GPU',
     pending: 'Pending',
     tabQueue: 'Queue',
@@ -830,7 +926,9 @@ export default {
     historyStatusDone: 'Success',
     historyStatusError: 'Failed',
     historyLoadFailed: 'Failed to load history: {error}',
-    needInstanceUrl: 'Start and select an instance first'
+    needInstanceUrl: 'Start and select an instance first',
+    loading: 'Loading…',
+    queueLoadFailed: 'Failed to load the queue — the instance may not be ready'
   },
   embed: {
     back: 'Back',
@@ -839,7 +937,8 @@ export default {
     openBrowser: 'Open in browser',
     reload: 'Reload',
     closeEmbed: 'Close embed',
-    fallbackText: 'Embeds the official Frontend in-app via WebContentsView. If embedding is unavailable, open it in the system browser with one click.',
+    fallbackText:
+      'Embeds the official Frontend in-app via WebContentsView. If embedding is unavailable, open it in the system browser with one click.',
     loadView: 'Load embedded view',
     externalBrowser: 'Open externally',
     embedDisabledInfo: 'Embedded Frontend is off — opening in the system browser',
@@ -851,7 +950,8 @@ export default {
     alreadyRunning: '{name} is already running',
     signalledExternal: 'Signalled external process — it is still running outside ComfyPilot',
     portBusyTitle: 'Port in use',
-    portBusyBody: 'Port {port} is in use. Switch to free port {suggested} for "{name}"? Config will be saved.',
+    portBusyBody:
+      'Port {port} is in use. Switch to free port {suggested} for "{name}"? Config will be saved.',
     usePort: 'Use {port} and launch',
     readyOnPort: '{name} is ready on port {port}',
     stopped: 'Stopped {name}',
@@ -865,7 +965,10 @@ export default {
     createAction: 'Create',
     created: 'Backup {name} created',
     restore: 'Restore',
-    restored: 'Backup restored (config / instances / node packs / model manifests / workflows / remotes)',
+    restoreConfirm:
+      'Restoring will overwrite current config (settings / instances / model list / node list / workflows / remotes). Continue?',
+    restored:
+      'Backup restored (config / instances / node packs / model manifests / workflows / remotes)',
     openFolder: 'Open folder',
     deleteConfirm: 'Delete this backup?',
     empty: 'No backups yet',
@@ -882,7 +985,16 @@ export default {
     fail: 'Fail',
     duration: 'Duration',
     fix: 'One-click fix',
-    empty: 'Hit "Run checkup" at the top right for a full health check of the current ComfyUI instance.'
+    info: 'Info',
+    group: {
+      Environment: 'Environment',
+      Runtime: 'Runtime',
+      Storage: 'Storage',
+      Extensions: 'Extensions',
+      Network: 'Network'
+    },
+    empty:
+      'Hit "Run checkup" at the top right for a full health check of the current ComfyUI instance.'
   },
   launchTpl: {
     default: { name: 'Local default', desc: 'Listen on 127.0.0.1 only — good for daily use' },

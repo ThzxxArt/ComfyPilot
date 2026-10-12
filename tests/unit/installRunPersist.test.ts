@@ -4,14 +4,30 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-vi.mock('electron', () => ({
-  app: {
-    getPath: vi.fn(() => 'C:/fake/userData'),
-    getName: vi.fn(() => 'ComfyPilot'),
-    getVersion: vi.fn(() => '0.1.4')
-  },
-  session: { defaultSession: { fetch: vi.fn(), setProxy: vi.fn() } }
-}))
+vi.mock('electron', async () => {
+  // Real FS is used by db.ts here — never point userData at a CWD-relative
+  // fake path (that pollutes the repo on POSIX). Use a real temp dir and
+  // clean it up when the test process exits.
+  const os = await import('os')
+  const path = await import('path')
+  const fs = await import('fs')
+  const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'cp-installrun-'))
+  process.once('exit', () => {
+    try {
+      fs.rmSync(userData, { recursive: true, force: true })
+    } catch {
+      /* best-effort cleanup */
+    }
+  })
+  return {
+    app: {
+      getPath: vi.fn(() => userData),
+      getName: vi.fn(() => 'ComfyPilot'),
+      getVersion: vi.fn(() => '0.1.8')
+    },
+    session: { defaultSession: { fetch: vi.fn(), setProxy: vi.fn() } }
+  }
+})
 
 import {
   saveInstallRun,

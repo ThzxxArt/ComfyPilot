@@ -2,13 +2,44 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { SearchOutline, DownloadOutline, StarOutline, RefreshOutline, ArrowUpCircleOutline } from '@vicons/ionicons5'
-import { NButton, NIcon, NInput, NList, NListItem, NPagination, NPopconfirm, NSpace, NSpin, NTag, NEmpty, NProgress, useMessage, useDialog } from 'naive-ui'
+import {
+  SearchOutline,
+  DownloadOutline,
+  StarOutline,
+  RefreshOutline,
+  ArrowUpCircleOutline
+} from '@vicons/ionicons5'
+import {
+  NButton,
+  NIcon,
+  NInput,
+  NList,
+  NListItem,
+  NPagination,
+  NPopconfirm,
+  NSpace,
+  NSpin,
+  NTag,
+  NEmpty,
+  NProgress,
+  useMessage,
+  useDialog
+} from 'naive-ui'
 import { ipc, onIpc, IPC_EVENTS } from '@/composables/useIpc'
-import { useComfyUpdate, describeNodeError, hasDepsSkippedIssue } from '@/composables/useComfyUpdate'
+import {
+  useComfyUpdate,
+  describeNodeError,
+  hasDepsSkippedIssue
+} from '@/composables/useComfyUpdate'
 import ComfyUpdateProgressModal from '@/components/ComfyUpdateProgressModal.vue'
+import ListSkeleton from '@/components/ListSkeleton.vue'
 import { useAppStore } from '@/stores/app'
-import type { MarketItem, RegistryPageResult, RegistryNodePack, NodePackRecord } from '@shared/types'
+import type {
+  MarketItem,
+  RegistryPageResult,
+  RegistryNodePack,
+  NodePackRecord
+} from '@shared/types'
 
 const { t } = useI18n()
 const store = useAppStore()
@@ -49,7 +80,8 @@ const showOpModal = ref(false)
 const opModalTitle = ref('')
 const installingItem = ref<string | null>(null)
 const updatingItem = ref<string | null>(null)
-const { nodeInstallingPack, nodeUpdatingPack, nodeInstallMessage, nodeUpdateMessage, progress } = useComfyUpdate()
+const { nodeInstallingPack, nodeUpdatingPack, nodeInstallMessage, nodeUpdateMessage, progress } =
+  useComfyUpdate()
 
 // ---- source tab ----
 const sourceTab = ref<'registry' | 'manager'>('registry')
@@ -100,15 +132,15 @@ function isInstalled(item: DisplayItem): boolean {
   const name = item.name.toLowerCase()
   const display = item.displayName.toLowerCase()
   const repo = (item.repository || '').toLowerCase().replace(/\.git$/, '')
-  return (
-    keys.has(id) ||
-    keys.has(name) ||
-    keys.has(display) ||
-    (repo !== '' && keys.has(repo))
-  )
+  return keys.has(id) || keys.has(name) || keys.has(display) || (repo !== '' && keys.has(repo))
 }
 
 // ---- unified filtered + paginated view ----
+function clearSearch(): void {
+  query.value = ''
+  void load(true)
+}
+
 const filteredItems = computed(() => {
   const q = activeQuery.value.trim().toLowerCase()
   if (!q) return allItems.value
@@ -144,14 +176,17 @@ function hint(): string {
   if (activeQuery.value) {
     return t('market.hintMatch', {
       query: activeQuery.value,
-      scanned: sourceTab.value === 'registry' ? scanned.value || indexCount.value : displayTotal.value,
+      scanned:
+        sourceTab.value === 'registry' ? scanned.value || indexCount.value : displayTotal.value,
       total: displayTotal.value
     })
   }
   if (sourceTab.value === 'manager') {
     // Manager: show its own total + page — no registry index info.
     return displayPages.value > 1
-      ? t('market.managerCount', { n: displayTotal.value }) + ' · ' + t('market.managerPage', { page: page.value, pages: displayPages.value })
+      ? t('market.managerCount', { n: displayTotal.value }) +
+          ' · ' +
+          t('market.managerPage', { page: page.value, pages: displayPages.value })
       : t('market.managerCount', { n: displayTotal.value })
   }
   // Registry: full paging + index info.
@@ -388,18 +423,21 @@ async function install(item: DisplayItem): Promise<void> {
   }
 }
 
-async function resolveLocalPack(item: DisplayItem): Promise<{ name: string; locked?: boolean } | null> {
+async function resolveLocalPack(
+  item: DisplayItem
+): Promise<{ id: string; name: string; locked?: boolean } | null> {
   try {
     const packs = await ipc('node.list', store.activeInstanceId || undefined)
-    return (
-      packs.find(
-        (p) =>
-          p.name === item.name ||
-          p.name?.toLowerCase() === item.name?.toLowerCase() ||
-          p.registryId === item.id ||
-          p.id === item.id
-      ) || null
+    const found = packs.find(
+      (p) =>
+        p.name === item.name ||
+        p.name?.toLowerCase() === item.name?.toLowerCase() ||
+        p.registryId === item.id ||
+        p.id === item.id
     )
+    if (!found) return null
+    // Unique id beats name: duplicate names can exist (e.g. Foo + .disabled/Foo).
+    return { id: found.id, name: found.name, locked: found.locked }
   } catch {
     return null
   }
@@ -422,7 +460,7 @@ async function updateItem(item: DisplayItem): Promise<void> {
       message.warning(t('nodes.locked'))
       return
     }
-    await ipc('node.update', local.name, undefined, store.activeInstanceId || undefined)
+    await ipc('node.update', local.id, undefined, store.activeInstanceId || undefined)
     message.success(t('nodes.updateDone', { name: local.name }))
     await loadCurrentPage()
   } catch (err) {
@@ -526,7 +564,8 @@ onUnmounted(() => offProgress?.())
       <div>
         <h1 class="page-title">{{ $t('market.title') }}</h1>
         <p class="page-subtitle">
-          {{ sourceTab === 'registry' ? $t('market.subtitle') : $t('market.subtitleManager') }} {{ hint() }}
+          {{ sourceTab === 'registry' ? $t('market.subtitle') : $t('market.subtitleManager') }}
+          {{ hint() }}
         </p>
       </div>
       <NSpace>
@@ -541,7 +580,11 @@ onUnmounted(() => offProgress?.())
           <template #prefix><NIcon :component="SearchOutline" /></template>
         </NInput>
         <NButton type="primary" @click="load(true)">{{ $t('market.search') }}</NButton>
-        <NButton secondary :loading="indexing || loading" @click="sourceTab === 'registry' ? refreshIndex() : loadManager()">
+        <NButton
+          secondary
+          :loading="indexing || loading"
+          @click="sourceTab === 'registry' ? refreshIndex() : loadManager()"
+        >
           <template #icon><NIcon :component="RefreshOutline" /></template>
           {{ sourceTab === 'registry' ? $t('market.refreshIndex') : $t('market.refreshManager') }}
         </NButton>
@@ -584,21 +627,34 @@ onUnmounted(() => offProgress?.())
       <div v-if="indexing && indexProgress && sourceTab === 'registry'" class="index-banner">
         <NProgress
           type="line"
-          :percentage="indexProgress.total ? Math.min(100, Math.round((indexProgress.done / indexProgress.total) * 100)) : 0"
+          :percentage="
+            indexProgress.total
+              ? Math.min(100, Math.round((indexProgress.done / indexProgress.total) * 100))
+              : 0
+          "
           :height="8"
           processing
         />
-        <div class="meta">{{ $t('market.indexing', { done: indexProgress.done, total: indexProgress.total, count: indexProgress.count }) }}</div>
+        <div class="meta">
+          {{
+            $t('market.indexing', {
+              done: indexProgress.done,
+              total: indexProgress.total,
+              count: indexProgress.count
+            })
+          }}
+        </div>
       </div>
 
       <!-- unified list -->
-      <NSpin :show="loading">
-        <NList v-if="displayItems.length" bordered class="market-list">
+      <NSpin :show="loading && displayItems.length > 0">
+        <ListSkeleton v-if="loading && !displayItems.length" :rows="6" />
+        <NList v-else-if="displayItems.length" bordered class="market-list">
           <NListItem v-for="item in displayItems" :key="item.source + ':' + item.id">
             <div class="row">
-              <div>
-                <div class="name">{{ item.displayName }}</div>
-                <div class="desc">{{ item.description }}</div>
+              <div class="item-main">
+                <div class="name" :title="item.displayName">{{ item.displayName }}</div>
+                <div class="desc clamp-2" :title="item.description">{{ item.description }}</div>
                 <div class="tags">
                   <NTag v-if="item.author" size="tiny" round>{{ item.author }}</NTag>
                   <NTag v-if="item.version" size="tiny" round>v{{ item.version }}</NTag>
@@ -607,17 +663,18 @@ onUnmounted(() => offProgress?.())
                     <template #icon><NIcon :component="StarOutline" /></template>
                     {{ item.stars }}
                   </NTag>
-                  <NTag size="tiny" round>{{ item.downloads }} DL</NTag>
-                  <NTag
+                  <NTag size="tiny" round>{{
+                    $t('market.downloadsShort', { n: item.downloads })
+                  }}</NTag>
+                  <NButton
                     v-if="isInstalled(item)"
                     size="tiny"
-                    round
+                    text
                     type="success"
-                    style="cursor: pointer"
                     @click="router.push('/nodes')"
                   >
                     {{ $t('market.installedTag') }}
-                  </NTag>
+                  </NButton>
                 </div>
               </div>
               <NSpace>
@@ -626,7 +683,11 @@ onUnmounted(() => offProgress?.())
                     <NButton
                       size="small"
                       secondary
-                      :loading="updatingItem === item.id || (nodeUpdatingPack !== null && nodeUpdatingPack === item.name)"
+                      :disabled="updatingItem !== null && updatingItem !== item.id"
+                      :loading="
+                        updatingItem === item.id ||
+                        (nodeUpdatingPack !== null && nodeUpdatingPack === item.name)
+                      "
                     >
                       <template #icon><NIcon :component="ArrowUpCircleOutline" /></template>
                       {{ $t('nodes.update') }}
@@ -637,8 +698,14 @@ onUnmounted(() => offProgress?.())
                 <NButton
                   type="primary"
                   secondary
-                  :disabled="isInstalled(item)"
-                  :loading="installingItem === item.id || (nodeInstallingPack !== null && (nodeInstallingPack === item.id || nodeInstallingPack === item.name))"
+                  :disabled="
+                    isInstalled(item) || (installingItem !== null && installingItem !== item.id)
+                  "
+                  :loading="
+                    installingItem === item.id ||
+                    (nodeInstallingPack !== null &&
+                      (nodeInstallingPack === item.id || nodeInstallingPack === item.name))
+                  "
                   @click="install(item)"
                 >
                   <template #icon><NIcon :component="DownloadOutline" /></template>
@@ -650,15 +717,36 @@ onUnmounted(() => offProgress?.())
         </NList>
         <NEmpty
           v-else-if="!loading"
-          :description="sourceError || (sourceTab === 'registry' ? $t('market.empty') : $t('market.managerEmpty'))"
-          style="padding: 48px 0"
-        />
+          :description="
+            sourceError ||
+            (activeQuery
+              ? $t('common.noMatch')
+              : sourceTab === 'registry'
+                ? $t('market.empty')
+                : $t('market.managerEmpty'))
+          "
+          class="empty"
+        >
+          <template #extra>
+            <NButton v-if="sourceError" secondary @click="load(true)">{{
+              $t('common.retry')
+            }}</NButton>
+            <NButton v-else-if="activeQuery" secondary @click="clearSearch">{{
+              $t('common.clearFilters')
+            }}</NButton>
+          </template>
+        </NEmpty>
       </NSpin>
 
       <!-- unified pagination -->
       <div v-if="displayItems.length" class="pager">
         <template v-if="sourceTab === 'registry'">
-          <NButton secondary :loading="loadingMore" :disabled="page >= totalPages" @click="loadMore">
+          <NButton
+            secondary
+            :loading="loadingMore"
+            :disabled="page >= totalPages"
+            @click="loadMore"
+          >
             {{ page < totalPages ? $t('market.loadMore') : $t('market.lastPage') }}
           </NButton>
         </template>
@@ -678,12 +766,64 @@ onUnmounted(() => offProgress?.())
 
 <style lang="scss" scoped>
 @use '@/styles/variables.scss' as *;
-.row { display: flex; justify-content: space-between; gap: 16px; align-items: center; width: 100%; }
-.name { font-size: 15px; font-weight: 700; }
-.desc { font-size: 13px; color: $color-text-secondary; margin: 4px 0 8px; }
-.tags { display: flex; flex-wrap: wrap; gap: 6px; }
-.pager { display: flex; justify-content: center; padding: 16px 0; }
-.index-banner { margin-bottom: 12px; padding: 12px 14px; border-radius: 12px; background: rgba(79, 110, 247, 0.08); }
-.meta { font-size: 12px; color: $color-text-secondary; margin-top: 6px; }
-.source-tabs { margin: 4px 0 12px; }
+.row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  width: 100%;
+}
+.item-main {
+  flex: 1;
+  min-width: 0;
+}
+.name {
+  font-size: 15px;
+  font-weight: 700;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.desc {
+  font-size: 13px;
+  color: $color-text-secondary;
+  margin: 4px 0 8px;
+}
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.pager {
+  display: flex;
+  justify-content: center;
+  padding: 16px 0;
+}
+.index-banner {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba($color-primary, 0.08);
+}
+.index-banner .mono {
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: bottom;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.meta {
+  font-size: 12px;
+  color: $color-text-secondary;
+  margin-top: 6px;
+}
+.source-tabs {
+  margin: 4px 0 12px;
+}
+.empty {
+  padding: 64px 0;
+}
 </style>

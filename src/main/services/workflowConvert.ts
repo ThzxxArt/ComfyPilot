@@ -59,8 +59,27 @@ const UI_ONLY_WIDGETS = new Set([
  * First N widgets_values map to these names in order.
  */
 const WIDGET_ORDER: Record<string, string[]> = {
-  KSampler: ['seed', 'control_after_generate', 'steps', 'cfg', 'sampler_name', 'scheduler', 'denoise'],
-  KSamplerAdvanced: ['add_noise', 'noise_seed', 'control_after_generate', 'steps', 'cfg', 'sampler_name', 'scheduler', 'start_at_step', 'end_at_step', 'return_with_leftover_noise'],
+  KSampler: [
+    'seed',
+    'control_after_generate',
+    'steps',
+    'cfg',
+    'sampler_name',
+    'scheduler',
+    'denoise'
+  ],
+  KSamplerAdvanced: [
+    'add_noise',
+    'noise_seed',
+    'control_after_generate',
+    'steps',
+    'cfg',
+    'sampler_name',
+    'scheduler',
+    'start_at_step',
+    'end_at_step',
+    'return_with_leftover_noise'
+  ],
   CheckpointLoaderSimple: ['ckpt_name'],
   LoraLoader: ['lora_name', 'strength_model', 'strength_clip'],
   CLIPTextEncode: ['text'],
@@ -71,13 +90,31 @@ const WIDGET_ORDER: Record<string, string[]> = {
   SaveImage: ['filename_prefix'],
   LoadImage: ['image', 'upload'],
   LoadAudio: ['audio', 'upload'],
-  LoadVideo: ['video', 'force_rate', 'force_size', 'custom_width', 'custom_height', 'frame_load_cap', 'skip_first_frames', 'select_every_nth'],
+  LoadVideo: [
+    'video',
+    'force_rate',
+    'force_size',
+    'custom_width',
+    'custom_height',
+    'frame_load_cap',
+    'skip_first_frames',
+    'select_every_nth'
+  ],
   PreviewImage: [],
   ImageScale: ['upscale_method', 'width', 'height', 'crop', 'image'],
   ImageScaleBy: ['upscale_method', 'scale_by', 'image'],
   VAEDecode: ['samples', 'vae'],
   VAEEncode: ['pixels', 'vae'],
-  ControlNetApplyAdvanced: ['strength', 'start_percent', 'end_percent', 'positive', 'negative', 'control_net', 'image', 'vae'],
+  ControlNetApplyAdvanced: [
+    'strength',
+    'start_percent',
+    'end_percent',
+    'positive',
+    'negative',
+    'control_net',
+    'image',
+    'vae'
+  ],
   ConditioningCombine: ['conditioning_1', 'conditioning_2'],
   ConditioningConcat: ['conditioning_to', 'conditioning_from'],
   ConditioningSetArea: ['conditioning', 'width', 'height', 'x', 'y', 'strength'],
@@ -108,7 +145,15 @@ const WIDGET_ORDER: Record<string, string[]> = {
   StyleModelApply: ['style_model', 'conditioning'],
   unCLIPConditioning: ['strength', 'noise_augmentation', 'conditioning', 'clip_vision_output'],
   GLIGENLoader: ['gligen_name'],
-  GLIGENTextBoxApply: ['position', 'size', 'conditioning', 'clip', 'gligen_textbox_model', 'text', 'strength'],
+  GLIGENTextBoxApply: [
+    'position',
+    'size',
+    'conditioning',
+    'clip',
+    'gligen_textbox_model',
+    'text',
+    'strength'
+  ],
   DiffusersLoader: ['unet_path', 'vae_path', 'weight_dtype'],
   DifferentialDiffusion: ['model', 'conditioning'],
   UNETLoaderGGUF: ['unet_name', 'weight_dtype'],
@@ -147,7 +192,8 @@ function widgetValueMatchesType(inputType: string | undefined, value: unknown): 
   if (value == null) return true
   if (!inputType) return true
   const t = inputType.toUpperCase()
-  if (typeof value === 'number') return t === 'INT' || t === 'FLOAT' || t === 'NUMBER' || t === 'SEED'
+  if (typeof value === 'number')
+    return t === 'INT' || t === 'FLOAT' || t === 'NUMBER' || t === 'SEED'
   if (typeof value === 'boolean') return t === 'BOOLEAN' || t === 'BOOL'
   if (typeof value === 'string') return t !== 'INT' && t !== 'FLOAT' && t !== 'BOOLEAN'
   return false
@@ -191,7 +237,11 @@ function mapWidgets(node: UiNode, linkedNames: Set<string>): Record<string, unkn
   }
   if (leftovers.length) {
     const candidates = (node.inputs || []).filter(
-      (inp) => inp?.name && !linkedNames.has(inp.name) && !(inp.name in inputs) && !UI_ONLY_WIDGETS.has(inp.name)
+      (inp) =>
+        inp?.name &&
+        !linkedNames.has(inp.name) &&
+        !(inp.name in inputs) &&
+        !UI_ONLY_WIDGETS.has(inp.name)
     )
     const deferred: typeof candidates = []
     for (const inp of candidates) {
@@ -328,7 +378,11 @@ export function applySeedToPrompt(prompt: ApiPrompt, seed: number): ApiPrompt {
 }
 
 /** Per-iteration seed variation for batch jobs. */
-export function applySeedForIteration(prompt: ApiPrompt, baseSeed: number, iteration: number): ApiPrompt {
+export function applySeedForIteration(
+  prompt: ApiPrompt,
+  baseSeed: number,
+  iteration: number
+): ApiPrompt {
   return applySeedToPrompt(prompt, (baseSeed + iteration) % 2 ** 32)
 }
 

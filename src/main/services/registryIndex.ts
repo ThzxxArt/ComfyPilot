@@ -85,7 +85,12 @@ export class RegistryIndexService extends EventEmitter {
     }
   }
 
-  private saveToDisk(items: Array<Record<string, unknown>>, total: number, pages: number, skippedPages = 0): void {
+  private saveToDisk(
+    items: Array<Record<string, unknown>>,
+    total: number,
+    pages: number,
+    skippedPages = 0
+  ): void {
     try {
       const dir = cacheDir()
       mkdirSync(dir, { recursive: true })
@@ -127,7 +132,13 @@ export class RegistryIndexService extends EventEmitter {
     if (!opts?.force && this.items && this.meta && Date.now() - this.meta.updatedAt < MAX_AGE_MS) {
       return this.status()
     }
-    if (!opts?.force && !this.items && this.loadFromDisk() && this.meta && Date.now() - this.meta.updatedAt < MAX_AGE_MS) {
+    if (
+      !opts?.force &&
+      !this.items &&
+      this.loadFromDisk() &&
+      this.meta &&
+      Date.now() - this.meta.updatedAt < MAX_AGE_MS
+    ) {
       return this.status()
     }
     if (this.building) {
@@ -216,11 +227,7 @@ export class RegistryIndexService extends EventEmitter {
   }
 
   /** Search the FULL catalog (not a single page). */
-  async search(opts: {
-    query: string
-    page?: number
-    limit?: number
-  }): Promise<{
+  async search(opts: { query: string; page?: number; limit?: number }): Promise<{
     raw: Array<Record<string, unknown>>
     total: number
     page: number

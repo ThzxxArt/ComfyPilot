@@ -26,7 +26,15 @@ const h = vi.hoisted(() => {
       securityLevel: 'normal',
       networkMode: 'public',
       pipIndex: '',
-      proxy: { enabled: false, protocol: 'http', host: '', port: 7890, bypass: '', username: '', password: '' }
+      proxy: {
+        enabled: false,
+        protocol: 'http',
+        host: '',
+        port: 7890,
+        bypass: '',
+        username: '',
+        password: ''
+      }
     } as Record<string, unknown>,
     renameFail: new Set<string>(),
     writeFail: new Set<string>(),
@@ -267,7 +275,9 @@ vi.mock('crypto', () => {
       h1 ^= s.charCodeAt(i)
       h1 = Math.imul(h1, 0x01000193)
     }
-    return ((h1 >>> 0).toString(16) + (s.length * 2654435761).toString(16)).slice(0, 16).padStart(16, '0')
+    return ((h1 >>> 0).toString(16) + (s.length * 2654435761).toString(16))
+      .slice(0, 16)
+      .padStart(16, '0')
   }
   let uuidCounter = 0
   return {
@@ -286,7 +296,11 @@ vi.mock('crypto', () => {
 
 // ---------- child_process (callback-accurate + promisify.custom) ----------
 vi.mock('child_process', () => {
-  type Handler = (cmd: string, args: string[], opts: unknown) => { stdout?: string; stderr?: string; error?: Error; code?: number }
+  type Handler = (
+    cmd: string,
+    args: string[],
+    opts: unknown
+  ) => { stdout?: string; stderr?: string; error?: Error; code?: number }
   let handler: Handler | null = null
   const setHandler = (fn: Handler | null): void => {
     handler = fn
@@ -342,9 +356,7 @@ vi.mock('child_process', () => {
     child.kill = () => undefined
     queueMicrotask(() => {
       try {
-        const result = handler
-          ? handler(cmd, args, undefined)
-          : { stdout: 'ok', stderr: '' }
+        const result = handler ? handler(cmd, args, undefined) : { stdout: 'ok', stderr: '' }
         if (result.error) {
           child.stderr.emit('data', Buffer.from(result.stderr || result.error.message))
           child.emit('close', result.code ?? 1)
@@ -450,9 +462,28 @@ vi.mock('../../src/main/services/bootstrap', () => ({
   }
 }))
 
-vi.mock('../../src/main/services/instance', () => ({
-  resolveRuntimesPythonSync: () => { if (h.state.runtimePythonThrow) throw h.state.runtimePythonThrow; return h.state.runtimePython }
-}))
+vi.mock('../../src/main/services/instance', async () => {
+  const { existsSync } = await import('fs')
+  const { join } = await import('path')
+  return {
+    resolveRuntimesPythonSync: () => {
+      if (h.state.runtimePythonThrow) throw h.state.runtimePythonThrow
+      return h.state.runtimePython
+    },
+    // Mirrors the shared resolver against the mocked FS (venv → pythonPath → runtime).
+    resolveInstancePythonPath: (config: { venvPath?: string; pythonPath?: string }) => {
+      if (config.venvPath) {
+        const win = join(config.venvPath, 'Scripts', 'python.exe')
+        const unix = join(config.venvPath, 'bin', 'python')
+        if (existsSync(win)) return win
+        if (existsSync(unix)) return unix
+      }
+      if (config.pythonPath) return config.pythonPath
+      if (h.state.runtimePythonThrow) throw h.state.runtimePythonThrow
+      return h.state.runtimePython || 'python'
+    }
+  }
+})
 
 vi.mock('../../src/main/services/registry', () => ({
   searchRegistry: vi.fn(async () => ({
@@ -465,7 +496,15 @@ vi.mock('../../src/main/services/registry', () => ({
     clientFiltered: false
   })),
   toPageResult: vi.fn((result: unknown, map: (n: unknown) => unknown) => {
-    const r = result as { raw?: unknown[]; total?: number; page?: number; pageSize?: number; totalPages?: number; scanned?: number; clientFiltered?: boolean }
+    const r = result as {
+      raw?: unknown[]
+      total?: number
+      page?: number
+      pageSize?: number
+      totalPages?: number
+      scanned?: number
+      clientFiltered?: boolean
+    }
     return {
       items: (r.raw || []).map(map),
       total: r.total || 0,
@@ -492,7 +531,11 @@ vi.mock('../../src/main/services/zipSafe', () => ({
   safeUnzip: vi.fn(async () => undefined)
 }))
 
-import { nodePackService, resolveInstanceConfig, compareVersions } from '../../src/main/services/nodePack'
+import {
+  nodePackService,
+  resolveInstanceConfig,
+  compareVersions
+} from '../../src/main/services/nodePack'
 import * as cp from 'child_process'
 import * as zipSafeMod from '../../src/main/services/zipSafe'
 import * as registryMod from '../../src/main/services/registry'
@@ -511,7 +554,13 @@ const registryIndexMock = registryIndexMod as unknown as {
 const cpMock = cp as unknown as {
   execFile: (cmd: string, args: string[], opts: unknown, cb?: ExecCallback) => unknown
   __setExecHandler: (
-    fn: ((cmd: string, args: string[], opts: unknown) => { stdout?: string; stderr?: string; error?: Error; code?: number }) | null
+    fn:
+      | ((
+          cmd: string,
+          args: string[],
+          opts: unknown
+        ) => { stdout?: string; stderr?: string; error?: Error; code?: number })
+      | null
   ) => void
 }
 
@@ -540,7 +589,15 @@ function resetState(): void {
     securityLevel: 'normal',
     networkMode: 'public',
     pipIndex: '',
-    proxy: { enabled: false, protocol: 'http', host: '', port: 7890, bypass: '', username: '', password: '' }
+    proxy: {
+      enabled: false,
+      protocol: 'http',
+      host: '',
+      port: 7890,
+      bypass: '',
+      username: '',
+      password: ''
+    }
   }
   h.state.instances = [
     {
@@ -581,7 +638,8 @@ function makeRes(body: unknown, init?: { ok?: boolean; status?: number }): Respo
     ok: init?.ok ?? true,
     status: init?.status ?? 200,
     json: async () => body,
-    arrayBuffer: async () => new TextEncoder().encode(typeof body === 'string' ? body : 'zip-bytes').buffer,
+    arrayBuffer: async () =>
+      new TextEncoder().encode(typeof body === 'string' ? body : 'zip-bytes').buffer,
     headers: { get: () => '0' }
   } as unknown as Response
 }
@@ -679,14 +737,13 @@ describe('readPackMeta via list()', () => {
     seedPack({
       name: 'PackB',
       pyproject: null,
-      packageJson:
-        JSON.stringify({
-          name: 'pkg-pack',
-          version: '9.9.9',
-          description: 'from package.json',
-          repository: { url: 'https://github.com/p/q' },
-          license: 'MIT'
-        })
+      packageJson: JSON.stringify({
+        name: 'pkg-pack',
+        version: '9.9.9',
+        description: 'from package.json',
+        repository: { url: 'https://github.com/p/q' },
+        license: 'MIT'
+      })
     })
     const packs = nodePackService.list('inst-1')
     expect(packs[0].name).toBe('pkg-pack')
@@ -699,7 +756,11 @@ describe('readPackMeta via list()', () => {
     seedPack({
       name: 'PackB2',
       pyproject: null,
-      packageJson: JSON.stringify({ name: 'hp-pack', version: '1.0.0', homepage: 'https://hp.example' })
+      packageJson: JSON.stringify({
+        name: 'hp-pack',
+        version: '1.0.0',
+        homepage: 'https://hp.example'
+      })
     })
     expect(nodePackService.list('inst-1')[0].repository).toBe('https://hp.example')
   })
@@ -730,7 +791,8 @@ describe('readPackMeta via list()', () => {
       initPy: '# package init, no mappings here\n',
       nodeListJson: null,
       extraFiles: {
-        'nodes.py': 'NODE_CLASS_MAPPINGS = {\n  "LoadThing": None,\n  "SaveThing": None,\n}\nNODE_DISPLAY_NAME_MAPPINGS = {"LoadThing": "LT"}\n',
+        'nodes.py':
+          'NODE_CLASS_MAPPINGS = {\n  "LoadThing": None,\n  "SaveThing": None,\n}\nNODE_DISPLAY_NAME_MAPPINGS = {"LoadThing": "LT"}\n',
         'readme.md': 'not python'
       }
     })
@@ -813,7 +875,18 @@ describe('collectIssues via list()', () => {
 describe('NodePackService.list', () => {
   it('filters junk/cache dirs and plain files', () => {
     seedPack({ name: 'Real' })
-    const junk = ['.git', '__pycache__', '__MACOSX', 'node_modules', 'foo.egg-info', 'bar.dist-info', 'old.trash', 'x.trash-1', 'y.bak-2', 'afile.txt']
+    const junk = [
+      '.git',
+      '__pycache__',
+      '__MACOSX',
+      'node_modules',
+      'foo.egg-info',
+      'bar.dist-info',
+      'old.trash',
+      'x.trash-1',
+      'y.bak-2',
+      'afile.txt'
+    ]
     for (const j of junk) {
       if (j === 'afile.txt') {
         h.writeFile(join(ROOT, j), 'x')
@@ -840,7 +913,7 @@ describe('NodePackService.list', () => {
   })
 
   it('computes update-available status when a newer latestVersion is known', () => {
-    const dir = seedPack({ name: 'UpdA' })
+    seedPack({ name: 'UpdA' })
     const id = ''
     // use the real mocked hash �?recompute via list
     const first = nodePackService.list('inst-1')[0]
@@ -978,24 +1051,36 @@ describe('NodePackService.refresh', () => {
 describe('install security guards', () => {
   it('rejects every remote install when networkMode is offline', async () => {
     h.state.settings.networkMode = 'offline'
-    await expect(nodePackService.install({ id: 'x', source: 'registry' })).rejects.toThrow(/offline/i)
-    await expect(nodePackService.install({ id: 'x', source: 'git', url: 'https://g.com/a' })).rejects.toThrow(/offline/i)
-    await expect(nodePackService.install({ id: 'x', source: 'manager' })).rejects.toThrow(/offline/i)
+    await expect(nodePackService.install({ id: 'x', source: 'registry' })).rejects.toThrow(
+      /offline/i
+    )
+    await expect(
+      nodePackService.install({ id: 'x', source: 'git', url: 'https://g.com/a' })
+    ).rejects.toThrow(/offline/i)
+    await expect(nodePackService.install({ id: 'x', source: 'manager' })).rejects.toThrow(
+      /offline/i
+    )
   })
 
   it('rejects git installs when allowGitUrlInstall is false', async () => {
     h.state.settings.allowGitUrlInstall = false
-    await expect(nodePackService.install({ id: 'https://g.com/a', source: 'git' })).rejects.toThrow(/allow_git_url_install/i)
+    await expect(nodePackService.install({ id: 'https://g.com/a', source: 'git' })).rejects.toThrow(
+      /allow_git_url_install/i
+    )
   })
 
   it('rejects git installs under securityLevel=strong', async () => {
     h.state.settings.securityLevel = 'strong'
-    await expect(nodePackService.install({ id: 'https://g.com/a', source: 'git' })).rejects.toThrow(/strong/i)
+    await expect(nodePackService.install({ id: 'https://g.com/a', source: 'git' })).rejects.toThrow(
+      /strong/i
+    )
   })
 
   it('rejects registry/manager installs under securityLevel=strong', async () => {
     h.state.settings.securityLevel = 'strong'
-    await expect(nodePackService.install({ id: 'x', source: 'registry' })).rejects.toThrow(/strong/i)
+    await expect(nodePackService.install({ id: 'x', source: 'registry' })).rejects.toThrow(
+      /strong/i
+    )
     await expect(nodePackService.install({ id: 'x', source: 'manager' })).rejects.toThrow(/strong/i)
   })
 
@@ -1003,7 +1088,9 @@ describe('install security guards', () => {
     h.state.instances = []
     delete process.env.COMFYUI_PATH
     // empty root string �?install throws
-    await expect(nodePackService.install({ id: 'https://g.com/a', source: 'git' })).rejects.toThrow(/custom_nodes/i)
+    await expect(nodePackService.install({ id: 'https://g.com/a', source: 'git' })).rejects.toThrow(
+      /custom_nodes/i
+    )
   })
 })
 
@@ -1020,7 +1107,10 @@ describe('install via git/manager channel', () => {
         const dest = args[args.length - 1]
         h.mkdirPath(dest)
         h.writeFile(join(dest, '__init__.py'), 'NODE_CLASS_MAPPINGS = {"GitNode": None}\n')
-        h.writeFile(join(dest, 'pyproject.toml'), 'name = "GitPack"\nversion = "3.0.0"\nrepository = "https://g.com/r"\n')
+        h.writeFile(
+          join(dest, 'pyproject.toml'),
+          'name = "GitPack"\nversion = "3.0.0"\nrepository = "https://g.com/r"\n'
+        )
         return { stdout: 'cloned' }
       }
       return { stdout: '' }
@@ -1052,7 +1142,11 @@ describe('install via git/manager channel', () => {
       }
       return { stdout: '' }
     })
-    const rec = await nodePackService.install({ id: 'https://github.com/u/IdUrl.git', source: 'git', instanceId: 'inst-1' })
+    const rec = await nodePackService.install({
+      id: 'https://github.com/u/IdUrl.git',
+      source: 'git',
+      instanceId: 'inst-1'
+    })
     expect(cloneArgs[0]).toContain('https://github.com/u/IdUrl.git')
     expect(rec.name).toBe('IdUrl')
   })
@@ -1068,7 +1162,11 @@ describe('install via git/manager channel', () => {
       return { stdout: '' }
     })
     await expect(
-      nodePackService.install({ id: 'https://github.com/u/Broken.git', source: 'git', instanceId: 'inst-1' })
+      nodePackService.install({
+        id: 'https://github.com/u/Broken.git',
+        source: 'git',
+        instanceId: 'inst-1'
+      })
     ).rejects.toThrow(/clone exploded/)
     const dest = join(ROOT, 'Broken')
     expect(h.state.dirs.has(dest)).toBe(false)
@@ -1085,7 +1183,11 @@ describe('install via git/manager channel', () => {
       }
       return { stdout: '' }
     })
-    const rec = await nodePackService.install({ id: 'https://github.com/u/Nested.git', source: 'git', instanceId: 'inst-1' })
+    const rec = await nodePackService.install({
+      id: 'https://github.com/u/Nested.git',
+      source: 'git',
+      instanceId: 'inst-1'
+    })
     expect(rec.name).toBe('NestedPack')
     expect(rec.path).toContain('Nested-inner')
   })
@@ -1117,16 +1219,22 @@ describe('install via git/manager channel', () => {
       }
       return { stdout: '' }
     })
-    const rec = await nodePackService.install({ id: 'mgr-1', source: 'manager', instanceId: 'inst-1' })
+    const rec = await nodePackService.install({
+      id: 'mgr-1',
+      source: 'manager',
+      instanceId: 'inst-1'
+    })
     expect(rec.name).toBe('ManagerPack')
     expect(rec.installSource).toBe('manager')
   })
 
   it('throws when a manager pack has no repository URL', async () => {
-    setFetch(async () => makeRes([{ id: 'mgr-2', title: 'NoRepo', name: 'NoRepo', repository: '' }]))
-    await expect(nodePackService.install({ id: 'mgr-2', source: 'manager', instanceId: 'inst-1' })).rejects.toThrow(
-      /no repository url/i
+    setFetch(async () =>
+      makeRes([{ id: 'mgr-2', title: 'NoRepo', name: 'NoRepo', repository: '' }])
     )
+    await expect(
+      nodePackService.install({ id: 'mgr-2', source: 'manager', instanceId: 'inst-1' })
+    ).rejects.toThrow(/no repository url/i)
   })
 
   it('rejects an unsafe git URL', async () => {
@@ -1163,9 +1271,16 @@ describe('install via registry channel', () => {
       const dest = (tmpDest as string) || join(ROOT, 'RegPack')
       h.mkdirPath(dest)
       h.writeFile(join(dest, '__init__.py'), 'NODE_CLASS_MAPPINGS = {"RegNode": None}\n')
-      h.writeFile(join(dest, 'pyproject.toml'), 'name = "RegPack"\nversion = "5.0.0"\nrepository = "https://r.example"\n')
+      h.writeFile(
+        join(dest, 'pyproject.toml'),
+        'name = "RegPack"\nversion = "5.0.0"\nrepository = "https://r.example"\n'
+      )
     })
-    const rec = await nodePackService.install({ id: 'RegPack', source: 'registry', instanceId: 'inst-1' })
+    const rec = await nodePackService.install({
+      id: 'RegPack',
+      source: 'registry',
+      instanceId: 'inst-1'
+    })
     expect(rec.name).toBe('RegPack')
     expect(rec.installSource).toBe('registry')
     expect(rec.registryId).toBe('RegPack')
@@ -1183,7 +1298,11 @@ describe('install via registry channel', () => {
       h.writeFile(join(nested, '__init__.py'), 'x')
       h.writeFile(join(nested, 'pyproject.toml'), 'name = "NestReg"\nversion = "1.0.0"\n')
     })
-    const rec = await nodePackService.install({ id: 'NestReg', source: 'registry', instanceId: 'inst-1' })
+    const rec = await nodePackService.install({
+      id: 'NestReg',
+      source: 'registry',
+      instanceId: 'inst-1'
+    })
     expect(rec.name).toBe('NestReg')
     // After flattening, the pack lives at dest/ directly — no nested folder.
     expect(rec.path).not.toContain('NestReg-main')
@@ -1194,30 +1313,30 @@ describe('install via registry channel', () => {
       if (url.includes('/install')) return makeRes({ status: 'banned' })
       throw new Error('unexpected')
     })
-    await expect(nodePackService.install({ id: 'Banned', source: 'registry', instanceId: 'inst-1' })).rejects.toThrow(
-      /banned/i
-    )
+    await expect(
+      nodePackService.install({ id: 'Banned', source: 'registry', instanceId: 'inst-1' })
+    ).rejects.toThrow(/banned/i)
   })
 
   it('throws when no download URL is returned', async () => {
     setFetch(async () => makeRes({ status: 'active' }))
-    await expect(nodePackService.install({ id: 'NoUrl', source: 'registry', instanceId: 'inst-1' })).rejects.toThrow(
-      /download url/i
-    )
+    await expect(
+      nodePackService.install({ id: 'NoUrl', source: 'registry', instanceId: 'inst-1' })
+    ).rejects.toThrow(/download url/i)
   })
 
   it('throws on a non-OK install API response', async () => {
     setFetch(async () => makeRes({}, { ok: false, status: 500 }))
-    await expect(nodePackService.install({ id: 'HttpFail', source: 'registry', instanceId: 'inst-1' })).rejects.toThrow(
-      /HTTP 500/
-    )
+    await expect(
+      nodePackService.install({ id: 'HttpFail', source: 'registry', instanceId: 'inst-1' })
+    ).rejects.toThrow(/HTTP 500/)
   })
 
   it('blocks an unsafe download URL scheme', async () => {
     setFetch(async () => makeRes({ url: 'ftp://evil/pack.zip' }))
-    await expect(nodePackService.install({ id: 'Evil', source: 'registry', instanceId: 'inst-1' })).rejects.toThrow(
-      /blocked/i
-    )
+    await expect(
+      nodePackService.install({ id: 'Evil', source: 'registry', instanceId: 'inst-1' })
+    ).rejects.toThrow(/blocked/i)
   })
 
   it('throws when the zip download fails', async () => {
@@ -1225,9 +1344,9 @@ describe('install via registry channel', () => {
       if (url.includes('/install')) return makeRes({ url: 'https://cdn.example/pack.zip' })
       return makeRes({}, { ok: false, status: 404 })
     })
-    await expect(nodePackService.install({ id: 'Z404', source: 'registry', instanceId: 'inst-1' })).rejects.toThrow(
-      /download failed/i
-    )
+    await expect(
+      nodePackService.install({ id: 'Z404', source: 'registry', instanceId: 'inst-1' })
+    ).rejects.toThrow(/download failed/i)
   })
 
   it('cleans up tmp zip and dest when unzip throws', async () => {
@@ -1242,9 +1361,9 @@ describe('install via registry channel', () => {
       h.writeFile(join(finalDest, 'partial.bin'), 'x')
       throw new Error('zip slip detected')
     })
-    await expect(nodePackService.install({ id: 'BadZip', source: 'registry', instanceId: 'inst-1' })).rejects.toThrow(
-      /zip slip/i
-    )
+    await expect(
+      nodePackService.install({ id: 'BadZip', source: 'registry', instanceId: 'inst-1' })
+    ).rejects.toThrow(/zip slip/i)
     expect(h.state.dirs.has(join(ROOT, 'BadZip'))).toBe(false)
     const leftovers = [...h.state.files.keys()].filter((k) => k.includes('._install_'))
     expect(leftovers).toEqual([])
@@ -1263,7 +1382,12 @@ describe('install via registry channel', () => {
       h.mkdirPath(finalDest)
       h.writeFile(join(finalDest, 'pyproject.toml'), 'name = "VerPack"\nversion = "1.0.0"\n')
     })
-    await nodePackService.install({ id: 'VerPack', version: '2.0.0', source: 'registry', instanceId: 'inst-1' })
+    await nodePackService.install({
+      id: 'VerPack',
+      version: '2.0.0',
+      source: 'registry',
+      instanceId: 'inst-1'
+    })
     expect(urls[0]).toContain('/nodes/VerPack/install/2.0.0')
   })
 })
@@ -1272,10 +1396,6 @@ describe('install via registry channel', () => {
 // afterInstall pip paths
 // =====================================================================
 describe('afterInstall pip handling', () => {
-  function seedPipPack(): void {
-    seedPack({ name: 'PipPack', requirements: 'requests\n', pyproject: 'name = "PipPack"\nversion = "1.0.0"\nrepository = "https://r"\n' })
-  }
-
   it('adds a pip-disabled issue when allowPipInstall is off', async () => {
     h.state.settings.allowPipInstall = false
     cpMock.__setExecHandler((cmd, args) => {
@@ -1284,7 +1404,10 @@ describe('afterInstall pip handling', () => {
         const dest = args[args.length - 1]
         h.mkdirPath(dest)
         h.writeFile(join(dest, 'requirements.txt'), 'requests\n')
-        h.writeFile(join(dest, 'pyproject.toml'), 'name = "PipPack2"\nversion = "1.0.0"\nrepository = "https://r"\n')
+        h.writeFile(
+          join(dest, 'pyproject.toml'),
+          'name = "PipPack2"\nversion = "1.0.0"\nrepository = "https://r"\n'
+        )
       }
       return { stdout: '' }
     })
@@ -1306,7 +1429,10 @@ describe('afterInstall pip handling', () => {
         const dest = args[args.length - 1]
         h.mkdirPath(dest)
         h.writeFile(join(dest, 'requirements.txt'), 'requests\n')
-        h.writeFile(join(dest, 'pyproject.toml'), 'name = "PipPack"\nversion = "1.0.0"\nrepository = "https://r"\n')
+        h.writeFile(
+          join(dest, 'pyproject.toml'),
+          'name = "PipPack"\nversion = "1.0.0"\nrepository = "https://r"\n'
+        )
         return { stdout: '' }
       }
       if (args.includes('pip')) {
@@ -1315,7 +1441,11 @@ describe('afterInstall pip handling', () => {
       }
       return { stdout: '' }
     })
-    const rec = await nodePackService.install({ id: 'https://github.com/u/PipPack.git', source: 'git', instanceId: 'inst-1' })
+    const rec = await nodePackService.install({
+      id: 'https://github.com/u/PipPack.git',
+      source: 'git',
+      instanceId: 'inst-1'
+    })
     // ensurePip probes with `-m pip --version` first — the INSTALL call is the
     // one carrying `-r requirements.txt`.
     const installCalls = pipCalls.filter((c) => c.args.includes('-r') || c.args.includes('install'))
@@ -1335,7 +1465,10 @@ describe('afterInstall pip handling', () => {
         const dest = args[args.length - 1]
         h.mkdirPath(dest)
         h.writeFile(join(dest, 'requirements.txt'), 'badpkg\n')
-        h.writeFile(join(dest, 'pyproject.toml'), 'name = "PipPack"\nversion = "1.0.0"\nrepository = "https://r"\n')
+        h.writeFile(
+          join(dest, 'pyproject.toml'),
+          'name = "PipPack"\nversion = "1.0.0"\nrepository = "https://r"\n'
+        )
         return { stdout: '' }
       }
       if (args.includes('pip')) {
@@ -1345,7 +1478,11 @@ describe('afterInstall pip handling', () => {
       }
       return { stdout: '' }
     })
-    const rec = await nodePackService.install({ id: 'https://github.com/u/PipPack.git', source: 'git', instanceId: 'inst-1' })
+    const rec = await nodePackService.install({
+      id: 'https://github.com/u/PipPack.git',
+      source: 'git',
+      instanceId: 'inst-1'
+    })
     const pipIssue = rec.issues.find((i) => i.code === 'pip-failed')
     expect(pipIssue).toBeTruthy()
     expect(pipIssue!.severity).toBe('error')
@@ -1361,13 +1498,24 @@ describe('afterInstall pip handling', () => {
         const dest = args[args.length - 1]
         h.mkdirPath(dest)
         h.writeFile(join(dest, 'requirements.txt'), 'bad\n')
-        h.writeFile(join(dest, 'pyproject.toml'), 'name = "PipPack"\nversion = "1.0.0"\nrepository = "https://r"\n')
+        h.writeFile(
+          join(dest, 'pyproject.toml'),
+          'name = "PipPack"\nversion = "1.0.0"\nrepository = "https://r"\n'
+        )
         return { stdout: '' }
       }
-      if (args.includes('pip')) return { stdout: 'ERROR: Could not find a version that satisfies the requirement', stderr: '' }
+      if (args.includes('pip'))
+        return {
+          stdout: 'ERROR: Could not find a version that satisfies the requirement',
+          stderr: ''
+        }
       return { stdout: '' }
     })
-    const rec = await nodePackService.install({ id: 'https://github.com/u/PipPack.git', source: 'git', instanceId: 'inst-1' })
+    const rec = await nodePackService.install({
+      id: 'https://github.com/u/PipPack.git',
+      source: 'git',
+      instanceId: 'inst-1'
+    })
     expect(rec.issues.map((i) => i.code)).toContain('pip-failed')
   })
 
@@ -1382,7 +1530,10 @@ describe('afterInstall pip handling', () => {
         const dest = args[args.length - 1]
         h.mkdirPath(dest)
         h.writeFile(join(dest, 'requirements.txt'), 'x\n')
-        h.writeFile(join(dest, 'pyproject.toml'), 'name = "PipPack"\nversion = "1.0.0"\nrepository = "https://r"\n')
+        h.writeFile(
+          join(dest, 'pyproject.toml'),
+          'name = "PipPack"\nversion = "1.0.0"\nrepository = "https://r"\n'
+        )
         return { stdout: '' }
       }
       if (args.includes('pip')) {
@@ -1391,11 +1542,19 @@ describe('afterInstall pip handling', () => {
       }
       return { stdout: '' }
     })
-    await nodePackService.install({ id: 'https://github.com/u/PipPack.git', source: 'git', instanceId: 'inst-1' })
-    const installArgs = pipCalls.find((a) => a.includes('-r') || a.includes('install')) || pipCalls[pipCalls.length - 1]
+    await nodePackService.install({
+      id: 'https://github.com/u/PipPack.git',
+      source: 'git',
+      instanceId: 'inst-1'
+    })
+    const installArgs =
+      pipCalls.find((a) => a.includes('-r') || a.includes('install')) ||
+      pipCalls[pipCalls.length - 1]
     expect(installArgs).toContain('-i')
     expect(installArgs).toContain('https://mirror.example/simple/')
-    const installArgs2 = pipCalls.find((a) => a.includes('-r') || a.includes('install')) || pipCalls[pipCalls.length - 1]
+    const installArgs2 =
+      pipCalls.find((a) => a.includes('-r') || a.includes('install')) ||
+      pipCalls[pipCalls.length - 1]
     expect(installArgs2).toContain('--trusted-host')
     expect(installArgs2).toContain('mirror.example')
   })
@@ -1411,7 +1570,10 @@ describe('afterInstall pip handling', () => {
         const dest = args[args.length - 1]
         h.mkdirPath(dest)
         h.writeFile(join(dest, 'requirements.txt'), 'x\n')
-        h.writeFile(join(dest, 'pyproject.toml'), 'name = "PipPack"\nversion = "1.0.0"\nrepository = "https://r"\n')
+        h.writeFile(
+          join(dest, 'pyproject.toml'),
+          'name = "PipPack"\nversion = "1.0.0"\nrepository = "https://r"\n'
+        )
         return { stdout: '' }
       }
       if (args.includes('pip')) {
@@ -1420,8 +1582,14 @@ describe('afterInstall pip handling', () => {
       }
       return { stdout: '' }
     })
-    await nodePackService.install({ id: 'https://github.com/u/PipPack.git', source: 'git', instanceId: 'inst-1' })
-    const installArgs = pipCalls.find((a) => a.includes('-r') || a.includes('install')) || pipCalls[pipCalls.length - 1]
+    await nodePackService.install({
+      id: 'https://github.com/u/PipPack.git',
+      source: 'git',
+      instanceId: 'inst-1'
+    })
+    const installArgs =
+      pipCalls.find((a) => a.includes('-r') || a.includes('install')) ||
+      pipCalls[pipCalls.length - 1]
     expect(installArgs).toContain('-i')
     expect(installArgs).not.toContain('--trusted-host')
   })
@@ -1437,7 +1605,10 @@ describe('afterInstall pip handling', () => {
         const dest = args[args.length - 1]
         h.mkdirPath(dest)
         h.writeFile(join(dest, 'requirements.txt'), 'x\n')
-        h.writeFile(join(dest, 'pyproject.toml'), 'name = "PipPack"\nversion = "1.0.0"\nrepository = "https://r"\n')
+        h.writeFile(
+          join(dest, 'pyproject.toml'),
+          'name = "PipPack"\nversion = "1.0.0"\nrepository = "https://r"\n'
+        )
         return { stdout: '' }
       }
       if (args.includes('pip')) {
@@ -1446,22 +1617,34 @@ describe('afterInstall pip handling', () => {
       }
       return { stdout: '' }
     })
-    await nodePackService.install({ id: 'https://github.com/u/PipPack.git', source: 'git', instanceId: 'inst-1' })
+    await nodePackService.install({
+      id: 'https://github.com/u/PipPack.git',
+      source: 'git',
+      instanceId: 'inst-1'
+    })
     expect(cmds[0]).toBe('C:/sys/python.exe')
 
     // runtimes branch
     h.state.runtimePython = 'C:/runtimes/python.exe'
     h.state.instances[0].pythonPath = ''
     cmds.length = 0
-    await nodePackService.install({ id: 'https://github.com/u/PipPack2.git', source: 'git', instanceId: 'inst-1' })
+    await nodePackService.install({
+      id: 'https://github.com/u/PipPack2.git',
+      source: 'git',
+      instanceId: 'inst-1'
+    })
     // PipPack2 clone creates another pack; pip runs with runtime python
     expect(cmds[0]).toBe('C:/runtimes/python.exe')
 
     // bare python fallback
     h.state.runtimePython = null
-  h.state.runtimePythonThrow = null
+    h.state.runtimePythonThrow = null
     cmds.length = 0
-    await nodePackService.install({ id: 'https://github.com/u/PipPack3.git', source: 'git', instanceId: 'inst-1' })
+    await nodePackService.install({
+      id: 'https://github.com/u/PipPack3.git',
+      source: 'git',
+      instanceId: 'inst-1'
+    })
     expect(cmds[0]).toBe('python')
   })
 
@@ -1475,7 +1658,10 @@ describe('afterInstall pip handling', () => {
         const dest = args[args.length - 1]
         h.mkdirPath(dest)
         h.writeFile(join(dest, 'requirements.txt'), 'x\n')
-        h.writeFile(join(dest, 'pyproject.toml'), 'name = "PipPack"\nversion = "1.0.0"\nrepository = "https://r"\n')
+        h.writeFile(
+          join(dest, 'pyproject.toml'),
+          'name = "PipPack"\nversion = "1.0.0"\nrepository = "https://r"\n'
+        )
         return { stdout: '' }
       }
       if (args.includes('pip')) {
@@ -1484,7 +1670,11 @@ describe('afterInstall pip handling', () => {
       }
       return { stdout: '' }
     })
-    await nodePackService.install({ id: 'https://github.com/u/PipPack4.git', source: 'git', instanceId: 'inst-1' })
+    await nodePackService.install({
+      id: 'https://github.com/u/PipPack4.git',
+      source: 'git',
+      instanceId: 'inst-1'
+    })
     expect(cmds[0]).toContain(join('bin', 'python'))
   })
 })
@@ -1611,7 +1801,11 @@ describe('NodePackService.uninstall', () => {
 // =====================================================================
 describe('NodePackService.update', () => {
   it('updates a git pack via pull --ff-only and re-reads meta', async () => {
-    const dir = seedPack({ name: 'GitUp', withGit: true, pyproject: 'name = "GitUp"\nversion = "1.0.0"\n' })
+    const dir = seedPack({
+      name: 'GitUp',
+      withGit: true,
+      pyproject: 'name = "GitUp"\nversion = "1.0.0"\n'
+    })
     const first = nodePackService.list('inst-1')[0]
     h.state.nodePacks = [
       {
@@ -1639,6 +1833,48 @@ describe('NodePackService.update', () => {
     expect(rec.version).toBe('2.0.0')
   })
 
+  it('falls back to fetch + ff-merge origin/<branch> when pull has no upstream', async () => {
+    const dir = seedPack({
+      name: 'NoUpUp',
+      withGit: true,
+      pyproject: 'name = "NoUpUp"\nversion = "1.0.0"\n'
+    })
+    const first = nodePackService.list('inst-1')[0]
+    h.state.nodePacks = [
+      {
+        id: first.id,
+        name: 'NoUpUp',
+        locked: false,
+        installSource: 'git',
+        version: '1.0.0',
+        issues: [],
+        tags: [],
+        nodeList: [],
+        path: dir
+      }
+    ]
+    const merges: string[][] = []
+    cpMock.__setExecHandler((cmd, args) => {
+      if (args.includes('pull')) {
+        return {
+          error: new Error('fatal: no tracking information for the current branch'),
+          stderr: 'no tracking information for the current branch'
+        }
+      }
+      if (args.includes('--abbrev-ref') && args.includes('HEAD')) return { stdout: 'main\n' }
+      if (args.includes('merge')) {
+        merges.push([...args])
+        h.writeFile(join(dir, 'pyproject.toml'), 'name = "NoUpUp"\nversion = "2.0.0"\n')
+        return { stdout: 'ok' }
+      }
+      if (args.includes('rev-parse') && args.includes('HEAD')) return { stdout: 'abc123\n' }
+      return { stdout: '' }
+    })
+    const rec = await nodePackService.update('NoUpUp', undefined, 'inst-1')
+    expect(merges[0]).toEqual(['-C', dir, 'merge', '--ff-only', 'origin/main'])
+    expect(rec.version).toBe('2.0.0')
+  })
+
   it('wraps git pull failures with the pack name', async () => {
     const dir = seedPack({ name: 'GitFail', withGit: true })
     const first = nodePackService.list('inst-1')[0]
@@ -1659,7 +1895,9 @@ describe('NodePackService.update', () => {
       if (args.includes('pull')) return { error: new Error('diverged'), stderr: 'diverged' }
       return { stdout: '' }
     })
-    await expect(nodePackService.update('GitFail', undefined, 'inst-1')).rejects.toThrow(/git pull failed for GitFail/)
+    await expect(nodePackService.update('GitFail', undefined, 'inst-1')).rejects.toThrow(
+      /git pull failed for GitFail/
+    )
   })
 
   it('reinstalls a registry pack and drops the .bak backup on success', async () => {
@@ -1690,7 +1928,10 @@ describe('NodePackService.update', () => {
     zipSafe.safeUnzip.mockImplementation(async (_zip: string, dest?: string) => {
       const finalDest = dest || join(ROOT, 'reg-up')
       h.mkdirPath(finalDest)
-      h.writeFile(join(finalDest, 'pyproject.toml'), 'name = "RegUp"\nversion = "2.0.0"\nrepository = "https://r"\n')
+      h.writeFile(
+        join(finalDest, 'pyproject.toml'),
+        'name = "RegUp"\nversion = "2.0.0"\nrepository = "https://r"\n'
+      )
     })
     const rec = await nodePackService.update('RegUp', undefined, 'inst-1')
     expect(rec.version).toBe('2.0.0')
@@ -1782,7 +2023,9 @@ describe('NodePackService.update', () => {
         path: dir
       }
     ]
-    await expect(nodePackService.update('LocalOnly', undefined, 'inst-1')).rejects.toThrow(/not updatable/i)
+    await expect(nodePackService.update('LocalOnly', undefined, 'inst-1')).rejects.toThrow(
+      /not updatable/i
+    )
   })
 })
 
@@ -1790,14 +2033,33 @@ describe('NodePackService.update', () => {
 // toggle / lock
 // =====================================================================
 describe('toggle and lock', () => {
-  it('writes a .disabled marker when disabling', () => {
+  it('moves the pack into custom_nodes/.disabled when disabling (Manager-compatible)', () => {
     const dir = seedPack({ name: 'TogA' })
     const p = nodePackService.toggle('TogA', false, 'inst-1')
     expect(p?.status).toBe('disabled')
-    expect(h.state.files.has(join(dir, '.disabled'))).toBe(true)
+    expect(p?.path).toBe(join(ROOT, '.disabled', 'TogA'))
+    expect(h.state.dirs.has(dir)).toBe(false)
+    expect(h.state.dirs.has(join(ROOT, '.disabled', 'TogA'))).toBe(true)
   })
 
-  it('removes the .disabled marker when enabling', () => {
+  it('lists packs inside .disabled/ as disabled', () => {
+    seedPack({ name: 'TogA2' })
+    nodePackService.toggle('TogA2', false, 'inst-1')
+    const rec = nodePackService.list('inst-1').find((x) => x.name === 'TogA2')
+    expect(rec?.status).toBe('disabled')
+    expect(rec?.path).toBe(join(ROOT, '.disabled', 'TogA2'))
+  })
+
+  it('moves a disabled pack back out of .disabled/ when enabling', () => {
+    seedPack({ name: 'TogB2' })
+    nodePackService.toggle('TogB2', false, 'inst-1')
+    const p = nodePackService.toggle('TogB2', true, 'inst-1')
+    expect(p?.status).toBe('installed')
+    expect(p?.path).toBe(join(ROOT, 'TogB2'))
+    expect(h.state.dirs.has(join(ROOT, '.disabled', 'TogB2'))).toBe(false)
+  })
+
+  it('removes a legacy .disabled marker when enabling', () => {
     const dir = seedPack({ name: 'TogB', disabledMarker: true })
     const p = nodePackService.toggle('TogB', true, 'inst-1')
     expect(p?.status).toBe('installed')
@@ -1813,11 +2075,31 @@ describe('toggle and lock', () => {
     expect(h.state.dirs.has(join(ROOT, 'TogC'))).toBe(true)
   })
 
-  it('leaves name.disabled alone when the target already exists', () => {
+  it('throws when the enable target already exists', () => {
     seedPack({ name: 'TogD', disabledSuffix: true })
     h.mkdirPath(join(ROOT, 'TogD'))
-    const p = nodePackService.toggle('TogD', true, 'inst-1')
-    expect(p?.path).toBe(disabledPath('TogD'))
+    expect(() => nodePackService.toggle('TogD', true, 'inst-1')).toThrow(/already exists/)
+  })
+
+  it('throws when the disable target already exists', () => {
+    seedPack({ name: 'TogE' })
+    h.mkdirPath(join(ROOT, '.disabled', 'TogE'))
+    expect(() => nodePackService.toggle('TogE', false, 'inst-1')).toThrow(/already exists/)
+  })
+
+  it('checkUpdates skips disabled packs', async () => {
+    seedPack({ name: 'SkipUpd' })
+    nodePackService.toggle('SkipUpd', false, 'inst-1')
+    const results = await nodePackService.checkUpdates('inst-1')
+    expect(results.some((r) => r.name === 'SkipUpd')).toBe(false)
+  })
+
+  it('update on a disabled pack is refused with NODE_DISABLED', async () => {
+    seedPack({ name: 'NoUpd' })
+    nodePackService.toggle('NoUpd', false, 'inst-1')
+    await expect(nodePackService.update('NoUpd', undefined, 'inst-1')).rejects.toMatchObject({
+      code: 'NODE_DISABLED'
+    })
   })
 
   it('returns undefined for an unknown pack', () => {
@@ -1838,10 +2120,6 @@ describe('toggle and lock', () => {
     expect(nodePackService.lock('Nope', true)).toBeUndefined()
   })
 })
-
-function disabledPath(name: string): string {
-  return join(ROOT, `${name}.disabled`)
-}
 
 // =====================================================================
 // checkIssues / conflicts / smokeTest
@@ -1884,7 +2162,11 @@ describe('checkIssues, conflicts, smokeTest', () => {
   })
 
   it('smokeTest reports NO_INIT when __init__.py is missing (exit code 3)', async () => {
-    seedPack({ name: 'SmokeNoInit', initPy: null, pyproject: 'name = "SmokeNoInit"\nversion = "1"\n' })
+    seedPack({
+      name: 'SmokeNoInit',
+      initPy: null,
+      pyproject: 'name = "SmokeNoInit"\nversion = "1"\n'
+    })
     cpMock.__setExecHandler(() => {
       const err = Object.assign(new Error('exit 3'), { code: 3 })
       return { error: err, stderr: 'exit 3' }
@@ -1975,9 +2257,10 @@ describe('snapshots', () => {
     expect(byName.get('Early')?.status).toBe('installed')
   })
 
-  it('restoreSnapshot writes/unlinks markers for snap packs not present in the listing', () => {
-    // Snapshot references a path that exists on disk but is filtered out of list()
-    // (e.g. a .disabled-suffixed folder). restore should still fix its marker.
+  it('restoreSnapshot keeps a .disabled-suffixed pack disabled (real form, no marker)', () => {
+    // Snapshot says disabled and the folder is already in the ComfyUI-recognized
+    // `.disabled` suffix form — restore must leave it disabled without needing
+    // a legacy marker file.
     const hiddenDir = join(ROOT, 'Ghost.disabled')
     h.mkdirPath(hiddenDir)
     h.writeFile(join(hiddenDir, 'pyproject.toml'), 'name = "Ghost"\nversion = "1"\n')
@@ -1996,7 +2279,9 @@ describe('snapshots', () => {
     h.state.snapshotById.set(snap.id, snap)
     const ok = nodePackService.restoreSnapshot('snap-ghost')
     expect(ok).toBe(true)
-    expect(h.state.files.has(join(hiddenDir, '.disabled'))).toBe(true)
+    const ghost = nodePackService.list('inst-1').find((p) => p.name === 'Ghost')
+    expect(ghost?.status).toBe('disabled')
+    expect(h.state.files.has(join(hiddenDir, '.disabled'))).toBe(false)
   })
 
   it('restoreSnapshot removes a stale marker for a snap-enabled pack not in the listing', () => {
@@ -2066,15 +2351,17 @@ describe('checkUpdates channels', () => {
       scanned: 1,
       clientFiltered: false
     })
-    toPageResult.mockImplementation((result: { raw?: unknown[] }, map: (n: unknown) => unknown) => ({
-      items: (result.raw || []).map(map),
-      total: 1,
-      page: 1,
-      pageSize: 50,
-      totalPages: 1,
-      scanned: 1,
-      clientFiltered: false
-    }))
+    toPageResult.mockImplementation(
+      (result: { raw?: unknown[] }, map: (n: unknown) => unknown) => ({
+        items: (result.raw || []).map(map),
+        total: 1,
+        page: 1,
+        pageSize: 50,
+        totalPages: 1,
+        scanned: 1,
+        clientFiltered: false
+      })
+    )
     mapRegistryPack.mockImplementation((n: Record<string, unknown>) => n)
     const results = await nodePackService.checkUpdates('inst-1')
     expect(results[0].updatable).toBe(true)
@@ -2112,15 +2399,17 @@ describe('checkUpdates channels', () => {
       scanned: 1,
       clientFiltered: false
     })
-    toPageResult.mockImplementation((result: { raw?: unknown[] }, map: (n: unknown) => unknown) => ({
-      items: (result.raw || []).map(map),
-      total: 1,
-      page: 1,
-      pageSize: 50,
-      totalPages: 1,
-      scanned: 1,
-      clientFiltered: false
-    }))
+    toPageResult.mockImplementation(
+      (result: { raw?: unknown[] }, map: (n: unknown) => unknown) => ({
+        items: (result.raw || []).map(map),
+        total: 1,
+        page: 1,
+        pageSize: 50,
+        totalPages: 1,
+        scanned: 1,
+        clientFiltered: false
+      })
+    )
     mapRegistryPack.mockImplementation((n: Record<string, unknown>) => n)
     const results = await nodePackService.checkUpdates('inst-1')
     expect(results[0].updatable).toBe(false)
@@ -2128,7 +2417,11 @@ describe('checkUpdates channels', () => {
   })
 
   it('reports git behind counts for packs with a .git dir', async () => {
-    const dir = seedPack({ name: 'GitChk', withGit: true, pyproject: 'name = "GitChk"\nversion = "1.0.0"\n' })
+    const dir = seedPack({
+      name: 'GitChk',
+      withGit: true,
+      pyproject: 'name = "GitChk"\nversion = "1.0.0"\n'
+    })
     const first = nodePackService.list('inst-1')[0]
     h.state.nodePacks = [
       {
@@ -2157,7 +2450,11 @@ describe('checkUpdates channels', () => {
   })
 
   it('reports git up-to-date when behind count is zero', async () => {
-    const dir = seedPack({ name: 'GitChk2', withGit: true, pyproject: 'name = "GitChk2"\nversion = "1.0.0"\n' })
+    const dir = seedPack({
+      name: 'GitChk2',
+      withGit: true,
+      pyproject: 'name = "GitChk2"\nversion = "1.0.0"\n'
+    })
     const first = nodePackService.list('inst-1')[0]
     h.state.nodePacks = [
       {
@@ -2182,8 +2479,80 @@ describe('checkUpdates channels', () => {
     expect(results[0].reasonKey).toBe('nodes.upToDate')
   })
 
+  it('returns results for git packs using origin/<branch> when upstream is missing', async () => {
+    const dir = seedPack({
+      name: 'GitNoUp',
+      withGit: true,
+      pyproject: 'name = "GitNoUp"\nversion = "1.0.0"\n'
+    })
+    const first = nodePackService.list('inst-1')[0]
+    h.state.nodePacks = [
+      {
+        id: first.id,
+        name: 'GitNoUp',
+        locked: false,
+        installSource: 'git',
+        version: '1.0.0',
+        issues: [],
+        tags: [],
+        nodeList: [],
+        path: dir
+      }
+    ]
+    cpMock.__setExecHandler((cmd, args) => {
+      if (args.includes('@{u}'))
+        return { error: new Error('no upstream'), stderr: 'fatal: no upstream' }
+      if (args.includes('--verify')) return { stdout: '' }
+      if (args.includes('--abbrev-ref') && args.includes('HEAD')) return { stdout: 'main\n' }
+      if (args.includes('rev-list')) return { stdout: '2' }
+      if (args.includes('describe')) return { stdout: 'v9.9.9\n' }
+      return { stdout: '' }
+    })
+    const results = await nodePackService.checkUpdates('inst-1')
+    const r = results.find((x) => x.name === 'GitNoUp')
+    expect(r?.updatable).toBe(true)
+    expect(r?.updateSource).toBe('git')
+    expect(r?.latestVersion).toBe('v9.9.9')
+  })
+
+  it('reports a git pack with no upstream and no origin branch as not updatable (still git)', async () => {
+    const dir = seedPack({
+      name: 'GitNoRemote',
+      withGit: true,
+      pyproject: 'name = "GitNoRemote"\nversion = "1.0.0"\n'
+    })
+    const first = nodePackService.list('inst-1')[0]
+    h.state.nodePacks = [
+      {
+        id: first.id,
+        name: 'GitNoRemote',
+        locked: false,
+        installSource: 'git',
+        version: '1.0.0',
+        issues: [],
+        tags: [],
+        nodeList: [],
+        path: dir
+      }
+    ]
+    cpMock.__setExecHandler((cmd, args) => {
+      if (args.includes('@{u}')) return { error: new Error('no upstream'), stderr: 'fatal' }
+      if (args.includes('--verify')) return { error: new Error('missing'), stderr: 'fatal' }
+      if (args.includes('--abbrev-ref') && args.includes('HEAD')) return { stdout: 'main\n' }
+      return { stdout: '' }
+    })
+    const results = await nodePackService.checkUpdates('inst-1')
+    const r = results.find((x) => x.name === 'GitNoRemote')
+    expect(r?.updatable).toBe(false)
+    expect(r?.updateSource).toBe('git')
+  })
+
   it('falls through to registry comparison when git fetch fails', async () => {
-    const dir = seedPack({ name: 'GitChk3', withGit: true, pyproject: 'name = "GitChk3"\nversion = "1.0.0"\n' })
+    const dir = seedPack({
+      name: 'GitChk3',
+      withGit: true,
+      pyproject: 'name = "GitChk3"\nversion = "1.0.0"\n'
+    })
     const first = nodePackService.list('inst-1')[0]
     h.state.nodePacks = [
       {
@@ -2199,7 +2568,8 @@ describe('checkUpdates channels', () => {
       }
     ]
     cpMock.__setExecHandler((cmd, args) => {
-      if (args.includes('fetch')) return { error: new Error('network down'), stderr: 'network down' }
+      if (args.includes('fetch'))
+        return { error: new Error('network down'), stderr: 'network down' }
       return { stdout: '' }
     })
     const results = await nodePackService.checkUpdates('inst-1')
@@ -2208,7 +2578,10 @@ describe('checkUpdates channels', () => {
   })
 
   it('reports no remote version information when nothing is known', async () => {
-    const dir = seedPack({ name: 'NoRemote', pyproject: 'name = "NoRemote"\nversion = "1.0.0"\nrepository = "https://r"\n' })
+    const dir = seedPack({
+      name: 'NoRemote',
+      pyproject: 'name = "NoRemote"\nversion = "1.0.0"\nrepository = "https://r"\n'
+    })
     const first = nodePackService.list('inst-1')[0]
     h.state.nodePacks = [
       {
@@ -2230,7 +2603,10 @@ describe('checkUpdates channels', () => {
   })
 
   it('uses the local registry index when page 1 misses the pack', async () => {
-    const dir = seedPack({ name: 'IdxPack', pyproject: 'name = "IdxPack"\nversion = "1.0.0"\nrepository = "https://r"\n' })
+    const dir = seedPack({
+      name: 'IdxPack',
+      pyproject: 'name = "IdxPack"\nversion = "1.0.0"\nrepository = "https://r"\n'
+    })
     const first = nodePackService.list('inst-1')[0]
     h.state.nodePacks = [
       {
@@ -2247,19 +2623,31 @@ describe('checkUpdates channels', () => {
       }
     ]
     const { searchRegistry, toPageResult, mapRegistryPack } = registryMock
-    searchRegistry.mockResolvedValue({ raw: [], total: 0, page: 1, pageSize: 50, totalPages: 0, scanned: 0, clientFiltered: false })
-    toPageResult.mockImplementation((result: { raw?: unknown[] }, map: (n: unknown) => unknown) => ({
-      items: (result.raw || []).map(map),
+    searchRegistry.mockResolvedValue({
+      raw: [],
       total: 0,
       page: 1,
       pageSize: 50,
       totalPages: 0,
       scanned: 0,
       clientFiltered: false
-    }))
+    })
+    toPageResult.mockImplementation(
+      (result: { raw?: unknown[] }, map: (n: unknown) => unknown) => ({
+        items: (result.raw || []).map(map),
+        total: 0,
+        page: 1,
+        pageSize: 50,
+        totalPages: 0,
+        scanned: 0,
+        clientFiltered: false
+      })
+    )
     mapRegistryPack.mockImplementation((n: Record<string, unknown>) => n)
     const { registryIndex } = registryIndexMock
-    registryIndex.searchPacks.mockReturnValue([{ id: 'idx-pack', name: 'IdxPack', latestVersion: '9.9.9' }])
+    registryIndex.searchPacks.mockReturnValue([
+      { id: 'idx-pack', name: 'IdxPack', latestVersion: '9.9.9' }
+    ])
     const results = await nodePackService.checkUpdates('inst-1')
     expect(results[0].latestVersion).toBe('9.9.9')
     expect(results[0].updatable).toBe(true)
@@ -2268,7 +2656,10 @@ describe('checkUpdates channels', () => {
   })
 
   it('survives a registry outage and still returns per-pack rows', async () => {
-    seedPack({ name: 'OfflineReg', pyproject: 'name = "OfflineReg"\nversion = "1.0.0"\nrepository = "https://r"\n' })
+    seedPack({
+      name: 'OfflineReg',
+      pyproject: 'name = "OfflineReg"\nversion = "1.0.0"\nrepository = "https://r"\n'
+    })
     const { searchRegistry } = registryMock
     searchRegistry.mockRejectedValue(new Error('registry down'))
     const results = await nodePackService.checkUpdates('inst-1')
@@ -2282,9 +2673,20 @@ describe('checkUpdates channels', () => {
 // =====================================================================
 describe('updateAll', () => {
   it('mixes success, failure and skip into a summary', async () => {
-    const dirA = seedPack({ name: 'AllA', withGit: true, pyproject: 'name = "AllA"\nversion = "1.0.0"\n' })
-    const dirB = seedPack({ name: 'AllB', withGit: true, pyproject: 'name = "AllB"\nversion = "1.0.0"\n' })
-    seedPack({ name: 'AllC', pyproject: 'name = "AllC"\nversion = "1.0.0"\nrepository = "https://r"\n' })
+    const dirA = seedPack({
+      name: 'AllA',
+      withGit: true,
+      pyproject: 'name = "AllA"\nversion = "1.0.0"\n'
+    })
+    const dirB = seedPack({
+      name: 'AllB',
+      withGit: true,
+      pyproject: 'name = "AllB"\nversion = "1.0.0"\n'
+    })
+    seedPack({
+      name: 'AllC',
+      pyproject: 'name = "AllC"\nversion = "1.0.0"\nrepository = "https://r"\n'
+    })
     const ids = listIds()
     h.state.nodePacks = [
       {
@@ -2327,7 +2729,8 @@ describe('updateAll', () => {
       if (args.includes('fetch')) return { stdout: '' }
       if (args.includes('describe')) return { stdout: 'v2\n' }
       if (args.includes('pull')) {
-        if (args[1] === dirB || args.includes(dirB)) return { error: new Error('pull failed'), stderr: 'pull failed' }
+        if (args[1] === dirB || args.includes(dirB))
+          return { error: new Error('pull failed'), stderr: 'pull failed' }
         return { stdout: 'ok' }
       }
       return { stdout: '' }
@@ -2344,6 +2747,73 @@ describe('updateAll', () => {
 })
 
 // =====================================================================
+// git source inference (manually copied checkouts)
+// =====================================================================
+describe('git source inference', () => {
+  it('infers installSource "git" and repository from .git for a manually copied pack', () => {
+    const dir = seedPack({
+      name: 'ManualGit',
+      withGit: true,
+      pyproject: 'name = "ManualGit"\nversion = "1.0.0"\n'
+    })
+    h.writeFile(
+      join(dir, '.git', 'config'),
+      '[core]\n\trepositoryformatversion = 0\n[remote "origin"]\n\turl = https://github.com/u/ManualGit.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n'
+    )
+    const pack = nodePackService.list('inst-1').find((p) => p.name === 'ManualGit')
+    expect(pack?.installSource).toBe('git')
+    expect(pack?.repository).toBe('https://github.com/u/ManualGit.git')
+  })
+
+  it('upgrades a stale "local" record to "git" when .git exists on disk', () => {
+    const dir = seedPack({
+      name: 'UpgradeGit',
+      withGit: true,
+      pyproject: 'name = "UpgradeGit"\nversion = "1.0.0"\n'
+    })
+    h.state.nodePacks = [
+      {
+        id: 'stale',
+        name: 'UpgradeGit',
+        installSource: 'local',
+        version: '1.0.0',
+        path: dir,
+        issues: [],
+        tags: [],
+        nodeList: [],
+        locked: false
+      }
+    ]
+    const pack = nodePackService.list('inst-1').find((p) => p.name === 'UpgradeGit')
+    expect(pack?.installSource).toBe('git')
+  })
+
+  it('keeps an explicit "git" record even when .git is temporarily absent', () => {
+    const dir = seedPack({
+      name: 'LostGit',
+      pyproject: 'name = "LostGit"\nversion = "1.0.0"\n'
+    })
+    h.state.nodePacks = [
+      {
+        id: 'stale2',
+        name: 'LostGit',
+        installSource: 'git',
+        version: '1.0.0',
+        path: dir,
+        issues: [],
+        tags: [],
+        nodeList: [],
+        locked: false
+      }
+    ]
+    const pack = nodePackService.list('inst-1').find((p) => p.name === 'LostGit')
+    // Explicit records are honored; a missing .git surfaces as a real git
+    // error on update instead of silently relabeling the pack.
+    expect(pack?.installSource).toBe('git')
+  })
+})
+
+// =====================================================================
 // managerChannelList / registrySearch
 // =====================================================================
 describe('managerChannelList', () => {
@@ -2352,8 +2822,28 @@ describe('managerChannelList', () => {
     setFetch(async (url) => {
       urls.push(url)
       return makeRes([
-        { id: 'a', title: 'A', name: 'A', description: '', author: '', version: '1', repository: 'https://g/a', tags: ['t'], downloads: 5 },
-        { id: 'a', title: 'A-dup', name: 'A-dup', description: '', author: '', version: '1', repository: '', tags: [], downloads: 0 }
+        {
+          id: 'a',
+          title: 'A',
+          name: 'A',
+          description: '',
+          author: '',
+          version: '1',
+          repository: 'https://g/a',
+          tags: ['t'],
+          downloads: 5
+        },
+        {
+          id: 'a',
+          title: 'A-dup',
+          name: 'A-dup',
+          description: '',
+          author: '',
+          version: '1',
+          repository: '',
+          tags: [],
+          downloads: 0
+        }
       ])
     })
     const out = await nodePackService.managerChannelList()
@@ -2406,15 +2896,17 @@ describe('registrySearch', () => {
       scanned: 1,
       clientFiltered: false
     })
-    toPageResult.mockImplementation((result: { raw?: unknown[] }, map: (n: unknown) => unknown) => ({
-      items: (result.raw || []).map(map),
-      total: 1,
-      page: 1,
-      pageSize: 50,
-      totalPages: 1,
-      scanned: 1,
-      clientFiltered: false
-    }))
+    toPageResult.mockImplementation(
+      (result: { raw?: unknown[] }, map: (n: unknown) => unknown) => ({
+        items: (result.raw || []).map(map),
+        total: 1,
+        page: 1,
+        pageSize: 50,
+        totalPages: 1,
+        scanned: 1,
+        clientFiltered: false
+      })
+    )
     mapRegistryPack.mockImplementation((n: Record<string, unknown>) => n)
     const page = await nodePackService.registrySearch({ query: 'x', limit: 10 })
     expect(page.items).toHaveLength(1)
@@ -2567,11 +3059,16 @@ describe('edge branches', () => {
     zipSafe.safeUnzip.mockImplementation(async (_zip: string, dest?: string) => {
       const finalDest = dest || join(ROOT, 'bak-fail')
       h.mkdirPath(finalDest)
-      h.writeFile(join(finalDest, 'pyproject.toml'), 'name = "BakFail"\nversion = "2.0.0"\nrepository = "https://r"\n')
+      h.writeFile(
+        join(finalDest, 'pyproject.toml'),
+        'name = "BakFail"\nversion = "2.0.0"\nrepository = "https://r"\n'
+      )
     })
     h.state.rmFail.add('.bak-')
     const events: Array<{ phase: string; message?: string }> = []
-    nodePackService.on('install-progress', (e: { phase: string; message?: string }) => events.push(e))
+    nodePackService.on('install-progress', (e: { phase: string; message?: string }) =>
+      events.push(e)
+    )
     const rec = await nodePackService.update('BakFail', undefined, 'inst-1')
     nodePackService.removeAllListeners('install-progress')
     expect(rec.version).toBe('2.0.0')
@@ -2589,7 +3086,10 @@ describe('edge branches', () => {
         const dest = args[args.length - 1]
         h.mkdirPath(dest)
         h.writeFile(join(dest, 'requirements.txt'), 'x\n')
-        h.writeFile(join(dest, 'pyproject.toml'), 'name = "PipPack"\nversion = "1.0.0"\nrepository = "https://r"\n')
+        h.writeFile(
+          join(dest, 'pyproject.toml'),
+          'name = "PipPack"\nversion = "1.0.0"\nrepository = "https://r"\n'
+        )
         return { stdout: '' }
       }
       if (args.includes('pip')) {
@@ -2598,7 +3098,11 @@ describe('edge branches', () => {
       }
       return { stdout: '' }
     })
-    await nodePackService.install({ id: 'https://github.com/u/PipRT.git', source: 'git', instanceId: 'inst-1' })
+    await nodePackService.install({
+      id: 'https://github.com/u/PipRT.git',
+      source: 'git',
+      instanceId: 'inst-1'
+    })
     expect(cmds[0]).toBe('python')
     h.state.runtimePythonThrow = null
   })
@@ -2614,7 +3118,10 @@ describe('edge branches', () => {
         const dest = args[args.length - 1]
         h.mkdirPath(dest)
         h.writeFile(join(dest, 'requirements.txt'), 'x\n')
-        h.writeFile(join(dest, 'pyproject.toml'), 'name = "PipSkip"\nversion = "1.0.0"\nrepository = "https://r"\n')
+        h.writeFile(
+          join(dest, 'pyproject.toml'),
+          'name = "PipSkip"\nversion = "1.0.0"\nrepository = "https://r"\n'
+        )
         return { stdout: '' }
       }
       if (args.includes('pip')) {
@@ -2623,7 +3130,11 @@ describe('edge branches', () => {
       }
       return { stdout: '' }
     })
-    const rec = await nodePackService.install({ id: 'https://github.com/u/PipSkip.git', source: 'git', instanceId: 'inst-1' })
+    const rec = await nodePackService.install({
+      id: 'https://github.com/u/PipSkip.git',
+      source: 'git',
+      instanceId: 'inst-1'
+    })
     // resolveInstancePython returns 'python' at worst �� so pip still runs; assert no crash
     expect(rec.name).toBe('PipSkip')
     void pipCalls
@@ -2673,15 +3184,17 @@ describe('edge branches', () => {
       scanned: 1,
       clientFiltered: false
     })
-    toPageResult.mockImplementation((result: { raw?: unknown[] }, map: (n: unknown) => unknown) => ({
-      items: (result.raw || []).map(map),
-      total: 1,
-      page: 1,
-      pageSize: 50,
-      totalPages: 1,
-      scanned: 1,
-      clientFiltered: false
-    }))
+    toPageResult.mockImplementation(
+      (result: { raw?: unknown[] }, map: (n: unknown) => unknown) => ({
+        items: (result.raw || []).map(map),
+        total: 1,
+        page: 1,
+        pageSize: 50,
+        totalPages: 1,
+        scanned: 1,
+        clientFiltered: false
+      })
+    )
     mapRegistryPack.mockImplementation((n: Record<string, unknown>) => n)
     const before = h.state.nodePacks.length
     await nodePackService.checkUpdates('inst-1')

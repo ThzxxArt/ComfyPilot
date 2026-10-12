@@ -4,7 +4,7 @@
  * analyze type-matching leftovers.
  */
 import { describe, expect, it, vi, beforeAll, beforeEach } from 'vitest'
-import { mkdirSync, writeFileSync, existsSync, readFileSync, writeFileSync as wf } from 'fs'
+import { mkdirSync, writeFileSync, existsSync, writeFileSync as wf } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { seedTestInstance } from '../helpers/testInstance'
@@ -76,7 +76,10 @@ describe('workflow branch coverage', () => {
     const dir = join(ROOT, 'sib')
     mkdirSync(dir, { recursive: true })
     const png = join(dir, 'shot.png')
-    const graph = JSON.stringify({ nodes: [{ id: 1, type: 'KSampler', widgets_values: [1] }], links: [] })
+    const graph = JSON.stringify({
+      nodes: [{ id: 1, type: 'KSampler', widgets_values: [1] }],
+      links: []
+    })
     writePng(png, [['workflow', graph]])
     // Pre-create the would-be json name
     writeFileSync(join(workflowLibraryDir(), 'shot.json'), '{"pre":true}')
@@ -181,7 +184,9 @@ describe('workflow branch coverage', () => {
     mkdirSync(dir, { recursive: true })
     const p = join(dir, 'n.json')
     writeFileSync(p, '{"nodes":[],"links":[]}')
-    await expect(workflowService.queue({ workflowPath: p, instanceId: 'zzz' })).rejects.toThrow(/instance/i)
+    await expect(workflowService.queue({ workflowPath: p, instanceId: 'zzz' })).rejects.toThrow(
+      /instance/i
+    )
   })
 
   it('analyze leftover widget values type-match onto unlinked inputs', async () => {

@@ -2,7 +2,12 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { join, isAbsolute, normalize, resolve, sep } from 'path'
 import { existsSync, readdirSync, lstatSync, realpathSync, rmSync } from 'fs'
-import { isPathInside, isWinReservedName, normalizePathEverySegment, normalizePathSegment } from './security'
+import {
+  isPathInside,
+  isWinReservedName,
+  normalizePathEverySegment,
+  normalizePathSegment
+} from './security'
 
 const execFileAsync = promisify(execFile)
 const EXEC = { timeout: 60000, windowsHide: true, maxBuffer: 20 * 1024 * 1024 } as const
@@ -16,11 +21,7 @@ export async function listZipEntries(zipPath: string): Promise<string[]> {
       '$z.Entries | ForEach-Object { $_.FullName }',
       '$z.Dispose()'
     ].join(';')
-    const { stdout } = await execFileAsync(
-      'powershell',
-      ['-NoProfile', '-Command', ps],
-      EXEC
-    )
+    const { stdout } = await execFileAsync('powershell', ['-NoProfile', '-Command', ps], EXEC)
     return stdout
       .split(/\r?\n/)
       .map((s) => s.trim())
@@ -28,10 +29,16 @@ export async function listZipEntries(zipPath: string): Promise<string[]> {
   }
   try {
     const { stdout } = await execFileAsync('unzip', ['-Z1', zipPath], EXEC)
-    return stdout.split(/\n/).map((s) => s.trim()).filter(Boolean)
+    return stdout
+      .split(/\n/)
+      .map((s) => s.trim())
+      .filter(Boolean)
   } catch {
     const { stdout } = await execFileAsync('zipinfo', ['-1', zipPath], EXEC)
-    return stdout.split(/\n/).map((s) => s.trim()).filter(Boolean)
+    return stdout
+      .split(/\n/)
+      .map((s) => s.trim())
+      .filter(Boolean)
   }
 }
 

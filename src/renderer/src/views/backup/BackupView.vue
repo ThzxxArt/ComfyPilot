@@ -3,16 +3,28 @@ import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { AddOutline, TrashOutline, RefreshOutline, DownloadOutline } from '@vicons/ionicons5'
 import {
-  NButton, NIcon, NInput, NSpace, NSpin, NEmpty, useMessage, NModal, NPopconfirm, NList, NListItem
+  NButton,
+  NIcon,
+  NInput,
+  NSpace,
+  NSpin,
+  NEmpty,
+  useMessage,
+  NModal,
+  NPopconfirm,
+  NList,
+  NListItem
 } from 'naive-ui'
 import { ipc } from '@/composables/useIpc'
 import { formatBytes } from '@/utils/format'
+import ListSkeleton from '@/components/ListSkeleton.vue'
 import type { BackupManifest } from '@shared/types'
 
 const { t } = useI18n()
 const message = useMessage()
 const loading = ref(false)
 const items = ref<BackupManifest[]>([])
+const loadError = ref('')
 const showCreate = ref(false)
 const name = ref('')
 const notes = ref('')
@@ -21,6 +33,10 @@ async function refresh(): Promise<void> {
   loading.value = true
   try {
     items.value = await ipc('backup.list')
+    loadError.value = ''
+  } catch (err) {
+    loadError.value = err instanceof Error ? err.message : String(err)
+    message.error(loadError.value)
   } finally {
     loading.value = false
   }
@@ -28,7 +44,10 @@ async function refresh(): Promise<void> {
 
 async function create(): Promise<void> {
   try {
-    const b = await ipc('backup.create', { name: name.value || `backup-${Date.now()}`, notes: notes.value })
+    const b = await ipc('backup.create', {
+      name: name.value || `backup-${Date.now()}`,
+      notes: notes.value
+    })
     showCreate.value = false
     name.value = ''
     notes.value = ''
@@ -86,40 +105,65 @@ onMounted(() => void refresh())
     </div>
 
     <div class="page-body">
-    <NSpin :show="loading">
-      <NList v-if="items.length" bordered>
-        <NListItem v-for="b in items" :key="b.id">
-          <div class="row">
-            <div>
-              <div class="name">{{ b.name }}</div>
-              <div class="meta">{{ new Date(b.createdAt).toLocaleString() }} · {{ formatBytes(b.size) }}</div>
-              <div class="meta mono">{{ b.path }}</div>
+      <NSpin :show="loading && items.length > 0">
+        <ListSkeleton v-if="loading && !items.length" :rows="5" />
+        <NList v-else-if="items.length" bordered>
+          <NListItem v-for="b in items" :key="b.id">
+            <div class="row">
+              <div class="backup-main">
+                <div class="name" :title="b.name">{{ b.name }}</div>
+                <div class="meta">
+                  {{ new Date(b.createdAt).toLocaleString() }} · {{ formatBytes(b.size) }}
+                </div>
+                <div class="meta mono">{{ b.path }}</div>
+              </div>
+              <NSpace>
+                <NPopconfirm @positive-click="restore(b.id)">
+                  <template #trigger>
+                    <NButton size="small" type="primary" secondary>
+                      <template #icon><NIcon :component="DownloadOutline" /></template
+                      >{{ t('backup.restore') }}
+                    </NButton>
+                  </template>
+                  {{ t('backup.restoreConfirm') }}
+                </NPopconfirm>
+                <NButton size="small" secondary @click="openFolder(b.id)">{{
+                  t('backup.openFolder')
+                }}</NButton>
+                <NPopconfirm @positive-click="removeBackup(b.id)">
+                  <template #trigger>
+                    <NButton size="small" type="error" secondary>
+                      <template #icon><NIcon :component="TrashOutline" /></template>
+                    </NButton>
+                  </template>
+                  {{ t('backup.deleteConfirm') }}
+                </NPopconfirm>
+              </NSpace>
             </div>
-            <NSpace>
-              <NButton size="small" type="primary" secondary @click="restore(b.id)">
-                <template #icon><NIcon :component="DownloadOutline" /></template>{{ t('backup.restore') }}
-              </NButton>
-              <NButton size="small" secondary @click="openFolder(b.id)">{{ t('backup.openFolder') }}</NButton>
-              <NPopconfirm @positive-click="removeBackup(b.id)">
-                <template #trigger>
-                  <NButton size="small" type="error" secondary>
-                    <template #icon><NIcon :component="TrashOutline" /></template>
-                  </NButton>
-                </template>
-                {{ t('backup.deleteConfirm') }}
-              </NPopconfirm>
-            </NSpace>
-          </div>
-        </NListItem>
-      </NList>
-      <NEmpty v-else :description="t('backup.empty')" class="empty" />
-    </NSpin>
+          </NListItem>
+        </NList>
+        <NEmpty v-else :description="loadError || t('backup.empty')" class="empty">
+          <template #extra>
+            <NButton v-if="loadError" secondary @click="refresh">{{ t('common.retry') }}</NButton>
+          </template>
+        </NEmpty>
+      </NSpin>
     </div>
 
-    <NModal v-model:show="showCreate" preset="card" :title="t('backup.create')" style="width: 480px; border-radius: 20px">
+    <NModal
+      v-model:show="showCreate"
+      preset="card"
+      :title="t('backup.create')"
+      style="width: 480px; border-radius: 20px"
+    >
       <NSpace vertical>
         <NInput v-model:value="name" :placeholder="t('backup.namePlaceholder')" />
-        <NInput v-model:value="notes" type="textarea" :rows="3" :placeholder="t('backup.notesPlaceholder')" />
+        <NInput
+          v-model:value="notes"
+          type="textarea"
+          :rows="3"
+          :placeholder="t('backup.notesPlaceholder')"
+        />
       </NSpace>
       <template #footer>
         <NSpace justify="end">
@@ -133,8 +177,35 @@ onMounted(() => void refresh())
 
 <style lang="scss" scoped>
 @use '@/styles/variables.scss' as *;
-.row { display: flex; justify-content: space-between; align-items: center; gap: 16px; width: 100%; }
-.name { font-size: 15px; font-weight: 700; }
-.meta { font-size: 12px; color: $color-text-muted; margin-top: 4px; word-break: break-all; }
-.empty { padding: 64px 0; }
+.row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+}
+.backup-main {
+  flex: 1;
+  min-width: 0;
+}
+.row > .n-space {
+  flex-shrink: 0;
+}
+.name {
+  font-size: 15px;
+  font-weight: 700;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.meta {
+  font-size: 12px;
+  color: $color-text-muted-ink;
+  margin-top: 4px;
+  word-break: break-all;
+}
+.empty {
+  padding: 64px 0;
+}
 </style>

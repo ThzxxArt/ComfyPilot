@@ -189,7 +189,9 @@ export class BackupService {
       path: dir,
       size,
       includes,
-      notes: (opts.notes || '') + (wfResult.missing ? ` (${wfResult.missing} workflow files missing)` : '')
+      notes:
+        (opts.notes || '') +
+        (wfResult.missing ? ` (${wfResult.missing} workflow files missing)` : '')
     }
     writeFileSync(join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2))
     insertBackup(manifest)

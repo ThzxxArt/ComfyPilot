@@ -155,7 +155,10 @@ describe('workflow params survive rescan', () => {
     mkdirSync(dir, { recursive: true })
     const src = join(dir, 'k.png')
     writePng(src, [
-      ['workflow', JSON.stringify({ nodes: [{ id: 1, type: 'KSampler', widgets_values: [1] }], links: [] })]
+      [
+        'workflow',
+        JSON.stringify({ nodes: [{ id: 1, type: 'KSampler', widgets_values: [1] }], links: [] })
+      ]
     ])
     const rec = await workflowService.importFile(src)
     expect(rec.path.endsWith('.json')).toBe(true)

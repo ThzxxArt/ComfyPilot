@@ -11,13 +11,28 @@ import {
   FolderOpenOutline
 } from '@vicons/ionicons5'
 import {
-  NButton, NIcon, NInput, NInputNumber, NSpace, NSpin, NTag, NEmpty, useMessage, useDialog,
-  NModal, NSelect, NPopconfirm, NCard, NText
+  NButton,
+  NIcon,
+  NInput,
+  NInputNumber,
+  NSpace,
+  NSpin,
+  NTag,
+  NEmpty,
+  useMessage,
+  useDialog,
+  NModal,
+  NSelect,
+  NPopconfirm,
+  NCard,
+  NText,
+  NTooltip
 } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 import { ipc, onIpc, IPC_EVENTS } from '@/composables/useIpc'
 import { useLaunch } from '@/composables/useLaunch'
 import { clampPercent } from '@/utils/format'
+import ListSkeleton from '@/components/ListSkeleton.vue'
 import type { BatchJob, WorkflowRecord, SeedMode } from '@shared/types'
 
 const { t } = useI18n()
@@ -41,7 +56,10 @@ function isBusy(status: string): boolean {
 
 /** ComfyPilot never auto-starts an instance — batch run is gated on this. */
 const instanceRunning = computed(() => store.activeInstance?.status === 'running')
-const needInstanceHint = t('batch.needRunningInstance')
+const needInstanceHint = computed(() => t('batch.needRunningInstance'))
+// Hoisted to setup scope — calling useLaunch() inside a dialog callback would
+// lose the router injection.
+const { launch } = useLaunch()
 
 const draft = ref({
   name: t('batch.defaultName'),
@@ -177,7 +195,7 @@ async function createJob(): Promise<void> {
 async function start(id: string): Promise<void> {
   if (startingId.value) return
   if (!instanceRunning.value) {
-    message.warning(needInstanceHint)
+    message.warning(needInstanceHint.value)
     return
   }
   const job = jobs.value.find((j) => j.id === id)
@@ -224,7 +242,6 @@ async function start(id: string): Promise<void> {
             try {
               const inst = store.activeInstance
               if (!inst) return
-              const { launch } = useLaunch()
               await launch(inst, { open: 'none' })
             } catch (e) {
               message.error(e instanceof Error ? e.message : String(e))
@@ -349,8 +366,9 @@ onUnmounted(() => offBatch?.())
     </div>
 
     <div class="page-body">
-      <NSpin :show="loading">
-        <div v-if="jobs.length" class="grid cards">
+      <NSpin :show="loading && jobs.length > 0">
+        <ListSkeleton v-if="loading && !jobs.length" :rows="4" variant="card" />
+        <div v-else-if="jobs.length" class="grid cards">
           <article
             v-for="job in jobs"
             :key="job.id"
@@ -360,8 +378,10 @@ onUnmounted(() => offBatch?.())
           >
             <div class="job-head">
               <div class="job-title">
-                <div class="job-name">{{ job.name }}</div>
-                <div class="job-meta mono">{{ job.workflowPath }}</div>
+                <div class="job-name" :title="job.name">{{ job.name }}</div>
+                <div class="job-meta mono job-path" :title="job.workflowPath">
+                  {{ job.workflowPath }}
+                </div>
                 <div v-if="job.items.length > 1" class="job-meta">
                   {{ $t('batch.multiWorkflow', { n: job.items.length }) }}
                 </div>
@@ -375,17 +395,21 @@ onUnmounted(() => offBatch?.())
               <div class="bar">
                 <div
                   class="bar-in"
-                  :style="{ width: `${job.count ? clampPercent(((job.completed + job.failed) / job.count) * 100) : 0}%` }"
+                  :style="{
+                    width: `${job.count ? clampPercent(((job.completed + job.failed) / job.count) * 100) : 0}%`
+                  }"
                 />
               </div>
               <div class="job-meta">
-                {{ $t('batch.progressLine', {
-                  submitted: job.submitted ?? 0,
-                  count: job.count,
-                  completed: job.completed,
-                  produced: job.produced,
-                  failed: job.failed
-                }) }}
+                {{
+                  $t('batch.progressLine', {
+                    submitted: job.submitted ?? 0,
+                    count: job.count,
+                    completed: job.completed,
+                    produced: job.produced,
+                    failed: job.failed
+                  })
+                }}
               </div>
             </div>
 
@@ -393,20 +417,31 @@ onUnmounted(() => offBatch?.())
             <div v-if="job.items.length" class="job-items">
               <div v-for="(it, idx) in job.items" :key="idx" class="job-item">
                 <div class="job-item-line">
-                  <span class="mono job-item-name">{{ it.workflowName }}</span>
+                  <span class="mono job-item-name" :title="it.workflowName">{{
+                    it.workflowName
+                  }}</span>
                   <span class="mono">
-                    {{ $t('batch.itemProgress', {
-                      submitted: it.submitted,
-                      count: it.count,
-                      completed: it.completed,
-                      failed: it.failed
-                    }) }}
+                    {{
+                      $t('batch.itemProgress', {
+                        submitted: it.submitted,
+                        count: it.count,
+                        completed: it.completed,
+                        failed: it.failed
+                      })
+                    }}
                   </span>
-                  <span v-if="it.failed" class="item-fail"> · {{ $t('batch.itemFailed', { n: it.failed }) }}</span>
-                  <span v-if="it.submitted && it.completed + it.failed < it.submitted && !it.cancelled" class="item-pending">
+                  <span v-if="it.failed" class="item-fail">
+                    · {{ $t('batch.itemFailed', { n: it.failed }) }}</span
+                  >
+                  <span
+                    v-if="it.submitted && it.completed + it.failed < it.submitted && !it.cancelled"
+                    class="item-pending"
+                  >
                     · {{ $t('batch.itemPending', { n: it.submitted - it.completed - it.failed }) }}
                   </span>
-                  <NTag v-if="it.cancelled" size="tiny" round type="warning">{{ $t('batch.itemCancelled') }}</NTag>
+                  <NTag v-if="it.cancelled" size="tiny" round type="warning">{{
+                    $t('batch.itemCancelled')
+                  }}</NTag>
                   <NButton
                     v-if="isBusy(job.status) && !it.cancelled"
                     size="tiny"
@@ -420,7 +455,9 @@ onUnmounted(() => offBatch?.())
                 <div class="bar item-bar">
                   <div
                     class="bar-in"
-                    :style="{ width: `${it.count ? clampPercent(((it.completed + it.failed) / it.count) * 100) : 0}%` }"
+                    :style="{
+                      width: `${it.count ? clampPercent(((it.completed + it.failed) / it.count) * 100) : 0}%`
+                    }"
                   />
                 </div>
               </div>
@@ -442,32 +479,45 @@ onUnmounted(() => offBatch?.())
               <template v-if="job.params.width && job.params.height">
                 · {{ job.params.width }}×{{ job.params.height }}
               </template>
-              <template v-if="job.params.steps"> · {{ $t('batch.steps') }} {{ job.params.steps }}</template>
-              <template v-if="job.params.cfg"> · {{ $t('batch.cfg') }} {{ job.params.cfg }}</template>
+              <template v-if="job.params.steps">
+                · {{ $t('batch.steps') }} {{ job.params.steps }}</template
+              >
+              <template v-if="job.params.cfg">
+                · {{ $t('batch.cfg') }} {{ job.params.cfg }}</template
+              >
             </div>
 
-            <NSpace>
-              <NButton
-                size="small"
-                type="primary"
-                secondary
-                :disabled="isBusy(job.status) || startingId === job.id || !instanceRunning"
-                :loading="startingId === job.id"
-                :title="instanceRunning ? '' : needInstanceHint"
-                @click="start(job.id)"
-              >
-                <template #icon><NIcon :component="PlayOutline" /></template>{{ $t('batch.run') }}
-              </NButton>
+            <NSpace class="job-actions">
+              <NTooltip trigger="hover" :disabled="instanceRunning">
+                <template #trigger>
+                  <span class="btn-wrap">
+                    <NButton
+                      size="small"
+                      type="primary"
+                      secondary
+                      :disabled="isBusy(job.status) || startingId === job.id || !instanceRunning"
+                      :loading="startingId === job.id"
+                      @click="start(job.id)"
+                    >
+                      <template #icon><NIcon :component="PlayOutline" /></template
+                      >{{ $t('batch.run') }}
+                    </NButton>
+                  </span>
+                </template>
+                {{ needInstanceHint }}
+              </NTooltip>
               <NButton
                 size="small"
                 secondary
                 :disabled="!isBusy(job.status) && job.status !== 'queued'"
                 @click="cancelJob(job.id)"
               >
-                <template #icon><NIcon :component="CloseOutline" /></template>{{ $t('batch.cancel') }}
+                <template #icon><NIcon :component="CloseOutline" /></template
+                >{{ $t('batch.cancel') }}
               </NButton>
               <NButton size="small" secondary @click="viewOutputs(job)">
-                <template #icon><NIcon :component="ImagesOutline" /></template>{{ $t('batch.viewOutputs') }}
+                <template #icon><NIcon :component="ImagesOutline" /></template
+                >{{ $t('batch.viewOutputs') }}
               </NButton>
               <NButton
                 size="small"
@@ -495,7 +545,12 @@ onUnmounted(() => offBatch?.())
       </NSpin>
     </div>
 
-    <NModal v-model:show="showCreate" preset="card" :title="$t('batch.createTitle')" style="width: 580px; border-radius: 20px">
+    <NModal
+      v-model:show="showCreate"
+      preset="card"
+      :title="$t('batch.createTitle')"
+      style="width: 580px; border-radius: 20px"
+    >
       <NSpace vertical>
         <NInput v-model:value="draft.name" :placeholder="$t('batch.namePlaceholder')" />
         <div>
@@ -523,7 +578,7 @@ onUnmounted(() => offBatch?.())
               <NText depth="3">{{ $t('batch.seedMode') }}</NText>
               <NSelect v-model:value="draft.seedMode" :options="seedModeOptions" />
             </div>
-            <div class="matrix-cell" v-if="draft.seedMode !== 'random'">
+            <div v-if="draft.seedMode !== 'random'" class="matrix-cell">
               <NText depth="3">{{ $t('batch.baseSeed') }}</NText>
               <NInputNumber v-model:value="draft.baseSeed" :min="0" :max="4294967295" />
             </div>
@@ -535,7 +590,13 @@ onUnmounted(() => offBatch?.())
             </div>
             <div class="matrix-cell">
               <NText depth="3">{{ $t('batch.height') }}</NText>
-              <NInputNumber v-model:value="draft.height" :min="64" :max="4096" :step="8" clearable />
+              <NInputNumber
+                v-model:value="draft.height"
+                :min="64"
+                :max="4096"
+                :step="8"
+                clearable
+              />
             </div>
             <div class="matrix-cell">
               <NText depth="3">{{ $t('batch.steps') }}</NText>
@@ -547,7 +608,12 @@ onUnmounted(() => offBatch?.())
             </div>
           </div>
         </div>
-        <NInput v-model:value="draft.notes" type="textarea" :rows="2" :placeholder="$t('batch.notesPlaceholder')" />
+        <NInput
+          v-model:value="draft.notes"
+          type="textarea"
+          :rows="2"
+          :placeholder="$t('batch.notesPlaceholder')"
+        />
         <NCard size="small">
           <NText depth="3">{{ $t('batch.hintQueueVsDone') }}</NText>
         </NCard>
@@ -555,7 +621,9 @@ onUnmounted(() => offBatch?.())
       <template #footer>
         <NSpace justify="end">
           <NButton @click="showCreate = false">{{ $t('batch.cancel') }}</NButton>
-          <NButton type="primary" :loading="creating" @click="createJob">{{ $t('batch.create') }}</NButton>
+          <NButton type="primary" :loading="creating" @click="createJob">{{
+            $t('batch.create')
+          }}</NButton>
         </NSpace>
       </template>
     </NModal>
@@ -566,9 +634,19 @@ onUnmounted(() => offBatch?.())
 @use '@/styles/variables.scss' as *;
 .cards {
   grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  grid-auto-rows: 1fr;
 }
 .job {
   padding: 18px;
+  display: flex;
+  flex-direction: column;
+}
+.job-actions {
+  margin-top: auto;
+  padding-top: 10px;
+}
+.btn-wrap {
+  display: inline-flex;
 }
 .job-head {
   display: flex;
@@ -579,15 +657,29 @@ onUnmounted(() => offBatch?.())
   min-width: 0;
   flex: 1;
 }
+.job-title > .n-tag,
+.job-head > .n-tag {
+  flex-shrink: 0;
+}
 .job-name {
   font-size: 16px;
   font-weight: 700;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .job-meta {
   font-size: 11.5px;
-  color: $color-text-muted;
+  color: $color-text-muted-ink;
   margin-top: 4px;
   word-break: break-all;
+}
+/* 路径固定单行省略，避免长路径把卡片撑高 */
+.job-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .job-progress {
   margin: 14px 0;
@@ -595,7 +687,7 @@ onUnmounted(() => offBatch?.())
 .bar {
   height: 8px;
   border-radius: 999px;
-  background: rgba(79, 110, 247, 0.12);
+  background: rgba($color-primary, 0.12);
   overflow: hidden;
 }
 .bar-in {
@@ -612,14 +704,14 @@ onUnmounted(() => offBatch?.())
 }
 .job-item {
   font-size: 11px;
-  color: $color-text-muted;
+  color: $color-text-muted-ink;
 }
 .item-fail {
-  color: #e2557a;
+  color: $color-danger;
   font-weight: 600;
 }
 .item-pending {
-  color: #c9a227;
+  color: $color-warning;
 }
 .job-item-line {
   display: flex;
@@ -629,6 +721,10 @@ onUnmounted(() => offBatch?.())
 }
 .job-item-name {
   font-weight: 600;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .item-bar {
   margin-top: 6px;
@@ -637,9 +733,9 @@ onUnmounted(() => offBatch?.())
   margin: 8px 0 4px;
   padding: 8px 10px;
   border-radius: 10px;
-  background: rgba(226, 85, 122, 0.1);
-  border: 1px solid rgba(226, 85, 122, 0.35);
-  color: #e2557a;
+  background: rgba($color-danger, 0.1);
+  border: 1px solid rgba($color-danger, 0.35);
+  color: $color-danger;
   font-size: 11.5px;
   word-break: break-all;
 }
@@ -647,8 +743,8 @@ onUnmounted(() => offBatch?.())
   margin: 4px 0 8px;
   padding: 6px 10px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.04);
-  color: $color-text-muted;
+  background: $color-surface-2;
+  color: $color-text-muted-ink;
   font-size: 11px;
   word-break: break-all;
   max-height: 80px;
@@ -656,7 +752,7 @@ onUnmounted(() => offBatch?.())
 }
 .job.highlighted {
   outline: 2px solid $color-primary;
-  box-shadow: 0 0 0 4px rgba(79, 110, 247, 0.25);
+  box-shadow: 0 0 0 4px rgba($color-primary, 0.25);
 }
 .matrix {
   display: flex;

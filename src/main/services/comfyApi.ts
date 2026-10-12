@@ -29,10 +29,7 @@ export class ComfyApiClient {
     }
   }
 
-  async queuePrompt(
-    prompt: Record<string, unknown>,
-    clientId: string
-  ): Promise<string | null> {
+  async queuePrompt(prompt: Record<string, unknown>, clientId: string): Promise<string | null> {
     try {
       const res = await fetch(this.url('/prompt'), {
         method: 'POST',
@@ -45,7 +42,10 @@ export class ComfyApiClient {
         const text = await res.text().catch(() => '')
         let detail = text.slice(0, 500)
         try {
-          const parsed = JSON.parse(text) as { error?: { message?: string; details?: string }; node_errors?: Record<string, unknown> }
+          const parsed = JSON.parse(text) as {
+            error?: { message?: string; details?: string }
+            node_errors?: Record<string, unknown>
+          }
           const msg = parsed.error?.message || parsed.error?.details
           if (msg) detail = msg
           else if (parsed.node_errors && Object.keys(parsed.node_errors).length) {
@@ -175,7 +175,10 @@ export class ComfyApiClient {
 
   async interrupt(): Promise<boolean> {
     try {
-      const res = await fetch(this.url('/interrupt'), { method: 'POST', signal: AbortSignal.timeout(3000) })
+      const res = await fetch(this.url('/interrupt'), {
+        method: 'POST',
+        signal: AbortSignal.timeout(3000)
+      })
       return res.ok
     } catch {
       return false

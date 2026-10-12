@@ -14,7 +14,10 @@ const h = vi.hoisted(() => ({
     renameFail: [] as string[],
     execHandler: null as
       | null
-      | ((cmd: string, args: string[]) => { stdout?: string; stderr?: string; error?: Error; hang?: boolean })
+      | ((
+          cmd: string,
+          args: string[]
+        ) => { stdout?: string; stderr?: string; error?: Error; hang?: boolean })
   }
 }))
 
@@ -108,7 +111,15 @@ vi.mock('../../src/main/services/db', () => ({
     securityLevel: 'normal',
     networkMode: 'public',
     pipIndex: '',
-    proxy: { enabled: false, protocol: 'http', host: '', port: 7890, bypass: '', username: '', password: '' }
+    proxy: {
+      enabled: false,
+      protocol: 'http',
+      host: '',
+      port: 7890,
+      bypass: '',
+      username: '',
+      password: ''
+    }
   })),
   loadInstanceConfigs: vi.fn(() => h.state.instances),
   listNodePacks: vi.fn(() => h.state.nodePacks),
@@ -151,10 +162,28 @@ vi.mock('../../src/main/services/bootstrap', () => ({
   findInRuntimes: vi.fn(() => null),
   bootstrapService: { ensure: vi.fn(), cancelAll: vi.fn() }
 }))
-vi.mock('../../src/main/services/instance', () => ({ resolveRuntimesPythonSync: vi.fn(() => null) }))
+vi.mock('../../src/main/services/instance', () => ({
+  resolveRuntimesPythonSync: vi.fn(() => null)
+}))
 vi.mock('../../src/main/services/registry', () => ({
-  searchRegistry: vi.fn(async () => ({ raw: [], total: 0, page: 1, pageSize: 50, totalPages: 0, scanned: 0, clientFiltered: false })),
-  toPageResult: vi.fn(() => ({ items: [], total: 0, page: 1, pageSize: 50, totalPages: 0, scanned: 0, clientFiltered: false })),
+  searchRegistry: vi.fn(async () => ({
+    raw: [],
+    total: 0,
+    page: 1,
+    pageSize: 50,
+    totalPages: 0,
+    scanned: 0,
+    clientFiltered: false
+  })),
+  toPageResult: vi.fn(() => ({
+    items: [],
+    total: 0,
+    page: 1,
+    pageSize: 50,
+    totalPages: 0,
+    scanned: 0,
+    clientFiltered: false
+  })),
   mapRegistryPack: vi.fn((n: Record<string, unknown>) => n),
   matchesQuery: vi.fn(() => true),
   fetchRegistryPage: vi.fn(async () => ({ nodes: [], total: 0, page: 1, totalPages: 0, limit: 50 }))
@@ -164,7 +193,8 @@ vi.mock('child_process', () => ({
     const handler = h.state.execHandler
     const finish = (err: Error | null, out: string, errOut: string): void => {
       queueMicrotask(() => {
-        if (typeof cb === 'function') (cb as (e: Error | null, o: string, e2: string) => void)(err, out, errOut)
+        if (typeof cb === 'function')
+          (cb as (e: Error | null, o: string, e2: string) => void)(err, out, errOut)
       })
     }
     if (handler) {
@@ -179,10 +209,13 @@ vi.mock('child_process', () => ({
   promisify: (fn: unknown) => {
     return async (...args: unknown[]) =>
       new Promise((resolve, reject) => {
-        ;(fn as (...a: unknown[]) => void)(...args.slice(0, -1), (err: Error | null, stdout: string, stderr: string) => {
-          if (err) reject(err)
-          else resolve({ stdout, stderr })
-        })
+        ;(fn as (...a: unknown[]) => void)(
+          ...args.slice(0, -1),
+          (err: Error | null, stdout: string, stderr: string) => {
+            if (err) reject(err)
+            else resolve({ stdout, stderr })
+          }
+        )
       })
   }
 }))
@@ -240,7 +273,12 @@ describe('S1: install destination safety', () => {
     }
     // Even with a hostile URL tail, install must never target the root itself.
     await expect(
-      nodePackService.install({ id: 'https://evil.example/x/.', source: 'git', url: 'https://evil.example/x/.', instanceId: 'inst-1' })
+      nodePackService.install({
+        id: 'https://evil.example/x/.',
+        source: 'git',
+        url: 'https://evil.example/x/.',
+        instanceId: 'inst-1'
+      })
     ).resolves.toBeDefined()
     // Root must still exist and still be a directory listing container
     expect(h.state.dirs.has('C:/fake/ComfyUI/custom_nodes')).toBe(true)
@@ -251,11 +289,17 @@ describe('S1: install destination safety', () => {
     h.state.dirs.add(dest)
     h.state.files.set(dest + '/__init__.py', 'x')
     h.state.execHandler = (cmd, args) => {
-      if (args.includes('clone')) return { error: new Error('clone failed'), stderr: 'clone failed' }
+      if (args.includes('clone'))
+        return { error: new Error('clone failed'), stderr: 'clone failed' }
       return { stdout: '' }
     }
     await expect(
-      nodePackService.install({ id: 'https://github.com/u/KeepMe.git', source: 'git', url: 'https://github.com/u/KeepMe.git', instanceId: 'inst-1' })
+      nodePackService.install({
+        id: 'https://github.com/u/KeepMe.git',
+        source: 'git',
+        url: 'https://github.com/u/KeepMe.git',
+        instanceId: 'inst-1'
+      })
     ).rejects.toThrow(/clone failed/)
     // The pre-existing user directory must survive
     expect(h.state.dirs.has(dest)).toBe(true)
@@ -271,7 +315,12 @@ describe('S1: install destination safety', () => {
       return { stdout: '' }
     }
     await expect(
-      nodePackService.install({ id: 'https://github.com/u/NewPack.git', source: 'git', url: 'https://github.com/u/NewPack.git', instanceId: 'inst-1' })
+      nodePackService.install({
+        id: 'https://github.com/u/NewPack.git',
+        source: 'git',
+        url: 'https://github.com/u/NewPack.git',
+        instanceId: 'inst-1'
+      })
     ).rejects.toThrow()
     // No ._clone_tmp_* residue
     const leftovers = [...h.state.dirs.keys()].filter((k) => k.includes('._clone_tmp_'))
@@ -290,7 +339,12 @@ describe('S1: install destination safety', () => {
       return { stdout: '' }
     }
     await expect(
-      nodePackService.install({ id: 'https://github.com/u/Dup.git', source: 'git', url: 'https://github.com/u/Dup.git', instanceId: 'inst-1' })
+      nodePackService.install({
+        id: 'https://github.com/u/Dup.git',
+        source: 'git',
+        url: 'https://github.com/u/Dup.git',
+        instanceId: 'inst-1'
+      })
     ).rejects.toThrow(/already exists/i)
   })
 })
@@ -403,13 +457,23 @@ describe('sanitizeInstallName safety (exported via install behavior)', () => {
 
   it('rejects a git URL that starts with a dash (option injection)', async () => {
     await expect(
-      nodePackService.install({ id: '-e', source: 'git', url: '--upload-pack=evil', instanceId: 'inst-1' })
+      nodePackService.install({
+        id: '-e',
+        source: 'git',
+        url: '--upload-pack=evil',
+        instanceId: 'inst-1'
+      })
     ).rejects.toThrow(/Invalid git URL/)
   })
 
   it('rejects ext:: transport URLs', async () => {
     await expect(
-      nodePackService.install({ id: 'ext', source: 'git', url: 'ext::sh -c evil', instanceId: 'inst-1' })
+      nodePackService.install({
+        id: 'ext',
+        source: 'git',
+        url: 'ext::sh -c evil',
+        instanceId: 'inst-1'
+      })
     ).rejects.toThrow(/Invalid git URL/)
   })
 })

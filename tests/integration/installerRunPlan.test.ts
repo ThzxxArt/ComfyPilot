@@ -3,7 +3,6 @@
  * child_process, zip and desktop/instance hooks. No real git/pip/uv runs.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
-import { pathKey } from '../helpers/pathKey'
 import { mkdirSync, writeFileSync, existsSync, rmSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -19,8 +18,18 @@ const h = vi.hoisted(() => ({
     zipInstallReady: true,
     components: [
       { kind: 'uv', path: 'C:/portable/uv.exe', installed: true, origin: 'runtimes' as const },
-      { kind: 'python', path: 'C:/portable/python.exe', installed: true, origin: 'system' as const },
-      { kind: 'mingit', path: 'C:/portable/mingit/bin/git.exe', installed: true, origin: 'runtimes' as const }
+      {
+        kind: 'python',
+        path: 'C:/portable/python.exe',
+        installed: true,
+        origin: 'system' as const
+      },
+      {
+        kind: 'mingit',
+        path: 'C:/portable/mingit/bin/git.exe',
+        installed: true,
+        origin: 'runtimes' as const
+      }
     ]
   } as {
     pythonPath: string
@@ -53,7 +62,12 @@ const h = vi.hoisted(() => ({
       components: [
         { kind: 'uv', path: 'C:/portable/uv.exe', installed: true, origin: 'runtimes' },
         { kind: 'python', path: 'C:/portable/python.exe', installed: true, origin: 'system' },
-        { kind: 'mingit', path: 'C:/portable/mingit/bin/git.exe', installed: true, origin: 'runtimes' }
+        {
+          kind: 'mingit',
+          path: 'C:/portable/mingit/bin/git.exe',
+          installed: true,
+          origin: 'runtimes'
+        }
       ]
     }
   }
@@ -198,11 +212,17 @@ function waitStatus(
       const p = svc.getStatus()
       if (p && pred(p)) {
         if (p.status === 'failed' && process.env['DEBUG_RUNPLAN']) {
-          console.error('RUNPLAN FAIL', p.error, '::', p.steps.map((s) => `${s.id}=${s.status}:${s.detail}`).join(' | '))
+          console.error(
+            'RUNPLAN FAIL',
+            p.error,
+            '::',
+            p.steps.map((s) => `${s.id}=${s.status}:${s.detail}`).join(' | ')
+          )
         }
         return resolve(p)
       }
-      if (Date.now() - t0 > timeoutMs) return reject(new Error('timeout waiting for status: ' + JSON.stringify(p)))
+      if (Date.now() - t0 > timeoutMs)
+        return reject(new Error('timeout waiting for status: ' + JSON.stringify(p)))
       setTimeout(tick, 15)
     }
     tick()
@@ -429,9 +449,10 @@ describe('installer runPlan (integration)', () => {
     await svc.start(plan({ useUv: true, pythonPath: 'broken' }))
     const p = await waitStatus(svc, (s) => s.status === 'done' || s.status === 'failed')
     expect(p.status).toBe('done')
-    expect(p.steps.find((s) => s.id === 'python')!.log.join('\n') + p.steps.find((s) => s.id === 'python')!.detail).toMatch(
-      /uv/i
-    )
+    expect(
+      p.steps.find((s) => s.id === 'python')!.log.join('\n') +
+        p.steps.find((s) => s.id === 'python')!.detail
+    ).toMatch(/uv/i)
   })
 
   it('fails hard when no python is resolvable at all', async () => {
@@ -492,46 +513,53 @@ describe('installer runPlan (integration)', () => {
     expect(p.message).toMatch(/cleaned:|HTTP/)
   })
 
-  it('zip extract to nested ComfyUI-master is flattened; missing main.py fails', { timeout: 15000 }, async () => {
-    h.safeUnzipImpl = async (_zip, dest) => {
-      mkdirSync(join(dest, 'ComfyUI-master'), { recursive: true })
-      writeFileSync(join(dest, 'ComfyUI-master', 'main.py'), '')
-      writeFileSync(join(dest, 'ComfyUI-master', 'requirements.txt'), 'x\n')
-    }
-    let svc = await freshService()
-    await svc.start(plan({ comfySource: 'zip', useUv: true }))
-    let p = await waitStatus(svc, (s) => s.status === 'done' || s.status === 'failed')
-    expect(p.status).toBe('done')
-    expect(existsSync(join(ROOT, 'inst', 'ComfyUI', 'main.py'))).toBe(true)
-
-    h.safeUnzipImpl = async (_zip, dest) => {
-      mkdirSync(join(dest, 'ComfyUI-master'), { recursive: true })
-      writeFileSync(join(dest, 'ComfyUI-master', 'README.md'), '')
-    }
-    h.execImpl = (cmd, args, cb) => {
-      if (args[0] === '--version') return queueMicrotask(() => cb(null, 'Python 3.12.0', ''))
-      if ((args[0] === '-m' && args[1] === 'venv') || args[0] === 'venv') {
-        const venvPath = args[0] === 'venv' ? args[1] : args[2]
-        mkdirSync(join(venvPath, 'Scripts'), { recursive: true })
-        writeFileSync(join(venvPath, 'Scripts', 'python.exe'), '')
-        return queueMicrotask(() => cb(null, '', ''))
+  it(
+    'zip extract to nested ComfyUI-master is flattened; missing main.py fails',
+    { timeout: 15000 },
+    async () => {
+      h.safeUnzipImpl = async (_zip, dest) => {
+        mkdirSync(join(dest, 'ComfyUI-master'), { recursive: true })
+        writeFileSync(join(dest, 'ComfyUI-master', 'main.py'), '')
+        writeFileSync(join(dest, 'ComfyUI-master', 'requirements.txt'), 'x\n')
       }
-      queueMicrotask(() => cb(null, 'ok', ''))
+      let svc = await freshService()
+      await svc.start(plan({ comfySource: 'zip', useUv: true }))
+      let p = await waitStatus(svc, (s) => s.status === 'done' || s.status === 'failed')
+      expect(p.status).toBe('done')
+      expect(existsSync(join(ROOT, 'inst', 'ComfyUI', 'main.py'))).toBe(true)
+
+      h.safeUnzipImpl = async (_zip, dest) => {
+        mkdirSync(join(dest, 'ComfyUI-master'), { recursive: true })
+        writeFileSync(join(dest, 'ComfyUI-master', 'README.md'), '')
+      }
+      h.execImpl = (cmd, args, cb) => {
+        if (args[0] === '--version') return queueMicrotask(() => cb(null, 'Python 3.12.0', ''))
+        if ((args[0] === '-m' && args[1] === 'venv') || args[0] === 'venv') {
+          const venvPath = args[0] === 'venv' ? args[1] : args[2]
+          mkdirSync(join(venvPath, 'Scripts'), { recursive: true })
+          writeFileSync(join(venvPath, 'Scripts', 'python.exe'), '')
+          return queueMicrotask(() => cb(null, '', ''))
+        }
+        queueMicrotask(() => cb(null, 'ok', ''))
+      }
+      // fresh root so the previous main.py is not reused
+      rmSync(join(ROOT, 'inst'), { recursive: true, force: true })
+      svc = await freshService()
+      await svc.start(plan({ comfySource: 'zip' }))
+      p = await waitStatus(svc, (s) => s.status === 'failed')
+      expect(p.error).toMatch(/main\.py/)
     }
-    // fresh root so the previous main.py is not reused
-    rmSync(join(ROOT, 'inst'), { recursive: true, force: true })
-    svc = await freshService()
-    await svc.start(plan({ comfySource: 'zip' }))
-    p = await waitStatus(svc, (s) => s.status === 'failed')
-    expect(p.error).toMatch(/main\.py/)
-  })
+  )
 
   it('cancel mid-run reports Installation cancelled', async () => {
     h.hang = true
     const svc = await freshService()
     await svc.start(plan())
     // wait until at least bootstrap started, then cancel while exec hangs
-    await waitStatus(svc, (s) => s.step !== undefined && s.steps.some((st) => st.status === 'running'))
+    await waitStatus(
+      svc,
+      (s) => s.step !== undefined && s.steps.some((st) => st.status === 'running')
+    )
     svc.cancel()
     const p = await waitStatus(svc, (s) => s.status === 'failed', 8000)
     expect(p.error).toMatch(/cancelled/i)
@@ -548,8 +576,12 @@ describe('installer runPlan (integration)', () => {
 
   it('git mode rejects unsafe repo / branch at start()', async () => {
     const svc = await freshService()
-    await expect(svc.start(plan({ comfySource: 'git', comfyRepo: 'ext::sh -c evil' }))).rejects.toThrow()
-    await expect(svc.start(plan({ comfySource: 'git', comfyBranch: 'a..b' }))).rejects.toThrow(/branch/i)
+    await expect(
+      svc.start(plan({ comfySource: 'git', comfyRepo: 'ext::sh -c evil' }))
+    ).rejects.toThrow()
+    await expect(svc.start(plan({ comfySource: 'git', comfyBranch: 'a..b' }))).rejects.toThrow(
+      /branch/i
+    )
     await expect(svc.start(plan({ installRoot: ROOT + '/../x' }))).rejects.toThrow(/install root/i)
     await expect(svc.start(plan({ installRoot: '' }))).rejects.toThrow(/install root/i)
   })

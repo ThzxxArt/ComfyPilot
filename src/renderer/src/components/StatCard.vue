@@ -45,6 +45,15 @@ const toneClass = computed(() => `tone-${props.tone || 'primary'}`)
   border-radius: 999px;
   background: $gradient-soft;
   opacity: 0.9;
+  z-index: 0;
+}
+
+/* 装饰圆是绝对定位绘制在文本之上的，必须把内容抬到装饰层之上 */
+.stat-top,
+.stat-value,
+.stat-label {
+  position: relative;
+  z-index: 1;
 }
 
 .stat-top {
@@ -60,31 +69,31 @@ const toneClass = computed(() => `tone-${props.tone || 'primary'}`)
   border-radius: 12px;
   display: grid;
   place-items: center;
-  background: rgba(79, 110, 247, 0.12);
+  background: rgba($color-primary, 0.12);
   color: $color-primary;
 }
 
 .tone-success .icon-wrap {
-  background: rgba(16, 185, 129, 0.14);
+  background: rgba($color-success, 0.14);
   color: $color-success;
 }
 .tone-warning .icon-wrap {
-  background: rgba(245, 158, 11, 0.16);
+  background: rgba($color-warning, 0.16);
   color: $color-warning;
 }
 .tone-danger .icon-wrap {
-  background: rgba(239, 68, 68, 0.12);
+  background: rgba($color-danger, 0.12);
   color: $color-danger;
 }
 .tone-muted .icon-wrap {
-  background: rgba(148, 163, 184, 0.16);
+  background: rgba($color-text-muted, 0.16);
   color: $color-text-muted;
 }
 
 .stat-hint {
   margin-top: 8px;
   font-size: 12px;
-  color: $color-text-muted;
+  color: $color-text-muted-ink;
   position: relative;
   z-index: 1;
 }

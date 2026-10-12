@@ -7,7 +7,7 @@ export const COLORS = {
   primaryHover: '#6B84F9',
   primaryPressed: '#3D5AE0',
   primary2: '#7C5CFC',
-  accent: '#22D3EE',
+  accent: '#06B6D4',
   success: '#10B981',
   successInk: '#059669',
   warning: '#F59E0B',
@@ -24,7 +24,9 @@ export const COLORS = {
 export type ColorToken = keyof typeof COLORS
 
 /** Severity → ink color (for status numbers, check marks, etc.) */
-export function severityColor(severity: 'pass' | 'ok' | 'success' | 'warn' | 'warning' | 'fail' | 'error' | 'info' | 'muted'): string {
+export function severityColor(
+  severity: 'pass' | 'ok' | 'success' | 'warn' | 'warning' | 'fail' | 'error' | 'info' | 'muted'
+): string {
   switch (severity) {
     case 'pass':
     case 'ok':

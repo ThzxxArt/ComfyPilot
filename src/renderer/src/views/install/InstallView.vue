@@ -75,7 +75,11 @@ type PreflightResult = {
 }
 
 /** Prefer i18n key from main; fall back to English detail. */
-function detailOf(item: { detail?: string; detailKey?: string; detailParams?: Record<string, string | number> }): string {
+function detailOf(item: {
+  detail?: string
+  detailKey?: string
+  detailParams?: Record<string, string | number>
+}): string {
   if (item.detailKey) {
     try {
       return t(item.detailKey, item.detailParams || {})
@@ -293,7 +297,9 @@ const torchIndexOptions = computed(() =>
   }))
 )
 
-const canStart = computed(() => Boolean(plan.value.installRoot.trim() && plan.value.instanceName.trim()))
+const canStart = computed(() =>
+  Boolean(plan.value.installRoot.trim() && plan.value.instanceName.trim())
+)
 
 const isDone = computed(() => progress.value?.status === 'done' && !progress.value?.error)
 const isFailed = computed(() => Boolean(progress.value?.error))
@@ -303,7 +309,9 @@ const installingNow = computed(() => installing.value || progress.value?.status 
 const hasHardPreflightFail = computed(() =>
   Boolean(preflight.value?.checks?.some((c) => !c.ok && !c.fixId))
 )
-const canStartInstall = computed(() => canStart.value && !hasHardPreflightFail.value && !installingNow.value)
+const canStartInstall = computed(
+  () => canStart.value && !hasHardPreflightFail.value && !installingNow.value
+)
 
 const diskNeedGb = computed(() => {
   if (typeof preflight.value?.diskNeedGb === 'number') return preflight.value.diskNeedGb
@@ -327,9 +335,18 @@ function bytesText(b: { receivedBytes: number; totalBytes: number; speedBps: num
   })
 }
 
-function stepStatusTag(status: InstallStepStatus): 'success' | 'error' | 'info' | 'default' {
+/** Localized step status chip (raw enum must not leak). */
+function stepStatusLabel(status: InstallStepStatus): string {
+  const key = `install.stepStatus.${status}`
+  return t(key) === key ? String(status) : t(key)
+}
+
+function stepStatusTag(
+  status: InstallStepStatus
+): 'success' | 'error' | 'info' | 'warning' | 'default' {
   if (status === 'done') return 'success'
   if (status === 'failed') return 'error'
+  if (status === 'cancelled') return 'warning'
   if (status === 'running') return 'info'
   return 'default'
 }
@@ -550,7 +567,11 @@ function findInstalledInstance() {
     const hit = store.instances.find((i) => i.id === fromProgress)
     if (hit) return hit
   }
-  const norm = (p: string): string => p.replace(/[\\/]+/g, '/').toLowerCase().replace(/\/$/, '')
+  const norm = (p: string): string =>
+    p
+      .replace(/[\\/]+/g, '/')
+      .toLowerCase()
+      .replace(/\/$/, '')
   return (
     store.instances.find((i) => i.name === plan.value.instanceName.trim()) ||
     store.instances.find(
@@ -677,7 +698,10 @@ async function probeAndRecommendMirrors(auto = false): Promise<void> {
       if (!userChoseMirror.value || !auto) {
         pipIndex.value = rec.pipIndex || ''
         torchIndexMirror.value = rec.torchIndexMirror || ''
-        await ipc('settings.set', { pipIndex: pipIndex.value, torchIndexMirror: torchIndexMirror.value })
+        await ipc('settings.set', {
+          pipIndex: pipIndex.value,
+          torchIndexMirror: torchIndexMirror.value
+        })
       }
       // rec.*Label are i18n key fragments under settings.*
       const tr = (k: string): string => {
@@ -894,7 +918,7 @@ onUnmounted(() => {
         </NCollapse>
 
         <!-- Repair an already-registered instance (0.1.4): bridges install wizard ↔ repairEnv -->
-        <section class="card repair-card">
+        <section class="repair-card">
           <div class="repair-head">
             <div>
               <div class="repair-title">{{ $t('install.repairSection') }}</div>
@@ -929,7 +953,12 @@ onUnmounted(() => {
             <div class="hint">{{ $t('install.runtimeHint') }}</div>
           </div>
           <NSpace>
-            <NButton size="small" secondary :loading="runtimeStatusLoading" @click="loadRuntimeStatus">
+            <NButton
+              size="small"
+              secondary
+              :loading="runtimeStatusLoading"
+              @click="loadRuntimeStatus"
+            >
               {{ $t('install.runtimeRefresh') }}
             </NButton>
             <NButton
@@ -955,7 +984,9 @@ onUnmounted(() => {
                 <div class="hint mono runtime-detail">
                   <span>{{ $t('install.runtimeVersion') }}: {{ c.version || '—' }}</span>
                   <span>{{ $t('install.runtimeOrigin') }}: {{ runtimeOriginLabel(c.origin) }}</span>
-                  <span v-if="c.path" class="runtime-path">{{ $t('install.runtimePath') }}: {{ c.path }}</span>
+                  <span v-if="c.path" class="runtime-path"
+                    >{{ $t('install.runtimePath') }}: {{ c.path }}</span
+                  >
                 </div>
               </div>
             </div>
@@ -1004,7 +1035,9 @@ onUnmounted(() => {
               <NTag v-if="runtimeProg.message" size="tiny" round>{{ runtimeProg.message }}</NTag>
             </div>
           </div>
-          <div v-else class="hint">{{ preflighting ? '' : $t('install.idleHint') }}</div>
+          <div v-else class="hint preflight-hint">
+            {{ preflighting ? $t('stepMsg.preflightRun') : $t('install.idleHint') }}
+          </div>
         </section>
 
         <section class="card panel">
@@ -1036,12 +1069,7 @@ onUnmounted(() => {
           </div>
 
           <div class="steps-log">
-            <div
-              v-for="s in progress?.steps || []"
-              :key="s.id"
-              class="step-row"
-              :class="s.status"
-            >
+            <div v-for="s in progress?.steps || []" :key="s.id" class="step-row" :class="s.status">
               <div class="step-head">
                 <NIcon
                   :size="16"
@@ -1054,14 +1082,18 @@ onUnmounted(() => {
                   "
                 />
                 <b>{{ $t(stepTitleKey(s.id)) }}</b>
-                <NTag size="tiny" round :type="stepStatusTag(s.status)">{{ s.status }}</NTag>
+                <NTag size="tiny" round :type="stepStatusTag(s.status)">{{
+                  stepStatusLabel(s.status)
+                }}</NTag>
               </div>
               <div v-if="s.detail || s.detailKey" class="step-detail">{{ detailOf(s) }}</div>
               <NCollapse
                 v-if="s.log.length"
                 class="log-collapse"
                 :expanded-names="logExpandedNames(s.id)"
-                @update:expanded-names="(names: Array<string | number>) => setLogExpanded(s.id, names)"
+                @update:expanded-names="
+                  (names: Array<string | number>) => setLogExpanded(s.id, names)
+                "
               >
                 <NCollapseItem :title="$t('install.logCount', { n: s.log.length })" :name="s.id">
                   <div v-for="(line, i) in s.log" :key="i" class="mono log-line">{{ line }}</div>
@@ -1088,7 +1120,9 @@ onUnmounted(() => {
                   {{ $t('models.recommended') }}
                 </NTag>
                 <NTag size="tiny" round>{{ s.family }}</NTag>
-                <NTag size="tiny" round>{{ $t('models.approx', { size: formatBytes(s.approxBytes) }) }}</NTag>
+                <NTag size="tiny" round>{{
+                  $t('models.approx', { size: formatBytes(s.approxBytes) })
+                }}</NTag>
               </div>
               <div class="starter-desc">{{ $t(s.description) }}</div>
             </div>
@@ -1118,6 +1152,17 @@ onUnmounted(() => {
   margin-top: 16px;
 }
 
+/* 窄窗口退化为单栏，预检/进度纵向堆叠 */
+@media (max-width: 1280px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .advanced-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .advanced-grid {
   grid-template-columns: 1fr 1fr;
   gap: 12px 16px;
@@ -1125,7 +1170,10 @@ onUnmounted(() => {
 
 .repair-card {
   margin-top: 16px;
-  padding: 18px 20px;
+  padding: 16px 18px;
+  background: $color-surface-2;
+  border: 1px solid $color-border;
+  border-radius: 14px;
 }
 
 .repair-head {
@@ -1153,10 +1201,12 @@ onUnmounted(() => {
   padding: 10px 12px;
   border: 1px solid $color-border;
   border-radius: 12px;
+  background: $color-surface;
 }
 
 .repair-info {
   min-width: 0;
+  flex: 1;
 }
 
 .repair-name {
@@ -1170,7 +1220,6 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 520px;
 }
 
 .panel {
@@ -1231,7 +1280,7 @@ onUnmounted(() => {
 
 .hint {
   font-size: 12px;
-  color: $color-text-muted;
+  color: $color-text-muted-ink;
 }
 
 .actions {
@@ -1329,6 +1378,11 @@ onUnmounted(() => {
     cursor: not-allowed;
     box-shadow: $shadow-sm;
   }
+
+  &:focus-visible {
+    outline: 2px solid rgba($color-primary, 0.6);
+    outline-offset: 3px;
+  }
 }
 
 .cta-icon {
@@ -1338,9 +1392,16 @@ onUnmounted(() => {
 .cta-hint {
   font-size: 12px;
   font-weight: 400;
-  color: $color-text-muted;
-  max-width: 320px;
+  color: $color-text-muted-ink;
+  max-width: 360px;
   text-align: right;
+}
+
+/* 窄窗口下 CTA 右侧提示换行到按钮下方后右对齐会显突兀，退化为左对齐 */
+@media (max-width: 1360px) {
+  .cta-hint {
+    text-align: left;
+  }
 }
 
 .advanced {
@@ -1406,15 +1467,15 @@ onUnmounted(() => {
   padding: 10px 12px;
 
   &.running {
-    border-color: rgba(79, 110, 247, 0.4);
-    background: rgba(79, 110, 247, 0.06);
+    border-color: rgba($color-primary, 0.4);
+    background: rgba($color-primary, 0.06);
   }
   &.done {
-    border-color: rgba(16, 185, 129, 0.35);
+    border-color: rgba($color-success, 0.35);
   }
   &.failed {
-    border-color: rgba(239, 68, 68, 0.4);
-    background: rgba(239, 68, 68, 0.05);
+    border-color: rgba($color-danger, 0.4);
+    background: rgba($color-danger, 0.05);
   }
 }
 
@@ -1436,7 +1497,7 @@ onUnmounted(() => {
   margin: 6px 0 4px;
   font-size: 12px;
   font-weight: 400;
-  color: $color-text-muted;
+  color: $color-text-muted-ink;
 }
 
 .log-line {
@@ -1444,6 +1505,8 @@ onUnmounted(() => {
   font-weight: 400;
   color: $color-text-secondary;
   line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 /* ---- starter models ---- */
@@ -1485,7 +1548,11 @@ onUnmounted(() => {
   margin-top: 4px;
   font-size: 12px;
   font-weight: 400;
-  color: $color-text-muted;
+  color: $color-text-muted-ink;
+}
+
+.preflight-hint {
+  min-height: 18px;
 }
 
 .mb {

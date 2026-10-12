@@ -21,8 +21,16 @@ import {
   StopOutline
 } from '@vicons/ionicons5'
 import {
-  NIcon, NAvatar, NButton, NSpace, NTooltip, NMessageProvider, NDialogProvider,
-  NConfigProvider, NSelect, NTag
+  NIcon,
+  NAvatar,
+  NButton,
+  NSpace,
+  NTooltip,
+  NMessageProvider,
+  NDialogProvider,
+  NConfigProvider,
+  NSelect,
+  NTag
 } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 import { ipc } from '@/composables/useIpc'
@@ -49,25 +57,107 @@ const SIDEBAR_W_COLLAPSED = 72
 
 const nav = computed(() => [
   // 生产
-  { key: 'dashboard', label: t('nav.dashboard'), icon: SpeedometerOutline, path: '/', group: 'produce' as const },
-  { key: 'instances', label: t('nav.instances'), icon: ServerOutline, path: '/instances', group: 'produce' as const },
-  { key: 'workflows', label: t('nav.workflows'), icon: GitBranchOutline, path: '/workflows', group: 'produce' as const },
-  { key: 'batch', label: t('nav.batch'), icon: PlayForwardOutline, path: '/batch', group: 'produce' as const },
-  { key: 'output', label: t('nav.output'), icon: ImagesOutline, path: '/output', group: 'produce' as const },
+  {
+    key: 'dashboard',
+    label: t('nav.dashboard'),
+    icon: SpeedometerOutline,
+    path: '/',
+    group: 'produce' as const
+  },
+  {
+    key: 'instances',
+    label: t('nav.instances'),
+    icon: ServerOutline,
+    path: '/instances',
+    group: 'produce' as const
+  },
+  {
+    key: 'workflows',
+    label: t('nav.workflows'),
+    icon: GitBranchOutline,
+    path: '/workflows',
+    group: 'produce' as const
+  },
+  {
+    key: 'batch',
+    label: t('nav.batch'),
+    icon: PlayForwardOutline,
+    path: '/batch',
+    group: 'produce' as const
+  },
+  {
+    key: 'output',
+    label: t('nav.output'),
+    icon: ImagesOutline,
+    path: '/output',
+    group: 'produce' as const
+  },
   // 资产
-  { key: 'models', label: t('nav.models'), icon: FolderOpenOutline, path: '/models', group: 'assets' as const },
-  { key: 'nodes', label: t('nav.nodes'), icon: ExtensionPuzzleOutline, path: '/nodes', group: 'assets' as const },
-  { key: 'market', label: t('nav.market'), icon: StorefrontOutline, path: '/market', group: 'assets' as const },
+  {
+    key: 'models',
+    label: t('nav.models'),
+    icon: FolderOpenOutline,
+    path: '/models',
+    group: 'assets' as const
+  },
+  {
+    key: 'nodes',
+    label: t('nav.nodes'),
+    icon: ExtensionPuzzleOutline,
+    path: '/nodes',
+    group: 'assets' as const
+  },
+  {
+    key: 'market',
+    label: t('nav.market'),
+    icon: StorefrontOutline,
+    path: '/market',
+    group: 'assets' as const
+  },
   // 运维
-  { key: 'monitor', label: t('nav.monitor'), icon: PulseOutline, path: '/monitor', group: 'ops' as const },
-  { key: 'doctor', label: t('nav.doctor'), icon: MedkitOutline, path: '/doctor', group: 'ops' as const },
-  { key: 'install', label: t('nav.install'), icon: RocketOutline, path: '/install', group: 'ops' as const },
-  { key: 'backup', label: t('nav.backup'), icon: SaveOutline, path: '/backup', group: 'ops' as const },
-  { key: 'settings', label: t('nav.settings'), icon: SettingsOutline, path: '/settings', group: 'ops' as const }
+  {
+    key: 'monitor',
+    label: t('nav.monitor'),
+    icon: PulseOutline,
+    path: '/monitor',
+    group: 'ops' as const
+  },
+  {
+    key: 'doctor',
+    label: t('nav.doctor'),
+    icon: MedkitOutline,
+    path: '/doctor',
+    group: 'ops' as const
+  },
+  {
+    key: 'install',
+    label: t('nav.install'),
+    icon: RocketOutline,
+    path: '/install',
+    group: 'ops' as const
+  },
+  {
+    key: 'backup',
+    label: t('nav.backup'),
+    icon: SaveOutline,
+    path: '/backup',
+    group: 'ops' as const
+  },
+  {
+    key: 'settings',
+    label: t('nav.settings'),
+    icon: SettingsOutline,
+    path: '/settings',
+    group: 'ops' as const
+  }
 ])
 
 const navGroups = computed(() => {
-  const g = { produce: [] as typeof nav.value, assets: [] as typeof nav.value, ops: [] as typeof nav.value }
+  const g = {
+    produce: [] as typeof nav.value,
+    assets: [] as typeof nav.value,
+    ops: [] as typeof nav.value
+  }
   for (const item of nav.value) g[item.group].push(item)
   return [
     { key: 'produce', label: t('nav.groupProduce'), items: g.produce },
@@ -94,20 +184,24 @@ const themeOverrides = {
     textColorBase: COLORS.text
   },
   Button: { fontWeight: '600' },
-  Card: { borderRadius: '16px' },
+  Card: { borderRadius: '20px' },
   Modal: { borderRadius: '20px' }
 }
 
 const activeKey = computed(() => {
-  const hit = nav.value.find((n) => route.path === n.path || (n.path !== '/' && route.path.startsWith(n.path)))
+  const hit = nav.value.find(
+    (n) => route.path === n.path || (n.path !== '/' && route.path.startsWith(n.path))
+  )
   return hit?.key ?? 'dashboard'
 })
 
-const runningCount = computed(() => store.instances.filter((i) => i.status === 'running').length)
+const runningCount = computed(
+  () => store.instances.filter((i) => i.status === 'running' || i.status === 'starting').length
+)
 
 const instanceOptions = computed(() => {
   const local = store.instances.map((i: ComfyInstanceInfo) => ({
-    label: `${i.name} · ${i.port} · ${i.status}`,
+    label: `${i.name} · ${i.port} · ${t(`status.${i.status || 'unknown'}`)}`,
     value: i.id
   }))
   const remote = store.remotes.map((r) => ({
@@ -133,24 +227,23 @@ const selectedInstanceId = computed({
   }
 })
 
+/** A remote is selected AND actually resolvable (guards stale activeRemoteId). */
+const remoteReady = computed(() => store.isRemoteActive && Boolean(store.activeRemote))
+
 const activeStatus = computed(() => {
-  if (store.isRemoteActive) return 'running' // remotes are always "reachable" when selected
+  if (store.isRemoteActive) return remoteReady.value ? 'running' : 'unknown'
   return store.activeInstance?.status || 'unknown'
 })
 /** ComfyPilot never auto-starts an instance — every Frontend open is gated on this. */
 const instanceRunning = computed(() => {
-  if (store.isRemoteActive) return true
+  if (store.isRemoteActive) return remoteReady.value
   return activeStatus.value === 'running'
 })
-const needInstanceHint = t('common.needRunningInstance')
+const needInstanceHint = computed(() => t('common.needRunningInstance'))
 const activeStatusLabel = computed(() => {
-  if (store.isRemoteActive) return t('status.remote')
-  const s = activeStatus.value
-  try {
-    return t(`status.${s}`)
-  } catch {
-    return s
-  }
+  if (remoteReady.value) return t('status.remote')
+  if (store.isRemoteActive) return t('status.unknown')
+  return t(`status.${activeStatus.value || 'unknown'}`)
 })
 
 const sidebarWidth = computed(() => (collapsed.value ? SIDEBAR_W_COLLAPSED : SIDEBAR_W))
@@ -196,10 +289,15 @@ watch(
       // Prefer i18n keys from main; fall back to the literal strings.
       const title = n.titleKey ? t(n.titleKey, n.params || {}) : n.title
       const msg = n.messageKey ? t(n.messageKey, n.params || {}) : n.message
-      discreteMessage[n.type === 'error' ? 'error' : n.type === 'warning' ? 'warning' : n.type === 'success' ? 'success' : 'info'](
-        title && msg ? `${title} — ${msg}` : title || msg,
-        { duration: n.duration ?? 5000 }
-      )
+      discreteMessage[
+        n.type === 'error'
+          ? 'error'
+          : n.type === 'warning'
+            ? 'warning'
+            : n.type === 'success'
+              ? 'success'
+              : 'info'
+      ](title && msg ? `${title} — ${msg}` : title || msg, { duration: n.duration ?? 5000 })
     }
   }
 )
@@ -238,14 +336,22 @@ function onKeydown(e: KeyboardEvent): void {
     }
     return
   }
-  // Ctrl+Enter → launch active instance and open embed
+  // Ctrl+Enter → launch active instance and open embed (not while typing in a field)
   if (e.key === 'Enter') {
+    const el = e.target as HTMLElement | null
+    const tag = el?.tagName?.toLowerCase()
+    if (tag === 'input' || tag === 'textarea' || el?.isContentEditable) return
     e.preventDefault()
     void launchActive()
   }
 }
 
 async function launchActive(): Promise<void> {
+  // Remote context: nothing to launch locally — open its frontend instead.
+  if (store.isRemoteActive) {
+    openEmbed()
+    return
+  }
   const inst = store.activeInstance
   if (!inst) return
   await launch(inst, { open: 'embed' })
@@ -255,28 +361,34 @@ function go(path: string): void {
   void router.push(path)
 }
 
+/** Frontend URL for the active context — remote baseUrl when a remote is selected. */
+function currentFrontendUrl(): string | null {
+  if (store.isRemoteActive) return store.activeRemote?.baseUrl || null
+  return store.activeInstance?.url || null
+}
+
 function openComfy(): void {
   if (!instanceRunning.value) {
-    discreteMessage.warning(needInstanceHint)
+    discreteMessage.warning(needInstanceHint.value)
     return
   }
-  const inst = store.activeInstance
-  if (inst?.url) {
-    void ipc('shell.openExternal', inst.url)
+  const url = currentFrontendUrl()
+  if (url) {
+    void ipc('shell.openExternal', url).catch(() => undefined)
   }
 }
 
 function openEmbed(): void {
   if (!instanceRunning.value) {
-    discreteMessage.warning(needInstanceHint)
+    discreteMessage.warning(needInstanceHint.value)
     return
   }
-  const inst = store.activeInstance
-  if (inst?.url) void router.push({ path: '/embed', query: { url: inst.url } })
+  const url = currentFrontendUrl()
+  if (url) void router.push({ path: '/embed', query: { url } })
 }
 
 function openGithub(): void {
-  void ipc('shell.openExternal', 'https://github.com/ThzxxArt/ComfyPilot')
+  void ipc('shell.openExternal', 'https://github.com/ThzxxArt/ComfyPilot').catch(() => undefined)
 }
 
 function toggleCollapse(): void {
@@ -301,9 +413,15 @@ async function toggleInstanceRun(): Promise<void> {
         <div class="shell" :class="{ collapsed }">
           <aside class="sider glass">
             <div class="brand">
-              <div class="brand-mark" @click="toggleCollapse" :title="t('header.collapseSidebar')">
+              <button
+                class="brand-mark"
+                type="button"
+                :title="t('header.collapseSidebar')"
+                :aria-label="t('header.collapseSidebar')"
+                @click="toggleCollapse"
+              >
                 <span class="brand-orb" />
-              </div>
+              </button>
               <div v-if="!collapsed" class="brand-text">
                 <div class="brand-name">ComfyPilot</div>
                 <div class="brand-tag">{{ $t('app.brandTag') }} · v{{ APP_VERSION }}</div>
@@ -319,11 +437,16 @@ async function toggleInstanceRun(): Promise<void> {
                   class="nav-item"
                   :class="{ active: activeKey === item.key }"
                   :title="collapsed ? item.label : undefined"
+                  :aria-current="activeKey === item.key ? 'page' : undefined"
                   @click="go(item.path)"
                 >
                   <NIcon :size="18" :component="item.icon" />
                   <span v-if="!collapsed" class="nav-label">{{ item.label }}</span>
-                  <span v-if="!collapsed && item.key === 'instances' && runningCount" class="nav-badge">{{ runningCount }}</span>
+                  <span
+                    v-if="!collapsed && item.key === 'instances' && runningCount"
+                    class="nav-badge"
+                    >{{ runningCount }}</span
+                  >
                 </button>
               </div>
             </nav>
@@ -331,7 +454,9 @@ async function toggleInstanceRun(): Promise<void> {
             <div class="sider-footer">
               <div class="status-pill" :class="{ idle: runningCount === 0 }">
                 <span class="pulse-dot" />
-                <span v-if="!collapsed">{{ runningCount > 0 ? `${runningCount} ${t('common.running')}` : t('common.stopped') }}</span>
+                <span v-if="!collapsed">{{
+                  runningCount > 0 ? `${runningCount} ${t('common.running')}` : t('common.stopped')
+                }}</span>
               </div>
               <NButton text class="github-btn" @click="openGithub">
                 <template #icon>
@@ -353,57 +478,76 @@ async function toggleInstanceRun(): Promise<void> {
                 <div class="instance-pick">
                   <NSelect
                     v-model:value="selectedInstanceId"
+                    class="instance-select"
                     :options="instanceOptions"
                     size="small"
-                    style="width: 220px"
                     :placeholder="t('header.instancePlaceholder')"
                   />
                   <NTag
                     size="small"
                     round
-                    :type="activeStatus === 'running' ? 'success' : activeStatus === 'error' ? 'error' : 'default'"
+                    :type="
+                      activeStatus === 'running'
+                        ? 'success'
+                        : activeStatus === 'error'
+                          ? 'error'
+                          : 'default'
+                    "
                   >
                     {{ activeStatusLabel }}
                   </NTag>
-                  <NButton
-                    size="small"
-                    secondary
-                    :type="activeStatus === 'running' ? 'warning' : 'primary'"
-                    :disabled="!store.activeInstance"
-                    :loading="store.activeInstance ? busy[store.activeInstance.id] : false"
-                    @click="toggleInstanceRun"
-                  >
-                    <template #icon>
-                      <NIcon :component="activeStatus === 'running' ? StopOutline : PlayOutline" />
+                  <NTooltip trigger="hover" :disabled="!store.isRemoteActive">
+                    <template #trigger>
+                      <span class="btn-wrap">
+                        <NButton
+                          size="small"
+                          secondary
+                          :type="activeStatus === 'running' ? 'warning' : 'primary'"
+                          :disabled="!store.activeInstance || store.isRemoteActive"
+                          :loading="store.activeInstance ? busy[store.activeInstance.id] : false"
+                          @click="toggleInstanceRun"
+                        >
+                          <template #icon>
+                            <NIcon
+                              :component="activeStatus === 'running' ? StopOutline : PlayOutline"
+                            />
+                          </template>
+                        </NButton>
+                      </span>
                     </template>
-                  </NButton>
+                    {{ $t('header.remoteNoControl') }}
+                  </NTooltip>
                 </div>
                 <NTooltip trigger="hover">
                   <template #trigger>
-                    <NButton
-                      secondary
-                      type="primary"
-                      :disabled="!instanceRunning"
-                      :title="instanceRunning ? '' : needInstanceHint"
-                      @click="openEmbed"
-                    >
-                      {{ t('header.embed') }}
-                    </NButton>
+                    <span class="btn-wrap">
+                      <NButton
+                        secondary
+                        type="primary"
+                        :disabled="!instanceRunning"
+                        :title="instanceRunning ? '' : needInstanceHint"
+                        @click="openEmbed"
+                      >
+                        {{ t('header.embed') }}
+                      </NButton>
+                    </span>
                   </template>
                   {{ instanceRunning ? t('header.embedTip') : needInstanceHint }}
                 </NTooltip>
-                <NButton
-                  secondary
-                  :disabled="!instanceRunning"
-                  :title="instanceRunning ? '' : needInstanceHint"
-                  @click="openComfy"
-                >
-                  <template #icon>
-                    <NIcon :component="OpenOutline" />
+                <NTooltip trigger="hover" :disabled="instanceRunning">
+                  <template #trigger>
+                    <span class="btn-wrap">
+                      <NButton secondary :disabled="!instanceRunning" @click="openComfy">
+                        <template #icon>
+                          <NIcon :component="OpenOutline" />
+                        </template>
+                        {{ t('header.openExternal') }}
+                      </NButton>
+                    </span>
                   </template>
-                  {{ t('header.openExternal') }}
-                </NButton>
-                <NAvatar round size="small" class="avatar">C</NAvatar>
+                  {{ needInstanceHint }}
+                </NTooltip>
+                <NAvatar round size="small" class="avatar" aria-hidden="true">C</NAvatar>
               </NSpace>
             </header>
 
@@ -463,17 +607,32 @@ async function toggleInstanceRun(): Promise<void> {
   gap: 8px;
   padding: 4px 8px;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.7);
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: $color-bg-glass;
+  border: 1px solid rgba($color-text-muted, 0.18);
+}
+
+.instance-select {
+  width: 220px;
+}
+
+/* 窄窗口收窄实例选择器，保证右侧操作区不被顶出 */
+@media (max-width: 1360px) {
+  .instance-select {
+    width: 160px;
+  }
+}
+
+.btn-wrap {
+  display: inline-flex;
 }
 
 .sider {
   display: flex;
   flex-direction: column;
   padding: 18px 14px;
-  border-right: 1px solid rgba(148, 163, 184, 0.16);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.88) 0%, rgba(244, 247, 252, 0.9) 100%);
+  border: none;
+  border-right: 1px solid rgba($color-text-muted, 0.16);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.88) 0%, rgba(244, 247, 252, 0.9) 100%);
 }
 
 .brand {
@@ -491,6 +650,15 @@ async function toggleInstanceRun(): Promise<void> {
   display: grid;
   place-items: center;
   box-shadow: $shadow-glow;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+
+  &:focus-visible {
+    outline: 2px solid rgba($color-primary, 0.6);
+    outline-offset: 2px;
+  }
 }
 
 .brand-orb {
@@ -510,7 +678,7 @@ async function toggleInstanceRun(): Promise<void> {
 
 .brand-tag {
   font-size: 11px;
-  color: $color-text-muted;
+  color: $color-text-muted-ink;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -539,7 +707,7 @@ async function toggleInstanceRun(): Promise<void> {
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: $color-text-muted;
+  color: $color-text-muted-ink;
   padding: 6px 14px 2px;
 }
 
@@ -559,14 +727,19 @@ async function toggleInstanceRun(): Promise<void> {
   text-align: left;
 
   &:hover {
-    background: rgba(79, 110, 247, 0.08);
+    background: rgba($color-primary, 0.08);
     color: $color-primary;
+  }
+
+  &:focus-visible {
+    outline: 2px solid rgba($color-primary, 0.55);
+    outline-offset: -2px;
   }
 
   &.active {
     background: rgba(255, 255, 255, 0.95);
     color: $color-primary;
-    border-color: rgba(79, 110, 247, 0.22);
+    border-color: rgba($color-primary, 0.22);
     box-shadow: $shadow-md;
     position: relative;
 
@@ -601,7 +774,7 @@ async function toggleInstanceRun(): Promise<void> {
   flex-direction: column;
   gap: 10px;
   padding-top: 12px;
-  border-top: 1px solid rgba(148, 163, 184, 0.16);
+  border-top: 1px solid rgba($color-text-muted, 0.16);
 }
 
 .status-pill {
@@ -610,14 +783,14 @@ async function toggleInstanceRun(): Promise<void> {
   gap: 8px;
   padding: 8px 12px;
   border-radius: 999px;
-  background: rgba(16, 185, 129, 0.1);
+  background: rgba($color-success, 0.1);
   color: $color-success;
   font-size: 12px;
   font-weight: 600;
 
   &.idle {
-    background: rgba(148, 163, 184, 0.12);
-    color: $color-text-muted;
+    background: rgba($color-text-muted, 0.12);
+    color: $color-text-secondary;
 
     .pulse-dot {
       background: $color-text-muted;
@@ -640,20 +813,32 @@ async function toggleInstanceRun(): Promise<void> {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding: 0 24px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+  border: none;
+  border-bottom: 1px solid rgba($color-text-muted, 0.16);
+}
+
+.header-left {
+  min-width: 0;
 }
 
 .header-title {
   font-size: 18px;
   font-weight: 700;
   letter-spacing: -0.02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .header-crumb {
   font-size: 12px;
-  color: $color-text-muted;
+  color: $color-text-muted-ink;
   margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .avatar {

@@ -50,7 +50,8 @@ describe('launch command quoting (real quoteCommandLineArg)', () => {
   })
 
   it('quotes correctly via instance.ts export', async () => {
-    const { quoteCommandLineArg, instanceService } = await import('../../src/main/services/instance')
+    const { quoteCommandLineArg, instanceService } =
+      await import('../../src/main/services/instance')
     expect(quoteCommandLineArg('C:\\py\\python.exe')).toBe('C:\\py\\python.exe')
     expect(quoteCommandLineArg('C:\\Program Files\\Python\\python.exe')).toBe(
       '"C:\\Program Files\\Python\\python.exe"'

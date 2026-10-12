@@ -44,6 +44,11 @@ export function useLaunch() {
     busy.value = { ...busy.value, [id]: v }
   }
 
+  /** A stop/kill is in flight for this instance — a launch/restart must wait. */
+  function stopInFlight(id: string): boolean {
+    return Boolean(busy.value[`stop:${id}`] || busy.value[`kill:${id}`])
+  }
+
   async function openFrontend(
     info: ComfyInstanceInfo,
     open: NonNullable<LaunchOpts['open']>
@@ -59,7 +64,7 @@ export function useLaunch() {
 
   async function launch(info: ComfyInstanceInfo, opts?: LaunchOpts): Promise<boolean> {
     const id = info.id
-    if (busy.value[id]) return false
+    if (busy.value[id] || stopInFlight(id)) return false
     setBusy(id, true)
     const open = opts?.open ?? 'none'
     // Snapshot before launch so we can tell "already running" from a cold start
@@ -67,7 +72,11 @@ export function useLaunch() {
     const wasRunning = info.status === 'running' || info.status === 'starting'
     try {
       // Never let main auto-relocate silently — PORT_IN_USE must surface to the user first.
-      const result = await ipc('instance.launch', id, { ...opts, open: 'none', relocatePort: false })
+      const result = await ipc('instance.launch', id, {
+        ...opts,
+        open: 'none',
+        relocatePort: false
+      })
       await store.refreshInstances()
       await openFrontend(result, open)
       if (wasRunning) {
@@ -169,7 +178,7 @@ export function useLaunch() {
 
   async function restart(info: ComfyInstanceInfo, opts?: LaunchOpts): Promise<void> {
     const open = opts?.open ?? 'none'
-    if (busy.value[info.id]) return
+    if (busy.value[info.id] || stopInFlight(info.id)) return
     setBusy(info.id, true)
     try {
       await ipc('instance.restart', info.id, { ...opts, open: 'none', relocatePort: false })

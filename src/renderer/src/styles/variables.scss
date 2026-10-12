@@ -11,7 +11,9 @@ $color-border-strong: rgba(99, 102, 241, 0.28);
 
 $color-text: #0f172a;
 $color-text-secondary: #475569;
+// 小字号（≤12.5px）用 ink 变体，保证浅底对比度达到 WCAG AA；大号装饰文字仍可用 muted
 $color-text-muted: #94a3b8;
+$color-text-muted-ink: #64748b;
 
 $color-primary: #4f6ef7;
 $color-primary-2: #7c5cfc;
