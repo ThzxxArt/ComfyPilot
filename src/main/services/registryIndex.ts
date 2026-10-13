@@ -5,11 +5,6 @@ import type { MarketItem, RegistryNodePack } from '@shared/types'
 import { cacheDir, loadSettings } from './db'
 import { fetchRegistryPage, mapMarketItem, mapRegistryPack, matchesQuery } from './registry'
 
-/** Lightweight row kept in the local full-catalog index. */
-export interface RegistryIndexRow {
-  raw: Record<string, unknown>
-}
-
 export interface RegistryIndexMeta {
   updatedAt: number
   total: number
@@ -261,6 +256,21 @@ export class RegistryIndexService extends EventEmitter {
     return matched.slice(0, limit).map(mapRegistryPack)
   }
 
+  /**
+   * Look up a catalog entry by git repository URL. Tolerates the common URL
+   * spellings (https / scp-style ssh / git+ / trailing .git / trailing slash)
+   * so a manually cloned pack can still be matched to its registry entry.
+   */
+  findByRepository(repository: string): RegistryNodePack | null {
+    const needle = normalizeRepositoryUrl(repository)
+    if (!needle) return null
+    for (const n of this.items || []) {
+      const repo = normalizeRepositoryUrl(String(n.repository || n.html_url || ''))
+      if (repo && repo === needle) return mapRegistryPack(n)
+    }
+    return null
+  }
+
   searchMarket(query: string, installed: Set<string>, limit = 200): MarketItem[] {
     const all = this.items || []
     const q = String(query || '').trim()
@@ -270,3 +280,21 @@ export class RegistryIndexService extends EventEmitter {
 }
 
 export const registryIndex = new RegistryIndexService()
+
+/** Canonical form of a git URL for equality matching. */
+export function normalizeRepositoryUrl(url: string): string {
+  let s = String(url || '')
+    .trim()
+    .toLowerCase()
+  if (!s) return ''
+  s = s.replace(/^git\+/, '')
+  // scp-style: git@github.com:owner/repo(.git)
+  const scp = /^git@([^:]+):(.+)$/.exec(s)
+  if (scp) s = `https://${scp[1]}/${scp[2]}`
+  s = s.replace(/^ssh:\/\/git@/, 'https://').replace(/^git:\/\//, 'https://')
+  // Order matters: `repo.git/` must collapse to `repo` too.
+  s = s.replace(/\/+$/, '')
+  s = s.replace(/\.git$/, '')
+  s = s.replace(/\/+$/, '')
+  return s
+}

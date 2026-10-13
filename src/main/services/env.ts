@@ -56,7 +56,7 @@ type LineSink = (line: string) => void
 export async function runStreaming(
   cmd: string,
   args: string[],
-  opts: { cwd?: string; timeout?: number; onLine?: LineSink },
+  opts: { cwd?: string; timeout?: number; onLine?: LineSink; signal?: AbortSignal },
   fallback: ExecLike
 ): Promise<string> {
   if (!opts.onLine) return fallback(cmd, args, opts)
@@ -64,25 +64,52 @@ export async function runStreaming(
     let out = ''
     let errOut = ''
     let settled = false
+    const settle = (): boolean => {
+      if (settled) return false
+      settled = true
+      return true
+    }
     const child = spawn(cmd, args, {
       cwd: opts.cwd,
       windowsHide: true,
       env: proxyEnv(loadSettings().proxy)
     })
-    const timer = setTimeout(
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const onAbort = (): void => {
+      if (!settle()) return
+      if (timer) clearTimeout(timer)
+      try {
+        child.kill('SIGKILL')
+      } catch {
+        /* ignore */
+      }
+      const err = new Error('aborted')
+      err.name = 'AbortError'
+      reject(err)
+    }
+    if (opts.signal) {
+      if (opts.signal.aborted) {
+        onAbort()
+        return
+      }
+      opts.signal.addEventListener('abort', onAbort, { once: true })
+    }
+    timer = setTimeout(
       () => {
-        if (!settled) {
-          settled = true
-          try {
-            child.kill('SIGKILL')
-          } catch {
-            /* ignore */
-          }
-          reject(new Error(`timeout after ${opts.timeout || 0}ms`))
+        if (!settle()) return
+        cleanup()
+        try {
+          child.kill('SIGKILL')
+        } catch {
+          /* ignore */
         }
+        reject(new Error(`timeout after ${opts.timeout || 0}ms`))
       },
       opts.timeout || 30 * 60 * 1000
     )
+    const cleanup = (): void => {
+      if (opts.signal) opts.signal.removeEventListener('abort', onAbort)
+    }
     const feed = (buf: Buffer, isErr: boolean): void => {
       const text = buf.toString('utf-8')
       if (isErr) errOut += text
@@ -94,15 +121,15 @@ export async function runStreaming(
     child.stdout?.on('data', (b: Buffer) => feed(b, false))
     child.stderr?.on('data', (b: Buffer) => feed(b, true))
     child.on('error', (e) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
+      if (!settle()) return
+      if (timer) clearTimeout(timer)
+      cleanup()
       reject(e)
     })
     child.on('close', (code) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
+      if (!settle()) return
+      if (timer) clearTimeout(timer)
+      cleanup()
       if (code === 0) resolveP(out)
       else reject(new Error(errOut || out || `exit ${code}`))
     })
@@ -122,7 +149,9 @@ export async function ensurePip(pythonPath: string, exec: ExecLike): Promise<voi
     try {
       await exec(pythonPath, ['-m', 'pip', '--version'], { timeout: 15000 })
       return true
-    } catch {
+    } catch (e) {
+      // A cancellation must surface as AbortError, not as "pip unavailable".
+      if (e instanceof Error && e.name === 'AbortError') throw e
       return false
     }
   }
@@ -130,7 +159,8 @@ export async function ensurePip(pythonPath: string, exec: ExecLike): Promise<voi
   // Seed pip via the stdlib bootstrap — works on every CPython venv.
   try {
     await exec(pythonPath, ['-m', 'ensurepip', '--upgrade'], { timeout: 120000 })
-  } catch {
+  } catch (e) {
+    if (e instanceof Error && e.name === 'AbortError') throw e
     /* fall through to verification — some embeds disable ensurepip */
   }
   if (await probe()) return
@@ -149,14 +179,14 @@ export async function installRequirements(
   pythonPath: string,
   reqFile: string,
   exec: ExecLike,
-  opts?: { uvPath?: string; pipIndex?: string; onLine?: LineSink }
+  opts?: { uvPath?: string; pipIndex?: string; onLine?: LineSink; signal?: AbortSignal }
 ): Promise<void> {
   const OFFICIAL_PYPI = 'https://pypi.org/simple'
   const pipIndex = String(opts?.pipIndex || '').trim()
   const uvPath = opts?.uvPath
   const onLine = opts?.onLine
   const run = (c: string, a: string[], o?: { cwd?: string; timeout?: number }): Promise<string> =>
-    runStreaming(c, a, { ...o, onLine }, exec).then((out) => {
+    runStreaming(c, a, { ...o, onLine, signal: opts?.signal }, exec).then((out) => {
       // pip/uv can print ERROR: and still exit 0 — treat that as failure too.
       if (
         /ERROR:|error: failed/i.test(out) &&
@@ -198,6 +228,9 @@ export async function installRequirements(
   try {
     await tryOnce(pipIndex || undefined)
   } catch (err) {
+    // Never wrap a cancellation into "requirements install failed": the op
+    // must surface OP_CANCELLED, not a bogus pip issue.
+    if (err instanceof Error && err.name === 'AbortError') throw err
     const msg = err instanceof Error ? err.message : String(err)
     // Mirror gap must not be fatal — retry against official PyPI only.
     if (pipIndex && pipIndex !== OFFICIAL_PYPI) {
@@ -206,6 +239,7 @@ export async function installRequirements(
         await tryOnce(OFFICIAL_PYPI)
         return
       } catch (err2) {
+        if (err2 instanceof Error && err2.name === 'AbortError') throw err2
         const msg2 = err2 instanceof Error ? err2.message : String(err2)
         throw new Error(`requirements install failed (mirror and official): ${msg2.slice(0, 400)}`)
       }

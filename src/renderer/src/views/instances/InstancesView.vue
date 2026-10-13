@@ -49,13 +49,16 @@ import { useAppStore } from '@/stores/app'
 import { ipc } from '@/composables/useIpc'
 import { useLaunch } from '@/composables/useLaunch'
 import { useComfyUpdate } from '@/composables/useComfyUpdate'
+import { LAUNCH_ARG_ERROR_KEYS, launchArgWarningKey } from '@shared/launchArgs'
 import ComfyUpdateProgressModal from '@/components/ComfyUpdateProgressModal.vue'
+import LaunchProfileEditor from '@/components/LaunchProfileEditor.vue'
 import { useI18n } from 'vue-i18n'
 import { formatUptime } from '@/utils/format'
 import type {
   ComfyInstanceConfig,
   ComfyInstanceInfo,
   LaunchArgTemplate,
+  LaunchProfile,
   EnvProbe,
   PortCheckResult,
   InstanceDiscoveryCandidate,
@@ -90,6 +93,9 @@ const editing = ref<ComfyInstanceInfo | null>(null)
 const showEditModal = ref(false)
 const editExtraArgs = ref('')
 const editSaving = ref(false)
+/** 0.1.9 structured launch tuning buffers (edit + create). */
+const editProfile = ref<LaunchProfile>({})
+const draftProfile = ref<LaunchProfile>({})
 
 const draft = ref<ComfyInstanceConfig>({
   id: '',
@@ -253,11 +259,17 @@ function toggleCandidate(path: string, checked: boolean): void {
   }
 }
 
+/** Open the create dialog with a FRESH profile draft (no leakage between opens). */
+function openCreate(): void {
+  draftProfile.value = {}
+  showCreate.value = true
+}
+
 function useCandidate(c: InstanceDiscoveryCandidate): void {
   draft.value.path = c.path
   if (c.estimatedVersion) draft.value.name = `ComfyUI ${c.estimatedVersion}`
   showDiscover.value = false
-  showCreate.value = true
+  openCreate()
   message.success(t('instance.candidateFilled', { path: c.path }))
 }
 
@@ -346,6 +358,9 @@ async function createInstance(): Promise<void> {
   saving.value = true
   try {
     draft.value.extraArgs = extraArgsText.value.split(/\s+/).filter(Boolean)
+    draft.value.launchProfile = Object.keys(draftProfile.value).length
+      ? { ...draftProfile.value }
+      : undefined
     const info = await ipc('instance.save', { ...draft.value })
     await store.refreshInstances()
     showCreate.value = false
@@ -368,6 +383,7 @@ async function createInstance(): Promise<void> {
       pinned: false
     }
     extraArgsText.value = ''
+    draftProfile.value = {}
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   } finally {
@@ -409,6 +425,7 @@ async function exportLaunchScript(): Promise<void> {
 function openEdit(item: ComfyInstanceInfo): void {
   editing.value = { ...item }
   editExtraArgs.value = (item.extraArgs || []).join(' ')
+  editProfile.value = { ...(item.launchProfile || {}) }
   showEditModal.value = true
 }
 
@@ -417,6 +434,9 @@ async function saveEdit(): Promise<void> {
   editSaving.value = true
   try {
     editing.value.extraArgs = editExtraArgs.value.split(/\s+/).filter(Boolean)
+    editing.value.launchProfile = Object.keys(editProfile.value).length
+      ? { ...editProfile.value }
+      : undefined
     await ipc('instance.save', { ...editing.value })
     await store.refreshInstances()
     editing.value = null
@@ -809,7 +829,7 @@ function statusClass(s: string): string {
           <template #icon><NIcon :component="FolderOpenOutline" /></template>
           {{ $t('instance.discover') }}
         </NButton>
-        <NButton type="primary" @click="showCreate = true">
+        <NButton type="primary" @click="openCreate">
           <template #icon><NIcon :component="AddOutline" /></template>
           {{ $t('instance.add') }}
         </NButton>
@@ -965,7 +985,7 @@ function statusClass(s: string): string {
           <NEmpty :description="$t('instance.emptyInstances')">
             <template #extra>
               <NSpace>
-                <NButton type="primary" @click="showCreate = true">{{
+                <NButton type="primary" @click="openCreate">{{
                   $t('instance.addExistingManually')
                 }}</NButton>
                 <NButton secondary @click="router.push('/install')">
@@ -1035,6 +1055,23 @@ function statusClass(s: string): string {
       <div v-if="preview" class="preview-box">
         <div class="preview-label mono">cwd: {{ preview.cwd }}</div>
         <pre class="mono preview-cmd">{{ preview.commandLine }}</pre>
+        <div v-if="preview.validationErrors?.length" class="preview-errors">
+          <div v-for="(e, i) in preview.validationErrors" :key="i" class="preview-error">
+            •
+            {{
+              e.code === 'invalid-number'
+                ? $t('launchArgs.errInvalidNumber', { flag: e.flag || '' })
+                : $t(LAUNCH_ARG_ERROR_KEYS[e.code] || 'launchArgs.errGeneric', {
+                    flag: e.flag || ''
+                  })
+            }}
+          </div>
+        </div>
+        <div v-if="preview.validationWarnings?.length" class="preview-warns">
+          <div v-for="(w, i) in preview.validationWarnings" :key="i" class="preview-warn">
+            • {{ $t(launchArgWarningKey(w.code), { flag: w.flag }) }}
+          </div>
+        </div>
       </div>
       <template #footer>
         <NSpace justify="end">
@@ -1126,6 +1163,10 @@ function statusClass(s: string): string {
             "
           />
         </NFormItem>
+        <LaunchProfileEditor
+          v-model="editProfile"
+          :extra-args="editExtraArgs.split(/\s+/).filter(Boolean)"
+        />
         <NFormItem :label="$t('instance.extraArgs')">
           <NInput v-model:value="editExtraArgs" />
         </NFormItem>
@@ -1200,6 +1241,10 @@ function statusClass(s: string): string {
             "
           />
         </NFormItem>
+        <LaunchProfileEditor
+          v-model="draftProfile"
+          :extra-args="extraArgsText.split(/\s+/).filter(Boolean)"
+        />
         <div class="form-row">
           <NFormItem :label="$t('instance.port')">
             <NSpace vertical :size="6">
@@ -1402,5 +1447,21 @@ function statusClass(s: string): string {
   word-break: break-all;
   margin: 0;
   line-height: 1.6;
+}
+.preview-errors {
+  margin-top: 8px;
+}
+.preview-error {
+  font-size: 12px;
+  color: $color-danger;
+  line-height: 1.7;
+}
+.preview-warns {
+  margin-top: 6px;
+}
+.preview-warn {
+  font-size: 12px;
+  color: $color-warning;
+  line-height: 1.7;
 }
 </style>

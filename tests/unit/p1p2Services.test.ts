@@ -946,6 +946,7 @@ describe('p1p2 services', () => {
       ])
       writeFileSync(join(root, 'b.jpg'), 'j')
       writeFileSync(join(root, 'c.mp4'), 'v')
+      writeFileSync(join(root, 'c2.mkv'), 'v')
       writeFileSync(join(root, 'd.wav'), 'a')
       writeFileSync(join(root, 'e.txt'), 'skip-me')
       writeFileSync(join(root, 'sub', 'nested.webp'), 'w')
@@ -997,9 +998,30 @@ describe('p1p2 services', () => {
 
       const video = res.items.find((i) => i.path === join(root, 'c.mp4'))!
       expect(video.type).toBe('video')
+      const mkv = res.items.find((i) => i.path === join(root, 'c2.mkv'))!
+      expect(mkv.type).toBe('video')
       const audio = res.items.find((i) => i.path === join(root, 'd.wav'))!
       expect(audio.type).toBe('audio')
       void updateOutputAsset
+    })
+
+    it('honors a custom output scan depth from settings (0.1.9)', async () => {
+      const { outputService } = await freshP1p2()
+      const { saveSettings, loadSettings } = await import('../../src/main/services/db')
+      const root = join(ROOT, 'deeproot')
+      rmSync(root, { recursive: true, force: true })
+      mkdirSync(join(root, 'a', 'b', 'c', 'd', 'e'), { recursive: true })
+      writeFileSync(join(root, 'a', 'b', 'c', 'd', 'e', 'deep.png'), 'x')
+      saveSettings({ outputScanDepth: 6 })
+      try {
+        const res = outputService.list({ root, limit: 100 })
+        expect(res.items.map((i) => i.path)).toContain(
+          join(root, 'a', 'b', 'c', 'd', 'e', 'deep.png')
+        )
+      } finally {
+        saveSettings({ outputScanDepth: 4 })
+        expect(loadSettings().outputScanDepth).toBe(4)
+      }
     })
 
     it('sort by name/size and order asc/desc + type/workflowId filters', async () => {

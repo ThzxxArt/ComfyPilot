@@ -12,7 +12,9 @@ import { join } from 'path'
 
 const skip = process.env.SKIP_E2E === '1'
 const root = process.cwd()
-const mainJs = join(root, 'out', 'main', 'index.js')
+// The packaged app entry is bootstrap.cjs (package.json "main"); it requires
+// out/main/index.js. Smoke the REAL entry so bootstrap regressions surface.
+const mainJs = join(root, 'out', 'main', 'bootstrap.cjs')
 const preloadJs = join(root, 'out', 'preload', 'index.js')
 const rendererHtml = join(root, 'out', 'renderer', 'index.html')
 
@@ -31,7 +33,9 @@ describe.skipIf(skip)('electron app smoke (real bundle)', () => {
   let child: ChildProcess | null = null
 
   beforeAll(() => {
-    expect(existsSync(mainJs), 'out/main/index.js missing — run npm run build first').toBe(true)
+    expect(existsSync(mainJs), 'out/main/bootstrap.cjs missing — run npm run build first').toBe(
+      true
+    )
     expect(existsSync(preloadJs), 'out/preload/index.js missing').toBe(true)
     expect(existsSync(rendererHtml), 'out/renderer/index.html missing').toBe(true)
   })
@@ -51,8 +55,8 @@ describe.skipIf(skip)('electron app smoke (real bundle)', () => {
     expect(existsSync(bin) || bin.endsWith('electron') || bin.endsWith('electron.cmd')).toBe(true)
 
     const result = await new Promise<{ code: number | null; text: string }>((resolve) => {
-      // Real Electron (not ELECTRON_RUN_AS_NODE) loading out/main
-      const p = spawn(bin, [join(root, 'out', 'main', 'index.js'), '--e2e-smoke'], {
+      // Real Electron (not ELECTRON_RUN_AS_NODE) loading the packaged entry.
+      const p = spawn(bin, [mainJs, '--e2e-smoke'], {
         env: {
           ...process.env,
           ELECTRON_ENABLE_LOGGING: '1',

@@ -14,7 +14,8 @@ import {
   ShareSocialOutline,
   DownloadOutline,
   ChevronBackOutline,
-  ChevronForwardOutline
+  ChevronForwardOutline,
+  PlayCircleOutline
 } from '@vicons/ionicons5'
 import {
   NButton,
@@ -95,8 +96,40 @@ const metaLoading = ref(false)
 const lightbox = ref(false)
 const lightboxSrc = ref('')
 const lightboxAsset = ref<OutputAsset | null>(null)
+/** Assets whose thumbnail <img> failed — degrade straight to the icon placeholder. */
+const brokenThumbs = ref<Set<string>>(new Set())
+/** Videos whose inline <video> failed (e.g. mkv container) — degrade to icon/system player. */
+const failedVideos = ref<Set<string>>(new Set())
+const lightboxVideoFailed = ref(false)
+const lightboxImageFailed = ref(false)
+const detailVideoFailed = ref(false)
 const refreshing = ref(false)
 let reqSeq = 0
+
+/** Thumb src with a one-shot fallback chain: thumbnail → (icon when failed). */
+function thumbSrc(a: OutputAsset): string | undefined {
+  if (brokenThumbs.value.has(a.id)) return undefined
+  return a.thumbnail || undefined
+}
+
+function onThumbError(a: OutputAsset): void {
+  if (brokenThumbs.value.has(a.id)) return
+  const next = new Set(brokenThumbs.value)
+  next.add(a.id)
+  brokenThumbs.value = next
+}
+
+/** Videos we can attempt to render inline (mp4/webm decode in Chromium; mkv degrades). */
+function playableVideo(a: OutputAsset): boolean {
+  return a.type === 'video' && Boolean(a.mediaUrl) && !failedVideos.value.has(a.id)
+}
+
+function onVideoError(a: OutputAsset): void {
+  if (failedVideos.value.has(a.id)) return
+  const next = new Set(failedVideos.value)
+  next.add(a.id)
+  failedVideos.value = next
+}
 
 /** Distinguish "no data at all" from "filters matched nothing". */
 const hasFilter = computed(
@@ -120,6 +153,9 @@ async function refresh(): Promise<void> {
   const seq = ++reqSeq
   loading.value = true
   refreshing.value = true
+  // Give previously failed thumbs/videos another chance (files may be fixed).
+  brokenThumbs.value = new Set()
+  failedVideos.value = new Set()
   try {
     const result = await ipc('output.list', {
       root: root.value || undefined,
@@ -204,6 +240,7 @@ async function safeReveal(path: string): Promise<void> {
 
 async function openDetail(a: OutputAsset): Promise<void> {
   detail.value = a
+  detailVideoFailed.value = false
   showDetail.value = true
   pngMeta.value = a.params && Object.keys(a.params).length ? a.params : null
   metaLoading.value = true
@@ -223,14 +260,22 @@ function lightboxUrl(a: OutputAsset): string {
 }
 
 function openLightbox(a: OutputAsset): void {
-  // Video/audio open externally  -no dead lightbox.
-  if (a.type === 'video' || a.type === 'audio') {
+  // Audio always goes to the system player — no meaningful inline preview.
+  if (a.type === 'audio') {
     void safeOpen(a.path)
     return
   }
-  if (a.type !== 'image') return
+  // An unsupported video (mkv in Chromium) would open an empty modal — degrade
+  // to the system player instead of showing a dead lightbox.
+  if (a.type === 'video' && (!a.mediaUrl || failedVideos.value.has(a.id))) {
+    void safeOpen(a.path)
+    return
+  }
+  if (a.type !== 'image' && a.type !== 'video') return
   lightboxAsset.value = a
   lightboxSrc.value = lightboxUrl(a)
+  lightboxVideoFailed.value = false
+  lightboxImageFailed.value = false
   lightbox.value = true
 }
 
@@ -249,6 +294,10 @@ function lightboxPrev(): void {
   const prev = images[cur - 1]
   lightboxAsset.value = prev
   lightboxSrc.value = lightboxUrl(prev)
+  // Reset failure flags per asset — otherwise one broken image locks the whole
+  // gallery into the fallback (the <img> never remounts to re-trigger @error).
+  lightboxImageFailed.value = false
+  lightboxVideoFailed.value = false
 }
 
 function lightboxNext(): void {
@@ -260,6 +309,8 @@ function lightboxNext(): void {
   const next = images[cur + 1]
   lightboxAsset.value = next
   lightboxSrc.value = lightboxUrl(next)
+  lightboxImageFailed.value = false
+  lightboxVideoFailed.value = false
 }
 
 function onLightboxKey(e: KeyboardEvent): void {
@@ -506,12 +557,30 @@ onUnmounted(() => {
                 @click="openDetail(a)"
               >
                 <div class="thumb" @dblclick="openLightbox(a)">
-                  <img v-if="a.thumbnail" :src="a.thumbnail" class="thumb-img" :alt="a.fileName" />
+                  <img
+                    v-if="a.type === 'image' && thumbSrc(a)"
+                    :src="thumbSrc(a)"
+                    class="thumb-img"
+                    :alt="a.fileName"
+                    @error="onThumbError(a)"
+                  />
+                  <video
+                    v-else-if="playableVideo(a)"
+                    class="thumb-img"
+                    :src="a.mediaUrl + '#t=0.35'"
+                    muted
+                    playsinline
+                    preload="metadata"
+                    @error="onVideoError(a)"
+                  ></video>
                   <NIcon
                     v-else
                     :size="36"
                     :component="a.type === 'video' ? VideocamOutline : ImageOutline"
                   />
+                  <div v-if="playableVideo(a)" class="thumb-play">
+                    <NIcon :component="PlayCircleOutline" :size="30" color="#fff" />
+                  </div>
                   <div class="thumb-check" @click.stop="toggleSelect(a.id)">
                     <NCheckbox :checked="selected.has(a.id)" />
                   </div>
@@ -596,11 +665,22 @@ onUnmounted(() => {
     >
       <div v-if="detail" class="detail-body">
         <div class="detail-preview" @click="openLightbox(detail)">
+          <video
+            v-if="detail.type === 'video' && detail.mediaUrl && !detailVideoFailed"
+            :src="detail.mediaUrl"
+            class="detail-img"
+            controls
+            muted
+            playsinline
+            preload="metadata"
+            @error="detailVideoFailed = true"
+          ></video>
           <img
-            v-if="detail.thumbnail"
-            :src="detail.thumbnail"
+            v-else-if="thumbSrc(detail)"
+            :src="thumbSrc(detail)"
             class="detail-img"
             :alt="detail.fileName"
+            @error="onThumbError(detail)"
           />
           <NIcon v-else :size="48" :component="ImageOutline" />
         </div>
@@ -671,24 +751,66 @@ onUnmounted(() => {
       style="width: 90vw; max-width: 1100px; border-radius: 20px"
     >
       <div class="lightbox">
-        <NButton class="lb-nav lb-prev" secondary circle size="large" @click="lightboxPrev">
+        <NButton
+          v-if="lightboxAsset?.type === 'image'"
+          class="lb-nav lb-prev"
+          secondary
+          circle
+          size="large"
+          @click="lightboxPrev"
+        >
           <template #icon><NIcon :component="ChevronBackOutline" /></template>
         </NButton>
+        <video
+          v-if="lightboxAsset?.type === 'video' && lightboxSrc && !lightboxVideoFailed"
+          :src="lightboxSrc"
+          class="lightbox-img"
+          controls
+          autoplay
+          loop
+          @error="lightboxVideoFailed = true"
+        ></video>
         <img
-          v-if="lightboxSrc"
+          v-else-if="lightboxSrc && !lightboxVideoFailed && !lightboxImageFailed"
           :src="lightboxSrc"
           class="lightbox-img"
           :alt="lightboxAsset?.fileName || ''"
+          @error="lightboxImageFailed = true"
         />
-        <NButton class="lb-nav lb-next" secondary circle size="large" @click="lightboxNext">
+        <div v-if="lightboxImageFailed" class="lb-fallback">
+          <NIcon :size="40" :component="ImageOutline" />
+          <NText depth="3">{{ $t('output.imageLoadFailed') }}</NText>
+          <NButton secondary @click="lightboxAsset && safeOpen(lightboxAsset.path)">
+            {{ $t('output.openFile') }}
+          </NButton>
+        </div>
+        <div v-if="lightboxVideoFailed" class="lb-fallback">
+          <NIcon :size="40" :component="VideocamOutline" />
+          <NText depth="3">{{ $t('output.videoPlaybackUnsupported') }}</NText>
+          <NButton secondary @click="lightboxAsset && safeOpen(lightboxAsset.path)">
+            {{ $t('output.openWithSystem') }}
+          </NButton>
+        </div>
+        <NButton
+          v-if="lightboxAsset?.type === 'image'"
+          class="lb-nav lb-next"
+          secondary
+          circle
+          size="large"
+          @click="lightboxNext"
+        >
           <template #icon><NIcon :component="ChevronForwardOutline" /></template>
         </NButton>
       </div>
       <template #footer>
         <NSpace justify="space-between">
           <NSpace>
-            <NButton secondary @click="lightboxPrev">{{ $t('output.prev') }}</NButton>
-            <NButton secondary @click="lightboxNext">{{ $t('output.next') }}</NButton>
+            <NButton v-if="lightboxAsset?.type === 'image'" secondary @click="lightboxPrev">{{
+              $t('output.prev')
+            }}</NButton>
+            <NButton v-if="lightboxAsset?.type === 'image'" secondary @click="lightboxNext">{{
+              $t('output.next')
+            }}</NButton>
           </NSpace>
           <NSpace>
             <NButton @click="lightbox = false">{{ $t('output.close') }}</NButton>
@@ -733,6 +855,23 @@ onUnmounted(() => {
   height: 100%;
   object-fit: cover;
   display: block;
+  background: #000;
+}
+.thumb-play {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+}
+.lb-fallback {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 48px 0;
+  justify-self: center;
 }
 .thumb-check {
   position: absolute;

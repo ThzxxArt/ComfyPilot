@@ -91,6 +91,8 @@ const h = vi.hoisted(() => {
     findInRuntimesThrow: null as Error | null,
     lastChild: null as null | Record<string, unknown>,
     spawnCount: 0,
+    /** Captured argv/opts of the most recent spawn (0.1.9 spawn-contract tests). */
+    lastSpawn: null as null | { cmd: string; args: string[]; opts: unknown },
     spawnFail: null as Error | null,
     spawnExitImmediate: null as null | { code: number | null; signal: string | null },
     saveDialogResult: { canceled: true, filePath: undefined } as {
@@ -227,6 +229,7 @@ vi.mock('child_process', () => {
 
   const spawn = (_cmd: string, _args: string[], _opts: unknown): unknown => {
     h.state.spawnCount += 1
+    h.state.lastSpawn = { cmd: _cmd, args: [..._args], opts: _opts }
     if (h.state.spawnFail) throw h.state.spawnFail
     const child = h.makeChild()
     h.state.lastChild = child as unknown as Record<string, unknown>
@@ -389,6 +392,7 @@ beforeEach(() => {
   h.state.findInRuntimesThrow = null
   h.state.lastChild = null
   h.state.spawnCount = 0
+  h.state.lastSpawn = null
   h.state.spawnFail = null
   h.state.spawnExitImmediate = null
   h.state.saveDialogResult = { canceled: true, filePath: undefined }
@@ -757,6 +761,154 @@ describe('previewLaunch()', () => {
     const preview = svc.previewLaunch('dflt')
     expect(preview.args).toContain('8188')
     expect(preview.args).toContain('127.0.0.1')
+  })
+
+  it('renders structured launchProfile and dedupes the lan template --listen', () => {
+    register(
+      cfg({
+        id: 'profile',
+        argTemplateId: 'lan',
+        launchProfile: {
+          previewMethod: 'taesd',
+          previewSize: 768,
+          disableAutoLaunch: true,
+          reserveVram: 1.5
+        }
+      })
+    )
+    const preview = svc.previewLaunch('profile')
+    // lan template brings --listen 0.0.0.0; the config listen must not duplicate it.
+    expect(preview.args.filter((a) => a === '--listen')).toHaveLength(1)
+    expect(preview.args).toContain('0.0.0.0')
+    expect(preview.args).toContain('--preview-method')
+    expect(preview.args).toContain('--preview-size')
+    expect(preview.args).toContain('--reserve-vram')
+    expect(preview.args).toContain('--disable-auto-launch')
+    expect(preview.validationErrors).toEqual([])
+  })
+
+  it('surfaces validation errors for conflicting free-text args', () => {
+    register(cfg({ id: 'conflict', extraArgs: ['--highvram', '--lowvram'] }))
+    const preview = svc.previewLaunch('conflict')
+    expect(preview.validationErrors?.map((e) => e.code)).toContain('vram-conflict')
+  })
+})
+
+// ===========================================================================
+// launch argument validation gate (0.1.9)
+// ===========================================================================
+describe('launch arg validation gate', () => {
+  it('refuses to start with mutually exclusive flags before spawning', async () => {
+    register(cfg({ id: 'badargs', extraArgs: ['--cache-none', '--high-ram'] }))
+    await expect(svc.start('badargs')).rejects.toMatchObject({ code: 'LAUNCH_ARGS_INVALID' })
+    // The whole point of the gate: nothing was ever spawned.
+    expect(h.state.spawnCount).toBe(0)
+  })
+
+  it('refuses invalid args before persisting a relocated port', async () => {
+    register(cfg({ id: 'badrelo', port: 8188, extraArgs: ['--highvram', '--lowvram'] }))
+    h.state.portsInUse.add(8188)
+    h.state.fetchImpl = failFetch
+    await expect(
+      svc.start('badrelo', { relocatePort: true } as LaunchOptions)
+    ).rejects.toMatchObject({ code: 'LAUNCH_ARGS_INVALID' })
+    // No half-applied side effects: port stays 8188, nothing spawned.
+    expect(h.state.upsertCalls.some((c) => c.id === 'badrelo' && c.port !== 8188)).toBe(false)
+    expect(h.state.spawnCount).toBe(0)
+  })
+
+  it('normalizes launchProfile on save (strips defaults, keeps explicit false)', () => {
+    const info = svc.save(
+      cfg({
+        id: 'norm',
+        launchProfile: {
+          vram: 'default',
+          cache: 'default',
+          fastDisk: false,
+          previewMethod: 'taesd',
+          offline: true
+        }
+      })
+    )
+    // `false` is a real decision for toggles (e.g. disableAutoLaunch opt-out).
+    expect(info.launchProfile).toEqual({ fastDisk: false, previewMethod: 'taesd', offline: true })
+  })
+})
+
+// ===========================================================================
+// spawn argv contract (0.1.9) — the mocked spawn now captures cmd/args/opts
+// ===========================================================================
+describe('spawn argv contract', () => {
+  it('spawns the rendered argv in template → profile → extra-model-paths → free-text order', async () => {
+    write(join(COMFY, 'extra_model_paths.yaml'), 'comfyui:\n  base_path: .\n')
+    register(
+      cfg({
+        id: 'spawnargs',
+        argTemplateId: 'preview-taesd',
+        extraArgs: ['--cpu'],
+        launchProfile: { disableAutoLaunch: true, cache: 'none' }
+      })
+    )
+    h.state.fetchImpl = okStats
+    await svc.start('spawnargs')
+    const sp = h.state.lastSpawn
+    expect(sp).toBeTruthy()
+    expect(sp!.cmd).toBe(svc.previewLaunch('spawnargs').python)
+    expect(sp!.args[0]).toBe(join(COMFY, 'main.py'))
+    expect(sp!.args.slice(1, 4)).toEqual(['--port', '8188', '--listen'])
+    const line = sp!.args.join(' ')
+    expect(line).toContain('--preview-method taesd')
+    expect(line.indexOf('--preview-method')).toBeLessThan(line.indexOf('--disable-auto-launch'))
+    expect(line.indexOf('--cache-none')).toBeLessThan(line.indexOf('--extra-model-paths-config'))
+    expect(line.indexOf('--extra-model-paths-config')).toBeLessThan(line.indexOf('--cpu'))
+    expect(sp!.args).toContain(join(COMFY, 'extra_model_paths.yaml'))
+    expect((sp!.opts as { cwd?: string }).cwd).toBe(COMFY)
+  })
+
+  it('does not duplicate --extra-model-paths-config when free text provides it', () => {
+    write(join(COMFY, 'extra_model_paths.yaml'), 'x')
+    register(cfg({ id: 'spawnargs2', extraArgs: ['--extra-model-paths-config', 'custom.yaml'] }))
+    const preview = svc.previewLaunch('spawnargs2')
+    expect(preview.args.filter((a) => a === '--extra-model-paths-config')).toHaveLength(1)
+  })
+
+  it('appends --disable-auto-launch by default and skips it when declared', () => {
+    register(cfg({ id: 'auto1' }))
+    const preview = svc.previewLaunch('auto1')
+    expect(preview.args.filter((a) => a === '--disable-auto-launch')).toHaveLength(1)
+
+    register(cfg({ id: 'auto2', extraArgs: ['--auto-launch'] }))
+    const declared = svc.previewLaunch('auto2')
+    expect(declared.args).not.toContain('--disable-auto-launch')
+
+    register(cfg({ id: 'auto3', launchProfile: { disableAutoLaunch: true } }))
+    const viaProfile = svc.previewLaunch('auto3')
+    expect(viaProfile.args.filter((a) => a === '--disable-auto-launch')).toHaveLength(1)
+
+    // Explicit opt-out: the profile toggle set to false must actually change
+    // behaviour (no default --disable-auto-launch).
+    register(cfg({ id: 'auto4', launchProfile: { disableAutoLaunch: false } }))
+    const optedOut = svc.previewLaunch('auto4')
+    expect(optedOut.args).not.toContain('--disable-auto-launch')
+    expect(optedOut.validationErrors).toEqual([])
+  })
+
+  it('logs advisories but still starts when free text has an unknown flag', async () => {
+    register(cfg({ id: 'spawnwarn', extraArgs: ['--totally-unknown-flag'] }))
+    h.state.fetchImpl = okStats
+    await svc.start('spawnwarn')
+    const logs = svc.getLogs('spawnwarn').map((l) => l.message)
+    expect(logs.some((m) => m.includes('--totally-unknown-flag'))).toBe(true)
+    expect(h.state.spawnCount).toBeGreaterThanOrEqual(1)
+  })
+
+  it('warns when a path-valued flag points nowhere (still starts)', async () => {
+    register(cfg({ id: 'badpath', extraArgs: ['--output-directory', 'no-such-dir-xyz'] }))
+    h.state.fetchImpl = okStats
+    await svc.start('badpath')
+    const logs = svc.getLogs('badpath').map((l) => l.message)
+    expect(logs.some((m) => m.includes('--output-directory path does not exist'))).toBe(true)
+    expect(h.state.spawnCount).toBeGreaterThanOrEqual(1)
   })
 })
 
@@ -1815,7 +1967,9 @@ describe('branch coverage extras', () => {
       '--port',
       '8188',
       '--listen',
-      '127.0.0.1'
+      '127.0.0.1',
+      // 0.1.9 default: ComfyPilot owns window opening.
+      '--disable-auto-launch'
     ])
   })
 })

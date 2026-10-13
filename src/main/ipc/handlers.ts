@@ -19,7 +19,8 @@ import {
   isSafeEmbedUrl,
   sanitizeId,
   isSafeOpenPath,
-  isLocalhostUrl
+  isLocalhostUrl,
+  resolveInsideAnyRoot
 } from '../services/security'
 import {
   loadSettings,
@@ -613,6 +614,10 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     wrap((instanceId?: string) => nodePackService.cancelOp(safeInstanceId(instanceId)))
   )
   ipcMain.handle(
+    'node.cancelBatch',
+    wrap((instanceId?: string) => nodePackService.cancelUpdateBatch(safeInstanceId(instanceId)))
+  )
+  ipcMain.handle(
     'node.update',
     wrap(async (id: string, version?: string, instanceId?: string) => {
       const rec = await nodePackService.update(id, version, safeInstanceId(instanceId))
@@ -730,7 +735,6 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     wrap(async (id: string, destDir?: string) => {
       if (destDir) {
         if (!existsSync(destDir)) throw new Error('Export directory does not exist')
-        const { isPathInside } = await import('../services/security')
         const { workflowLibraryDir, cacheDir } = await import('../services/db')
         const allowed = [
           join(homedir(), 'Downloads', 'ComfyPilot'),
@@ -738,8 +742,11 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
           cacheDir(),
           ...loadInstanceConfigs().map((i) => i.path)
         ].filter(Boolean) as string[]
-        const okDir = allowed.some((r) => destDir === r || isPathInside(destDir, r))
-        if (!okDir) throw new Error('Export directory is outside the allowed roots')
+        // resolveInsideAnyRoot collapses `..` (lexical prefix checks let
+        // `<allowed>/../Desktop` through on every platform).
+        if (!resolveInsideAnyRoot(destDir, allowed)) {
+          throw new Error('Export directory is outside the allowed roots')
+        }
       }
       return workflowService.exportZip(sanitizeId(id), destDir)
     })
@@ -1127,7 +1134,6 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       }) => {
         // Renderer-supplied root must sit inside an allow-listed output area.
         if (opts?.root) {
-          const { isPathInside } = await import('../services/security')
           const { workflowLibraryDir } = await import('../services/db')
           const { resolveOutputDir } = await import('../services/p1p2')
           const allowed = [
@@ -1135,29 +1141,44 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
             ...loadInstanceConfigs().map((i) => resolveOutputDir(i)),
             ...loadInstanceConfigs().map((i) => join(i.path, 'user', 'default', 'workflows'))
           ].filter(Boolean) as string[]
-          const root = opts.root
-          // root must sit INSIDE an allow-listed area (or be one). Never the
-          // reverse — `isPathInside(allowed, root)` would accept `C:\`.
-          const okRoot = allowed.some((r) => root === r || isPathInside(root, r))
-          if (!okRoot) throw new Error('Output root is outside the allowed areas')
+          // Per-segment normalization + resolve so `..` hops can't escape the
+          // allow-list (0.1.9; the old prefix check was lexical-only).
+          if (!resolveInsideAnyRoot(opts.root, allowed)) {
+            throw new Error('Output root is outside the allowed areas')
+          }
         }
-        const { thumbnailDisplayUrl, toMediaUrl, thumbnailService } =
+        const { thumbnailDisplayUrl, toMediaUrl, resolveMediaUrlToPath, thumbnailService } =
           await import('../services/media')
+        const { existsSync } = await import('fs')
         const result = outputService.list(opts)
         // Generate downscaled thumbs for image assets so the grid does not load
-        // full-size PNGs (产物库缩略图管线).
+        // full-size PNGs (产物库缩略图管线). A recorded thumb that no longer
+        // exists on disk (stale DB row / cache eviction) must NOT win over a
+        // regenerated thumb or the full-size fallback — that produced 403s.
         const items = await Promise.all(
           result.items.map(async (a) => {
-            let thumb: string | undefined = thumbnailDisplayUrl(a.thumbnail) || undefined
+            let thumb: string | undefined
+            if (a.thumbnail) {
+              if (a.thumbnail.startsWith('comfy-pilot-media:')) {
+                thumb = resolveMediaUrlToPath(a.thumbnail) ? a.thumbnail : undefined
+              } else if (existsSync(a.thumbnail)) {
+                thumb = thumbnailDisplayUrl(a.thumbnail) || undefined
+              }
+            }
             if (!thumb && a.type === 'image') {
               const generated = await thumbnailService.ensureOutputThumb(a.path)
               if (generated) thumb = thumbnailDisplayUrl(generated) || undefined
             }
+            // Only advertise media URLs for files that still exist — a stale DB
+            // row for a deleted output must not produce a 403ing <img>/<video>.
+            const mediaUrl = existsSync(a.path) ? toMediaUrl(a.path) || undefined : undefined
             return {
               ...a,
-              thumbnail: thumb || toMediaUrl(a.path) || undefined,
+              // Images fall back to the full-size URL; videos render <video>
+              // directly from mediaUrl (no raster thumb possible without ffmpeg).
+              thumbnail: thumb || (a.type === 'image' ? mediaUrl : undefined),
               // Full-resolution media URL — the lightbox must never get a bare fs path.
-              mediaUrl: toMediaUrl(a.path) || undefined
+              mediaUrl
             }
           })
         )
@@ -1175,7 +1196,11 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle(
     'output.reveal',
     wrap(async (path: string) => {
-      if (!isSafeReadPath(path) && !isSafeOpenPath(path)) throw new Error('Blocked unsafe path')
+      // Same allow-list as shell.reveal — the outputs library must not become
+      // a weaker second door into the filesystem (0.1.9).
+      const { resolveInsideAnyRoot } = await import('../services/security')
+      const allowed = resolveInsideAnyRoot(path, await collectRevealRoots())
+      if (!allowed) throw new Error('Blocked revealing path outside allowed areas')
       shell.showItemInFolder(path)
       return true
     })
@@ -1207,7 +1232,6 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       }
       if (destDir) {
         if (!existsSync(destDir)) throw new Error('Export directory does not exist')
-        const { isPathInside } = await import('../services/security')
         const { workflowLibraryDir, cacheDir } = await import('../services/db')
         const allowed = [
           join(homedir(), 'Downloads', 'ComfyPilot'),
@@ -1215,8 +1239,11 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
           cacheDir(),
           ...loadInstanceConfigs().map((i) => i.path)
         ].filter(Boolean) as string[]
-        const okDir = allowed.some((r) => destDir === r || isPathInside(destDir, r))
-        if (!okDir) throw new Error('Export directory is outside the allowed roots')
+        // resolveInsideAnyRoot collapses `..` (lexical prefix checks let
+        // `<allowed>/../Desktop` through on every platform).
+        if (!resolveInsideAnyRoot(destDir, allowed)) {
+          throw new Error('Export directory is outside the allowed roots')
+        }
       }
       return outputService.exportZip(paths, destDir)
     })
@@ -1312,6 +1339,12 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     'shell.reveal',
     wrap(async (path: string) => {
       if (!path || path.includes('\0')) throw new Error('Blocked unsafe path')
+      // Allow-list with per-segment normalization + resolve: blocks `..` hops
+      // and Windows path games (0.1.9). Only locations the app owns/configured.
+      const { resolveInsideAnyRoot } = await import('../services/security')
+      const allowed = resolveInsideAnyRoot(path, await collectRevealRoots())
+      if (!allowed) throw new Error('Blocked revealing path outside allowed areas')
+      // Pass the ORIGINAL path — the resolver may normalize UNC prefixes.
       shell.showItemInFolder(path)
       return true
     })
@@ -1394,8 +1427,33 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
 export function broadcast(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send(channel, payload)
+    // A destroyed renderer must never throw into an event emitter — a listener
+    // exception would abort batch cleanup and leave stale op state behind.
+    try {
+      if (win.isDestroyed() || win.webContents.isDestroyed()) continue
+      win.webContents.send(channel, payload)
+    } catch {
+      /* window died mid-send; drop the frame */
+    }
   }
+}
+
+/** Roots the app may reveal/open in the OS file manager (0.1.9 allow-list). */
+async function collectRevealRoots(): Promise<string[]> {
+  const { userDataDir, workflowLibraryDir } = await import('../services/db')
+  const { resolveOutputDir } = await import('../services/p1p2')
+  const roots: string[] = []
+  try {
+    roots.push(userDataDir(), workflowLibraryDir())
+  } catch {
+    /* ignore */
+  }
+  for (const c of loadInstanceConfigs()) {
+    if (!c.path) continue
+    roots.push(c.path, resolveOutputDir(c), join(c.path, 'user', 'default', 'workflows'))
+  }
+  for (const r of loadSettings().modelScanRoots || []) roots.push(r)
+  return roots
 }
 
 /** Push a global UI notification (long-running task done / failed). */

@@ -41,6 +41,8 @@ export interface AppSettings {
   pipIndex: string
   /** Optional torch wheel index override (empty = download.pytorch.org per channel) */
   torchIndexMirror: string
+  /** Output-library scan depth under the output root (0.1.9, default 4, 2..10). */
+  outputScanDepth: number
 }
 
 // ---------- Instance ----------
@@ -51,6 +53,47 @@ export interface LaunchArgTemplate {
   name: string
   args: string[]
   description: string
+}
+
+/**
+ * Structured ComfyUI launch tuning (0.1.9). Every field maps to well-known
+ * `comfy/cli_args.py` flags; the renderer edits this object, the main process
+ * renders it to argv via `@shared/launchArgs`. Free-text `extraArgs` stays as
+ * the escape hatch appended last.
+ */
+export interface LaunchProfile {
+  vram?: 'default' | 'gpu-only' | 'highvram' | 'lowvram' | 'novram' | 'cpu'
+  /** --reserve-vram (GB) */
+  reserveVram?: number
+  /** --vram-headroom (GB) */
+  vramHeadroom?: number
+  cache?: 'default' | 'classic' | 'lru' | 'none' | 'high-ram'
+  /** --cache-lru N */
+  cacheLru?: number
+  previewMethod?: 'none' | 'auto' | 'latent2rgb' | 'taesd'
+  previewSize?: number
+  attention?: 'default' | 'split' | 'quad' | 'pytorch' | 'sage' | 'flash' | 'ck'
+  disableXformers?: boolean
+  attentionUpcast?: 'default' | 'force' | 'disable'
+  unetPrecision?:
+    'default' | 'fp32' | 'fp64' | 'bf16' | 'fp16' | 'fp8_e4m3fn' | 'fp8_e5m2' | 'fp8_e8m0fnu'
+  vaePrecision?: 'default' | 'fp16' | 'fp32' | 'bf16'
+  textEncoderPrecision?: 'default' | 'fp8_e4m3fn' | 'fp8_e5m2' | 'fp16' | 'fp32' | 'bf16'
+  asyncOffload?: 'default' | 'on' | 'off'
+  fastDisk?: boolean
+  disablePinnedMemory?: boolean
+  mmapTorchFiles?: boolean
+  disableCudaGraphs?: boolean
+  disableSmartMemory?: boolean
+  /** --enable-cors-header [ORIGIN]; '*' emits the bare flag. */
+  corsHeader?: string
+  /** --max-upload-size (MB) */
+  maxUploadSize?: number
+  multiUser?: boolean
+  offline?: boolean
+  /** --disable-auto-launch — recommended: ComfyPilot opens the window itself. */
+  disableAutoLaunch?: boolean
+  verbose?: boolean
 }
 
 export interface ComfyInstanceConfig {
@@ -69,6 +112,8 @@ export interface ComfyInstanceConfig {
   frontendVersion: string
   /** Pinned instances sort first in lists */
   pinned: boolean
+  /** Structured launch tuning (0.1.9) — absent for pre-0.1.9 records. */
+  launchProfile?: LaunchProfile
 }
 
 export interface ComfyInstanceInfo extends ComfyInstanceConfig {
@@ -106,6 +151,10 @@ export interface LaunchCommandPreview {
   args: string[]
   cwd: string
   commandLine: string
+  /** argparse-fatal conflicts detected in the final argv (0.1.9). */
+  validationErrors?: Array<{ code: string; flag?: string }>
+  /** Non-blocking advisories (unknown/recent flags) (0.1.9). */
+  validationWarnings?: Array<{ code: string; flag: string; level: 'info' | 'warning' }>
 }
 
 export interface LaunchOptions {
@@ -767,6 +816,8 @@ export interface UpdateStep {
   log: string[]
   detailKey?: string
   detailParams?: Record<string, string | number>
+  /** 0..1 progress within the step (git object %, pip line heuristics). */
+  progress?: number
 }
 
 export interface UpdateProgress {
@@ -781,6 +832,12 @@ export interface UpdateProgress {
   /** Absolute path of the backup dir when the backup step completed. */
   backupPath?: string
   bytes?: InstallStepByteProgress
+  /** 0.1.9: pack context so batch updates can label the running pack. */
+  packName?: string
+  batchIndex?: number
+  batchTotal?: number
+  /** Overall percent across ALL packs in the running batch (monotonic). */
+  aggregatePercent?: number
 }
 
 export interface ComfyUpdateOptions {
@@ -799,6 +856,13 @@ export interface RepairEnvOptions {
 }
 
 // ---------- Node update checking ----------
+/**
+ * Explicit outcome of a check. 0.1.9: every installed pack gets a row — a
+ * failed check must never masquerade as "up to date" or "unsupported".
+ */
+export type NodeCheckStatus =
+  'updatable' | 'up-to-date' | 'unsupported' | 'check-failed' | 'skipped-disabled' | 'locked'
+
 export interface NodeUpdateCheckResult {
   name: string
   id: string
@@ -809,6 +873,9 @@ export interface NodeUpdateCheckResult {
   /** Why it cannot be updated (locked / manager / local / no remote). */
   reason?: string
   reasonKey?: string
+  checkStatus: NodeCheckStatus
+  /** Populated when checkStatus === 'check-failed'. */
+  error?: string
 }
 
 export interface NodeUpdateAllResult {
@@ -816,6 +883,50 @@ export interface NodeUpdateAllResult {
   ok: boolean
   error?: string
   skipped?: boolean
+  /** Check outcome from the batch's initial pass (drives "all checks failed" UX). */
+  checkStatus?: NodeCheckStatus
+}
+
+/** Batch update lifecycle event (event:node-update-batch). */
+export interface NodeUpdateBatchEvent {
+  batchId: string
+  phase: 'checking' | 'start' | 'pack-start' | 'pack-done' | 'batch-done' | 'batch-error'
+  index: number
+  total: number
+  packName?: string
+  ok?: boolean
+  error?: string
+  summary?: {
+    ok: number
+    fail: number
+    skip: number
+    cancelled?: boolean
+    /** Packs whose pre-check failed (not updatable this round). */
+    checkFailed?: number
+  }
+  /** Stream owner (instance key) — renderer keeps per-instance state. */
+  instanceId?: string
+  ts: number
+}
+
+/** Streaming log line for a node install/update (event:node-op-log). */
+export interface NodeOpLogEvent {
+  runId: string
+  packName?: string
+  line: string
+  /** Stream owner (instance key) — renderer buckets logs per instance. */
+  instanceId?: string
+  ts: number
+}
+
+/** Progress of a running check-updates pass (event:node-check-progress). */
+export interface NodeCheckProgressEvent {
+  done: number
+  total: number
+  packName?: string
+  /** Stream owner (instance key) — labels must not cross instances. */
+  instanceId?: string
+  ts: number
 }
 
 // ---------- IPC ----------
@@ -949,6 +1060,7 @@ export type IpcChannelMap = {
   }
   'node.uninstallDeps': { args: [string, string?]; result: string[] }
   'node.cancelOp': { args: [string?]; result: boolean }
+  'node.cancelBatch': { args: [string?]; result: boolean }
   'node.update': { args: [string, string?, string?]; result: NodePackRecord }
   'node.toggle': { args: [string, boolean, string?]; result: NodePackRecord }
   'node.lock': { args: [string, boolean, string?]; result: NodePackRecord }
@@ -1206,6 +1318,9 @@ export const IPC_EVENTS = {
   runtimeProgress: 'event:runtime-progress',
   comfyUpdateProgress: 'event:comfy-update-progress',
   nodeUpdateProgress: 'event:node-update-progress',
+  nodeUpdateBatch: 'event:node-update-batch',
+  nodeOpLog: 'event:node-op-log',
+  nodeCheckProgress: 'event:node-check-progress',
   repairProgress: 'event:repair-progress',
   nodeOperationProgress: 'event:node-operation-progress'
 } as const

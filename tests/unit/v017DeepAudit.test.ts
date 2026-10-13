@@ -535,14 +535,14 @@ describe('i18n parity', () => {
 })
 
 describe('APP_VERSION consistency', () => {
-  it('constants.ts has 0.1.8 fallback', () => {
+  it('constants.ts has 0.1.9 fallback', () => {
     const src = readFileSync(join(__dirname, '..', '..', 'src', 'shared', 'constants.ts'), 'utf-8')
-    expect(src).toContain('0.1.8')
+    expect(src).toContain('0.1.9')
   })
 
-  it('package.json version is 0.1.8', () => {
+  it('package.json version is 0.1.9', () => {
     const pkg = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf-8'))
-    expect(pkg.version).toBe('0.1.8')
+    expect(pkg.version).toBe('0.1.9')
   })
 })
 

@@ -300,7 +300,7 @@ vi.mock('child_process', () => {
     cmd: string,
     args: string[],
     opts: unknown
-  ) => { stdout?: string; stderr?: string; error?: Error; code?: number }
+  ) => { stdout?: string; stderr?: string; error?: Error; code?: number; hang?: boolean }
   let handler: Handler | null = null
   const setHandler = (fn: Handler | null): void => {
     handler = fn
@@ -357,6 +357,8 @@ vi.mock('child_process', () => {
     queueMicrotask(() => {
       try {
         const result = handler ? handler(cmd, args, undefined) : { stdout: 'ok', stderr: '' }
+        // `hang` models a long-running command (e.g. git pull mid-transfer).
+        if (result.hang) return
         if (result.error) {
           child.stderr.emit('data', Buffer.from(result.stderr || result.error.message))
           child.emit('close', result.code ?? 1)
@@ -523,7 +525,8 @@ vi.mock('../../src/main/services/registry', () => ({
 vi.mock('../../src/main/services/registryIndex', () => ({
   registryIndex: {
     ensure: vi.fn(async () => undefined),
-    searchPacks: vi.fn(() => [])
+    searchPacks: vi.fn(() => []),
+    findByRepository: vi.fn(() => null)
   }
 }))
 
@@ -548,7 +551,11 @@ const registryMock = registryMod as unknown as {
   mapRegistryPack: ReturnType<typeof vi.fn>
 }
 const registryIndexMock = registryIndexMod as unknown as {
-  registryIndex: { ensure: ReturnType<typeof vi.fn>; searchPacks: ReturnType<typeof vi.fn> }
+  registryIndex: {
+    ensure: ReturnType<typeof vi.fn>
+    searchPacks: ReturnType<typeof vi.fn>
+    findByRepository: ReturnType<typeof vi.fn>
+  }
 }
 
 const cpMock = cp as unknown as {
@@ -1940,6 +1947,75 @@ describe('NodePackService.update', () => {
     expect(baks).toEqual([])
   })
 
+  it('registry reinstall keeps ONE runId and a monotonic percent (reuseStream)', async () => {
+    const dir = seedPack({
+      name: 'RegMono',
+      pyproject: 'name = "RegMono"\nversion = "1.0.0"\nrepository = "https://r"\n'
+    })
+    const first = nodePackService.list('inst-1')[0]
+    h.state.nodePacks = [
+      {
+        id: first.id,
+        name: 'RegMono',
+        locked: false,
+        installSource: 'registry',
+        registryId: 'reg-mono',
+        version: '1.0.0',
+        issues: [],
+        tags: [],
+        nodeList: [],
+        path: dir
+      }
+    ]
+    setFetch(async (url) => {
+      if (url.includes('/install')) return makeRes({ url: 'https://cdn.example/pack.zip' })
+      return makeRes('zip')
+    })
+    zipSafeMock.safeUnzip.mockImplementation(async (_zip: string, dest?: string) => {
+      const finalDest = dest || join(ROOT, 'reg-mono')
+      h.mkdirPath(finalDest)
+      h.writeFile(
+        join(finalDest, 'pyproject.toml'),
+        'name = "RegMono"\nversion = "2.0.0"\nrepository = "https://r"\n'
+      )
+    })
+    const progresses: Array<{
+      runId: string
+      percent: number
+      cloneStatus?: string
+    }> = []
+    const onProg = (p: {
+      runId: string
+      percent: number
+      instanceId?: string
+      steps?: Array<{ id: string; status: string }>
+    }): void => {
+      // The service is a file-level singleton; only this instance's stream is
+      // under test (a stale async op from another test must not leak in).
+      if (p.instanceId !== 'inst-1') return
+      progresses.push({
+        runId: p.runId,
+        percent: p.percent,
+        cloneStatus: p.steps?.find((s) => s.id === 'clone')?.status
+      })
+    }
+    nodePackService.on('op-progress', onProg)
+    try {
+      const rec = await nodePackService.update('RegMono', undefined, 'inst-1')
+      expect(rec.version).toBe('2.0.0')
+    } finally {
+      nodePackService.off('op-progress', onProg)
+    }
+    // The whole update (git-prefer attempt → zip fallback) is ONE stream.
+    expect(new Set(progresses.map((p) => p.runId)).size).toBe(1)
+    // And the bar never jumps backwards, even when installInner re-marks the
+    // pre-skipped clone step as running.
+    for (let i = 1; i < progresses.length; i++) {
+      expect(progresses[i].percent).toBeGreaterThanOrEqual(progresses[i - 1].percent)
+    }
+    expect(progresses.some((p) => p.cloneStatus === 'skipped')).toBe(true)
+  })
+
   it('rolls back a failed registry update and rethrows the original error', async () => {
     const dir = seedPack({
       name: 'RegRb',
@@ -2087,11 +2163,14 @@ describe('toggle and lock', () => {
     expect(() => nodePackService.toggle('TogE', false, 'inst-1')).toThrow(/already exists/)
   })
 
-  it('checkUpdates skips disabled packs', async () => {
+  it('checkUpdates reports disabled packs explicitly (never silently drops them)', async () => {
     seedPack({ name: 'SkipUpd' })
     nodePackService.toggle('SkipUpd', false, 'inst-1')
     const results = await nodePackService.checkUpdates('inst-1')
-    expect(results.some((r) => r.name === 'SkipUpd')).toBe(false)
+    const row = results.find((r) => r.name === 'SkipUpd')
+    expect(row).toBeTruthy()
+    expect(row?.updatable).toBe(false)
+    expect(row?.checkStatus).toBe('skipped-disabled')
   })
 
   it('update on a disabled pack is refused with NODE_DISABLED', async () => {
@@ -2547,7 +2626,7 @@ describe('checkUpdates channels', () => {
     expect(r?.updateSource).toBe('git')
   })
 
-  it('falls through to registry comparison when git fetch fails', async () => {
+  it('git fetch failure reports check-failed (not silently "not updatable")', async () => {
     const dir = seedPack({
       name: 'GitChk3',
       withGit: true,
@@ -2573,8 +2652,10 @@ describe('checkUpdates channels', () => {
       return { stdout: '' }
     })
     const results = await nodePackService.checkUpdates('inst-1')
-    expect(results[0].updateSource).toBe('none')
-    expect(results[0].reasonKey).toBe('nodes.notUpdatable')
+    expect(results[0].updateSource).toBe('git')
+    expect(results[0].checkStatus).toBe('check-failed')
+    expect(results[0].error).toContain('network down')
+    expect(results[0].updatable).toBe(false)
   })
 
   it('reports no remote version information when nothing is known', async () => {
@@ -2743,6 +2824,362 @@ describe('updateAll', () => {
     expect(byName.get('AllB')?.error).toMatch(/git pull failed/)
     expect(byName.get('AllC')?.skipped).toBe(true)
     expect(byName.get('AllC')?.ok).toBe(true)
+  })
+
+  it('emits batch-error and rethrows when the pre-check itself throws', async () => {
+    const spy = vi
+      .spyOn(nodePackService, 'checkUpdates')
+      .mockRejectedValueOnce(new Error('precheck boom'))
+    const events: Array<{ phase: string; error?: string }> = []
+    const onEvent = (e: { phase: string; error?: string }): void => {
+      events.push(e)
+    }
+    nodePackService.on('update-batch', onEvent)
+    try {
+      await expect(nodePackService.updateAll('inst-1')).rejects.toThrow('precheck boom')
+    } finally {
+      nodePackService.off('update-batch', onEvent)
+      spy.mockRestore()
+    }
+    // 'checking' opens the batch, then the terminal batch-error.
+    expect(events.map((e) => e.phase)).toEqual(['checking', 'batch-error'])
+    expect(events[1]).toMatchObject({ phase: 'batch-error', error: 'precheck boom' })
+  })
+})
+
+// =====================================================================
+// 0.1.9 check-status matrix (every pack gets an explicit row)
+// =====================================================================
+describe('checkUpdates status matrix', () => {
+  it('reports disabled/locked/check-failed rows explicitly', async () => {
+    seedPack({
+      name: 'MxA',
+      withGit: true,
+      pyproject: 'name = "MxA"\nversion = "1.0.0"\n'
+    })
+    seedPack({ name: 'MxB', pyproject: 'name = "MxB"\nversion = "1.0.0"\n' })
+    seedPack({ name: 'MxC', pyproject: 'name = "MxC"\nversion = "1.0.0"\n' })
+    nodePackService.toggle('MxB', false, 'inst-1')
+    nodePackService.lock('MxC', true, 'inst-1')
+    cpMock.__setExecHandler((cmd, args) => {
+      if (args.includes('fetch')) return { error: new Error('down'), stderr: 'down' }
+      return { stdout: '' }
+    })
+    const rows = await nodePackService.checkUpdates('inst-1')
+    const by = new Map(rows.map((r) => [r.name, r]))
+    expect(rows).toHaveLength(3)
+    expect(by.get('MxA')?.checkStatus).toBe('check-failed')
+    expect(by.get('MxB')?.checkStatus).toBe('skipped-disabled')
+    expect(by.get('MxC')?.checkStatus).toBe('locked')
+  })
+
+  it('matches a local pack to registry metadata by repository URL', async () => {
+    const dir = seedPack({
+      name: 'RepoMatch',
+      pyproject:
+        'name = "RepoMatch"\nversion = "1.0.0"\nrepository = "git@github.com:Org/RepoMatch.git"\n'
+    })
+    const first = nodePackService.list('inst-1')[0]
+    h.state.nodePacks = [
+      {
+        id: first.id,
+        name: 'RepoMatch',
+        locked: false,
+        installSource: 'local',
+        repository: 'git@github.com:Org/RepoMatch.git',
+        version: '1.0.0',
+        issues: [],
+        tags: [],
+        nodeList: [],
+        path: dir
+      }
+    ]
+    registryIndexMock.registryIndex.findByRepository.mockReturnValue({
+      id: 'rm-id',
+      name: 'RepoMatch',
+      latestVersion: '2.0.0'
+    })
+    try {
+      const rows = await nodePackService.checkUpdates('inst-1')
+      const r = rows.find((x) => x.name === 'RepoMatch')
+      expect(r?.latestVersion).toBe('2.0.0')
+      // Local copies are checked, but not updatable via registry — honest status.
+      expect(r?.checkStatus).toBe('unsupported')
+      expect(r?.updatable).toBe(false)
+    } finally {
+      registryIndexMock.registryIndex.findByRepository.mockReturnValue(null)
+    }
+  })
+
+  it('persists git check results (latestVersion + lastCheckedAt)', async () => {
+    const dir = seedPack({
+      name: 'GitPersist',
+      withGit: true,
+      pyproject: 'name = "GitPersist"\nversion = "1.0.0"\n'
+    })
+    const first = nodePackService.list('inst-1')[0]
+    h.state.nodePacks = [
+      {
+        id: first.id,
+        name: 'GitPersist',
+        locked: false,
+        installSource: 'git',
+        version: '1.0.0',
+        issues: [],
+        tags: [],
+        nodeList: [],
+        path: dir
+      }
+    ]
+    cpMock.__setExecHandler((cmd, args) => {
+      if (args.includes('describe')) return { stdout: 'v9.9.9\n' }
+      if (args.includes('fetch')) return { stdout: '' }
+      if (args.includes('@{u}')) return { stdout: 'origin/main\n' }
+      if (args.includes('rev-list')) return { stdout: '1' }
+      return { stdout: '' }
+    })
+    const rows = await nodePackService.checkUpdates('inst-1')
+    expect(rows[0].checkStatus).toBe('updatable')
+    const known = h.state.nodePacks.find((p) => p.name === 'GitPersist')!
+    expect(known.latestVersion).toBe('v9.9.9')
+    expect(known.lastCheckedAt).toBeGreaterThan(0)
+  })
+
+  it('does not trust ambiguous registry name matches', async () => {
+    const dir = seedPack({
+      name: 'Ambiguous',
+      pyproject: 'name = "Ambiguous"\nversion = "1.0.0"\n'
+    })
+    const first = nodePackService.list('inst-1')[0]
+    h.state.nodePacks = [
+      {
+        id: first.id,
+        name: 'Ambiguous',
+        locked: false,
+        installSource: 'registry',
+        version: '1.0.0',
+        issues: [],
+        tags: [],
+        nodeList: [],
+        path: dir
+      }
+    ]
+    registryIndexMock.registryIndex.searchPacks.mockReturnValue([
+      { id: 'a1', name: 'Ambiguous', latestVersion: '2.0.0' },
+      { id: 'a2', name: 'Ambiguous', latestVersion: '3.0.0' }
+    ])
+    try {
+      const rows = await nodePackService.checkUpdates('inst-1')
+      const r = rows.find((x) => x.name === 'Ambiguous')
+      expect(r?.checkStatus).toBe('unsupported')
+      expect(r?.updatable).toBe(false)
+    } finally {
+      registryIndexMock.registryIndex.searchPacks.mockReturnValue([])
+    }
+  })
+
+  it('emits check progress for every pack', async () => {
+    seedPack({ name: 'CpA', pyproject: 'name = "CpA"\nversion = "1.0.0"\n' })
+    seedPack({ name: 'CpB', pyproject: 'name = "CpB"\nversion = "1.0.0"\n' })
+    const seen: Array<{ done: number; total: number }> = []
+    const onProg = (p: { done: number; total: number }): void => {
+      seen.push({ done: p.done, total: p.total })
+    }
+    nodePackService.on('check-progress', onProg)
+    try {
+      await nodePackService.checkUpdates('inst-1')
+    } finally {
+      nodePackService.off('check-progress', onProg)
+    }
+    expect(seen).toHaveLength(2)
+    expect(seen.map((s) => s.done).sort((a, b) => a - b)).toEqual([1, 2])
+    expect(seen[0].total).toBe(2)
+  })
+
+  it('a pack whose check crashes still gets a check-failed row (no lost results)', async () => {
+    seedPack({ name: 'CrashA', pyproject: 'name = "CrashA"\nversion = "1.0.0"\n' })
+    seedPack({ name: 'CrashB', pyproject: 'name = "CrashB"\nversion = "1.0.0"\n' })
+    const spy = vi
+      .spyOn(
+        nodePackService as unknown as { checkOnePack: (...a: unknown[]) => Promise<unknown> },
+        'checkOnePack'
+      )
+      .mockRejectedValueOnce(new Error('boom'))
+    try {
+      const rows = await nodePackService.checkUpdates('inst-1')
+      expect(rows).toHaveLength(2)
+      const byName = new Map(rows.map((r) => [r.name, r]))
+      // CrashA is queued first and workers shift synchronously, so the
+      // mockRejectedValueOnce deterministically lands on CrashA.
+      expect(byName.get('CrashA')).toMatchObject({
+        checkStatus: 'check-failed',
+        error: 'boom'
+      })
+      expect(byName.get('CrashB')?.checkStatus).not.toBe('check-failed')
+    } finally {
+      spy.mockRestore()
+    }
+  })
+})
+
+// =====================================================================
+// 0.1.9 batch update events + aggregate progress + cancel
+// =====================================================================
+describe('batch update progress (0.1.9)', () => {
+  function seedTwoGitPacks(): { dirA: string; dirB: string } {
+    const dirA = seedPack({
+      name: 'BtA',
+      withGit: true,
+      pyproject: 'name = "BtA"\nversion = "1.0.0"\n'
+    })
+    const dirB = seedPack({
+      name: 'BtB',
+      withGit: true,
+      pyproject: 'name = "BtB"\nversion = "1.0.0"\n'
+    })
+    const ids = listIds()
+    h.state.nodePacks = [
+      {
+        id: ids.get('BtA'),
+        name: 'BtA',
+        locked: false,
+        installSource: 'git',
+        version: '1.0.0',
+        issues: [],
+        tags: [],
+        nodeList: [],
+        path: dirA
+      },
+      {
+        id: ids.get('BtB'),
+        name: 'BtB',
+        locked: false,
+        installSource: 'git',
+        version: '1.0.0',
+        issues: [],
+        tags: [],
+        nodeList: [],
+        path: dirB
+      }
+    ]
+    return { dirA, dirB }
+  }
+
+  function batchExecHandler(dirA: string, dirB: string): (cmd: string, args: string[]) => unknown {
+    return (cmd, args) => {
+      if (args.includes('fetch')) return { stdout: '' }
+      if (args.includes('@{u}')) return { stdout: 'origin/main\n' }
+      if (args.includes('rev-list')) return { stdout: '1' }
+      if (args.includes('describe')) return { stdout: 'v2\n' }
+      if (args.includes('pull')) {
+        const name = args.includes(dirA) ? 'BtA' : args.includes(dirB) ? 'BtB' : ''
+        const target = args.includes(dirA) ? dirA : dirB
+        if (name)
+          h.writeFile(join(target, 'pyproject.toml'), `name = "${name}"\nversion = "2.0.0"\n`)
+        return { stdout: 'ok' }
+      }
+      if (args.includes('rev-parse') && args.includes('HEAD')) return { stdout: 'abc\n' }
+      return { stdout: '' }
+    }
+  }
+
+  it('emits ordered batch events with monotonic aggregate progress', async () => {
+    const { dirA, dirB } = seedTwoGitPacks()
+    cpMock.__setExecHandler(batchExecHandler(dirA, dirB))
+    const events: Array<{
+      phase: string
+      index: number
+      total: number
+      packName?: string
+      summary?: { ok: number; fail: number; skip: number; cancelled?: boolean }
+    }> = []
+    const aggregates: number[] = []
+    const runIds = new Set<string>()
+    const onEvent = (e: (typeof events)[number]): void => {
+      events.push(e)
+    }
+    const onProg = (p: { aggregatePercent?: number; runId?: string }): void => {
+      if (p.runId) runIds.add(p.runId)
+      if (p.aggregatePercent != null) aggregates.push(p.aggregatePercent)
+    }
+    nodePackService.on('update-batch', onEvent)
+    nodePackService.on('op-progress', onProg)
+    try {
+      const out = await nodePackService.updateAll('inst-1')
+      expect(out.filter((r) => r.ok && !r.skipped)).toHaveLength(2)
+    } finally {
+      nodePackService.off('update-batch', onEvent)
+      nodePackService.off('op-progress', onProg)
+    }
+    // The batch reserves/cancellable state BEFORE the slow check pass.
+    expect(events[0].phase).toBe('checking')
+    const startEvent = events.find((e) => e.phase === 'start')
+    expect(startEvent?.total).toBe(2)
+    expect(events.filter((e) => e.phase === 'pack-start').map((e) => e.index)).toEqual([1, 2])
+    expect(events.filter((e) => e.phase === 'pack-done')).toHaveLength(2)
+    expect(events.at(-1)?.phase).toBe('batch-done')
+    expect(events.at(-1)?.summary).toMatchObject({ ok: 2, fail: 0 })
+    // Exactly one terminal batch event — a pack's own done must never end the batch.
+    const doneIdx = events.findIndex((e) => e.phase === 'batch-done')
+    expect(events.filter((e) => e.phase === 'batch-done')).toHaveLength(1)
+    expect(events.slice(0, doneIdx).filter((e) => e.phase === 'pack-done')).toHaveLength(2)
+    for (let i = 1; i < aggregates.length; i++) {
+      expect(aggregates[i]).toBeGreaterThanOrEqual(aggregates[i - 1])
+    }
+    expect(aggregates.at(-1)).toBe(100)
+    // One continuous stream for the whole batch: the terminal log never resets.
+    expect(runIds.size).toBe(1)
+  })
+
+  it('cancelUpdateBatch stops the remaining queue and reports cancelled', async () => {
+    const { dirA, dirB } = seedTwoGitPacks()
+    // A third pack ensures "remaining" is non-empty after cancelling during #1.
+    const dirC = seedPack({
+      name: 'BtC',
+      withGit: true,
+      pyproject: 'name = "BtC"\nversion = "1.0.0"\n'
+    })
+    const ids = listIds()
+    h.state.nodePacks.push({
+      id: ids.get('BtC'),
+      name: 'BtC',
+      locked: false,
+      installSource: 'git',
+      version: '1.0.0',
+      issues: [],
+      tags: [],
+      nodeList: [],
+      path: dirC
+    })
+    cpMock.__setExecHandler(batchExecHandler(dirA, dirB))
+    const starts: number[] = []
+    const onEvent = (e: {
+      phase: string
+      index: number
+      summary?: { cancelled?: boolean }
+    }): void => {
+      if (e.phase === 'pack-start') {
+        starts.push(e.index)
+        if (e.index === 1) nodePackService.cancelUpdateBatch('inst-1')
+      }
+    }
+    const done: Array<{ cancelled?: boolean }> = []
+    const onDone = (e: { phase: string; summary?: { cancelled?: boolean } }): void => {
+      if (e.phase === 'batch-done' && e.summary) done.push(e.summary)
+    }
+    nodePackService.on('update-batch', onEvent)
+    nodePackService.on('update-batch', onDone)
+    try {
+      const out = await nodePackService.updateAll('inst-1')
+      const byName = new Map(out.map((r) => [r.name, r]))
+      expect(byName.get('BtB')?.skipped).toBe(true)
+      expect(byName.get('BtC')?.skipped).toBe(true)
+    } finally {
+      nodePackService.off('update-batch', onEvent)
+      nodePackService.off('update-batch', onDone)
+    }
+    expect(starts).toEqual([1])
+    expect(done[0]?.cancelled).toBe(true)
   })
 })
 
@@ -3282,5 +3719,343 @@ describe('install progress lifecycle', () => {
     }
     expect(phases.some((p) => p.phase === 'start' && p.op === 'update')).toBe(true)
     expect(phases.some((p) => p.phase === 'done' && p.op === 'update')).toBe(true)
+  })
+})
+
+// =====================================================================
+// 0.1.9 streaming fidelity: git % → step fraction, op-log increment,
+// trimmed progress snapshots, pip fraction, reuseStream continuity
+// =====================================================================
+describe('node-op streaming fidelity (0.1.9)', () => {
+  function seedGitPack(name: string, extra: { requirements?: string } = {}): string {
+    const dir = seedPack({
+      name,
+      withGit: true,
+      pyproject: `name = "${name}"\nversion = "1.0.0"\n`
+    })
+    if (extra.requirements) h.writeFile(join(dir, 'requirements.txt'), extra.requirements)
+    const first = nodePackService.list('inst-1')[0]
+    h.state.nodePacks = [
+      {
+        id: first.id,
+        name,
+        locked: false,
+        installSource: 'git',
+        version: '1.0.0',
+        issues: [],
+        tags: [],
+        nodeList: [],
+        path: dir
+      }
+    ]
+    return dir
+  }
+
+  it('git pull streams Receiving objects % into the clone step and op-log', async () => {
+    const dir = seedGitPack('StreamGit')
+    cpMock.__setExecHandler((cmd, args) => {
+      if (args.includes('pull')) {
+        return {
+          stdout: 'Receiving objects:  42%\n',
+          stderr: 'Resolving deltas:  50%\n'
+        }
+      }
+      if (args.includes('rev-parse') && args.includes('HEAD')) return { stdout: 'abc\n' }
+      void dir
+      return { stdout: '' }
+    })
+    const lines: string[] = []
+    let maxClone = 0
+    let maxStepLog = 0
+    const onLog = (l: { line: string }): void => {
+      lines.push(l.line)
+    }
+    const onProg = (p: {
+      steps?: Array<{ id: string; progress?: number; log: string[] }>
+    }): void => {
+      for (const s of p.steps || []) {
+        maxStepLog = Math.max(maxStepLog, s.log.length)
+        if (s.id === 'clone' && s.progress) maxClone = Math.max(maxClone, s.progress)
+      }
+    }
+    nodePackService.on('op-log', onLog)
+    nodePackService.on('op-progress', onProg)
+    try {
+      await nodePackService.update('StreamGit', undefined, 'inst-1')
+    } finally {
+      nodePackService.off('op-log', onLog)
+      nodePackService.off('op-progress', onProg)
+    }
+    expect(lines.some((l) => l.includes('Receiving objects'))).toBe(true)
+    // 42% → ≥0.1 + 0.42*0.85 fraction
+    expect(maxClone).toBeGreaterThan(0.3)
+    // Progress snapshots carry at most the trailing log line (incremental lines
+    // travel on op-log instead of re-sending the whole buffer).
+    expect(maxStepLog).toBeLessThanOrEqual(1)
+  })
+
+  it('pip output advances the requirements step fraction', async () => {
+    seedGitPack('PipPack', { requirements: 'requests\n' })
+    cpMock.__setExecHandler((cmd, args) => {
+      if (args.includes('pull')) return { stdout: '' }
+      if (args.includes('rev-parse') && args.includes('HEAD')) return { stdout: 'abc\n' }
+      if (args.includes('--version')) return { stdout: 'pip 24.0\n' }
+      if (args.includes('install')) {
+        return {
+          stdout:
+            'Collecting requests\nDownloading requests.whl\nInstalling collected packages: requests\nSuccessfully installed requests-2.0\n'
+        }
+      }
+      return { stdout: '' }
+    })
+    let maxReq = 0
+    const onProg = (p: { steps?: Array<{ id: string; progress?: number }> }): void => {
+      const req = (p.steps || []).find((s) => s.id === 'requirements')
+      if (req?.progress) maxReq = Math.max(maxReq, req.progress)
+    }
+    nodePackService.on('op-progress', onProg)
+    try {
+      await nodePackService.update('PipPack', undefined, 'inst-1')
+    } finally {
+      nodePackService.off('op-progress', onProg)
+    }
+    expect(maxReq).toBeGreaterThanOrEqual(0.7)
+  })
+
+  it('reuseStream keeps the current runId for registry reinstalls inside an update', async () => {
+    seedPack({ name: 'ReusePack', pyproject: 'name = "ReusePack"\nversion = "1.0.0"\n' })
+    const spy = vi
+      .spyOn(
+        nodePackService as unknown as { installInner: (...a: unknown[]) => Promise<unknown> },
+        'installInner'
+      )
+      .mockResolvedValue({ name: 'ReusePack', id: 'reuse', version: '1.0.0' })
+    const runIds: string[] = []
+    const onProg = (p: { runId: string }): void => {
+      runIds.push(p.runId)
+    }
+    nodePackService.on('op-progress', onProg)
+    try {
+      await nodePackService.install({ id: 'reuse-src', source: 'registry', instanceId: 'inst-1' })
+      await nodePackService.install(
+        { id: 'reuse-src', source: 'registry', instanceId: 'inst-1' },
+        { reuseStream: true }
+      )
+    } finally {
+      nodePackService.off('op-progress', onProg)
+      spy.mockRestore()
+    }
+    // reuseStream must NOT start a new stream (registry update mid-flight).
+    expect(new Set(runIds).size).toBe(1)
+  })
+})
+
+// =====================================================================
+// 0.1.9 op exclusivity (OP_BUSY) + abort propagation
+// =====================================================================
+describe('op exclusivity and abort (0.1.9)', () => {
+  type BatchMap = Map<string, unknown>
+
+  it('rejects single ops while a batch context is active (OP_BUSY)', async () => {
+    seedPack({ name: 'BusyA', pyproject: 'name = "BusyA"\nversion = "1.0.0"\n' })
+    const map = (nodePackService as unknown as { opBatches: BatchMap }).opBatches
+    map.set('inst-1', { batchId: 'b1', index: 1, total: 1, cancelled: false })
+    try {
+      await expect(nodePackService.update('BusyA', undefined, 'inst-1')).rejects.toMatchObject({
+        code: 'OP_BUSY'
+      })
+      await expect(
+        nodePackService.install({ id: 'x', source: 'registry', instanceId: 'inst-1' })
+      ).rejects.toMatchObject({ code: 'OP_BUSY' })
+      await expect(nodePackService.updateAll('inst-1')).rejects.toMatchObject({
+        code: 'OP_BUSY'
+      })
+    } finally {
+      map.delete('inst-1')
+    }
+  })
+
+  it('cancelOp aborts an in-flight git pull promptly (AbortError → OP_CANCELLED)', async () => {
+    const dir = seedPack({
+      name: 'HangPack',
+      withGit: true,
+      pyproject: 'name = "HangPack"\nversion = "1.0.0"\n'
+    })
+    const first = nodePackService.list('inst-1')[0]
+    h.state.nodePacks = [
+      {
+        id: first.id,
+        name: 'HangPack',
+        locked: false,
+        installSource: 'git',
+        version: '1.0.0',
+        issues: [],
+        tags: [],
+        nodeList: [],
+        path: dir
+      }
+    ]
+    let pullStarted = false
+    cpMock.__setExecHandler((cmd, args) => {
+      if (args.includes('pull')) {
+        pullStarted = true
+        return { hang: true }
+      }
+      if (args.includes('rev-parse') && args.includes('HEAD')) return { stdout: 'abc\n' }
+      return { stdout: '' }
+    })
+    const pending = nodePackService.update('HangPack', undefined, 'inst-1')
+    for (let i = 0; i < 100 && !pullStarted; i++) {
+      await new Promise((r) => setTimeout(r, 5))
+    }
+    expect(pullStarted).toBe(true)
+    expect(nodePackService.cancelOp('inst-1')).toBe(true)
+    await expect(pending).rejects.toMatchObject({ code: 'OP_CANCELLED' })
+  })
+})
+
+// =====================================================================
+// 0.1.9 follow-ups: duplicate names + batch abort-current
+// =====================================================================
+describe('duplicate pack names and batch abort (0.1.9)', () => {
+  it('checkUpdates yields one row per pack even for Foo + .disabled/Foo', async () => {
+    seedPack({ name: 'DupPack', pyproject: 'name = "DupPack"\nversion = "1.0.0"\n' })
+    nodePackService.toggle('DupPack', false, 'inst-1')
+    seedPack({ name: 'DupPack', pyproject: 'name = "DupPack"\nversion = "1.0.0"\n' })
+    cpMock.__setExecHandler(() => ({ stdout: '' }))
+    const rows = await nodePackService.checkUpdates('inst-1')
+    const dup = rows.filter((r) => r.name === 'DupPack')
+    expect(dup).toHaveLength(2)
+    expect(dup.map((r) => r.checkStatus).sort()).toEqual(['skipped-disabled', 'unsupported'])
+    expect(new Set(dup.map((r) => r.id)).size).toBe(2)
+  })
+
+  it('cancelUpdateBatch aborts the in-flight pack and skips the rest', async () => {
+    const dirA = seedPack({
+      name: 'CtA',
+      withGit: true,
+      pyproject: 'name = "CtA"\nversion = "1.0.0"\n'
+    })
+    const dirB = seedPack({
+      name: 'CtB',
+      withGit: true,
+      pyproject: 'name = "CtB"\nversion = "1.0.0"\n'
+    })
+    const ids = listIds()
+    h.state.nodePacks = [
+      {
+        id: ids.get('CtA'),
+        name: 'CtA',
+        locked: false,
+        installSource: 'git',
+        version: '1.0.0',
+        issues: [],
+        tags: [],
+        nodeList: [],
+        path: dirA
+      },
+      {
+        id: ids.get('CtB'),
+        name: 'CtB',
+        locked: false,
+        installSource: 'git',
+        version: '1.0.0',
+        issues: [],
+        tags: [],
+        nodeList: [],
+        path: dirB
+      }
+    ]
+    let pulls = 0
+    let firstHangStarted = false
+    cpMock.__setExecHandler((cmd, args) => {
+      if (args.includes('fetch')) return { stdout: '' }
+      if (args.includes('@{u}')) return { stdout: 'origin/main\n' }
+      if (args.includes('rev-list')) return { stdout: '1' }
+      if (args.includes('describe')) return { stdout: 'v2\n' }
+      if (args.includes('pull')) {
+        pulls += 1
+        if (pulls === 1) {
+          firstHangStarted = true
+          return { hang: true }
+        }
+        return { stdout: 'ok' }
+      }
+      if (args.includes('rev-parse') && args.includes('HEAD')) return { stdout: 'abc\n' }
+      return { stdout: '' }
+    })
+    const pending = nodePackService.updateAll('inst-1')
+    for (let i = 0; i < 200 && !firstHangStarted; i++) {
+      await new Promise((r) => setTimeout(r, 5))
+    }
+    expect(firstHangStarted).toBe(true)
+    expect(nodePackService.cancelUpdateBatch('inst-1')).toBe(true)
+    const out = await pending
+    const byName = new Map(out.map((r) => [r.name, r]))
+    // Current pack aborted (not merely skipped), remaining pack skipped.
+    expect(byName.get('CtA')?.ok).toBe(false)
+    expect(byName.get('CtA')?.error).toMatch(/cancel/i)
+    expect(byName.get('CtB')?.skipped).toBe(true)
+    expect(pulls).toBe(1)
+  })
+})
+
+// =====================================================================
+// 0.1.9 round-3: cancellation during pip + batch vs single exclusivity
+// =====================================================================
+describe('cancellation and exclusivity follow-ups (0.1.9)', () => {
+  it('cancel during pip install cancels the op (never a swallowed pip issue)', async () => {
+    const dir = seedPack({
+      name: 'PipCancel',
+      withGit: true,
+      pyproject: 'name = "PipCancel"\nversion = "1.0.0"\n'
+    })
+    h.writeFile(join(dir, 'requirements.txt'), 'requests\n')
+    const first = nodePackService.list('inst-1')[0]
+    h.state.nodePacks = [
+      {
+        id: first.id,
+        name: 'PipCancel',
+        locked: false,
+        installSource: 'git',
+        version: '1.0.0',
+        issues: [],
+        tags: [],
+        nodeList: [],
+        path: dir
+      }
+    ]
+    let pipStarted = false
+    cpMock.__setExecHandler((cmd, args) => {
+      if (args.includes('pull')) return { stdout: '' }
+      if (args.includes('rev-parse') && args.includes('HEAD')) return { stdout: 'abc\n' }
+      if (args.includes('--version')) return { stdout: 'pip 24.0\n' }
+      if (args.includes('install')) {
+        pipStarted = true
+        return { hang: true }
+      }
+      return { stdout: '' }
+    })
+    const pending = nodePackService.update('PipCancel', undefined, 'inst-1')
+    for (let i = 0; i < 200 && !pipStarted; i++) {
+      await new Promise((r) => setTimeout(r, 5))
+    }
+    expect(pipStarted).toBe(true)
+    expect(nodePackService.cancelOp('inst-1')).toBe(true)
+    await expect(pending).rejects.toMatchObject({ code: 'OP_CANCELLED' })
+  })
+
+  it('updateAll is rejected while a single op is in flight (OP_BUSY)', async () => {
+    seedPack({ name: 'SingleBusy', pyproject: 'name = "SingleBusy"\nversion = "1.0.0"\n' })
+    const controllers = (nodePackService as unknown as { opAborts: Map<string, AbortController> })
+      .opAborts
+    controllers.set('inst-1', new AbortController())
+    try {
+      await expect(nodePackService.updateAll('inst-1')).rejects.toMatchObject({
+        code: 'OP_BUSY'
+      })
+    } finally {
+      controllers.delete('inst-1')
+    }
   })
 })

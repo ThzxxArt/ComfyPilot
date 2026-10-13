@@ -15,11 +15,14 @@ import { execFile, execFileSync } from 'child_process'
 import { promisify } from 'util'
 import { EventEmitter } from 'events'
 import type {
+  NodeCheckProgressEvent,
   NodeNameConflict,
+  NodeOpLogEvent,
   NodePackIssue,
   NodePackRecord,
   NodeSnapshot,
   NodeUpdateAllResult,
+  NodeUpdateBatchEvent,
   NodeUpdateCheckResult,
   RegistryNodePack,
   UpdateProgress,
@@ -40,6 +43,7 @@ import {
 } from './db'
 import { REGISTRY_API } from '@shared/constants'
 import { proxyEnv } from './proxy'
+import { runStreaming } from './env'
 import { sanitizeId, isPathInside, normalizePathEverySegment } from './security'
 import { assertSafeGitUrl, applyGithubMirror, assertSafeBranch } from './installer'
 import { resolveInstancePythonPath, resolveRuntimesPythonSync } from './instance'
@@ -571,8 +575,15 @@ export class NodePackService extends EventEmitter {
     message?: string
     /** What kind of operation this is — the UI labels install vs update differently. */
     op?: 'install' | 'update' | 'uninstall'
+    /** Stream owner so the renderer's banner never shows another instance's pack. */
+    instanceId?: string
   }): void {
-    this.emit('install-progress', { ...payload, op: payload.op || 'install', ts: Date.now() })
+    this.emit('install-progress', {
+      ...payload,
+      op: payload.op || 'install',
+      instanceId: payload.instanceId || 'default',
+      ts: Date.now()
+    })
   }
 
   // ---- UpdateProgress-shaped stream (feeds the shared progress modal) ----
@@ -581,6 +592,25 @@ export class NodePackService extends EventEmitter {
    * installs/updates on different instances overwrite each other's steps.
    */
   private opProgressMap = new Map<string, UpdateProgress>()
+
+  /** Relative weights of the fixed node-op steps — percent advances mid-step. */
+  private static readonly STEP_WEIGHTS: ReadonlyArray<[UpdateStepId, number]> = [
+    ['download', 15],
+    ['clone', 25],
+    ['unpack', 15],
+    ['requirements', 35],
+    ['verify', 5],
+    ['done', 5]
+  ]
+
+  /**
+   * Batch update contexts per instance. Deliberately OUTSIDE opProgressMap so
+   * the per-pack stream reset in update()/install() never erases batch state.
+   */
+  private opBatches = new Map<
+    string,
+    { batchId: string; index: number; total: number; current?: string; cancelled: boolean }
+  >()
 
   /**
    * Active install/update abort controllers, keyed by instance (or 'default').
@@ -608,8 +638,77 @@ export class NodePackService extends EventEmitter {
     const ac = this.opAborts.get(key)
     if (!ac) return false
     ac.abort()
-    this.opAborts.delete(key)
+    // Do NOT delete here: the op's finally does. Keeping the controller makes
+    // the abort→cleanup/rollback window still count as busy for OP_BUSY.
     return true
+  }
+
+  /**
+   * Stop a running "update all" queue: abort the current pack AND mark the
+   * batch cancelled so remaining packs are skipped instead of started.
+   */
+  cancelUpdateBatch(instanceId?: string): boolean {
+    const key = instanceId || 'default'
+    const batch = this.opBatches.get(key)
+    if (batch) batch.cancelled = true
+    const aborted = this.cancelOp(instanceId)
+    return Boolean(batch) || aborted
+  }
+
+  private emitBatch(payload: Omit<NodeUpdateBatchEvent, 'ts'>): void {
+    this.emit('update-batch', { ...payload, ts: Date.now() })
+  }
+
+  /**
+   * Trim step logs from the op-progress payload: incremental lines travel on
+   * `event:node-op-log`, so re-sending up to 400 lines × 6 steps per tick is
+   * pure IPC waste. One trailing line is kept for any consumer that still
+   * renders "last log line" from the snapshot.
+   */
+  private progressSnapshot(p: UpdateProgress): UpdateProgress {
+    return {
+      ...p,
+      steps: p.steps.map((s) => (s.log.length > 1 ? { ...s, log: [s.log[s.log.length - 1]] } : s))
+    }
+  }
+
+  /** Weighted completion of the six fixed steps (skipped counts as complete). */
+  private computePercent(p: UpdateProgress): number {
+    let sum = 0
+    for (const s of p.steps) {
+      const w = NodePackService.STEP_WEIGHTS.find(([id]) => id === s.id)?.[1] ?? 0
+      if (s.status === 'done' || s.status === 'skipped') sum += w
+      else if (s.status === 'running') sum += w * Math.max(0, Math.min(1, s.progress ?? 0))
+    }
+    return Math.max(0, Math.min(100, Math.round(sum)))
+  }
+
+  /** Fresh six-step list for a new op stream. */
+  private static freshSteps(): UpdateStep[] {
+    return [
+      { id: 'download', title: 'Download', status: 'pending', detail: '', log: [] },
+      { id: 'clone', title: 'Git pull / clone', status: 'pending', detail: '', log: [] },
+      { id: 'unpack', title: 'Unpack', status: 'pending', detail: '', log: [] },
+      { id: 'requirements', title: 'Dependencies', status: 'pending', detail: '', log: [] },
+      { id: 'verify', title: 'Finalize', status: 'pending', detail: '', log: [] },
+      { id: 'done', title: 'Done', status: 'pending', detail: '', log: [] }
+    ] as UpdateStep[]
+  }
+
+  /**
+   * Reset the live stream for the NEXT pack of a running batch IN PLACE.
+   * The runId survives so the renderer keeps one continuous terminal log
+   * across the whole queue (a fresh runId would clear it mid-batch).
+   */
+  private resetOpSteps(key: string, packName?: string): void {
+    const p = this.opProgressMap.get(key)
+    if (!p) return
+    p.steps = NodePackService.freshSteps()
+    p.step = 'download'
+    p.status = 'running'
+    p.percent = 0
+    p.error = undefined
+    p.packName = packName
   }
 
   /**
@@ -624,40 +723,46 @@ export class NodePackService extends EventEmitter {
     message: string
     logLine?: string
     detailKey?: string
+    packName?: string
   }): void {
     const key = opts.instanceId || 'default'
     let p = this.opProgressMap.get(key)
     if (!p) {
+      const currentBatch = this.opBatches.get(key)
       p = {
         runId: randomUUID(),
         instanceId: key,
         step: 'download',
         status: 'running',
-        steps: [
-          { id: 'download', title: 'Download', status: 'pending', detail: '', log: [] },
-          { id: 'clone', title: 'Git clone', status: 'pending', detail: '', log: [] },
-          { id: 'unpack', title: 'Unpack', status: 'pending', detail: '', log: [] },
-          { id: 'requirements', title: 'Dependencies', status: 'pending', detail: '', log: [] },
-          { id: 'verify', title: 'Finalize', status: 'pending', detail: '', log: [] },
-          { id: 'done', title: 'Done', status: 'pending', detail: '', log: [] }
-        ] as UpdateStep[],
+        steps: NodePackService.freshSteps(),
         message: opts.message,
-        percent: 0
+        percent: 0,
+        packName: opts.packName || currentBatch?.current
       }
       this.opProgressMap.set(key, p)
     }
+    if (opts.packName) p.packName = opts.packName
     const s = p.steps.find((x) => x.id === opts.step)
     if (s) {
       s.status = opts.status
+      if (opts.status === 'running') s.progress = s.progress ?? 0
       if (opts.message) s.detail = opts.message
       if (opts.detailKey) s.detailKey = opts.detailKey
       if (opts.logLine) {
         s.log.push(opts.logLine)
         if (s.log.length > 400) s.log.splice(0, s.log.length - 400)
+        this.emit('op-log', {
+          runId: p.runId,
+          packName: p.packName,
+          line: opts.logLine,
+          instanceId: key,
+          ts: Date.now()
+        } satisfies NodeOpLogEvent)
       }
     }
     p.step = opts.step
     p.message = opts.message
+    const prevPercent = p.percent
     p.status =
       opts.status === 'failed' || opts.status === 'cancelled'
         ? opts.status
@@ -675,14 +780,41 @@ export class NodePackService extends EventEmitter {
       }
       p.percent = 100
       p.error = undefined
-    } else if (p.status === 'failed') {
-      const doneCount = p.steps.filter((x) => x.status === 'done' || x.status === 'skipped').length
-      p.percent = Math.round((doneCount / p.steps.length) * 100)
     } else {
-      const doneCount = p.steps.filter((x) => x.status === 'done' || x.status === 'skipped').length
-      p.percent = Math.round((doneCount / p.steps.length) * 100)
+      p.percent = this.computePercent(p)
     }
-    this.emit('op-progress', { ...p })
+    // Monotonic guard: a step being (re)marked running — e.g. installInner's
+    // clone after updateInner pre-skipped it for reuseStream, or the zip
+    // fallback after a skipped download — must never make the bar jump back.
+    p.percent = Math.max(prevPercent, p.percent)
+    this.attachBatchContext(key, p)
+    this.emit('op-progress', this.progressSnapshot(p))
+  }
+
+  /** Fill batch fields + monotonic aggregate percent on the progress object. */
+  private attachBatchContext(key: string, p: UpdateProgress): void {
+    const b = this.opBatches.get(key)
+    if (!b || b.total <= 0) return
+    p.packName = p.packName || b.current
+    p.batchIndex = b.index
+    p.batchTotal = b.total
+    p.aggregatePercent = Math.round(((b.index - 1 + (p.percent || 0) / 100) / b.total) * 100)
+  }
+
+  /** Advance the running step's fraction (0..1) and re-emit the stream. */
+  private setStepFraction(step: UpdateStepId, fraction: number, instanceId?: string): void {
+    const key = instanceId || 'default'
+    const p = this.opProgressMap.get(key)
+    if (!p) return
+    const s = p.steps.find((x) => x.id === step)
+    if (!s || s.status !== 'running') return
+    const next = Math.max(0, Math.min(1, fraction))
+    // Never regress inside a step — git/pip output can repeat percentages.
+    if ((s.progress ?? 0) >= next) return
+    s.progress = next
+    p.percent = this.computePercent(p)
+    this.attachBatchContext(key, p)
+    this.emit('op-progress', this.progressSnapshot(p))
   }
 
   private opLog(line: string, instanceId?: string): void {
@@ -694,7 +826,14 @@ export class NodePackService extends EventEmitter {
       s.log.push(line)
       if (s.log.length > 400) s.log.splice(0, s.log.length - 400)
     }
-    this.emit('op-progress', { ...p })
+    this.emit('op-log', {
+      runId: p.runId,
+      packName: p.packName,
+      line,
+      instanceId: key,
+      ts: Date.now()
+    } satisfies NodeOpLogEvent)
+    this.emit('op-progress', this.progressSnapshot(p))
   }
 
   getOpProgress(instanceId?: string): UpdateProgress | null {
@@ -984,25 +1123,46 @@ export class NodePackService extends EventEmitter {
     // registry/manager allowed at normal / normal- / weak
   }
 
-  async install(opts: {
-    id: string
-    version?: string
-    source: 'registry' | 'git' | 'manager'
-    url?: string
-    branch?: string
-    instanceId?: string
-    /** Known repository URL from search results — fallback when /install API returns 401. */
-    repository?: string
-  }): Promise<NodePackRecord> {
+  async install(
+    opts: {
+      id: string
+      version?: string
+      source: 'registry' | 'git' | 'manager'
+      url?: string
+      branch?: string
+      instanceId?: string
+      /** Known repository URL from search results — fallback when /install API returns 401. */
+      repository?: string
+    },
+    internal?: {
+      /**
+       * Keep the CURRENT stream (runId + steps) instead of starting a new one.
+       * Used by updateInner's registry path: the reinstall is the middle of an
+       * update op and must not reset the modal mid-flight.
+       */
+      reuseStream?: boolean
+      /** Reuse the outer op's abort signal instead of arming a new controller. */
+      signal?: AbortSignal
+    }
+  ): Promise<NodePackRecord> {
     this.assertInstallAllowed(opts.source)
+    const guardKey = opts.instanceId || 'default'
+    // Exclusivity: a standalone install must not hijack/abort a running batch
+    // (registry updates call back in with reuseStream and are exempt).
+    if (!internal?.reuseStream && (this.opBatches.has(guardKey) || this.opAborts.has(guardKey))) {
+      throw codedError('OP_BUSY', 'Another operation is already running for this instance')
+    }
     this.emitInstallProgress({
       phase: 'start',
       packName: opts.id,
+      instanceId: opts.instanceId,
       op: 'install',
       message: `Installing ${opts.id}…`
     })
-    // Fresh op-progress stream for the shared modal.
-    this.opProgressMap.delete(opts.instanceId || 'default')
+    // Fresh op-progress stream for the shared modal (unless the caller owns it).
+    if (!internal?.reuseStream) {
+      this.opProgressMap.delete(opts.instanceId || 'default')
+    }
     // Pick the first step by source so the modal never shows "Download"
     // when the user actually asked for a git install.
     const firstStep: UpdateStepId =
@@ -1011,15 +1171,19 @@ export class NodePackService extends EventEmitter {
       instanceId: opts.instanceId || 'default',
       step: firstStep,
       status: 'running',
-      message: firstStep === 'clone' ? `Cloning ${opts.id}…` : `Downloading ${opts.id}…`
+      message: firstStep === 'clone' ? `Cloning ${opts.id}…` : `Downloading ${opts.id}…`,
+      packName: opts.id
     })
-    const signal = this.beginOpAbort(opts.instanceId)
+    // Reuse the outer op's controller when this install is the middle of an
+    // update (reuseStream) — arming a fresh one would abort the outer signal.
+    const signal = internal?.signal || this.beginOpAbort(opts.instanceId)
     try {
       const rec = await this.installInner({ ...opts, signal })
       // Must emit 'done' — the UI hangs on the spinner/banner until it arrives.
       this.emitInstallProgress({
         phase: 'done',
         packName: rec.name || opts.id,
+        instanceId: opts.instanceId,
         op: 'install',
         message: `Installed ${rec.name || opts.id}`
       })
@@ -1037,6 +1201,7 @@ export class NodePackService extends EventEmitter {
       this.emitInstallProgress({
         phase: 'error',
         packName: opts.id,
+        instanceId: opts.instanceId,
         op: 'install',
         message: e instanceof Error ? e.message : String(e)
       })
@@ -1048,7 +1213,7 @@ export class NodePackService extends EventEmitter {
       })
       throw cancelled ? codedError('OP_CANCELLED', 'Install cancelled') : e
     } finally {
-      this.endOpAbort(opts.instanceId)
+      if (!internal?.signal) this.endOpAbort(opts.instanceId)
     }
   }
 
@@ -1125,7 +1290,8 @@ export class NodePackService extends EventEmitter {
         await execFileAsync(gitBin, args, {
           timeout: 120000,
           maxBuffer: 20 * 1024 * 1024,
-          env: proxyEnv(loadSettings().proxy)
+          env: proxyEnv(loadSettings().proxy),
+          signal: opts.signal
         })
         if (pinned) {
           const safeRef = assertSafeBranch(pinned)
@@ -1141,7 +1307,7 @@ export class NodePackService extends EventEmitter {
               'origin',
               `refs/tags/${safeRef}:refs/tags/${safeRef}`
             ],
-            { timeout: 60000, env: proxyEnv(loadSettings().proxy) }
+            { timeout: 60000, env: proxyEnv(loadSettings().proxy), signal: opts.signal }
           ).catch(() => undefined)
           // tags/<v> first (exact release tag), then the bare ref (branch / sha).
           // Checkout failure is NON-FATAL — fall through to default branch.
@@ -1149,14 +1315,16 @@ export class NodePackService extends EventEmitter {
           try {
             await execFileAsync(gitBin, ['-C', tmpDest, 'checkout', `tags/${safeRef}`], {
               timeout: 30000,
-              env: proxyEnv(loadSettings().proxy)
+              env: proxyEnv(loadSettings().proxy),
+              signal: opts.signal
             })
             checkedOut = true
           } catch {
             try {
               await execFileAsync(gitBin, ['-C', tmpDest, 'checkout', safeRef], {
                 timeout: 30000,
-                env: proxyEnv(loadSettings().proxy)
+                env: proxyEnv(loadSettings().proxy),
+                signal: opts.signal
               })
               checkedOut = true
             } catch {
@@ -1167,7 +1335,14 @@ export class NodePackService extends EventEmitter {
             this.opLog?.(`Continuing with default branch (wanted ${pinned})`, opts.instanceId)
           }
         }
-        // Atomic-ish publish: only now do we touch `dest`.
+        // Atomic-ish publish: only now do we touch `dest`. A cancellation that
+        // arrived during tag fetch/checkout must not publish a ghost package.
+        if (opts.signal?.aborted) {
+          rmSync(tmpDest, { recursive: true, force: true })
+          const abortErr = new Error('aborted')
+          abortErr.name = 'AbortError'
+          throw abortErr
+        }
         if (existsSync(dest)) {
           rmSync(tmpDest, { recursive: true, force: true })
           throw new Error(`Destination already exists: ${destName}`)
@@ -1286,7 +1461,8 @@ export class NodePackService extends EventEmitter {
           url: resolvedRepo,
           version: opts.version,
           registryId: opts.id,
-          instanceId: opts.instanceId
+          instanceId: opts.instanceId,
+          signal: opts.signal
         })
         this.emitOpProgress({
           instanceId: opts.instanceId || 'default',
@@ -1302,6 +1478,9 @@ export class NodePackService extends EventEmitter {
         })
         return rec
       } catch (e) {
+        // A cancellation must never be downgraded to a git failure (which
+        // would silently retry via zip and "succeed" after the user cancelled).
+        if (isAbortError(e)) throw e
         // Git clone failed — fall back to zip. This is NOT a terminal failure;
         // do NOT emit status:'failed' or the UI modal closes prematurely.
         const msg = e instanceof Error ? e.message : String(e)
@@ -1405,6 +1584,13 @@ export class NodePackService extends EventEmitter {
     try {
       const { safeUnzip } = await import('./zipSafe')
       await safeUnzip(tmpZip, tmpDest)
+      // A cancellation that landed during extraction must not publish the pack
+      // and "succeed" when there is no requirements step to notice the abort.
+      if (opts.signal?.aborted) {
+        const abortErr = new Error('aborted')
+        abortErr.name = 'AbortError'
+        throw abortErr
+      }
       if (existsSync(dest)) {
         rmSync(tmpDest, { recursive: true, force: true })
         throw new Error(`Destination already exists: ${destName}`)
@@ -1496,6 +1682,7 @@ export class NodePackService extends EventEmitter {
         this.emitInstallProgress({
           phase: 'pip',
           packName: meta.name || dir,
+          instanceId: instanceId,
           op: 'install',
           message: 'Dependencies skipped (allow_pip_install is off)'
         })
@@ -1514,6 +1701,7 @@ export class NodePackService extends EventEmitter {
             this.emitInstallProgress({
               phase: 'pip',
               packName: meta.name || dir,
+              instanceId: instanceId,
               op: 'install',
               message: 'Installing Python dependencies…'
             })
@@ -1524,13 +1712,16 @@ export class NodePackService extends EventEmitter {
               message: 'Installing Python dependencies…'
             })
             // Stream pip/uv output into the progress modal line by line.
-            const { runStreaming, installRequirements } = await import('./env')
+            const { installRequirements } = await import('./env')
             const { bootstrapService } = await import('./bootstrap')
             const bootstrap = await bootstrapService.ensure({
               kinds: ['uv'],
               downloadIfMissing: false
             })
             const uvComp = bootstrap.components.find((c) => c.kind === 'uv' && c.installed)
+            // Line-count heuristic drives the requirements step fraction so the
+            // bar moves through the (usually longest) pip phase.
+            let pipLines = 0
             await installRequirements(
               vpy,
               reqFile,
@@ -1546,18 +1737,30 @@ export class NodePackService extends EventEmitter {
               {
                 uvPath: uvComp?.path,
                 pipIndex: String(settings.pipIndex || '').trim(),
+                signal: extra?.signal,
                 onLine: (line) => {
                   this.opLog(line, instanceId || 'default')
+                  pipLines += 1
+                  let frac = Math.min(0.9, pipLines / 40)
+                  if (
+                    /Installing collected packages|Prepared \d+ packages|Installed \d+ package/i.test(
+                      line
+                    )
+                  ) {
+                    frac = 0.75
+                  }
+                  if (/Successfully installed|Successfully built/i.test(line)) frac = 0.95
+                  this.setStepFraction('requirements', frac, instanceId || 'default')
                   this.emitInstallProgress({
                     phase: 'pip',
                     packName: meta.name || dir,
+                    instanceId: instanceId,
                     op: 'install',
                     message: line.slice(0, 120)
                   })
                 }
               }
             )
-            void runStreaming
             this.emitOpProgress({
               instanceId: instanceId || 'default',
               step: 'requirements',
@@ -1566,6 +1769,10 @@ export class NodePackService extends EventEmitter {
             })
           }
         } catch (err) {
+          // Cancellation is NOT a pip failure: the abort must reach update()/
+          // install() so the whole op reports OP_CANCELLED instead of finishing
+          // "successfully" with a deps issue after the user pressed cancel.
+          if (isAbortError(err)) throw err
           // Pip failure is NON-FATAL — the node is installed, just missing deps.
           // Emit 'skipped' not 'failed' so the modal stays open until the
           // overall install reaches its terminal state.
@@ -1659,7 +1866,11 @@ export class NodePackService extends EventEmitter {
   }
 
   /** Uninstall recorded pip requirements for a pack. Returns the removed names. */
-  private async removePipDeps(names: string[], instanceId?: string): Promise<string[]> {
+  private async removePipDeps(
+    names: string[],
+    instanceId?: string,
+    signal?: AbortSignal
+  ): Promise<string[]> {
     const removed: string[] = []
     const vpy = resolveInstancePython(instanceId)
     if (!vpy || !names.length) return removed
@@ -1672,10 +1883,13 @@ export class NodePackService extends EventEmitter {
           timeout: 5 * 60 * 1000,
           maxBuffer: 10 * 1024 * 1024,
           windowsHide: true,
-          env: proxyEnv(loadSettings().proxy)
+          env: proxyEnv(loadSettings().proxy),
+          signal
         })
         removed.push(...batch)
-      } catch {
+      } catch (e) {
+        // Cancellation must propagate, never be swallowed as "not installed".
+        if (isAbortError(e)) throw e
         // Some names may not be installed — keep going and report what worked.
         for (const n of batch) {
           try {
@@ -1683,10 +1897,12 @@ export class NodePackService extends EventEmitter {
               timeout: 60000,
               maxBuffer: 2 * 1024 * 1024,
               windowsHide: true,
-              env: proxyEnv(loadSettings().proxy)
+              env: proxyEnv(loadSettings().proxy),
+              signal
             })
             removed.push(n)
-          } catch {
+          } catch (e2) {
+            if (isAbortError(e2)) throw e2
             /* not installed / already gone */
           }
         }
@@ -1704,89 +1920,106 @@ export class NodePackService extends EventEmitter {
     const pack = packs.find((p) => p.id === idOrName || p.name === idOrName)
     if (!pack?.path) return false
     if (pack.locked) throw new Error('Pack is locked — unlock before uninstall')
-    this.emitInstallProgress({
-      phase: 'start',
-      packName: pack.name || idOrName,
-      op: 'uninstall',
-      message: `Uninstalling ${pack.name || idOrName}…`
-    })
-    this.opProgressMap.delete(instanceId || 'default')
-    this.emitOpProgress({
-      instanceId: instanceId || 'default',
-      step: 'verify',
-      status: 'running',
-      message: `Uninstalling ${pack.name || idOrName}…`
-    })
+    const guardKey = instanceId || 'default'
+    if (this.opBatches.has(guardKey) || this.opAborts.has(guardKey)) {
+      throw codedError('OP_BUSY', 'Another operation is already running for this instance')
+    }
+    // Own the busy slot (and an abort controller) for the whole uninstall —
+    // pip cleanup can take minutes and must block concurrent ops.
+    const uninstallSignal = this.beginOpAbort(instanceId)
     try {
-      // Snapshot before destructive ops so the user can at least see what was removed.
+      this.emitInstallProgress({
+        phase: 'start',
+        packName: pack.name || idOrName,
+        instanceId: instanceId,
+        op: 'uninstall',
+        message: `Uninstalling ${pack.name || idOrName}…`
+      })
+      // Never clobber a running batch stream (uninstall is standalone, but the
+      // guard keeps the invariant local to every stream owner).
+      this.opProgressMap.delete(guardKey)
+      this.emitOpProgress({
+        instanceId: instanceId || 'default',
+        step: 'verify',
+        status: 'running',
+        message: `Uninstalling ${pack.name || idOrName}…`,
+        packName: pack.name || idOrName
+      })
       try {
-        this.createSnapshot(`auto-pre-uninstall-${sanitizeInstallName(pack.name)}`, instanceId)
-      } catch {
-        /* best-effort */
-      }
-      const targets = this.resolveRemovalTargets(pack.path, instanceId)
-      for (const target of targets) {
-        const trash = `${target}.trash-${Date.now()}`
+        // Snapshot before destructive ops so the user can at least see what was removed.
         try {
-          renameSync(target, trash)
-          rmSync(trash, { recursive: true, force: true })
+          this.createSnapshot(`auto-pre-uninstall-${sanitizeInstallName(pack.name)}`, instanceId)
         } catch {
+          /* best-effort */
+        }
+        const targets = this.resolveRemovalTargets(pack.path, instanceId)
+        for (const target of targets) {
+          const trash = `${target}.trash-${Date.now()}`
           try {
-            rmSync(target, { recursive: true, force: true })
+            renameSync(target, trash)
+            rmSync(trash, { recursive: true, force: true })
           } catch {
-            /* keep going — report via remaining dirs */
+            try {
+              rmSync(target, { recursive: true, force: true })
+            } catch {
+              /* keep going — report via remaining dirs */
+            }
           }
         }
-      }
-      // Optional pip cleanup — offered by the UI after listing the residual deps.
-      if (opts?.removePipDeps) {
-        const deps = pack.pipRequirements?.length ? pack.pipRequirements : []
-        if (deps.length) {
-          this.emitOpProgress({
-            instanceId: instanceId || 'default',
-            step: 'requirements',
-            status: 'running',
-            message: `Removing ${deps.length} pip package(s)…`
-          })
-          const removed = await this.removePipDeps(deps, instanceId)
-          this.emitOpProgress({
-            instanceId: instanceId || 'default',
-            step: 'requirements',
-            status: removed.length ? 'done' : 'skipped',
-            message: removed.length
-              ? `Removed pip packages: ${removed.join(', ')}`
-              : 'No matching pip packages were installed'
-          })
+        // Optional pip cleanup — offered by the UI after listing the residual deps.
+        if (opts?.removePipDeps) {
+          const deps = pack.pipRequirements?.length ? pack.pipRequirements : []
+          if (deps.length) {
+            this.emitOpProgress({
+              instanceId: instanceId || 'default',
+              step: 'requirements',
+              status: 'running',
+              message: `Removing ${deps.length} pip package(s)…`
+            })
+            const removed = await this.removePipDeps(deps, instanceId, uninstallSignal)
+            this.emitOpProgress({
+              instanceId: instanceId || 'default',
+              step: 'requirements',
+              status: removed.length ? 'done' : 'skipped',
+              message: removed.length
+                ? `Removed pip packages: ${removed.join(', ')}`
+                : 'No matching pip packages were installed'
+            })
+          }
         }
+        deleteNodePack(pack.id)
+        this.emitInstallProgress({
+          phase: 'done',
+          packName: pack.name || idOrName,
+          instanceId: instanceId,
+          op: 'uninstall',
+          message: `Uninstalled ${pack.name || idOrName}`
+        })
+        this.emitOpProgress({
+          instanceId: instanceId || 'default',
+          step: 'done',
+          status: 'done',
+          message: `Uninstalled ${pack.name || idOrName}`
+        })
+        return true
+      } catch (e) {
+        this.emitInstallProgress({
+          phase: 'error',
+          packName: pack.name || idOrName,
+          instanceId: instanceId,
+          op: 'uninstall',
+          message: e instanceof Error ? e.message : String(e)
+        })
+        this.emitOpProgress({
+          instanceId: instanceId || 'default',
+          step: 'done',
+          status: 'failed',
+          message: e instanceof Error ? e.message : String(e)
+        })
+        throw e
       }
-      deleteNodePack(pack.id)
-      this.emitInstallProgress({
-        phase: 'done',
-        packName: pack.name || idOrName,
-        op: 'uninstall',
-        message: `Uninstalled ${pack.name || idOrName}`
-      })
-      this.emitOpProgress({
-        instanceId: instanceId || 'default',
-        step: 'done',
-        status: 'done',
-        message: `Uninstalled ${pack.name || idOrName}`
-      })
-      return true
-    } catch (e) {
-      this.emitInstallProgress({
-        phase: 'error',
-        packName: pack.name || idOrName,
-        op: 'uninstall',
-        message: e instanceof Error ? e.message : String(e)
-      })
-      this.emitOpProgress({
-        instanceId: instanceId || 'default',
-        step: 'done',
-        status: 'failed',
-        message: e instanceof Error ? e.message : String(e)
-      })
-      throw e
+    } finally {
+      this.endOpAbort(instanceId)
     }
   }
 
@@ -1827,250 +2060,468 @@ export class NodePackService extends EventEmitter {
   }
 
   /**
-   * Check every installed pack for an available update.
-   * - registry packs: compare local version with Registry latest_version
+   * Check every installed pack for an available update. 0.1.9 guarantees a
+   * result row for EVERY pack (including disabled/locked/failed) with an
+   * explicit `checkStatus` — a failed check must never read as "up to date".
+   * - registry packs: Registry latest_version (id → repository URL → unique name)
    * - git packs (or packs with .git): git fetch + rev-list behind count
-   * - manager packs with a repository and a .git dir behave as git
+   * git checks run with bounded concurrency (4) and report progress.
    */
   async checkUpdates(instancePathOrId?: string): Promise<NodeUpdateCheckResult[]> {
     const packs = this.list(instancePathOrId)
-    const results: NodeUpdateCheckResult[] = []
     const registryLatest = new Map<string, string>()
+    const registryMatches = new Map<string, { id?: string; latestVersion?: string }>()
 
-    // Warm registry latest versions for packs that have a registryId or match by name.
+    // Warm registry latest versions for packs that have a registryId or match by name/repo.
+    // Live page-1 hints (network) — a failure here must NOT skip the local index.
     try {
       const page = await this.registrySearch({ limit: 100, page: 1 })
       for (const item of page.items) {
-        if (item.id) registryLatest.set(item.id, item.latestVersion || '')
-        if (item.name) registryLatest.set(item.name, item.latestVersion || '')
-      }
-      // Also peek at the local full-catalog index for names not on page 1.
-      try {
-        const { registryIndex } = await import('./registryIndex')
-        await registryIndex.ensure()
-        for (const p of packs) {
-          if (registryLatest.has(p.registryId || '') || registryLatest.has(p.name)) continue
-          const hits = registryIndex.searchPacks(p.name, 5)
-          const exact = hits.find((h) => h.name === p.name || h.id === p.registryId)
-          if (exact?.latestVersion) registryLatest.set(p.name, exact.latestVersion)
-        }
-      } catch {
-        /* index optional */
+        // Only accept entries that actually carry a version — an empty value
+        // would mark the key as "resolved" and suppress the local index peek.
+        if (item.id && item.latestVersion) registryLatest.set(item.id, item.latestVersion)
+        if (item.name && item.latestVersion) registryLatest.set(item.name, item.latestVersion)
       }
     } catch {
-      /* offline / registry down — git checks can still run */
+      /* offline / registry down — the local index can still resolve matches */
     }
-
-    for (const pack of packs) {
-      // Disabled packs are intentionally not updatable: a registry update
-      // re-installs into custom_nodes and would silently re-enable them.
-      if (pack.status === 'disabled') continue
-
-      const gitLike =
-        pack.installSource === 'git' ||
-        pack.installSource === 'manager' ||
-        Boolean(pack.path && existsSync(join(pack.path, '.git')))
-
-      if (pack.locked) {
-        results.push({
-          name: pack.name,
-          id: pack.id,
-          currentVersion: pack.version,
-          latestVersion: pack.latestVersion,
-          updatable: false,
-          updateSource: 'none',
-          reason: 'Pack is locked',
-          reasonKey: 'nodes.locked'
-        })
-        continue
-      }
-
-      if (gitLike && pack.path && existsSync(join(pack.path, '.git'))) {
-        try {
-          const gitBin = resolveGitBinary()
-          const gitEnv = proxyEnv(loadSettings().proxy)
-          await execFileAsync(gitBin, ['-C', pack.path, 'fetch', '--quiet'], {
-            timeout: 30000,
-            env: gitEnv
-          })
-          // Prefer the configured upstream; manually copied clones often have
-          // origin but no tracking branch — fall back to origin/<current branch>.
-          let compareRef = '@{u}'
-          try {
-            await execFileAsync(
-              gitBin,
-              ['-C', pack.path, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'],
-              { timeout: 10000, env: gitEnv }
-            )
-          } catch {
-            const { stdout: branchOut } = await execFileAsync(
-              gitBin,
-              ['-C', pack.path, 'rev-parse', '--abbrev-ref', 'HEAD'],
-              { timeout: 10000, env: gitEnv }
-            )
-            const branch = branchOut.trim()
-            let fallback = ''
-            if (branch && branch !== 'HEAD') {
-              const cand = `origin/${branch}`
-              try {
-                await execFileAsync(
-                  gitBin,
-                  ['-C', pack.path, 'rev-parse', '--verify', '--quiet', cand],
-                  {
-                    timeout: 10000,
-                    env: gitEnv
-                  }
-                )
-                fallback = cand
-              } catch {
-                /* origin branch missing */
-              }
-            }
-            if (!fallback) {
-              results.push({
-                name: pack.name,
-                id: pack.id,
-                currentVersion: pack.version,
-                latestVersion: pack.latestVersion,
-                updatable: false,
-                updateSource: 'git',
-                reason: 'Git checkout has no upstream or origin branch',
-                reasonKey: undefined
-              })
+    // Peek at the local full-catalog index for anything not on page 1.
+    try {
+      const { registryIndex } = await import('./registryIndex')
+      await registryIndex.ensure()
+      for (const p of packs) {
+        if (registryLatest.has(p.registryId || '') || registryLatest.has(p.name)) continue
+        // 1) Exact repository URL match — survives renamed folders / local copies.
+        if (p.repository) {
+          const byRepo = registryIndex.findByRepository(p.repository)
+          if (byRepo) {
+            registryMatches.set(p.name, { id: byRepo.id, latestVersion: byRepo.latestVersion })
+            if (byRepo.latestVersion) {
+              registryLatest.set(p.name, byRepo.latestVersion)
               continue
             }
-            compareRef = fallback
+            // No version on the repo hit → fall through to the name match.
           }
-          const { stdout: behindOut } = await execFileAsync(
-            gitBin,
-            ['-C', pack.path, 'rev-list', '--count', `HEAD..${compareRef}`],
-            { timeout: 10000, env: gitEnv }
-          )
-          const behind = Number(behindOut.trim()) || 0
-          const { stdout: remoteVer } = await execFileAsync(
-            gitBin,
-            ['-C', pack.path, 'describe', '--tags', '--abbrev=0', compareRef],
-            { timeout: 10000, env: gitEnv }
-          ).catch(() => ({ stdout: '' }))
-          const latest = remoteVer.trim() || pack.latestVersion
-          results.push({
-            name: pack.name,
-            id: pack.id,
-            currentVersion: pack.version,
-            latestVersion: latest,
-            updatable: behind > 0,
-            updateSource: 'git',
-            reason: behind > 0 ? `${behind} commit(s) behind` : 'Up to date',
-            reasonKey: behind > 0 ? undefined : 'nodes.upToDate'
+        }
+        // 2) Unique exact name match (ambiguous names are never trusted).
+        const hits = registryIndex.searchPacks(p.name, 5)
+        const exact = hits.filter(
+          (h) => h.name === p.name || (p.registryId && h.id === p.registryId)
+        )
+        if (exact.length === 1 && exact[0].latestVersion) {
+          registryLatest.set(p.name, exact[0].latestVersion)
+          registryMatches.set(p.name, {
+            id: exact[0].id,
+            latestVersion: exact[0].latestVersion
           })
-          continue
-        } catch {
-          /* fall through to registry comparison */
         }
       }
+    } catch {
+      /* index optional */
+    }
 
-      const remote =
-        (pack.registryId && registryLatest.get(pack.registryId)) ||
-        registryLatest.get(pack.name) ||
-        pack.latestVersion
-      if (!remote) {
-        results.push({
-          name: pack.name,
-          id: pack.id,
-          currentVersion: pack.version,
-          updatable: false,
-          updateSource: 'none',
-          reason: 'No remote version information',
-          reasonKey: 'nodes.notUpdatable'
-        })
-        continue
-      }
-      const canRegistry = pack.installSource === 'registry' && Boolean(pack.registryId)
-      const updatable = canRegistry && isUpdateAvailable(pack.version, remote)
-      results.push({
-        name: pack.name,
-        id: pack.id,
-        currentVersion: pack.version,
-        latestVersion: remote,
-        updatable,
-        updateSource: canRegistry ? 'registry' : gitLike ? 'git' : 'none',
-        reason: updatable
-          ? `Update available: ${remote}`
-          : canRegistry
-            ? 'Up to date'
-            : 'Pack is not updatable via Registry or git',
-        reasonKey: updatable
-          ? 'nodes.hasUpdate'
-          : canRegistry
-            ? 'nodes.upToDate'
-            : 'nodes.notUpdatable'
-      })
-      // Persist latestVersion so list() can flag update-available without another round-trip.
-      try {
-        const known = listNodePacks().find((p) => p.id === pack.id || p.name === pack.name)
-        if (known && remote && known.latestVersion !== remote) {
-          upsertNodePack({ ...known, latestVersion: remote, lastCheckedAt: Date.now() })
+    const total = packs.length
+    const results: Array<NodeUpdateCheckResult | undefined> = new Array(total)
+    let done = 0
+    const queue = packs.map((pack, index) => ({ pack, index }))
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const item = queue.shift()
+        if (!item) break
+        try {
+          results[item.index] = await this.checkOnePack(
+            item.pack,
+            registryLatest,
+            registryMatches.get(item.pack.name)
+          )
+        } catch (e) {
+          // Defensive: one pack's unexpected throw must not kill the pass —
+          // every pack still gets an explicit row.
+          results[item.index] = {
+            name: item.pack.name,
+            id: item.pack.id,
+            currentVersion: item.pack.version,
+            updatable: false,
+            updateSource: 'none',
+            checkStatus: 'check-failed',
+            reason: 'Check crashed',
+            error: e instanceof Error ? e.message : String(e)
+          }
         }
-      } catch {
-        /* best-effort */
+        done += 1
+        this.emit('check-progress', {
+          done,
+          total,
+          packName: item.pack.name,
+          instanceId: instancePathOrId || 'default',
+          ts: Date.now()
+        } satisfies NodeCheckProgressEvent)
       }
     }
-    return results
+    // Bounded concurrency: git fetches dominate the runtime and each can burn
+    // up to 30s on a dead remote — 4 workers keep the pass responsive.
+    const workers = Math.max(1, Math.min(4, total))
+    await Promise.all(Array.from({ length: workers }, () => worker()))
+    return results.filter((r): r is NodeUpdateCheckResult => Boolean(r))
   }
 
-  /** Sequentially update every updatable pack. Locked/non-updatable are skipped. */
-  async updateAll(instancePathOrId?: string): Promise<NodeUpdateAllResult[]> {
-    const checks = await this.checkUpdates(instancePathOrId)
-    const out: NodeUpdateAllResult[] = []
+  /** Single-pack check used by checkUpdates (runs in a 4-worker pool). */
+  private async checkOnePack(
+    pack: NodePackRecord,
+    registryLatest: Map<string, string>,
+    registryMatch?: { id?: string; latestVersion?: string }
+  ): Promise<NodeUpdateCheckResult> {
+    const base = { name: pack.name, id: pack.id, currentVersion: pack.version }
+
+    if (pack.status === 'disabled') {
+      // A registry update would reinstall into custom_nodes and silently
+      // re-enable it — report it explicitly instead of hiding the row.
+      return {
+        ...base,
+        updatable: false,
+        updateSource: 'none',
+        checkStatus: 'skipped-disabled',
+        reason: 'Pack is disabled — enable it before updating',
+        reasonKey: 'nodes.packDisabledUpdate'
+      }
+    }
+    if (pack.locked) {
+      return {
+        ...base,
+        latestVersion: pack.latestVersion,
+        updatable: false,
+        updateSource: 'none',
+        checkStatus: 'locked',
+        reason: 'Pack is locked',
+        reasonKey: 'nodes.locked'
+      }
+    }
+
+    const gitLike =
+      pack.installSource === 'git' ||
+      pack.installSource === 'manager' ||
+      Boolean(pack.path && existsSync(join(pack.path, '.git')))
+
+    if (gitLike && pack.path && existsSync(join(pack.path, '.git'))) {
+      try {
+        const gitBin = resolveGitBinary()
+        const gitEnv = proxyEnv(loadSettings().proxy)
+        await execFileAsync(gitBin, ['-C', pack.path, 'fetch', '--quiet'], {
+          timeout: 30000,
+          env: gitEnv
+        })
+        // Prefer the configured upstream; manually copied clones often have
+        // origin but no tracking branch — fall back to origin/<current branch>.
+        let compareRef = '@{u}'
+        try {
+          await execFileAsync(
+            gitBin,
+            ['-C', pack.path, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'],
+            { timeout: 10000, env: gitEnv }
+          )
+        } catch {
+          const { stdout: branchOut } = await execFileAsync(
+            gitBin,
+            ['-C', pack.path, 'rev-parse', '--abbrev-ref', 'HEAD'],
+            { timeout: 10000, env: gitEnv }
+          )
+          const branch = branchOut.trim()
+          let fallback = ''
+          if (branch && branch !== 'HEAD') {
+            const cand = `origin/${branch}`
+            try {
+              await execFileAsync(
+                gitBin,
+                ['-C', pack.path, 'rev-parse', '--verify', '--quiet', cand],
+                { timeout: 10000, env: gitEnv }
+              )
+              fallback = cand
+            } catch {
+              /* origin branch missing */
+            }
+          }
+          if (!fallback) {
+            return {
+              ...base,
+              latestVersion: pack.latestVersion,
+              updatable: false,
+              updateSource: 'git',
+              checkStatus: 'check-failed',
+              reason: 'Git checkout has no upstream or origin branch',
+              error: 'Git checkout has no upstream or origin branch'
+            }
+          }
+          compareRef = fallback
+        }
+        const { stdout: behindOut } = await execFileAsync(
+          gitBin,
+          ['-C', pack.path, 'rev-list', '--count', `HEAD..${compareRef}`],
+          { timeout: 10000, env: gitEnv }
+        )
+        const behind = Number(behindOut.trim()) || 0
+        const { stdout: remoteVer } = await execFileAsync(
+          gitBin,
+          ['-C', pack.path, 'describe', '--tags', '--abbrev=0', compareRef],
+          { timeout: 10000, env: gitEnv }
+        ).catch(() => ({ stdout: '' }))
+        const latest = remoteVer.trim() || pack.latestVersion
+        const result: NodeUpdateCheckResult = {
+          ...base,
+          latestVersion: latest,
+          updatable: behind > 0,
+          updateSource: 'git',
+          checkStatus: behind > 0 ? 'updatable' : 'up-to-date',
+          reason: behind > 0 ? `${behind} commit(s) behind` : 'Up to date',
+          reasonKey: behind > 0 ? undefined : 'nodes.upToDate'
+        }
+        this.persistCheck(pack, latest)
+        return result
+      } catch (e) {
+        // A fetch failure is a FAILED CHECK — never silently "not updatable".
+        const msg = e instanceof Error ? e.message : String(e)
+        return {
+          ...base,
+          latestVersion: pack.latestVersion,
+          updatable: false,
+          updateSource: 'git',
+          checkStatus: 'check-failed',
+          reason: `Git check failed: ${msg.slice(0, 200)}`,
+          error: msg.slice(0, 400)
+        }
+      }
+    }
+
+    const remote =
+      (pack.registryId && registryLatest.get(pack.registryId)) ||
+      registryLatest.get(pack.name) ||
+      registryMatch?.latestVersion ||
+      pack.latestVersion
+    const resolvedRegistryId = pack.registryId || registryMatch?.id
+    if (!remote) {
+      return {
+        ...base,
+        updatable: false,
+        updateSource: 'none',
+        checkStatus: 'unsupported',
+        reason: 'No remote version information',
+        reasonKey: 'nodes.notUpdatable'
+      }
+    }
+    const canRegistry = pack.installSource === 'registry' && Boolean(resolvedRegistryId)
+    const updatable = canRegistry && isUpdateAvailable(pack.version, remote)
+    if (canRegistry) {
+      this.persistCheck(pack, remote, resolvedRegistryId)
+    }
+    return {
+      ...base,
+      latestVersion: remote,
+      updatable,
+      updateSource: canRegistry ? 'registry' : gitLike ? 'git' : 'none',
+      checkStatus: updatable ? 'updatable' : canRegistry ? 'up-to-date' : 'unsupported',
+      reason: updatable
+        ? `Update available: ${remote}`
+        : canRegistry
+          ? 'Up to date'
+          : gitLike
+            ? 'Git checkout is missing — cannot pull'
+            : 'Pack is not updatable via Registry or git',
+      reasonKey: updatable
+        ? 'nodes.hasUpdate'
+        : canRegistry
+          ? 'nodes.upToDate'
+          : 'nodes.notUpdatable'
+    }
+  }
+
+  /** Persist check results so list() can flag update-available without another round-trip. */
+  private persistCheck(pack: NodePackRecord, latestVersion?: string, registryId?: string): void {
     try {
-      this.createSnapshot('auto-pre-update-all', instancePathOrId)
+      const known = listNodePacks().find((p) => p.id === pack.id || p.name === pack.name)
+      if (!known) return
+      const next: NodePackRecord = { ...known, lastCheckedAt: Date.now() }
+      if (latestVersion) next.latestVersion = latestVersion
+      if (registryId && !known.registryId) next.registryId = registryId
+      if (
+        next.latestVersion !== known.latestVersion ||
+        next.registryId !== known.registryId ||
+        !known.lastCheckedAt
+      ) {
+        upsertNodePack(next)
+      }
     } catch {
       /* best-effort */
     }
-    for (const c of checks) {
-      if (!c.updatable) {
-        out.push({ name: c.name, ok: true, skipped: true })
-        continue
-      }
-      this.emitInstallProgress({
-        phase: 'start',
-        packName: c.name,
-        op: 'update',
-        message: `Updating ${c.name}…`
-      })
-      try {
-        await this.update(c.name, undefined, instancePathOrId)
-        this.emitInstallProgress({
-          phase: 'done',
-          packName: c.name,
-          op: 'update',
-          message: `Updated ${c.name}`
-        })
-        out.push({ name: c.name, ok: true })
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e)
-        this.emitInstallProgress({ phase: 'error', packName: c.name, op: 'update', message: msg })
-        out.push({ name: c.name, ok: false, error: msg })
-      }
+  }
+
+  /**
+   * Sequentially update every updatable pack. 0.1.9: a batch context makes
+   * EVERY pack's progress carry `batchIndex/batchTotal/aggregatePercent`, and
+   * lifecycle events (`event:node-update-batch`) let the renderer show the
+   * queue, the current pack and a monotonic overall bar. Cancel stops the
+   * remaining queue after aborting the in-flight pack.
+   */
+  async updateAll(instancePathOrId?: string): Promise<NodeUpdateAllResult[]> {
+    const key = instancePathOrId || 'default'
+    // One batch per instance: a second concurrent "update all" (or a batch
+    // started while a single op is in flight) would abort/clobber the other
+    // operation's controller and misroute cancel.
+    if (this.opBatches.has(key) || this.opAborts.has(key)) {
+      throw codedError('OP_BUSY', 'Another operation is already running for this instance')
     }
+    const batchId = randomUUID()
+    // Reserve the batch slot BEFORE the (slow) check pass: without this, a
+    // single op started during checkUpdates would arm its controller and get
+    // abort-clobbered when the batch loop begins; two updateAlls could also
+    // interleave their check phases.
+    const state = {
+      batchId,
+      index: 0,
+      total: 0,
+      current: undefined as string | undefined,
+      cancelled: false
+    }
+    this.opBatches.set(key, state)
+    const out: NodeUpdateAllResult[] = []
+    try {
+      // Terminal event BEFORE the (slow) check pass: the modal must show a
+      // cancellable "checking" state instead of looking stuck.
+      this.emitBatch({
+        batchId,
+        instanceId: key,
+        phase: 'checking',
+        index: 0,
+        total: 0
+      })
+      const checks = await this.checkUpdates(instancePathOrId)
+      const updatable = checks.filter((c) => c.updatable)
+      state.total = updatable.length
+      this.emitBatch({
+        batchId,
+        instanceId: key,
+        phase: 'start',
+        index: 0,
+        total: updatable.length
+      })
+      // No snapshot for a no-op / already-cancelled batch.
+      if (updatable.length && !state.cancelled) {
+        try {
+          this.createSnapshot('auto-pre-update-all', instancePathOrId)
+        } catch {
+          /* best-effort */
+        }
+      }
+      for (const c of updatable) {
+        if (state.cancelled) {
+          out.push({ name: c.name, ok: false, error: 'cancelled', skipped: true })
+          continue
+        }
+        state.index += 1
+        state.current = c.name
+        this.emitBatch({
+          batchId,
+          instanceId: key,
+          phase: 'pack-start',
+          index: state.index,
+          total: state.total,
+          packName: c.name
+        })
+        try {
+          await this.update(c.name, undefined, instancePathOrId, { fromBatch: true })
+          out.push({ name: c.name, ok: true, checkStatus: c.checkStatus })
+          this.emitBatch({
+            batchId,
+            instanceId: key,
+            phase: 'pack-done',
+            index: state.index,
+            total: state.total,
+            packName: c.name,
+            ok: true
+          })
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e)
+          out.push({ name: c.name, ok: false, error: msg, checkStatus: c.checkStatus })
+          this.emitBatch({
+            batchId,
+            instanceId: key,
+            phase: 'pack-done',
+            index: state.index,
+            total: state.total,
+            packName: c.name,
+            ok: false,
+            error: msg
+          })
+          if ((e as { code?: string })?.code === 'OP_CANCELLED') state.cancelled = true
+        }
+      }
+      // Preserve the legacy shape: one entry per non-updatable check.
+      for (const c of checks) {
+        if (!c.updatable) {
+          out.push({ name: c.name, ok: true, skipped: true, checkStatus: c.checkStatus })
+        }
+      }
+    } catch (e) {
+      // A failure before/during the queue (bad check pass, listener throw)
+      // reports a terminal batch event once, then cleans the slot.
+      this.emitBatch({
+        batchId,
+        instanceId: key,
+        phase: 'batch-error',
+        index: state.index,
+        total: state.total,
+        error: e instanceof Error ? e.message : String(e)
+      })
+      throw e
+    } finally {
+      this.opBatches.delete(key)
+    }
+    const ok = out.filter((r) => r.ok && !r.skipped).length
+    const fail = out.filter((r) => !r.ok && !r.skipped).length
+    const skip = out.filter((r) => r.skipped).length
+    const checkFailed = out.filter((r) => r.checkStatus === 'check-failed').length
+    this.emitBatch({
+      batchId,
+      instanceId: key,
+      phase: 'batch-done',
+      index: state.index,
+      total: state.total,
+      ok: fail === 0,
+      summary: { ok, fail, skip, cancelled: state.cancelled, checkFailed }
+    })
     return out
   }
 
-  async update(idOrName: string, version?: string, instanceId?: string): Promise<NodePackRecord> {
+  async update(
+    idOrName: string,
+    version?: string,
+    instanceId?: string,
+    internal?: { fromBatch?: boolean }
+  ): Promise<NodePackRecord> {
+    const guardKey = instanceId || 'default'
+    // Exclusivity: while a batch (or another op) runs for this instance, a
+    // second entry point must not abort it, clobber its stream, or inherit
+    // its batch context. updateAll passes {fromBatch:true} for its own calls.
+    if (!internal?.fromBatch && (this.opBatches.has(guardKey) || this.opAborts.has(guardKey))) {
+      throw codedError('OP_BUSY', 'Another operation is already running for this instance')
+    }
     this.emitInstallProgress({
       phase: 'start',
       packName: idOrName,
+      instanceId: instanceId,
       op: 'update',
       message: `Updating ${idOrName}…`
     })
     // Fresh op-progress stream so the shared modal can finish (git-pull path
-    // never emitted a terminal 'done' before).
-    this.opProgressMap.delete(instanceId || 'default')
+    // never emitted a terminal 'done' before). Inside a running batch the
+    // stream is reset IN PLACE instead — runId + terminal log continuity.
+    const key = instanceId || 'default'
+    if (this.opBatches.has(key)) this.resetOpSteps(key, idOrName)
+    else this.opProgressMap.delete(key)
     this.emitOpProgress({
       instanceId: instanceId || 'default',
       step: 'clone',
       status: 'running',
-      message: `Updating ${idOrName}…`
+      message: `Updating ${idOrName}…`,
+      packName: idOrName
     })
     const signal = this.beginOpAbort(instanceId)
     try {
@@ -2078,6 +2529,7 @@ export class NodePackService extends EventEmitter {
       this.emitInstallProgress({
         phase: 'done',
         packName: rec.name || idOrName,
+        instanceId: instanceId,
         op: 'update',
         message: `Updated ${rec.name || idOrName}`
       })
@@ -2096,6 +2548,7 @@ export class NodePackService extends EventEmitter {
       this.emitInstallProgress({
         phase: 'error',
         packName: idOrName,
+        instanceId: instanceId,
         op: 'update',
         message: e instanceof Error ? e.message : String(e)
       })
@@ -2112,17 +2565,55 @@ export class NodePackService extends EventEmitter {
   }
 
   /**
+   * Run a git command with live output: lines stream into the op log, and
+   * "Receiving objects: N%" / "Resolving deltas: N%" drive the step fraction
+   * so the progress bar moves during a long fetch instead of sitting at 0%.
+   */
+  private async gitRunStreaming(
+    gitBin: string,
+    args: string[],
+    instanceId: string | undefined,
+    opts: { timeout: number; onPercent?: (pct: number) => void; signal?: AbortSignal }
+  ): Promise<string> {
+    const sink = (line: string): void => {
+      this.opLog(line, instanceId)
+      const recv = /Receiving objects:\s+(\d+)%/.exec(line)
+      if (recv && opts.onPercent) opts.onPercent(Number(recv[1]))
+      const delta = /Resolving deltas:\s+(\d+)%/.exec(line)
+      if (delta && opts.onPercent) opts.onPercent(60 + Math.round(Number(delta[1]) * 0.4))
+    }
+    return runStreaming(
+      gitBin,
+      args,
+      { timeout: opts.timeout, onLine: sink, signal: opts.signal },
+      async (c, a, o) =>
+        execFileAsync(c, a, {
+          timeout: o?.timeout,
+          maxBuffer: 20 * 1024 * 1024,
+          windowsHide: true,
+          env: proxyEnv(loadSettings().proxy)
+        }).then((r) => r.stdout)
+    )
+  }
+
+  /**
    * Bring a git pack up to date: `pull --ff-only` when a tracking branch is
    * configured; manually copied clones (origin exists, no upstream) fall back
    * to `fetch origin` + `merge --ff-only origin/<branch>`.
    */
-  private async gitPullOrMerge(gitBin: string, cwd: string, instanceId?: string): Promise<void> {
-    const env = proxyEnv(loadSettings().proxy)
+  private async gitPullOrMerge(
+    gitBin: string,
+    cwd: string,
+    instanceId?: string,
+    onProgress?: (fraction: number) => void,
+    signal?: AbortSignal
+  ): Promise<void> {
+    const mapPct = (pct: number): void => onProgress?.(0.1 + (pct / 100) * 0.85)
     try {
-      await execFileAsync(gitBin, ['-C', cwd, 'pull', '--ff-only'], {
+      await this.gitRunStreaming(gitBin, ['-C', cwd, 'pull', '--ff-only'], instanceId, {
         timeout: 60000,
-        maxBuffer: 20 * 1024 * 1024,
-        env
+        onPercent: mapPct,
+        signal
       })
       return
     } catch (e) {
@@ -2132,20 +2623,22 @@ export class NodePackService extends EventEmitter {
       const { stdout: branchOut } = await execFileAsync(
         gitBin,
         ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'],
-        { timeout: 10000, env }
+        { timeout: 10000, env: proxyEnv(loadSettings().proxy), signal }
       )
       const branch = branchOut.trim()
       if (!branch || branch === 'HEAD') throw e
-      await execFileAsync(gitBin, ['-C', cwd, 'fetch', 'origin', '--quiet'], {
+      await this.gitRunStreaming(gitBin, ['-C', cwd, 'fetch', 'origin', '--quiet'], instanceId, {
         timeout: 60000,
-        env
+        onPercent: mapPct,
+        signal
       })
-      await execFileAsync(gitBin, ['-C', cwd, 'merge', '--ff-only', `origin/${branch}`], {
-        timeout: 60000,
-        maxBuffer: 20 * 1024 * 1024,
-        env
-      })
-      this.opLog?.(`pull had no upstream — fast-forwarded to origin/${branch}`, instanceId)
+      await this.gitRunStreaming(
+        gitBin,
+        ['-C', cwd, 'merge', '--ff-only', `origin/${branch}`],
+        instanceId,
+        { timeout: 60000, onPercent: mapPct, signal }
+      )
+      this.opLog(`pull had no upstream — fast-forwarded to origin/${branch}`, instanceId)
     }
   }
 
@@ -2153,7 +2646,7 @@ export class NodePackService extends EventEmitter {
     idOrName: string,
     version?: string,
     instanceId?: string,
-    _signal?: AbortSignal
+    signal?: AbortSignal
   ): Promise<NodePackRecord> {
     const packs = this.list(instanceId)
     const pack = packs.find((p) => p.id === idOrName || p.name === idOrName)
@@ -2187,7 +2680,20 @@ export class NodePackService extends EventEmitter {
         /* no rev — skip the reset safety net */
       }
       try {
-        await this.gitPullOrMerge(gitBin, pack.path, instanceId)
+        await this.gitPullOrMerge(
+          gitBin,
+          pack.path,
+          instanceId,
+          (fraction) => this.setStepFraction('clone', fraction, instanceId),
+          signal
+        )
+        this.emitOpProgress({
+          instanceId: instanceId || 'default',
+          step: 'clone',
+          status: 'done',
+          message: 'Repository updated',
+          packName: pack.name
+        })
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
         if (oldRev) {
@@ -2210,7 +2716,8 @@ export class NodePackService extends EventEmitter {
         pack.path,
         pack.installSource === 'registry' ? 'git' : pack.installSource,
         pack.registryId,
-        instanceId
+        instanceId,
+        { signal }
       )
     }
     if (pack.installSource === 'registry' && pack.registryId && pack.path) {
@@ -2228,12 +2735,25 @@ export class NodePackService extends EventEmitter {
       })()
       renameSync(pack.path, trash)
       try {
-        const next = await this.install({
-          id: pack.registryId,
-          version,
-          source: 'registry',
-          instanceId
+        // The reinstall is the middle of THIS update op: reuse the stream so the
+        // modal doesn't reset (runId/log) halfway, and close the inapplicable
+        // git step accordingly. Signal ownership stays with the outer op.
+        this.emitOpProgress({
+          instanceId: instanceId || 'default',
+          step: 'clone',
+          status: 'skipped',
+          message: 'Reinstalling from registry…',
+          packName: pack.name
         })
+        const next = await this.install(
+          {
+            id: pack.registryId,
+            version,
+            source: 'registry',
+            instanceId
+          },
+          { reuseStream: true, signal }
+        )
         // Clean backup only after successful reinstall
         try {
           rmSync(trash, { recursive: true, force: true })
@@ -2241,6 +2761,7 @@ export class NodePackService extends EventEmitter {
           this.emitInstallProgress({
             phase: 'done',
             packName: pack.name,
+            instanceId: instanceId,
             message: `Updated, but backup cleanup failed — kept ${trash}`
           })
         }
@@ -2281,6 +2802,7 @@ export class NodePackService extends EventEmitter {
           this.emitInstallProgress({
             phase: 'error',
             packName: pack.name,
+            instanceId: instanceId,
             message: `Update failed AND rollback failed (${rbMsg}) — backup kept at ${trash}`
           })
           throw new Error(
@@ -2290,6 +2812,7 @@ export class NodePackService extends EventEmitter {
         this.emitInstallProgress({
           phase: 'error',
           packName: pack.name,
+          instanceId: instanceId,
           message: rolledBack ? `Update failed — rolled back to previous version` : 'Update failed'
         })
         throw e

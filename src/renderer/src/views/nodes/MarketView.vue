@@ -31,7 +31,7 @@ import {
   describeNodeError,
   hasDepsSkippedIssue
 } from '@/composables/useComfyUpdate'
-import ComfyUpdateProgressModal from '@/components/ComfyUpdateProgressModal.vue'
+import NodeOpProgressModal from '@/components/NodeOpProgressModal.vue'
 import ListSkeleton from '@/components/ListSkeleton.vue'
 import { useAppStore } from '@/stores/app'
 import type {
@@ -80,8 +80,13 @@ const showOpModal = ref(false)
 const opModalTitle = ref('')
 const installingItem = ref<string | null>(null)
 const updatingItem = ref<string | null>(null)
-const { nodeInstallingPack, nodeUpdatingPack, nodeInstallMessage, nodeUpdateMessage, progress } =
-  useComfyUpdate()
+const {
+  nodeInstallingPack,
+  nodeUpdatingPack,
+  nodeInstallMessage,
+  nodeUpdateMessage,
+  selectNodeOpInstance
+} = useComfyUpdate()
 
 // ---- source tab ----
 const sourceTab = ref<'registry' | 'manager'>('registry')
@@ -416,7 +421,8 @@ async function install(item: DisplayItem): Promise<void> {
     }
     await loadCurrentPage()
   } catch (err) {
-    showOpModal.value = false
+    // Modal stays open with the failure log — except OP_BUSY (nothing ran).
+    if ((err as { code?: string })?.code === 'OP_BUSY') showOpModal.value = false
     message.error(describeNodeError(t, err))
   } finally {
     installingItem.value = null
@@ -446,25 +452,33 @@ async function resolveLocalPack(
 async function updateItem(item: DisplayItem): Promise<void> {
   if (updatingItem.value) return
   updatingItem.value = item.id
-  opModalTitle.value = t('nodes.updating')
-  showOpModal.value = true
+  // Snapshot the target instance: resolveLocalPack and the update call must
+  // act on the SAME instance even if the header selection changes mid-await.
+  const forInst = store.activeInstanceId || undefined
   try {
     const local = await resolveLocalPack(item)
     if (!local) {
-      showOpModal.value = false
       message.error(t('nodes.updateFailed', { error: 'Pack not found locally' }))
       return
     }
     if (local.locked) {
-      showOpModal.value = false
       message.warning(t('nodes.locked'))
       return
     }
-    await ipc('node.update', local.id, undefined, store.activeInstanceId || undefined)
+    if ((store.activeInstanceId || undefined) !== forInst) {
+      message.warning(t('nodes.opBusy'))
+      return
+    }
+    // Only open the modal once a real operation is about to start — opening
+    // early showed the previous op's stale log for these early returns.
+    opModalTitle.value = t('nodes.updating')
+    showOpModal.value = true
+    await ipc('node.update', local.id, undefined, forInst)
     message.success(t('nodes.updateDone', { name: local.name }))
     await loadCurrentPage()
   } catch (err) {
-    showOpModal.value = false
+    if ((err as { code?: string })?.code === 'OP_BUSY') showOpModal.value = false
+    // Modal stays open with the failure log (0.1.9 — manual close only).
     const msg = describeNodeError(t, err)
     const backup = /backup at (.+)$/i.exec(msg)
     if (/rollback (also failed|FAILED)/i.test(msg) && backup) {
@@ -489,6 +503,9 @@ function applyRouteQuery(): boolean {
 }
 
 onMounted(() => {
+  // Op-modal must follow THIS view's active instance, not whatever stream the
+  // NodesView last viewed (0.1.9 per-instance op tracking).
+  selectNodeOpInstance(store.activeInstanceId || '')
   offProgress = onIpc(IPC_EVENTS.registryIndexProgress, (p) => {
     const ev = p as { done: number; total: number; count: number; ready?: boolean }
     indexProgress.value = ev
@@ -548,11 +565,11 @@ watch(
   }
 )
 
+// 0.1.9: node-op modal never auto-closes — success/failure both keep the log
+// visible until the user closes it (ComfyUI-Manager terminal behaviour).
 watch(
-  () => progress.value?.status,
-  (s) => {
-    if (s === 'done' || s === 'failed') showOpModal.value = false
-  }
+  () => store.instanceSwitchTick,
+  () => selectNodeOpInstance(store.activeInstanceId || '')
 )
 
 onUnmounted(() => offProgress?.())
@@ -621,6 +638,9 @@ onUnmounted(() => offProgress?.())
             <span v-if="nodeUpdateMessage"> — {{ nodeUpdateMessage }}</span>
           </template>
         </div>
+        <NButton size="tiny" secondary @click="showOpModal = true">
+          {{ $t('nodes.viewProgress') }}
+        </NButton>
       </div>
 
       <!-- registry index progress -->
@@ -760,7 +780,7 @@ onUnmounted(() => offProgress?.())
         </template>
       </div>
     </div>
-    <ComfyUpdateProgressModal v-model:show="showOpModal" :title="opModalTitle" />
+    <NodeOpProgressModal v-model:show="showOpModal" :title="opModalTitle" mode="single" />
   </div>
 </template>
 

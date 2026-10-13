@@ -42,19 +42,71 @@ import type {
   ComfyLogLine,
   ComfyUpdateInfo,
   EnvCreateRequest,
-  LaunchCommandPreview
+  LaunchCommandPreview,
+  LaunchProfile
 } from '@shared/types'
+import LaunchProfileEditor from '@/components/LaunchProfileEditor.vue'
+import { LAUNCH_ARG_ERROR_KEYS, launchArgWarningKey } from '@shared/launchArgs'
 
 const route = useRoute()
 const router = useRouter()
 const store = useAppStore()
 const message = useMessage()
 const { t } = useI18n()
-const { launch, stop, busy } = useLaunch()
+const { launch, stop, restart, busy } = useLaunch()
 const loading = ref(true)
 const logs = ref<ComfyLogLine[]>([])
 const instance = ref<ComfyInstanceInfo | null>(null)
 const preview = ref<LaunchCommandPreview | null>(null)
+// ---------- 0.1.9: structured launch tuning (detail-page panel) ----------
+const profileDraft = ref<LaunchProfile>({})
+const savingProfile = ref(false)
+let profileSyncedFor = ''
+
+function warningText(w: { code: string; flag: string }): string {
+  return t(launchArgWarningKey(w.code), { flag: w.flag })
+}
+
+function errorCodeLabel(e: { code: string; flag?: string }): string {
+  if (e.code === 'invalid-number') return t('launchArgs.errInvalidNumber', { flag: e.flag || '' })
+  return t(LAUNCH_ARG_ERROR_KEYS[e.code] || 'launchArgs.errGeneric', { flag: e.flag || '' })
+}
+
+async function saveProfile(): Promise<boolean> {
+  const target = instance.value
+  if (!target) return false
+  savingProfile.value = true
+  try {
+    const profile = Object.keys(profileDraft.value).length ? { ...profileDraft.value } : undefined
+    await ipc('instance.save', { ...target, launchProfile: profile })
+    // The route may have switched during the await — only touch the view state
+    // when we're still on the instance this save belongs to.
+    if (instance.value?.id === target.id) {
+      instance.value = { ...instance.value, launchProfile: profile }
+      profileSyncedFor = target.id
+      message.success(t('instance.configSaved'))
+      if (instanceRunning.value) message.info(t('launchArgs.restartToApply'))
+    }
+    await refresh()
+    return true
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+    return false
+  } finally {
+    savingProfile.value = false
+  }
+}
+
+async function restartWithProfile(): Promise<void> {
+  const target = instance.value
+  if (!target) return
+  const saved = await saveProfile()
+  // Never restart with stale config after a failed save, and never restart the
+  // wrong instance when the route switched mid-flight.
+  if (!saved || instance.value?.id !== target.id) return
+  await restart(target)
+  await refresh()
+}
 
 const id = computed(() => String(route.params.id || ''))
 const instanceRunning = computed(() => instance.value?.status === 'running')
@@ -127,6 +179,12 @@ async function refresh(): Promise<void> {
     // Ignore stale responses after the route switched to another instance.
     if (seq !== refreshSeq || forId !== id.value) return
     instance.value = store.instances.find((i) => i.id === forId) || null
+    // Sync the profile draft only when the route switches to another instance,
+    // so background refreshes can never clobber unsaved edits.
+    if (profileSyncedFor !== forId) {
+      profileSyncedFor = forId
+      profileDraft.value = { ...(instance.value?.launchProfile || {}) }
+    }
     const logsResult = await ipc('instance.getLogs', forId, 400)
     if (seq !== refreshSeq || forId !== id.value) return
     logs.value = logsResult
@@ -608,11 +666,50 @@ watch(
                 <div class="cmd-box">
                   <div class="mono cmd-cwd">cwd: {{ preview.cwd }}</div>
                   <pre class="mono cmd-line">{{ preview.commandLine }}</pre>
+                  <div v-if="preview.validationErrors?.length" class="cmd-errs">
+                    <div v-for="(e, i) in preview.validationErrors" :key="i" class="cmd-err">
+                      • {{ errorCodeLabel(e) }}
+                    </div>
+                  </div>
+                  <div v-if="preview.validationWarnings?.length" class="cmd-warns">
+                    <div v-for="(w, i) in preview.validationWarnings" :key="i" class="cmd-warn">
+                      • {{ warningText(w) }}
+                    </div>
+                  </div>
                   <NButton size="tiny" secondary @click="copyCommand">
                     <template #icon><NIcon :component="TerminalOutline" /></template>
                     {{ $t('instance.copyCmd') }}
                   </NButton>
                 </div>
+              </NCollapseItem>
+            </NCollapse>
+
+            <!-- 0.1.9: structured launch tuning lives here too, not just in the
+                 edit modal — same editor, save + restart-required hint. -->
+            <NCollapse class="cmd-collapse">
+              <NCollapseItem :title="$t('launchArgs.title')" name="launchArgs">
+                <LaunchProfileEditor
+                  v-model="profileDraft"
+                  :extra-args="instance?.extraArgs || []"
+                />
+                <NSpace justify="end" style="margin-top: 10px">
+                  <NButton
+                    size="small"
+                    secondary
+                    :disabled="!instanceRunning"
+                    @click="restartWithProfile"
+                  >
+                    {{ $t('instance.restart') }}
+                  </NButton>
+                  <NButton
+                    size="small"
+                    type="primary"
+                    :loading="savingProfile"
+                    @click="saveProfile"
+                  >
+                    {{ $t('common.save') }}
+                  </NButton>
+                </NSpace>
               </NCollapseItem>
             </NCollapse>
           </section>
@@ -885,5 +982,21 @@ watch(
 
 .url-line {
   word-break: break-all;
+}
+.cmd-warns {
+  margin-top: 6px;
+}
+.cmd-errs {
+  margin-top: 6px;
+}
+.cmd-err {
+  font-size: 12px;
+  color: $color-danger;
+  line-height: 1.7;
+}
+.cmd-warn {
+  font-size: 12px;
+  color: $color-warning;
+  line-height: 1.7;
 }
 </style>

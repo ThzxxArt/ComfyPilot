@@ -158,12 +158,17 @@ beforeEach(() => {
 })
 
 describe('findZipSlipEntry residual branches', () => {
-  it('ignores blank entries and flags embedded-dot hops after normalize', () => {
+  it('ignores blank entries and flags dot-only parent hops (embedded dots are names)', () => {
     expect(findZipSlipEntry(['', 'ok.txt'])).toBeNull()
-    // `x..y` is not a raw `..` hop and survives segment normalize,
-    // but normalizePathEverySegment turns it into a parent hop.
-    expect(findZipSlipEntry(['foo/x..y/bar'])).toBeTruthy()
-    expect(findZipSlipEntry(['a..b'])).toBeTruthy()
+    // `x..y` / `a..b` are ordinary names (no path escape) — 0.1.9 sanitizer
+    // only treats dot/space-only segments as parent hops.
+    expect(findZipSlipEntry(['foo/x..y/bar'])).toBeNull()
+    expect(findZipSlipEntry(['a..b'])).toBeNull()
+    // Real hops stay blocked in every spelling.
+    expect(findZipSlipEntry(['..'])).toBeTruthy()
+    expect(findZipSlipEntry(['a/../b'])).toBeTruthy()
+    expect(findZipSlipEntry(['...'])).toBeTruthy()
+    expect(findZipSlipEntry(['.. '])).toBeTruthy()
   })
 
   it('treats trailing directory separators as empty and safe', () => {

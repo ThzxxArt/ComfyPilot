@@ -346,6 +346,15 @@ onMounted(async () => {
                 <div class="hint">{{ t('settings.modelScanRootsHint') }}</div>
               </div>
             </NFormItem>
+            <NFormItem :label="t('settings.outputScanDepth')">
+              <NInputNumber
+                v-model:value="form.outputScanDepth"
+                :min="2"
+                :max="10"
+                style="width: 160px"
+              />
+              <div class="hint">{{ t('settings.outputScanDepthHint') }}</div>
+            </NFormItem>
           </NForm>
         </NCard>
         <NCard :title="t('settings.network')" class="card" size="small">

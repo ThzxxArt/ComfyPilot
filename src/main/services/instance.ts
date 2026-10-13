@@ -11,7 +11,7 @@ import {
   mkdirSync,
   rmSync
 } from 'fs'
-import { join, dirname, resolve } from 'path'
+import { join, dirname, resolve, isAbsolute } from 'path'
 import { homedir } from 'os'
 import net from 'net'
 import type {
@@ -24,6 +24,7 @@ import type {
   InstanceStatus,
   LaunchCommandPreview,
   LaunchOptions,
+  LaunchProfile,
   PortCheckResult,
   WaitReadyResult
 } from '@shared/types'
@@ -39,8 +40,23 @@ import { resolveInsideAnyRoot } from './security'
 import { proxyEnv } from './proxy'
 import { findInRuntimes } from './bootstrap'
 import { COMFY_DEFAULT_PORTS, LAUNCH_TEMPLATES } from '@shared/constants'
+import { renderLaunchProfile, validateLaunchArgs, warnLaunchArgs } from '@shared/launchArgs'
 
 const execFileAsync = promisify(execFile)
+
+/** Drop undefined/default-only fields so instances.jsonc stays readable. */
+export function normalizeLaunchProfile(profile?: LaunchProfile): LaunchProfile | undefined {
+  if (!profile) return undefined
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(profile)) {
+    if (value === undefined || value === null || value === '') continue
+    if (value === 'default') continue
+    // Explicit `false` is KEPT: for toggle fields (e.g. disableAutoLaunch) it
+    // is a real user decision, distinct from "unset".
+    out[key] = value
+  }
+  return Object.keys(out).length ? (out as LaunchProfile) : undefined
+}
 
 /** Quote a single argv for display in a command-line preview (exported for tests). */
 export function quoteCommandLineArg(s: string): string {
@@ -305,7 +321,14 @@ export class InstanceService extends EventEmitter {
     const python = this.resolvePython(config)
     const args = this.buildArgs(config)
     const commandLine = [python, ...args].map(quoteCommandLineArg).join(' ')
-    return { python, args, cwd: config.path, commandLine }
+    return {
+      python,
+      args,
+      cwd: config.path,
+      commandLine,
+      validationErrors: validateLaunchArgs(args),
+      validationWarnings: warnLaunchArgs(args)
+    }
   }
 
   /**
@@ -379,7 +402,8 @@ export class InstanceService extends EventEmitter {
       notes: config.notes || '',
       autoStart: Boolean(config.autoStart),
       frontendVersion: config.frontendVersion || '',
-      pinned: Boolean(config.pinned)
+      pinned: Boolean(config.pinned),
+      launchProfile: normalizeLaunchProfile(config.launchProfile)
     }
     upsertInstanceConfig(next)
     return this.toInfo(this.ensureRuntime(next))
@@ -754,21 +778,63 @@ export class InstanceService extends EventEmitter {
     return resolveInstancePythonPath(config)
   }
 
+  /**
+   * Throw codedError-style LAUNCH_ARGS_INVALID when the final argv contains
+   * argparse-fatal conflicts. Shared by the spawn path and the port-relocation
+   * path (which must validate before persisting the new port).
+   */
+  private assertLaunchArgsValid(rt: RuntimeEntry, args: string[]): void {
+    const argErrors = validateLaunchArgs(args)
+    if (!argErrors.length) return
+    const err = new Error(
+      `Invalid launch arguments: ${argErrors
+        .map((e) => (e.flag ? `${e.code} (${e.flag})` : e.code))
+        .join(', ')}`
+    ) as Error & { code?: string }
+    err.code = 'LAUNCH_ARGS_INVALID'
+    rt.lastError = err.message
+    rt.status = 'error'
+    this.pushLog(rt, 'error', err.message)
+    this.emitStatus(rt)
+    throw err
+  }
+
   private buildArgs(config: ComfyInstanceConfig): string[] {
-    const args = [
-      join(config.path, 'main.py'),
-      '--port',
-      String(config.port || 8188),
-      '--listen',
-      config.listen || '127.0.0.1'
-    ]
+    const args = [join(config.path, 'main.py'), '--port', String(config.port || 8188)]
     const template = LAUNCH_TEMPLATES.find((t) => t.id === config.argTemplateId)
-    if (template) args.push(...template.args)
+    const templateArgs = template?.args || []
+    // Dedupe `--listen`: the lan template brings its own 0.0.0.0 — pushing the
+    // configured listen first made the printed command line ambiguous.
+    if (!templateArgs.includes('--listen')) args.push('--listen', config.listen || '127.0.0.1')
+    args.push(...templateArgs)
+    // Structured tuning renders before free-text extraArgs so an explicit
+    // override in extraArgs still wins by being last.
+    const profileArgs = renderLaunchProfile(config.launchProfile)
+    args.push(...profileArgs)
     const extra = Array.isArray(config.extraArgs)
       ? config.extraArgs
       : String(config.extraArgs || '')
           .split(/\s+/)
           .filter(Boolean)
+    // Explicitly load the instance's extra_model_paths.yaml when it exists, so
+    // a custom cwd / --base-directory can never silently lose the model paths.
+    const yamlPath = join(config.path, 'extra_model_paths.yaml')
+    const declared = [...templateArgs, ...profileArgs, ...extra].includes(
+      '--extra-model-paths-config'
+    )
+    if (!declared && existsSync(yamlPath)) {
+      args.push('--extra-model-paths-config', yamlPath)
+    }
+    // Default: ComfyUI must not open a browser tab on its own — ComfyPilot owns
+    // window/browser opening. Skipped when the user declared either side of the
+    // flag explicitly (template / profile / free text) and when the profile
+    // explicitly opted out (disableAutoLaunch=false keeps ComfyUI's own default).
+    const autoLaunchDeclared = [...templateArgs, ...profileArgs, ...extra].some(
+      (a) => a === '--auto-launch' || a === '--disable-auto-launch'
+    )
+    if (!autoLaunchDeclared && config.launchProfile?.disableAutoLaunch !== false) {
+      args.push('--disable-auto-launch')
+    }
     if (extra.length) args.push(...extra)
     return args
   }
@@ -998,13 +1064,16 @@ export class InstanceService extends EventEmitter {
       }
       if (opts?.relocatePort) {
         const next = await this.suggestPort()
+        effectivePort = next
+        const nextConfig: ComfyInstanceConfig = { ...config, port: next }
+        // Validate BEFORE persisting: an argparse-fatal combo must not leave a
+        // half-applied port change behind when the launch is refused.
+        this.assertLaunchArgsValid(rt, this.buildArgs(nextConfig))
         this.pushLog(
           rt,
           'warn',
           `Port ${effectivePort} is in use — relocating to ${next} (persisted to instance config)`
         )
-        effectivePort = next
-        const nextConfig: ComfyInstanceConfig = { ...config, port: next }
         upsertInstanceConfig(nextConfig)
         rt.config = nextConfig
       } else {
@@ -1031,6 +1100,39 @@ export class InstanceService extends EventEmitter {
 
     const python = this.resolvePython(rt.config)
     const args = this.buildArgs(rt.config)
+    // Refuse argparse-fatal combos (mutually exclusive groups) BEFORE spawn —
+    // ComfyUI would otherwise exit instantly with an opaque usage error.
+    this.assertLaunchArgsValid(rt, args)
+    // Advisories never block: unknown/recent flags may still be perfectly valid
+    // (version drift), so they only land in the instance log.
+    for (const w of warnLaunchArgs(args)) {
+      this.pushLog(
+        rt,
+        'warn',
+        w.code === 'unknown-flag'
+          ? `Unrecognized flag ${w.flag}`
+          : w.code === 'duplicate-listen'
+            ? 'Multiple --listen flags — the last one wins'
+            : `Flag ${w.flag} requires a recent ComfyUI build`
+      )
+    }
+    // Path-valued flags that point nowhere usually mean a typo'd path; warn.
+    const pathFlags = new Set([
+      '--extra-model-paths-config',
+      '--output-directory',
+      '--input-directory',
+      '--temp-directory',
+      '--base-directory'
+    ])
+    for (let i = 0; i < args.length - 1; i++) {
+      if (!pathFlags.has(args[i])) continue
+      const p = args[i + 1]
+      if (!p || p.startsWith('--')) continue
+      const abs = isAbsolute(p) ? p : resolve(rt.config.path, p)
+      if (!existsSync(abs)) {
+        this.pushLog(rt, 'warn', `${args[i]} path does not exist: ${abs}`)
+      }
+    }
 
     try {
       const child = spawn(python, args, {

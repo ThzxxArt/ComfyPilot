@@ -58,8 +58,44 @@ function has(path) {
 }
 const dynamicDomains = {
   'status.*': ['stopped', 'starting', 'running', 'error', 'unknown', 'remote'],
-  'launchTpl.*.name': ['default', 'preview-taesd', 'manager', 'offline', 'lan', 'lowvram', 'cpu'],
-  'launchTpl.*.desc': ['default', 'preview-taesd', 'manager', 'offline', 'lan', 'lowvram', 'cpu'],
+  'launchTpl.*.name': [
+    'default',
+    'preview-taesd',
+    'manager',
+    'offline',
+    'lan',
+    'lowvram',
+    'vram-save',
+    'cache-none',
+    'cpu'
+  ],
+  'launchTpl.*.desc': [
+    'default',
+    'preview-taesd',
+    'manager',
+    'offline',
+    'lan',
+    'lowvram',
+    'vram-save',
+    'cache-none',
+    'cpu'
+  ],
+  'launchArgs.*': [
+    'warnUnknownFlag',
+    'warnRecentFlag',
+    'warnDuplicateListen',
+    'errVramConflict',
+    'errCacheConflict',
+    'errAttentionConflict',
+    'errUnetConflict',
+    'errVaeConflict',
+    'errTextEncConflict',
+    'errFpConflict',
+    'errUpcastConflict',
+    'errCudaMallocConflict',
+    'errInvalidNumber',
+    'errGeneric'
+  ],
   'starterModels.*.desc': ['sd15', 'sdxl', 'flux'],
   'install.torchChannels.*': ['cu130', 'cu126', 'cu124', 'rocm', 'xpu', 'mps', 'cpu'],
   'stepMsg.*': [
@@ -147,7 +183,6 @@ const dynamicDomains = {
     'confirmUpdate',
     'confirmUpdateAll',
     'batchDone',
-    'batchSummary',
     'restoreHint'
   ],
   'gpu.*': [

@@ -1,7 +1,7 @@
 # ComfyPilot
 
 > **ComfyUI 全能管理器** — 本机 ComfyUI 生产线的控制塔  
-> TypeScript · Vue 3 · Electron · Naive UI · MIT · v0.1.8
+> TypeScript · Vue 3 · Electron · Naive UI · MIT · v0.1.9
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-4f6ef7)](./LICENSE)
 
@@ -35,13 +35,13 @@ ComfyPilot **不替代** ComfyUI 节点工作台，而是管理它的整套生�
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **总览 Dashboard**   | 空态三步引导、启动器大卡（一键启动并打开 Frontend）、启动中阶段与日志、实例 / 模型 / 节点 / CPU·内存·显存一屏掌握                                                              |
 | **一键装机 Install** | **无需预装 Python / Git**：自动下载便携运行时、zip 获取 ComfyUI、按 GPU 推荐 torch、镜像测速、细粒度进度、完成后一键启动 + 推荐基础模型                                        |
-| **实例 Instances**   | 发现候选、启动并打开、就绪探测、端口冲突自愈、启动命令预览与导出脚本、热编辑、置顶/搜索、批量启停、环境探测、诊断包、**检查/更新 ComfyUI 本体（备份-回滚）**、**一键修复环境** |
+| **实例 Instances**   | 发现候选、启动并打开、就绪探测、端口冲突自愈、**启动参数调优面板（8 组结构化参数 + 冲突校验 + 实时预览）**、启动命令预览与导出脚本、热编辑、置顶/搜索、批量启停、环境探测、诊断包、**检查/更新 ComfyUI 本体（备份-回滚）**、**一键修复环境** |
 | **模型库 Models**    | 多根扫描、safetensors 元数据、SHA256 去重、断点下载与校验、推荐模型包一键下载、移动/软链/改名、存储分析、真缩略图                                                              |
-| **节点 Node Packs**  | Registry / Manager / Git 安装、依赖真实安装、启用禁用、锁定、冲突检测、冒烟导入、快照对齐、**检查更新、一键/批量更新、失败回滚上报**                                           |
+| **节点 Node Packs**  | Registry / Manager / Git 安装、依赖真实安装、启用禁用、锁定、冲突检测、冒烟导入、快照对齐、**全量检查更新（每包显式状态：可更新/已最新/无法检查/检查失败/已禁用/已锁定）**、**一键/批量顺序更新（批量实时进度、第 N/M、终端日志、可停止剩余）**、失败回滚上报                                           |
 | **市场 Market**      | Comfy Registry 精选浏览与一键安装                                                                                                                                              |
 | **工作流 Workflows** | **真·工作流库**：JSON / PNG 元数据解析（PNG 抽出 .json）、导入拷贝入库、来源徽章、标签/收藏/改名/删除、ZIP 导出、同步到实例、Frontend 打开、按实例排队                         |
 | **批跑 Batch**       | 从工作流库**多选**多工作流 × 次数；种子策略（随机/递增/固定）+ 尺寸/steps/cfg 矩阵；入队后跟踪真实出图；取消可撤队；产物关联批次                                               |
-| **产物 Output**      | output 目录索引、真缩略图、时间/大小/名称排序 + 分页、收藏、多选导出 PNG 参数还原、**还原为工作流真正入库**、批次/工作流回溯                                                   |
+| **产物 Output**      | output 目录索引、真缩略图、**视频首帧卡片 + 灯箱内嵌播放（mp4/webm；mkv/mov 优雅降级系统播放器）**、时间/大小/名称排序 + 分页、收藏、多选导出 PNG 参数还原、**还原为工作流真正入库**、批次/工作流回溯                                                       |
 | **监控 Monitor**     | CPU / 内存 / 磁盘 / GPU（显存真实采样）、队列、WebSocket 实时进度                                                                                                              |
 | **诊断 Doctor**      | 一键体检（Python / torch·CUDA / 端口 / 节点 / 路径 / 磁盘 / 网络）+ 可修复项                                                                                                   |
 | **备份 Backup**      | 配置 / 实例 / 节点清单 / 模型清单快照，原子恢复                                                                                                                                |
@@ -131,7 +131,7 @@ node node_modules/electron/install.js
 
 npm run dev          # 开发模式
 npm run typecheck    # vue-tsc + tsc
-npm run test         # 单元 + 集成（2026 tests）
+npm run test         # 单元 + 集成（2112 tests）
 npm run test:coverage
 npm run lint         # ESLint（含 --fix）
 npm run lint:check   # ESLint 只检查（CI 门禁）
@@ -147,7 +147,10 @@ npm run test:all
 
 - **发现**：扫描 Desktop / Portable / 源码目录、自定义根、`extra_model_paths.yaml` 相关路径
 - **生命周期**：启动并打开 / 停止 / 重启 / 强杀（二次确认）；全部启动 / 全部停止
-- **启动参数模板**：默认本地、高质量预览（taesd）、启用 Manager、完全离线、局域网共享、低显存、CPU 模式
+- **启动参数模板**：默认本地、高质量预览（taesd）、启用 Manager、完全离线、局域网共享、低显存、省显存·新版、省内存、CPU 模式
+- **启动参数调优**（0.1.9）：显存/缓存/预览/注意力/精度/IO/网络/日志 8 组结构化选项，互斥组单选 + 冲突即时校验 + 变更后的参数实时预览；未知/仅新版参数只警告不阻断；实例详情页与编辑弹窗双入口；自由参数框保留为逃生通道
+- **extra_model_paths**：检测到实例根下 `extra_model_paths.yaml` 时启动自动显式加载（自定义 cwd 也不会丢模型路径）
+- **默认不抢浏览器**：未显式声明时自动追加 `--disable-auto-launch`（ComfyPilot 负责打开窗口；显式 `--auto-launch` 时跳过）
 - **端口**：占用检测、空闲建议、冲突时确认换端口并持久化；已运行的外部 ComfyUI 可采用（不误杀）
 - **就绪探测**：轮询 `/system_stats`，就绪后才打开 Frontend
 - **启动脚本**：预览命令、一键导出 `.bat` / `.sh`（平台安全转义）
@@ -169,7 +172,9 @@ npm run test:all
 - Git 安装校验：仅 https / ssh / git@，拦截 `ext::`、注入型主机/分支；**自动使用便携 MinGit**
 - 依赖安装：`pip install -r requirements.txt` **真实等待完成**，失败写入 issue
 - 健康：requirements 提示、节点名冲突、`__init__.py` 真实导入冒烟
-- **更新**：检查更新（Registry 版本 / git behind）、一键更新、批量更新；registry 包失败自动回滚到 `.bak`，回滚失败必报备份路径
+- **更新**：检查更新**全量覆盖每个已安装包**并给出显式状态（可更新 / 已最新 / 无法检查 / 检查失败 / 已禁用 / 已锁定）——检查失败不再伪装成「不支持自动更新」；Registry 匹配支持 registryId → 仓库 URL → 唯一名字三级，git 检查结果持久化
+- **一键/批量更新**：批量按顺序逐个更新，弹框实时显示总进度、第 N/M 个包与终端日志；**弹框不会自动关闭**，成功失败都停留供查看，可「停止剩余」或手动关闭
+- registry 包失败自动回滚到 `.bak`，回滚失败必报备份路径
 - 快照：安装/更新/卸载前自动快照；恢复为**启用状态对齐**（不回滚版本，UI 已明示）
 
 ### 工作流与批跑
@@ -184,9 +189,11 @@ npm run test:all
 
 ### 产物
 
-- output 目录索引、类型筛选、真缩略图、排序 + 分页
+- output 目录索引、类型筛选、真缩略图（自动愈合死链）、排序 + 分页
+- **视频支持**：网格显示首帧 + 播放角标，双击/点击灯箱内嵌播放（mp4/webm 由 Chromium 原生解码；mkv/mov 优雅降级「用系统播放器打开」）
 - PNG 参数面板（seed / 元数据）+ **还原为工作流（真入库）**
 - 收藏、多选导出 ZIP、按批次 / 工作流过滤、回溯跳转
+- 扫描深度可调（设置 → 路径 → 产物扫描深度，默认 4）
 
 ### 监控
 
@@ -204,6 +211,7 @@ Python 版本、Torch / CUDA、`extra_model_paths.yaml`、端口、磁盘、Regi
 | 分组   | 项                                                                     | 说明                                                  |
 | ------ | ---------------------------------------------------------------------- | ----------------------------------------------------- |
 | 路径   | 默认实例目录、模型扫描根、下载目录、产物索引根、extra_model_paths.yaml | 影响发现与下载落点                                    |
+| 路径   | 产物扫描深度                                                            | output 目录递归层数（默认 4，2–10）                    |
 | 网络   | GitHub 镜像 / HF Endpoint / Civitai Endpoint                           | 镜像与下载域名                                        |
 | 网络   | **PyPI 镜像 / Torch 镜像**                                             | 装机与节点依赖加速                                    |
 | 网络   | 网络模式                                                               | public / private / offline / personal_cloud           |
@@ -224,7 +232,7 @@ Python 版本、Torch / CUDA、`extra_model_paths.yaml`、端口、磁盘、Regi
 - **工作流落盘**：导入进当前实例的 `user/default/workflows/`（1 份 `.json`），ComfyUI Frontend 直接可见；`data/workflows/` 仅作旧版本遗留扫描
 - 解析失败的文件改名为 `*.jsonc.bad-<时间戳>`，不覆盖用户数据
 - 运行时：`userData/runtimes/`（便携 Python / uv / MinGit + `checksums.json`）
-- 缩略图与缓存：`userData/cache/`
+- 缩略图与缓存：`userData/app-cache/`（0.1.9 从 `userData/cache` 迁出——与 Chromium 浏览器缓存目录同名会被系统清理连坐）
 - 日志：`%APPDATA%/ComfyPilot/logs/boot.log`
 
 ---
@@ -252,7 +260,7 @@ Python 版本、Torch / CUDA、`extra_model_paths.yaml`、端口、磁盘、Regi
 
 ```text
 ComfyPilot/
-├── package.json                 # v0.1.8 · MIT · ThzxxArt
+├── package.json                 # v0.1.9 · MIT · ThzxxArt
 ├── electron.vite.config.ts
 ├── electron-builder.yml         # Win NSIS / macOS DMG / Linux AppImage·deb + GitHub publish
 ├── vitest.config.ts             # 覆盖率门禁（0.1.8 按实测定档，见文件内说明）
@@ -282,7 +290,7 @@ ComfyPilot/
 │           ├── styles/tokens.ts # JS 侧设计 token
 │           └── views/           # dashboard/instances/install/models/…
 ├── tests/
-│   ├── unit/                    # 56 文件（+3 集成 = 59）· 用例全绿 · 行为测试为主
+│   ├── unit/                    # 62 文件（+3 集成 = 65）· 2112 用例全绿 · 行为测试为主
 │   ├── integration/
 │   └── e2e/
 └── .github/workflows/ci.yml
@@ -296,7 +304,7 @@ ComfyPilot/
 npm run dev / typecheck / test / test:coverage / test:e2e / test:all
 ```
 
-**测试：** 2026 用例（59 文件）+ e2e 冒烟。覆盖率门禁在 `vitest.config.ts` 内 **按实测定档（实测 − 2pp）**——0.1.8 起门禁真实可执行；提升门槛必须先补行为测试。
+**测试：** 2112 用例（65 文件）+ e2e 冒烟。覆盖率门禁在 `vitest.config.ts` 内 **按实测定档（实测 − 2pp）**——0.1.8 起门禁真实可执行；提升门槛必须先补行为测试。
 
 **门禁脚本：**
 
@@ -392,6 +400,9 @@ ComfyUI 本身采用 GPL-3.0；本项目独立发布，采用 **MIT**。
 - [x] **0.1.8 正确性根治**：节点启用/禁用真实生效（Manager 同构 `.disabled/`）、更新会拒绝已禁用包而不是悄悄重新启用、远程实例的「打开/启动」不再落到本地实例、远程/本地实例选择互斥、ComfyUI 更新/修复进度槽释放、详情页 not-found 兜底
 - [x] **0.1.8 ComfyUI 对齐**：秋叶/绘世整合包 Python 解析、模型分类对齐 ComfyUI 注册目录（25+2 legacy 别名）、extra_model_paths 全键集与多行值（扫描时剔除 custom_nodes/datasets）
 - [x] **0.1.8 工程护栏**：`.gitattributes` 行尾归一、ESLint 配置修复（Vue SFC 解析 + Node globals）并接入 CI、i18n 门禁改为硬失败、覆盖率按实测定档、CI 增加 lint 与覆盖率产物
+- [x] **0.1.9 产物可见**：缩略图 URL/目录回环断裂根治（全部产物裂图）、缓存目录迁出 Chromium Cache、死链自愈、孤儿清理；视频首帧卡片 + 灯箱内嵌播放与降级
+- [x] **0.1.9 更新可信**：检查更新全量状态矩阵（含检查失败/已禁用显式行）、仓库 URL 三级匹配、git 结果持久化；批量顺序更新 + 实时聚合进度 + 终端日志弹框（永不自动关闭、可停止剩余）
+- [x] **0.1.9 启动可控**：结构化启动参数调优面板（互斥组校验、实时预览、冲突拦截在 spawn 前）、产物扫描深度可配、`shell.reveal` 白名单、e2e 起真实 bootstrap 入口
 - [x] 自动更新通道（GitHub Releases）：electron-builder.yml 配置 GitHub publish，NSIS 产物含 `latest.yml` + `app-update.yml`
 - [ ] 工作流版本对照与打包分享（0.1.5 已含 ZIP 分享）
 - [ ] 更细的 GPU 多卡 / 共享显存展示

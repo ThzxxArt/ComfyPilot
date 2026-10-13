@@ -16,7 +16,8 @@ const props = defineProps<{ show: boolean; title?: string }>()
 const emit = defineEmits<{ (e: 'update:show', v: boolean): void }>()
 
 const { t } = useI18n()
-const { progress, updating, cancelling, cancelUpdate, clearProgress } = useComfyUpdate()
+const { progress, progressKind, updating, cancelling, cancelUpdate, clearProgress } =
+  useComfyUpdate()
 
 const modalTitle = computed(() => props.title || t('instance.updateComfy'))
 
@@ -24,7 +25,11 @@ const visible = computed({
   get: () => props.show,
   set: (v: boolean) => {
     emit('update:show', v)
-    if (!v) clearProgress()
+    // Only clear streams this modal owns. Closing it must NOT wipe a node-op
+    // stream whose state the node modal deliberately preserves (0.1.9).
+    if (!v && (progressKind.value === 'comfy-update' || progressKind.value === 'repair')) {
+      clearProgress()
+    }
   }
 })
 

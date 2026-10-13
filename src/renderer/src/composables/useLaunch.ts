@@ -131,7 +131,8 @@ export function useLaunch() {
                 notes: info.notes || '',
                 autoStart: Boolean(info.autoStart),
                 frontendVersion: info.frontendVersion || '',
-                pinned: Boolean(info.pinned)
+                pinned: Boolean(info.pinned),
+                launchProfile: info.launchProfile
               })
               await store.refreshInstances()
               const result = await ipc('instance.launch', info.id, {

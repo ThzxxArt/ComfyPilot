@@ -1,4 +1,13 @@
-import { existsSync, mkdirSync, writeFileSync, readFileSync, renameSync } from 'fs'
+import {
+  existsSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  renameSync,
+  readdirSync,
+  statSync,
+  unlinkSync
+} from 'fs'
 import { join, basename, dirname, extname, resolve } from 'path'
 import { createHash } from 'crypto'
 import { execFile } from 'child_process'
@@ -11,8 +20,10 @@ import {
   deleteModel as dbDeleteModel,
   workflowLibraryDir,
   listOutputAssetsAll,
-  mergeUpsertOutputAsset
+  mergeUpsertOutputAsset,
+  updateOutputAsset
 } from './db'
+import { resolveOutputDir } from './p1p2'
 import { assertSafeRelativeFilename, isSafeExternalUrl, isPathInside } from './security'
 import type { ModelRecord } from '@shared/types'
 
@@ -139,15 +150,31 @@ export class ThumbnailService {
   async ensureOutputThumb(assetPath: string): Promise<string | null> {
     try {
       const ext = extname(assetPath).toLowerCase()
-      if (!['.png', '.jpg', '.jpeg', '.webp', '.bmp'].includes(ext)) return null
+      if (!['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif'].includes(ext)) return null
       if (!existsSync(assetPath)) return null
       const root = this.outputThumbRoot()
       mkdirSync(root, { recursive: true })
-      const key = createHash('sha1').update(assetPath).digest('hex').slice(0, 16)
+      // Key includes mtime + size: an in-place overwrite of the source image
+      // must produce a new thumbnail instead of serving a stale one forever.
+      const st = statSync(assetPath)
+      const key = createHash('sha1')
+        .update(`${assetPath}:${Math.floor(st.mtimeMs)}:${st.size}`)
+        .digest('hex')
+        .slice(0, 16)
       const out = join(root, `${key}.png`)
       if (existsSync(out)) {
-        this.persistOutputThumb(assetPath, out)
-        return out
+        // Freshness guard for the same-ms/same-size corner: if the cached
+        // thumb is older than the source, regenerate instead of serving stale.
+        let fresh = true
+        try {
+          fresh = statSync(out).mtimeMs >= st.mtimeMs
+        } catch {
+          fresh = false
+        }
+        if (fresh) {
+          this.persistOutputThumb(assetPath, out)
+          return out
+        }
       }
       // Electron nativeImage can decode + resize without external deps.
       const { nativeImage } = await import('electron')
@@ -185,7 +212,22 @@ export const thumbnailService = new ThumbnailService()
 // output previews are served through `comfy-pilot-media:` with an explicit
 // allow-list of roots.
 
-const MEDIA_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg'])
+const MEDIA_EXT = new Set([
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.webp',
+  '.gif',
+  '.svg',
+  '.bmp',
+  // Videos are served so the renderer can play them with <video>. Chromium
+  // decodes mp4(H.264/AAC) and webm natively; mkv/mov degrade gracefully via
+  // the renderer's onerror fallback (system player).
+  '.mp4',
+  '.webm',
+  '.mkv',
+  '.mov'
+])
 
 function mediaThumbsRoot(): string {
   return join(cacheDir(), 'thumbs')
@@ -201,7 +243,8 @@ function mediaOutputRoots(): string[] {
     }
     for (const c of loadInstanceConfigs()) {
       if (c.path) {
-        roots.push(join(c.path, 'output'))
+        // Honor `--output-directory` exactly like the scanner/handler do.
+        roots.push(resolveOutputDir(c))
         roots.push(join(c.path, 'user', 'default', 'workflows'))
       }
     }
@@ -219,7 +262,10 @@ export function toMediaUrl(absPath: string): string | null {
     const resolved = resolve(absPath)
     const thumbs = mediaThumbsRoot()
     if (isPathInside(resolved, thumbs)) {
-      return `comfy-pilot-media:thumbs/${encodeURIComponent(basename(resolved))}`
+      // Keep the sub-path (thumbs/output/<key>.png): the resolver mirrors it.
+      // A flattened URL here is what caused every output thumbnail to 403.
+      const rel = resolved.slice(resolve(thumbs).length).replace(/^[\\/]+/, '')
+      return `comfy-pilot-media:thumbs/${rel.split(/[\\/]/).map(encodeURIComponent).join('/')}`
     }
     for (const root of mediaOutputRoots()) {
       if (root && isPathInside(resolved, root)) {
@@ -239,24 +285,16 @@ export function resolveMediaUrlToPath(url: string): string | null {
     const raw = String(url || '').replace(/^comfy-pilot-media:/, '')
     const clean = raw.replace(/^\/+/, '')
     if (clean.startsWith('thumbs/')) {
-      const name = decodeURIComponent(clean.slice('thumbs/'.length))
-      if (!name || name.includes('/') || name.includes('\\') || name.includes('..')) return null
-      if (!MEDIA_EXT.has(extname(name).toLowerCase())) return null
-      const full = join(mediaThumbsRoot(), name)
-      if (!existsSync(full) || !isPathInside(full, mediaThumbsRoot())) return null
+      const rel = mediaRelativePath(clean.slice('thumbs/'.length))
+      if (!rel || !MEDIA_EXT.has(extname(rel).toLowerCase())) return null
+      const root = mediaThumbsRoot()
+      const full = join(root, rel)
+      if (!existsSync(full) || !isPathInside(full, root)) return null
       return full
     }
     if (clean.startsWith('output/')) {
-      const relRaw = clean.slice('output/'.length)
-      const segments = relRaw
-        .split('/')
-        .map((p) => decodeURIComponent(p))
-        .filter((p) => p && p !== '..' && p !== '.')
-      if (!segments.length) return null
-      // join() with path segments — never hardcode '\\' (breaks POSIX nested paths)
-      const rel = join(...segments)
-      if (rel.includes('..')) return null
-      if (!MEDIA_EXT.has(extname(rel).toLowerCase())) return null
+      const rel = mediaRelativePath(clean.slice('output/'.length))
+      if (!rel || !MEDIA_EXT.has(extname(rel).toLowerCase())) return null
       for (const root of mediaOutputRoots()) {
         const full = join(root, rel)
         if (existsSync(full) && isPathInside(full, root)) return full
@@ -269,11 +307,72 @@ export function resolveMediaUrlToPath(url: string): string | null {
   }
 }
 
+/** Decode a URL-encoded relative path, refusing traversal and empty segments. */
+function mediaRelativePath(relRaw: string): string | null {
+  const segments = relRaw
+    .split('/')
+    .map((p) => decodeURIComponent(p))
+    .filter((p) => p && p !== '..' && p !== '.')
+  if (!segments.length) return null
+  // join() with path segments — never hardcode '\\' (breaks POSIX nested paths).
+  // No substring `..` check: a name like `my..image.png` is legitimate and the
+  // parent-hop segments were already filtered above.
+  return join(...segments)
+}
+
 /** Map a record's thumbnail field (fs path or already a media URL) to a display URL. */
 export function thumbnailDisplayUrl(thumb?: string): string | null {
   if (!thumb) return null
   if (thumb.startsWith('comfy-pilot-media:')) return thumb
   return toMediaUrl(thumb)
+}
+
+/**
+ * Clear DB thumbnail pointers whose thumb AND source are both gone (deleted
+ * outputs). Rows whose source still exists are healed lazily by output.list,
+ * which regenerates and persists a fresh thumbnail on demand.
+ */
+export function pruneDeadOutputThumbRows(): number {
+  let cleared = 0
+  try {
+    for (const row of listOutputAssetsAll()) {
+      if (!row.thumbnail) continue
+      if (existsSync(row.thumbnail)) continue
+      if (row.path && existsSync(row.path)) continue
+      const next = updateOutputAsset(row.id, { thumbnail: undefined })
+      if (next) cleared += 1
+    }
+  } catch {
+    /* best effort */
+  }
+  return cleared
+}
+
+/**
+ * Delete output thumbnails older than `maxAgeMs`. Thumbs are pure cache and
+ * regenerate on demand, so this only bounds disk growth from deleted outputs.
+ */
+export function pruneOldOutputThumbs(maxAgeMs = 30 * 24 * 60 * 60 * 1000): number {
+  let removed = 0
+  try {
+    const root = join(cacheDir(), 'thumbs', 'output')
+    if (!existsSync(root)) return 0
+    const cutoff = Date.now() - maxAgeMs
+    for (const name of readdirSync(root)) {
+      const full = join(root, name)
+      try {
+        if (statSync(full).isFile() && statSync(full).mtimeMs < cutoff) {
+          unlinkSync(full)
+          removed += 1
+        }
+      } catch {
+        /* skip unreadable entries */
+      }
+    }
+  } catch {
+    /* best effort */
+  }
+  return removed
 }
 
 /** Batch rename models (PLAN: 批量改名). */

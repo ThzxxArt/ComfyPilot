@@ -551,9 +551,9 @@ describe('source quality: test files exist for all new features', () => {
 
 // ============ Readme consistency ============
 describe('README consistency', () => {
-  it('README mentions v0.1.8', () => {
+  it('README mentions v0.1.9', () => {
     const src = readFileSync(join(__dirname, '../../README.md'), 'utf-8')
-    expect(src).toContain('0.1.8')
+    expect(src).toContain('0.1.9')
   })
 
   it('README does not claim 257 tests', () => {
@@ -568,7 +568,7 @@ describe('package.json', () => {
   it('has correct metadata', () => {
     const pkg = JSON.parse(readSrc('package.json'))
     expect(pkg.name).toBe('comfy-pilot')
-    expect(pkg.version).toBe('0.1.8')
+    expect(pkg.version).toBe('0.1.9')
     expect(pkg.license).toBe('MIT')
     expect(pkg.author).toBe('ThzxxArt')
     expect(pkg.main).toBeTruthy()

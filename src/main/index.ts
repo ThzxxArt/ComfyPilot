@@ -25,7 +25,14 @@ protocol.registerSchemesAsPrivileged([
   },
   {
     scheme: 'comfy-pilot-media',
-    privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true }
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true,
+      corsEnabled: true,
+      bypassCSP: true
+    }
   }
 ])
 
@@ -340,6 +347,18 @@ app.whenReady().then(async () => {
     } catch (err) {
       crashLog('proxy fail ' + err)
     }
+    try {
+      // Thumbs are pure cache: bound disk growth from long-deleted outputs and
+      // clear DB pointers whose thumb AND source are both gone.
+      const { pruneOldOutputThumbs, pruneDeadOutputThumbRows } = await import('./services/media')
+      const removed = pruneOldOutputThumbs()
+      const cleared = pruneDeadOutputThumbRows()
+      if (removed || cleared) {
+        crashLog(`thumbs pruned: files=${removed} deadRows=${cleared}`)
+      }
+    } catch (err) {
+      crashLog('thumb prune fail ' + err)
+    }
     crashLog('services ready')
   }
 
@@ -477,6 +496,12 @@ app.whenReady().then(async () => {
       })
       // UpdateProgress-shaped stream — feeds the shared progress modal.
       nodePackService.on('op-progress', (p) => broadcast(IPC_EVENTS.nodeOperationProgress, p))
+      // Streaming log lines (terminal panel in the node-op modal).
+      nodePackService.on('op-log', (p) => broadcast(IPC_EVENTS.nodeOpLog, p))
+      // Batch update lifecycle (queue position + final summary).
+      nodePackService.on('update-batch', (p) => broadcast(IPC_EVENTS.nodeUpdateBatch, p))
+      // Check-updates pass progress (N/M packs).
+      nodePackService.on('check-progress', (p) => broadcast(IPC_EVENTS.nodeCheckProgress, p))
     })
     .catch(() => undefined)
   import('./services/updater')

@@ -46,11 +46,13 @@ export default defineConfig({
         'src/main/services/registryIndex.ts',
         'src/main/services/netProbe.ts',
         'src/main/services/comfyApi.ts',
-        'src/shared/constants.ts'
+        'src/shared/constants.ts',
+        'src/shared/launchArgs.ts'
       ],
       thresholds: {
         // ── 实测定档：高覆盖模块（实测 − 2pp）──
         'src/main/services/security.ts': { statements: 98, lines: 98, functions: 98, branches: 93 },
+        'src/shared/launchArgs.ts': { statements: 90, lines: 90, functions: 85, branches: 80 },
         'src/main/services/workflowConvert.ts': {
           statements: 98,
           lines: 98,

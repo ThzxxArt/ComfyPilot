@@ -747,12 +747,19 @@ export class OutputService {
     createdTo?: number
   }): { items: OutputAsset[]; total: number; truncated: boolean } {
     const scanRoots = [opts?.root].filter(Boolean) as string[]
+    // Depth is user-tunable (0.1.9): deep date/nested folders were silently
+    // invisible at the old hardcoded 4.
+    const maxDepth = (() => {
+      const raw = Number(loadSettings().outputScanDepth ?? 4)
+      if (!Number.isFinite(raw)) return 4
+      return Math.max(2, Math.min(10, Math.floor(raw)))
+    })()
     if (scanRoots.length) {
       this.refreshPrevMap()
       const assets: OutputAsset[] = []
       for (const root of scanRoots) {
         if (!existsSync(root)) continue
-        this.walk(root, assets, 0)
+        this.walk(root, assets, 0, maxDepth)
       }
       // Field-level merge so batch/walk concurrent writes never drop linkage.
       // One read-modify-write for the whole walk, not one per file.
@@ -795,8 +802,8 @@ export class OutputService {
     }
   }
 
-  private walk(dir: string, out: OutputAsset[], depth: number): void {
-    if (depth > 4) return
+  private walk(dir: string, out: OutputAsset[], depth: number, maxDepth = 4): void {
+    if (depth > maxDepth) return
     let entries: string[] = []
     try {
       entries = readdirSync(dir)
@@ -808,13 +815,13 @@ export class OutputService {
       try {
         const st = statSync(full)
         if (st.isDirectory()) {
-          this.walk(full, out, depth + 1)
+          this.walk(full, out, depth + 1, maxDepth)
           continue
         }
         const ext = extname(name).toLowerCase()
         const type: OutputAsset['type'] = ['.png', '.jpg', '.jpeg', '.webp', '.gif'].includes(ext)
           ? 'image'
-          : ['.mp4', '.webm', '.mov'].includes(ext)
+          : ['.mp4', '.webm', '.mov', '.mkv'].includes(ext)
             ? 'video'
             : ['.wav', '.mp3', '.flac'].includes(ext)
               ? 'audio'

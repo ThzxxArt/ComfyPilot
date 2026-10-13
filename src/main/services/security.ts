@@ -68,8 +68,10 @@ export function normalizePathEverySegment(pathStr: string): string {
   const cleaned: string[] = []
   for (const p of parts) {
     if (!p) continue
-    // Any segment containing `..` (incl. `.. `, `...`) is a parent hop
-    if (/\.{2,}/.test(p)) {
+    // Only dot/space-only segments (e.g. `..`, `.. `, `...`) are parent hops —
+    // Windows strips trailing dots/spaces, so those collapse onto the parent.
+    // Ordinary names like `a..b.png` are preserved.
+    if (/^[. ]+$/.test(p) && p.split('.').length - 1 >= 2) {
       cleaned.push('..')
       continue
     }
@@ -160,15 +162,21 @@ export function safeResolveUnder(appRoot: string, relative: string): string | nu
 }
 
 /**
- * Resolve a user-supplied directory and require it to stay under one of the
- * allowed roots. Normalizes per-segment first (blocks `.. ` hops).
+ * Resolve a user-supplied path and require it to stay under one of the
+ * allowed roots. Uses `path.resolve` (which collapses real `..` hops while
+ * preserving UNC prefixes and names that merely contain dots), guarded by the
+ * per-segment hop check so Windows trailing-dot/space variants (`.. `, `... `)
+ * can never slip through as lexical prefixes.
  */
 export function resolveInsideAnyRoot(candidate: string, roots: string[]): string | null {
-  if (!candidate) return null
+  if (!candidate || candidate.includes('\0')) return null
+  // Reject dot/space-only segments (Win32 strips trailing dots/spaces, so
+  // `.. ` and `... ` resolve to the parent directory).
   if (hasParentHop(candidate)) return null
   try {
-    const normalized = normalizePathEverySegment(candidate)
-    const target = resolve(normalized)
+    const target = resolve(candidate)
+    // Defensive: a leading `..` beyond the root can survive on relative inputs.
+    if (target.split(/[\\/]+/).includes('..')) return null
     for (const root of roots) {
       if (!root) continue
       const r = resolve(root)

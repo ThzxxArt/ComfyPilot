@@ -6,7 +6,7 @@ export const APP_NAME = 'ComfyPilot'
  * Build injects __APP_VERSION__ from package.json; dev falls back to the literal.
  */
 declare const __APP_VERSION__: string | undefined
-export const APP_VERSION = (typeof __APP_VERSION__ !== 'undefined' && __APP_VERSION__) || '0.1.8'
+export const APP_VERSION = (typeof __APP_VERSION__ !== 'undefined' && __APP_VERSION__) || '0.1.9'
 
 export const DEFAULT_SETTINGS: AppSettings = {
   locale: 'zh-CN',
@@ -30,6 +30,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoStartInstancesOnLaunch: true,
   pipIndex: '',
   torchIndexMirror: '',
+  outputScanDepth: 4,
   proxy: {
     enabled: false,
     protocol: 'http',
@@ -112,6 +113,21 @@ export const LAUNCH_TEMPLATES: LaunchArgTemplate[] = [
     name: 'lowvram',
     args: ['--lowvram'],
     description: 'lowvram'
+  },
+  {
+    id: 'vram-save',
+    name: 'vram-save',
+    // Modern (0.39-era) memory saving: dynamic VRAM is the default, so the
+    // useful knobs are a reserved floor + fast-disk offloading. Requires a
+    // recent ComfyUI build — older ones reject unknown flags at startup.
+    args: ['--reserve-vram', '1', '--fast-disk'],
+    description: 'vram-save'
+  },
+  {
+    id: 'cache-none',
+    name: 'cache-none',
+    args: ['--cache-none'],
+    description: 'cache-none'
   },
   {
     id: 'cpu',

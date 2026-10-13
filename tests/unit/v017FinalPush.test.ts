@@ -268,11 +268,11 @@ describe('machine-readable error codes', () => {
 
 // ============ Version consistency ============
 describe('version consistency across files', () => {
-  it('package.json, constants.ts agree on 0.1.8', () => {
+  it('package.json, constants.ts agree on 0.1.9', () => {
     const pkg = JSON.parse(readSrc('package.json'))
     const constants = readSrc('src/shared/constants.ts')
-    expect(pkg.version).toBe('0.1.8')
-    expect(constants).toContain('0.1.8')
+    expect(pkg.version).toBe('0.1.9')
+    expect(constants).toContain('0.1.9')
   })
 })
 

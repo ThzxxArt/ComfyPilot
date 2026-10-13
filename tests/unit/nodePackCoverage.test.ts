@@ -575,7 +575,8 @@ vi.mock('../../src/main/services/registry', () => ({
 vi.mock('../../src/main/services/registryIndex', () => ({
   registryIndex: {
     ensure: vi.fn(async () => undefined),
-    searchPacks: vi.fn(() => [])
+    searchPacks: vi.fn(() => []),
+    findByRepository: vi.fn(() => null)
   }
 }))
 
@@ -586,20 +587,47 @@ vi.mock('../../src/main/services/zipSafe', () => ({
 // env.installRequirements normally streams via spawn; here we invoke the
 // buffered-run fallback callback that nodePack passes in — that is the real
 // code under test (the execFileAsync closure at nodePack.ts:1015-1020).
-vi.mock('../../src/main/services/env', () => ({
-  runStreaming: vi.fn(async () => ''),
-  installRequirements: vi.fn(
-    async (
-      pythonPath: string,
-      reqFile: string,
-      exec: (c: string, a: string[], o?: { timeout?: number }) => Promise<string>,
+// runStreaming is routed through the mocked execFile so git streaming (which
+// reuses runStreaming in 0.1.9) still hits the test's exec handler.
+vi.mock('../../src/main/services/env', async () => {
+  const cp = await import('child_process')
+  const execFile = cp.execFile as unknown as (
+    cmd: string,
+    args: string[],
+    opts: unknown,
+    cb: (e: Error | null, o: string, s: string) => void
+  ) => unknown
+  return {
+    runStreaming: async (
+      cmd: string,
+      args: string[],
       opts?: { onLine?: (line: string) => void }
-    ) => {
-      for (let i = 0; i < 405; i++) opts?.onLine?.(`log line ${i}`)
-      return exec(pythonPath, ['-m', 'pip', 'install', '-r', reqFile], { timeout: 1234 })
-    }
-  )
-}))
+    ): Promise<string> =>
+      await new Promise<string>((resolve, reject) => {
+        execFile(cmd, args, {}, (err, stdout, stderr) => {
+          for (const line of String(stdout || '').split(/\r?\n/)) {
+            if (line.trim()) opts?.onLine?.(line)
+          }
+          for (const line of String(stderr || '').split(/\r?\n/)) {
+            if (line.trim()) opts?.onLine?.(line)
+          }
+          if (err) reject(err)
+          else resolve(String(stdout || ''))
+        })
+      }),
+    installRequirements: vi.fn(
+      async (
+        pythonPath: string,
+        reqFile: string,
+        exec: (c: string, a: string[], o?: { timeout?: number }) => Promise<string>,
+        opts?: { onLine?: (line: string) => void }
+      ) => {
+        for (let i = 0; i < 405; i++) opts?.onLine?.(`log line ${i}`)
+        return exec(pythonPath, ['-m', 'pip', 'install', '-r', reqFile], { timeout: 1234 })
+      }
+    )
+  }
+})
 
 import {
   nodePackService,
@@ -622,7 +650,11 @@ const registryMock = registryMod as unknown as {
   mapRegistryPack: ReturnType<typeof vi.fn>
 }
 const registryIndexMock = registryIndexMod as unknown as {
-  registryIndex: { ensure: ReturnType<typeof vi.fn>; searchPacks: ReturnType<typeof vi.fn> }
+  registryIndex: {
+    ensure: ReturnType<typeof vi.fn>
+    searchPacks: ReturnType<typeof vi.fn>
+    findByRepository: ReturnType<typeof vi.fn>
+  }
 }
 
 const cpMock = cp as unknown as {

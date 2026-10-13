@@ -39,9 +39,10 @@ import {
   describeNodeError,
   hasDepsSkippedIssue
 } from '@/composables/useComfyUpdate'
-import ComfyUpdateProgressModal from '@/components/ComfyUpdateProgressModal.vue'
+import NodeOpProgressModal from '@/components/NodeOpProgressModal.vue'
 import { useAppStore } from '@/stores/app'
 import type {
+  NodeCheckStatus,
   NodeNameConflict,
   NodePackIssue,
   NodePackRecord,
@@ -54,8 +55,16 @@ const store = useAppStore()
 const router = useRouter()
 const message = useMessage()
 const dialog = useDialog()
-const { nodeUpdatingPack, nodeInstallingPack, nodeUpdateMessage, nodeInstallMessage, progress } =
-  useComfyUpdate()
+const {
+  nodeUpdatingPack,
+  nodeInstallingPack,
+  nodeUpdateMessage,
+  nodeInstallMessage,
+  nodeBatchActive,
+  nodeBatch,
+  nodeCheck,
+  selectNodeOpInstance
+} = useComfyUpdate()
 
 // Auto-refresh when a background install/update finishes — the user should not
 // have to hit Refresh to see a pack that just landed.
@@ -74,6 +83,7 @@ const installedQuery = ref('')
 const showInstall = ref(false)
 const showOpModal = ref(false)
 const opModalTitle = ref('')
+const opModalMode = ref<'single' | 'batch'>('single')
 const installUrl = ref('')
 const installBranch = ref('')
 const tab = ref('installed')
@@ -136,7 +146,7 @@ function hasUpdatePack(pack: NodePackRecord): boolean {
   // Disabled packs are intentionally not updatable (a registry reinstall would
   // silently re-enable them) — never light the badge or include them in "update all".
   if (pack.status === 'disabled') return false
-  const c = checks.value[pack.name]
+  const c = checks.value[pack.id]
   if (c) return Boolean(c.updatable)
   if (pack.status === 'update-available') return true
   // Only flag string-difference when both look like numeric versions —
@@ -162,7 +172,7 @@ function canUpdatePack(pack: NodePackRecord): boolean {
   if (pack.locked) return false
   // Disabled packs must be enabled first (update would silently re-enable them).
   if (pack.status === 'disabled') return false
-  const c = checks.value[pack.name]
+  const c = checks.value[pack.id]
   if (c) return c.updateSource === 'git' || c.updateSource === 'registry'
   if (pack.installSource === 'git') return true
   if (pack.installSource === 'registry' && pack.registryId) return true
@@ -189,13 +199,9 @@ function describeUpdateError(err: unknown, _pack?: NodePackRecord): string {
   return t('nodes.updateFailed', { error: msg })
 }
 
-// Auto-close the shared op modal when the operation reaches a terminal state.
-watch(
-  () => progress.value?.status,
-  (s) => {
-    if (s === 'done' || s === 'failed') showOpModal.value = false
-  }
-)
+// 0.1.9: the node-op modal NEVER auto-closes. Success and failure both keep
+// it open with the final log; the user closes it manually (ComfyUI-Manager
+// terminal behaviour). The banner below can reopen it while an op runs.
 
 async function refresh(): Promise<void> {
   loading.value = true
@@ -213,11 +219,16 @@ async function refresh(): Promise<void> {
 
 async function checkUpdates(): Promise<void> {
   checking.value = true
+  nodeCheck.value = null
+  const forInst = store.activeInstanceId || undefined
   try {
-    const results = await ipc('node.checkUpdates', store.activeInstanceId || undefined)
+    const results = await ipc('node.checkUpdates', forInst)
+    // The user may have switched instances while the pass ran — results belong
+    // to the old instance and must not relabel/overwrite the new one's state.
+    if ((store.activeInstanceId || undefined) !== forInst) return
     const map: Record<string, NodeUpdateCheckResult> = {}
     for (const r of results) {
-      map[r.name] = r
+      map[r.id] = r
       const pack = packs.value.find((p) => p.name === r.name || p.id === r.id)
       if (pack) {
         if (r.latestVersion) pack.latestVersion = r.latestVersion
@@ -225,7 +236,9 @@ async function checkUpdates(): Promise<void> {
       }
     }
     checks.value = map
-    if (!results.some((r) => r.updatable)) {
+    // "All up to date" is only honest when every check actually completed.
+    const anyFailed = results.some((r) => r.checkStatus === 'check-failed')
+    if (!results.some((r) => r.updatable) && !anyFailed) {
       message.info(t('nodes.upToDate'))
     }
   } catch (err) {
@@ -235,9 +248,35 @@ async function checkUpdates(): Promise<void> {
   }
 }
 
+/** Counts of every check outcome so "couldn't check" is visible at a glance. */
+const checkSummary = computed(() => {
+  const out: Record<NodeCheckStatus, number> = {
+    updatable: 0,
+    'up-to-date': 0,
+    unsupported: 0,
+    'check-failed': 0,
+    'skipped-disabled': 0,
+    locked: 0
+  }
+  for (const r of Object.values(checks.value)) out[r.checkStatus] = (out[r.checkStatus] || 0) + 1
+  return out
+})
+
+/** Per-card check reason (tooltip) — never blank when a check ran. */
+function checkReason(pack: NodePackRecord): string {
+  const c = checks.value[pack.id]
+  if (!c) return ''
+  return c.reasonKey ? t(c.reasonKey) : c.reason || ''
+}
+
+function checkFailed(pack: NodePackRecord): boolean {
+  return checks.value[pack.id]?.checkStatus === 'check-failed'
+}
+
 async function updatePack(pack: NodePackRecord): Promise<void> {
   updatingOne.value = pack.name
   opModalTitle.value = t('nodes.updating')
+  opModalMode.value = 'single'
   showOpModal.value = true
   try {
     // Pass the unique id (not the name): duplicate names can exist on disk
@@ -245,13 +284,14 @@ async function updatePack(pack: NodePackRecord): Promise<void> {
     await ipc('node.update', pack.id, undefined, store.activeInstanceId || undefined)
     message.success(t('nodes.updateDone', { name: pack.displayName || pack.name }))
     // Drop the stale check result so the "has update" badge clears.
-    delete checks.value[pack.name]
+    delete checks.value[pack.id]
     await refresh()
   } catch (err) {
-    showOpModal.value = false
-    // Coded errors (e.g. NODE_DISABLED) get the localized mapping first;
-    // rollback/network messages keep the update-specific describer.
+    // The modal stays open (0.1.9): it holds the full failure log + rollback
+    // state. Only a toast summarizes the error. OP_BUSY means nothing started,
+    // so the stale stream must not stay on screen.
     const code = (err as { code?: string })?.code
+    if (code === 'OP_BUSY') showOpModal.value = false
     message.error(code ? describeNodeError(t, err) : describeUpdateError(err, pack))
   } finally {
     updatingOne.value = null
@@ -260,35 +300,45 @@ async function updatePack(pack: NodePackRecord): Promise<void> {
 
 async function updateAllPacks(): Promise<void> {
   batchRunning.value = true
+  opModalTitle.value = t('nodes.updateAll')
+  opModalMode.value = 'batch'
+  showOpModal.value = true
   try {
     const results = await ipc('node.updateAll', store.activeInstanceId || undefined)
     const ok = results.filter((r) => r.ok && !r.skipped).length
-    const fail = results.filter((r) => !r.ok).length
+    const fail = results.filter((r) => !r.ok && !r.skipped).length
     const skip = results.filter((r) => r.skipped).length
-    const summary = t('nodes.batchDone', { ok, fail, skip })
-    const failures = results.filter((r) => !r.ok)
-    dialog.info({
-      title: t('nodes.batchSummary'),
-      content: failures.length
-        ? `${summary} — ${failures.map((f) => `${f.name}: ${f.error || ''}`).join(' · ')}`
-        : summary,
-      positiveText: t('common.confirm')
-    })
-    if (fail > 0) message.warning(summary)
+    const checkFailed = results.filter((r) => r.skipped && r.checkStatus === 'check-failed').length
+    const cancelled = results.some((r) => !r.ok && r.skipped && r.error === 'cancelled')
+    const summary =
+      t('nodes.batchDone', { ok, fail, skip }) +
+      (checkFailed ? ` — ${t('nodes.batchCheckFailed', { n: checkFailed })}` : '')
+    // The modal keeps the per-pack queue + log; a toast carries the summary.
+    if (cancelled) message.warning(t('nodes.batchCancelled'))
+    else if (fail > 0 || checkFailed > 0) message.warning(summary)
     else message.success(summary)
-    // Drop stale check results so the "has update" badges refresh.
-    checks.value = {}
     await refresh()
   } catch (err) {
-    message.error(err instanceof Error ? err.message : String(err))
+    message.error(describeNodeError(t, err))
+    // Nothing started (busy) — the stale stream must not linger on screen.
+    if ((err as { code?: string })?.code === 'OP_BUSY' && !nodeBatchActive.value) {
+      showOpModal.value = false
+    }
   } finally {
+    // Drop stale check results even when the batch errored halfway.
+    checks.value = {}
     batchRunning.value = false
   }
+}
+
+function reopenOpModal(): void {
+  showOpModal.value = true
 }
 
 async function installGit(): Promise<void> {
   if (!installUrl.value.trim()) return
   opModalTitle.value = t('nodes.installing')
+  opModalMode.value = 'single'
   showOpModal.value = true
   try {
     const branch = installBranch.value.trim()
@@ -312,7 +362,9 @@ async function installGit(): Promise<void> {
     }
     await refresh()
   } catch (err) {
-    showOpModal.value = false
+    // Modal stays open so the failure log remains reviewable — except OP_BUSY,
+    // where the op never started and the old stream would be misleading.
+    if ((err as { code?: string })?.code === 'OP_BUSY') showOpModal.value = false
     message.error(describeNodeError(t, err))
   }
 }
@@ -419,15 +471,24 @@ async function uninstall(pack: NodePackRecord): Promise<void> {
     } catch {
       deps = []
     }
-    const run = (removePipDeps: boolean) =>
-      ipc('node.uninstall', pack.id, store.activeInstanceId || undefined, { removePipDeps })
+    const run = (removePipDeps: boolean) => {
+      // Same terminal-modal semantics as install/update (0.1.9): the op modal
+      // stays open on success and failure until the user closes it.
+      opModalTitle.value = t('nodes.uninstalling', { name: pack.displayName || pack.name })
+      opModalMode.value = 'single'
+      showOpModal.value = true
+      return ipc('node.uninstall', pack.id, store.activeInstanceId || undefined, { removePipDeps })
         .then(async () => {
           message.success(
             removePipDeps && deps.length ? t('nodes.uninstalledWithDeps') : t('nodes.uninstalled')
           )
           await refresh()
         })
-        .catch((err) => message.error(err instanceof Error ? err.message : String(err)))
+        .catch((err) => {
+          if ((err as { code?: string })?.code === 'OP_BUSY') showOpModal.value = false
+          message.error(describeNodeError(t, err))
+        })
+    }
 
     if (!deps.length) {
       await run(false)
@@ -442,7 +503,7 @@ async function uninstall(pack: NodePackRecord): Promise<void> {
       onNegativeClick: () => run(false)
     })
   } catch (err) {
-    message.error(err instanceof Error ? err.message : String(err))
+    message.error(describeNodeError(t, err))
   }
 }
 
@@ -457,6 +518,7 @@ async function removeSnapshot(id: string): Promise<void> {
 }
 
 onMounted(() => {
+  selectNodeOpInstance(store.activeInstanceId || '')
   void refresh()
 })
 
@@ -464,6 +526,11 @@ onMounted(() => {
 watch(
   () => store.instanceSwitchTick,
   () => {
+    // Check results are per-instance: stale rows would mislabel same-named
+    // packs on the new instance and could enable "update all" wrongly.
+    checks.value = {}
+    nodeCheck.value = null
+    selectNodeOpInstance(store.activeInstanceId || '')
     void refresh()
   }
 )
@@ -479,14 +546,25 @@ watch(
       <NSpace>
         <NButton secondary :loading="checking" @click="checkUpdates">
           <template #icon><NIcon :component="CloudDownloadOutline" /></template
-          >{{ $t('nodes.checkUpdates') }}
+          >{{
+            checking
+              ? $t('nodes.checkingProgress', {
+                  done: nodeCheck?.done || 0,
+                  total: nodeCheck?.total || packs.length
+                })
+              : $t('nodes.checkUpdates')
+          }}
         </NButton>
         <NPopconfirm @positive-click="updateAllPacks">
           <template #trigger>
             <NButton
               secondary
               type="primary"
-              :disabled="!updatablePacks.length"
+              :disabled="
+                !updatablePacks.length ||
+                Boolean(updatingOne || nodeUpdatingPack) ||
+                nodeBatchActive
+              "
               :loading="batchRunning"
             >
               <template #icon><NIcon :component="ArrowUpCircleOutline" /></template
@@ -516,15 +594,61 @@ watch(
           </NInput>
           <span class="meta">{{ filteredPacks.length }} / {{ packs.length }}</span>
         </NSpace>
-        <div v-if="nodeUpdatingPack || nodeInstallingPack" class="updating-banner">
+        <div
+          v-if="nodeUpdatingPack || nodeInstallingPack || nodeBatchActive"
+          class="updating-banner"
+        >
           <NTag size="small" type="info" round>
-            {{ nodeInstallingPack ? $t('nodes.installing') : $t('nodes.updating') }}
+            {{
+              nodeBatchActive
+                ? $t('nodes.updateAll')
+                : nodeInstallingPack
+                  ? $t('nodes.installing')
+                  : $t('nodes.updating')
+            }}
           </NTag>
-          <span class="mono">{{ nodeInstallingPack || nodeUpdatingPack }}</span>
+          <span v-if="nodeBatchActive && nodeBatch" class="mono">
+            {{
+              $t('nodes.batchProgress', {
+                index: nodeBatch.index || 0,
+                total: nodeBatch.total || 0,
+                name: nodeBatch.packName || ''
+              })
+            }}
+          </span>
+          <span v-else class="mono">{{ nodeInstallingPack || nodeUpdatingPack }}</span>
           <span v-if="nodeInstallMessage || nodeUpdateMessage" class="hint">
             {{ nodeInstallingPack ? nodeInstallMessage : nodeUpdateMessage }}
           </span>
+          <NButton size="tiny" secondary @click="reopenOpModal">
+            {{ $t('nodes.viewProgress') }}
+          </NButton>
         </div>
+        <NSpace
+          v-if="Object.keys(checks).length"
+          align="center"
+          style="margin-bottom: 10px"
+          :wrap="true"
+        >
+          <NTag v-if="checkSummary.updatable" size="small" round type="warning">
+            {{ $t('nodes.checkUpdatable', { n: checkSummary.updatable }) }}
+          </NTag>
+          <NTag v-if="checkSummary['up-to-date']" size="small" round type="success">
+            {{ $t('nodes.checkUpToDate', { n: checkSummary['up-to-date'] }) }}
+          </NTag>
+          <NTag v-if="checkSummary.unsupported" size="small" round>
+            {{ $t('nodes.checkUnsupportedCount', { n: checkSummary.unsupported }) }}
+          </NTag>
+          <NTag v-if="checkSummary['check-failed']" size="small" round type="error">
+            {{ $t('nodes.checkFailedCount', { n: checkSummary['check-failed'] }) }}
+          </NTag>
+          <NTag v-if="checkSummary['skipped-disabled']" size="small" round>
+            {{ $t('nodes.checkDisabledCount', { n: checkSummary['skipped-disabled'] }) }}
+          </NTag>
+          <NTag v-if="checkSummary.locked" size="small" round type="warning">
+            {{ $t('nodes.checkLockedCount', { n: checkSummary.locked }) }}
+          </NTag>
+        </NSpace>
         <NSpin :show="loading">
           <div v-if="filteredPacks.length" class="grid cards">
             <article
@@ -593,9 +717,22 @@ watch(
                 <NTag v-if="hasUpdatePack(pack)" size="tiny" round type="warning">
                   {{ $t('nodes.hasUpdate', { version: pack.latestVersion || pack.version }) }}
                 </NTag>
-                <NTag v-if="!canUpdatePack(pack)" size="tiny" round>{{
-                  $t('nodes.notUpdatable')
-                }}</NTag>
+                <NTag
+                  v-if="checkFailed(pack)"
+                  size="tiny"
+                  round
+                  type="error"
+                  :title="checkReason(pack)"
+                >
+                  {{ $t('nodes.checkFailed') }}
+                </NTag>
+                <NTag
+                  v-else-if="!canUpdatePack(pack)"
+                  size="tiny"
+                  round
+                  :title="checkReason(pack)"
+                  >{{ $t('nodes.notUpdatable') }}</NTag
+                >
               </div>
               <div class="pack-actions">
                 <NSpace>
@@ -616,6 +753,7 @@ watch(
                         size="tiny"
                         type="primary"
                         secondary
+                        :disabled="batchRunning"
                         :loading="
                           updatingOne === pack.name ||
                           nodeUpdatingPack === pack.name ||
@@ -797,7 +935,7 @@ watch(
         </NSpace>
       </template>
     </NModal>
-    <ComfyUpdateProgressModal v-model:show="showOpModal" :title="opModalTitle" />
+    <NodeOpProgressModal v-model:show="showOpModal" :title="opModalTitle" :mode="opModalMode" />
   </div>
 </template>
 

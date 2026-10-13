@@ -3,7 +3,15 @@
  * RenameService.batchRename, Aria2Service download.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
-import { mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from 'fs'
+import {
+  mkdirSync,
+  writeFileSync,
+  existsSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync
+} from 'fs'
 import { join, dirname, basename } from 'path'
 import { tmpdir } from 'os'
 import { createHash } from 'crypto'
@@ -321,6 +329,35 @@ describe('media services', () => {
       expect(media.resolveMediaUrlToPath(url!)).toBe(nested)
     })
 
+    it('honors --output-directory for instance media roots', async () => {
+      const media = await freshMedia()
+      const { upsertInstanceConfig } = await import('../../src/main/services/db')
+      const instRoot = join(ROOT, 'custom-out-inst')
+      const custom = join(instRoot, 'custom_output')
+      mkdirSync(custom, { recursive: true })
+      const img = join(custom, 'pic.png')
+      writeFileSync(img, 'x')
+      upsertInstanceConfig({
+        id: 'custom-out',
+        name: 'C',
+        path: instRoot,
+        pythonPath: '',
+        venvPath: '',
+        port: 8189,
+        listen: '127.0.0.1',
+        extraArgs: ['--output-directory', 'custom_output'],
+        argTemplateId: 'default',
+        enabled: true,
+        notes: '',
+        autoStart: false,
+        frontendVersion: '',
+        pinned: false
+      })
+      const url = media.toMediaUrl(img)
+      expect(url).toBe('comfy-pilot-media:output/pic.png')
+      expect(media.resolveMediaUrlToPath(url!)).toBe(img)
+    })
+
     it('rejects empty path, bad ext, and throws-to-null', async () => {
       const media = await freshMedia()
       expect(media.toMediaUrl('')).toBeNull()
@@ -586,8 +623,55 @@ describe('output thumbnails (ensureOutputThumb / persistOutputThumb)', () => {
     const second = await thumbnailService.ensureOutputThumb(img)
     expect(second).toBe(first)
 
-    const key = createHash('sha1').update(img).digest('hex').slice(0, 16)
+    const st = statSync(img)
+    const key = createHash('sha1')
+      .update(`${img}:${Math.floor(st.mtimeMs)}:${st.size}`)
+      .digest('hex')
+      .slice(0, 16)
     expect(basename(first!)).toBe(`${key}.png`)
+  })
+
+  it('invalidates the cached thumb when the source is overwritten in place', async () => {
+    const { thumbnailService } = await import('../../src/main/services/media')
+    const dir = join(ROOT, 'output-thumbs')
+    mkdirSync(dir, { recursive: true })
+    const img = join(dir, 'overwrite.png')
+    writeFileSync(img, 'first-bytes')
+    const first = await thumbnailService.ensureOutputThumb(img)
+    expect(first).toBeTruthy()
+
+    // Rewrite with different bytes and bump mtime explicitly.
+    writeFileSync(img, 'second-bytes-longer')
+    const future = new Date(Date.now() + 5000)
+    utimesSync(img, future, future)
+    const second = await thumbnailService.ensureOutputThumb(img)
+    expect(second).toBeTruthy()
+    expect(second).not.toBe(first)
+    expect(existsSync(second!)).toBe(true)
+  })
+
+  it('regenerates when the cached file for the SAME key is older than the source', async () => {
+    const { thumbnailService } = await import('../../src/main/services/media')
+    const { cacheDir } = await import('../../src/main/services/db')
+    const dir = join(ROOT, 'output-thumbs')
+    mkdirSync(dir, { recursive: true })
+    const img = join(dir, 'same-key.png')
+    writeFileSync(img, 'bytes')
+    const st = statSync(img)
+    const key = createHash('sha1')
+      .update(`${img}:${Math.floor(st.mtimeMs)}:${st.size}`)
+      .digest('hex')
+      .slice(0, 16)
+    const out = join(cacheDir(), 'thumbs', 'output', `${key}.png`)
+    mkdirSync(join(cacheDir(), 'thumbs', 'output'), { recursive: true })
+    writeFileSync(out, 'stale-thumb')
+    const past = new Date(Date.now() - 60_000)
+    utimesSync(out, past, past)
+
+    const thumb = await thumbnailService.ensureOutputThumb(img)
+    expect(thumb).toBe(out)
+    // The stale bytes were replaced by the freshly encoded PNG.
+    expect(readFileSync(thumb!, 'utf-8')).not.toBe('stale-thumb')
   })
 
   it('returns null for non-images and missing files', async () => {
@@ -614,5 +698,104 @@ describe('output thumbnails (ensureOutputThumb / persistOutputThumb)', () => {
     const thumb = await thumbnailService.ensureOutputThumb(small)
     expect(thumb).toBeTruthy()
     expect(existsSync(thumb!)).toBe(true)
+  })
+
+  it('generates static first-frame thumbs for gif sources', async () => {
+    const { thumbnailService } = await import('../../src/main/services/media')
+    const dir = join(ROOT, 'output-thumbs')
+    mkdirSync(dir, { recursive: true })
+    const gif = join(dir, 'anim.gif')
+    writeFileSync(gif, 'gif-bytes')
+    const thumb = await thumbnailService.ensureOutputThumb(gif)
+    expect(thumb).toBeTruthy()
+    expect(thumb!.endsWith('.png')).toBe(true)
+  })
+
+  it('prunes only thumbs older than the age threshold', async () => {
+    const { pruneOldOutputThumbs } = await import('../../src/main/services/media')
+    const { cacheDir } = await import('../../src/main/services/db')
+    const root = join(cacheDir(), 'thumbs', 'output')
+    mkdirSync(root, { recursive: true })
+    const oldFile = join(root, 'old-thumb.png')
+    const freshFile = join(root, 'fresh-thumb.png')
+    writeFileSync(oldFile, 'x')
+    writeFileSync(freshFile, 'x')
+    const past = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000)
+    utimesSync(oldFile, past, past)
+
+    const removed = pruneOldOutputThumbs()
+    expect(removed).toBeGreaterThanOrEqual(1)
+    expect(existsSync(oldFile)).toBe(false)
+    expect(existsSync(freshFile)).toBe(true)
+  })
+
+  it('clears DB thumbnail pointers only when thumb AND source are gone', async () => {
+    const { pruneDeadOutputThumbRows } = await import('../../src/main/services/media')
+    const { upsertOutputAsset, listOutputAssetsAll, deleteOutputAsset } =
+      await import('../../src/main/services/db')
+    // The DB lives in a shared tmp dir across runs — remove rows from earlier
+    // runs so `cleared` stays deterministic for THIS test only.
+    for (const r of listOutputAssetsAll()) {
+      if (r.id.startsWith('dead-')) deleteOutputAsset(r.id)
+    }
+    const dir = join(ROOT, 'dead-rows')
+    mkdirSync(dir, { recursive: true })
+    // Row 1: both thumb and source missing → cleared.
+    upsertOutputAsset({
+      id: 'dead-1',
+      path: join(dir, 'gone.png'),
+      fileName: 'gone.png',
+      type: 'image',
+      size: 1,
+      createdAt: 1,
+      thumbnail: join(dir, 'missing-thumb.png'),
+      params: {}
+    })
+    // Row 2: source exists, thumb missing → kept (lazy heal on next list()).
+    const alive = join(dir, 'alive.png')
+    writeFileSync(alive, 'x')
+    upsertOutputAsset({
+      id: 'dead-2',
+      path: alive,
+      fileName: 'alive.png',
+      type: 'image',
+      size: 1,
+      createdAt: 1,
+      thumbnail: join(dir, 'missing-thumb-2.png'),
+      params: {}
+    })
+    // Row 3: thumb file exists → untouched.
+    const okThumb = join(dir, 'ok-thumb.png')
+    writeFileSync(okThumb, 'x')
+    upsertOutputAsset({
+      id: 'dead-3',
+      path: join(dir, 'whatever.png'),
+      fileName: 'whatever.png',
+      type: 'image',
+      size: 1,
+      createdAt: 1,
+      thumbnail: okThumb,
+      params: {}
+    })
+    // Row 4: no thumbnail at all → skipped.
+    upsertOutputAsset({
+      id: 'dead-4',
+      path: join(dir, 'no-thumb.png'),
+      fileName: 'no-thumb.png',
+      type: 'image',
+      size: 1,
+      createdAt: 1,
+      params: {}
+    })
+
+    const cleared = pruneDeadOutputThumbRows()
+    expect(cleared).toBe(1)
+    // Idempotent: a second pass has nothing left to clear.
+    expect(pruneDeadOutputThumbRows()).toBe(0)
+    const rows = listOutputAssetsAll()
+    expect(rows.find((r) => r.id === 'dead-1')?.thumbnail).toBeUndefined()
+    expect(rows.find((r) => r.id === 'dead-2')?.thumbnail).toBeTruthy()
+    expect(rows.find((r) => r.id === 'dead-3')?.thumbnail).toBe(okThumb)
+    expect(rows.find((r) => r.id === 'dead-4')?.thumbnail).toBeUndefined()
   })
 })

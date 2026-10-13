@@ -378,7 +378,9 @@ describe('handlers security gates', () => {
 
   it('validates output roots', () => {
     const src = readSrc('src/main/ipc/handlers.ts')
-    expect(src).toContain('isPathInside')
+    // 0.1.9: per-segment normalizing resolver (blocks `.. ` variants) instead
+    // of the earlier lexical prefix check.
+    expect(src).toContain('resolveInsideAnyRoot')
     expect(src).toContain('Output root is outside')
   })
 })
@@ -394,7 +396,7 @@ describe('workflow security', () => {
   it('validates export dirs', () => {
     const src = readSrc('src/main/ipc/handlers.ts')
     expect(src).toContain('Export directory is outside')
-    expect(src).toContain('isPathInside')
+    expect(src).toContain('resolveInsideAnyRoot')
   })
 })
 

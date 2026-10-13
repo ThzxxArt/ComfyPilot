@@ -6,8 +6,16 @@
  * No native modules.
  */
 import { app } from 'electron'
-import { join, basename } from 'path'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, readdirSync } from 'fs'
+import { join, basename, dirname } from 'path'
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  renameSync,
+  readdirSync,
+  lstatSync
+} from 'fs'
 import { randomUUID } from 'crypto'
 import { DEFAULT_SETTINGS } from '@shared/constants'
 import type {
@@ -131,8 +139,54 @@ export function userDataDir(): string {
   return ensureDir(join(app.getPath('userData'), 'data'))
 }
 
+/**
+ * Cache root for regenerable ComfyPilot data (thumbnails, registry index).
+ *
+ * MUST NOT be `<userData>/cache`: on Windows/macOS the filesystem is
+ * case-insensitive, so that path IS Chromium's own `Cache` directory —
+ * browser cache eviction (or upgrade) wipes our thumbs with it. 0.1.9 moved
+ * the root to `app-cache` and migrates legacy data once on first access.
+ */
 export function cacheDir(): string {
-  return ensureDir(join(app.getPath('userData'), 'cache'))
+  const root = join(app.getPath('userData'), 'app-cache')
+  migrateLegacyCache(app.getPath('userData'), root)
+  return ensureDir(root)
+}
+
+let legacyCacheMigrated = false
+
+/** One-shot best-effort move of `cache/thumbs` + registry index into app-cache. */
+function migrateLegacyCache(userData: string, nextRoot: string): void {
+  if (legacyCacheMigrated) return
+  legacyCacheMigrated = true
+  try {
+    const legacyRoot = join(userData, 'cache')
+    if (legacyRoot === nextRoot || !existsSync(legacyRoot)) return
+    for (const name of ['thumbs', 'registry-index.json', 'registry-index.json.tmp']) {
+      moveLegacyEntry(join(legacyRoot, name), join(nextRoot, name))
+    }
+  } catch {
+    /* best effort — a failed migration only costs regenerating thumbs */
+  }
+}
+
+function moveLegacyEntry(from: string, to: string): void {
+  try {
+    if (!existsSync(from)) return
+    const st = lstatSync(from)
+    // Never descend into symlinks/junctions: statSync would follow them and
+    // move the LINK TARGET's contents out of the user's real directory.
+    if (st.isSymbolicLink()) return
+    if (st.isDirectory()) {
+      mkdirSync(to, { recursive: true })
+      for (const name of readdirSync(from)) moveLegacyEntry(join(from, name), join(to, name))
+    } else if (!existsSync(to)) {
+      mkdirSync(dirname(to), { recursive: true })
+      renameSync(from, to)
+    }
+  } catch {
+    /* skip individual entries that resist moving */
+  }
 }
 
 export function logsDir(): string {
@@ -295,7 +349,8 @@ const KNOWN_SETTINGS_KEYS = new Set([
   'autoStartInstancesOnLaunch',
   'proxy',
   'pipIndex',
-  'torchIndexMirror'
+  'torchIndexMirror',
+  'outputScanDepth'
 ])
 
 export function saveSettings(patch: Partial<AppSettings>): AppSettings {
