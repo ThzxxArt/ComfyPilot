@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { PulseOutline, HardwareChipOutline } from '@vicons/ionicons5'
 import {
+  NAlert,
   NButton,
   NSpace,
   NProgress,
@@ -16,22 +17,65 @@ import {
 import StatCard from '@/components/StatCard.vue'
 import ListSkeleton from '@/components/ListSkeleton.vue'
 import { useAppStore } from '@/stores/app'
-import { ipc, onMonitorTick } from '@/composables/useIpc'
+import { ipc, onIpc, onMonitorTick, IPC_EVENTS } from '@/composables/useIpc'
 import { clampPercent, formatBytes, formatPercent } from '@/utils/format'
 import { COLORS } from '@/styles/tokens'
-import type { QueueSnapshot, SystemSnapshot } from '@shared/types'
+import type {
+  ComfyJobSummary,
+  ExecNodeProgress,
+  ExecProgressEvent,
+  QueueSnapshot,
+  SystemSnapshot
+} from '@shared/types'
 
 const store = useAppStore()
-const { t } = useI18n()
+const { t, te } = useI18n()
 const message = useMessage()
 const queue = ref<QueueSnapshot | null>(null)
 const queueError = ref(false)
 const history = ref<number[]>([])
+/** /api/jobs snapshot (0.39+); null when the endpoint is unavailable. */
+const jobs = ref<ComfyJobSummary[] | null>(null)
 
 // monitor.history — task history for the active instance
 const historySnapshot = ref<QueueSnapshot | null>(null)
 const historyLoading = ref(false)
 const queueTab = ref<'queue' | 'history'>('queue')
+
+// ---------- Live generation preview + node-level progress (0.1.10) ----------
+const lastPreview = ref('')
+const nodeProgress = ref<Record<string, ExecNodeProgress>>({})
+const currentNodeId = ref('')
+
+const runningNodes = computed(() =>
+  Object.values(nodeProgress.value).filter((n) => n.state === 'running')
+)
+const finishedNodeCount = computed(
+  () => Object.values(nodeProgress.value).filter((n) => n.state === 'finished').length
+)
+
+function onWsEvent(payload: unknown): void {
+  const evt = payload as ExecProgressEvent
+  if (!evt?.type) return
+  if (evt.type === 'preview' && evt.image) {
+    lastPreview.value = evt.image
+    return
+  }
+  if (evt.type === 'progress_state' && evt.nodes) {
+    nodeProgress.value = evt.nodes
+    if (evt.nodeId) currentNodeId.value = evt.nodeId
+    return
+  }
+  if (evt.type === 'executing') {
+    currentNodeId.value = evt.nodeId || ''
+    return
+  }
+  if (evt.type === 'execution_start') {
+    // New run — reset stale state.
+    nodeProgress.value = {}
+    currentNodeId.value = ''
+  }
+}
 
 const cpuHistory = computed(() => history.value.slice(-40))
 
@@ -40,24 +84,23 @@ function pct(used: number, total: number): number {
   return clampPercent((used / total) * 100)
 }
 
+// 0.1.10: the monitor follows the ACTIVE TARGET — a configured remote's
+// baseUrl when one is selected, otherwise the local instance. Remote targets
+// are read-only (queue/history/system only).
+const targetUrl = computed(() => store.activeTargetUrl)
+const targetReady = computed(() =>
+  store.isRemoteActive ? Boolean(store.activeRemote) : store.activeInstance?.status === 'running'
+)
+
 async function refreshQueue(): Promise<void> {
   try {
-    const inst = store.activeInstance
-    if (!inst?.url) {
-      // Switching to an instance without a URL must not show the previous
-      // instance's queue.
+    if (!targetUrl.value || !targetReady.value) {
+      // No target / not ready: show the empty state, not a scary error banner.
       queue.value = null
       queueError.value = false
       return
     }
-    if (inst.status !== 'running') {
-      // Stopped/starting: no queue endpoint to poll — show the empty state,
-      // not a scary "load failed" banner on every 3s tick.
-      queue.value = null
-      queueError.value = false
-      return
-    }
-    queue.value = await ipc('monitor.queue', inst.url)
+    queue.value = await ipc('monitor.queue', targetUrl.value)
     queueError.value = false
   } catch {
     // Offline: clear stale data instead of leaving the old queue on screen.
@@ -66,22 +109,43 @@ async function refreshQueue(): Promise<void> {
   }
 }
 
-/** Load monitor.history (QueueSnapshot.history) for the active instance. */
-async function refreshHistory(): Promise<void> {
-  const inst = store.activeInstance
-  if (!inst?.url) {
-    historySnapshot.value = null
+/** Job list (0.39+); unsupported endpoints yield null and the section hides. */
+async function refreshJobs(): Promise<void> {
+  if (!targetUrl.value || !targetReady.value) {
+    jobs.value = null
     return
   }
-  if (inst.status !== 'running') {
-    // Same policy as the queue tab: no endpoint to poll, no error-toast spam.
+  try {
+    jobs.value = await ipc('monitor.jobs', targetUrl.value)
+  } catch {
+    jobs.value = null
+  }
+}
+
+function jobStatusLabel(status: string): string {
+  const key = `monitor.job.${status}`
+  return te(key) ? t(key) : status
+}
+
+function jobChip(status: string): string {
+  const s = String(status || '').toLowerCase()
+  if (s === 'completed' || s === 'success' || s === 'done') return 'chip-success'
+  if (s === 'failed' || s === 'error') return 'chip-danger'
+  if (s === 'cancelled') return 'chip-warning'
+  if (s === 'in_progress' || s === 'running') return 'chip-warning'
+  return 'chip-muted'
+}
+
+/** Load monitor.history (QueueSnapshot.history) for the active target. */
+async function refreshHistory(): Promise<void> {
+  if (!targetUrl.value || !targetReady.value) {
     historySnapshot.value = null
     historyLoading.value = false
     return
   }
   historyLoading.value = true
   try {
-    historySnapshot.value = await ipc('monitor.history', inst.url)
+    historySnapshot.value = await ipc('monitor.history', targetUrl.value)
   } catch (err) {
     historySnapshot.value = null
     message.error(
@@ -110,6 +174,7 @@ function formatHistoryTime(ts?: number): string {
 }
 
 let off: (() => void) | null = null
+let offWs: (() => void) | null = null
 let queueTimer: ReturnType<typeof setInterval> | null = null
 
 onMounted(async () => {
@@ -125,11 +190,16 @@ onMounted(async () => {
     history.value.push(snap.cpuUsage)
     if (history.value.length > 60) history.value.shift()
   })
+  offWs = onIpc(IPC_EVENTS.monitorWs, onWsEvent)
   // WS is owned by the app store (bound to the active instance) — do not
   // connect/disconnect it here or leaving this page would kill other pages' streams.
   await refreshQueue()
   void refreshHistory()
-  queueTimer = setInterval(() => void refreshQueue(), 3000)
+  void refreshJobs()
+  queueTimer = setInterval(() => {
+    void refreshQueue()
+    void refreshJobs()
+  }, 3000)
 })
 
 // Re-poll when the user switches the active instance in the header.
@@ -138,11 +208,13 @@ watch(
   () => {
     void refreshQueue()
     void refreshHistory()
+    void refreshJobs()
   }
 )
 
 onUnmounted(() => {
   off?.()
+  offWs?.()
   if (queueTimer) clearInterval(queueTimer)
 })
 </script>
@@ -160,6 +232,14 @@ onUnmounted(() => {
     </div>
 
     <div class="page-body">
+      <NAlert
+        v-if="store.isRemoteActive && store.activeRemote"
+        type="info"
+        class="remote-note"
+        :title="$t('monitor.remoteReadonlyTitle')"
+      >
+        {{ $t('monitor.remoteReadonlyBody', { name: store.activeRemote.name }) }}
+      </NAlert>
       <div class="grid stats">
         <StatCard
           :label="$t('monitor.cpuUsage')"
@@ -233,6 +313,33 @@ onUnmounted(() => {
         </section>
       </div>
 
+      <section class="card panel preview-panel">
+        <div class="panel-head">
+          <div>
+            <div class="panel-title">{{ $t('monitor.previewTitle') }}</div>
+            <div class="panel-sub">{{ $t('monitor.previewSub') }}</div>
+          </div>
+        </div>
+        <div class="preview-box">
+          <img v-if="lastPreview" :src="lastPreview" class="preview-img" alt="" />
+          <div v-else class="preview-empty">{{ $t('monitor.previewEmpty') }}</div>
+        </div>
+        <div v-if="runningNodes.length || finishedNodeCount" class="node-progress">
+          <div v-for="n in runningNodes" :key="n.nodeId" class="node-progress-row">
+            <span class="mono node-id" :title="n.nodeId">{{ n.nodeId }}</span>
+            <NProgress
+              type="line"
+              :percentage="n.max ? Math.min(100, Math.round((n.value / n.max) * 100)) : 0"
+              :height="8"
+              indicator-placement="inside"
+            />
+          </div>
+          <div v-if="finishedNodeCount" class="meta">
+            {{ $t('monitor.nodeDoneCount', { n: finishedNodeCount }) }}
+          </div>
+        </div>
+      </section>
+
       <section class="card panel queue-panel">
         <NTabs
           v-model:value="queueTab"
@@ -245,10 +352,25 @@ onUnmounted(() => {
         >
           <NTabPane name="queue" :tab="$t('monitor.tabQueue')">
             <div class="panel-title">{{ $t('monitor.queueTitle') }}</div>
-            <ListSkeleton
-              v-if="!queue && !queueError && store.activeInstance?.status === 'running'"
-              :rows="3"
-            />
+            <!-- /api/jobs (0.39+) — richer state incl. completed/failed/cancelled -->
+            <div v-if="jobs && jobs.length" class="jobs-block">
+              <div class="panel-head">
+                <span class="meta">{{ $t('monitor.jobsTitle') }}</span>
+                <span class="meta">{{ $t('monitor.jobsCount', { n: jobs.length }) }}</span>
+              </div>
+              <div class="queue-list">
+                <div v-for="j in jobs.slice(0, 8)" :key="j.id" class="queue-row">
+                  <span class="chip" :class="jobChip(j.status)">{{
+                    jobStatusLabel(j.status)
+                  }}</span>
+                  <span class="mono history-prompt">{{ j.id }}</span>
+                  <span v-if="j.createdAt" class="meta history-time">
+                    {{ new Date(j.createdAt).toLocaleTimeString() }}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <ListSkeleton v-if="!queue && !queueError && targetReady" :rows="3" />
             <div
               v-else-if="!queue || (!queue.running.length && !queue.pending.length)"
               class="queue-empty"
@@ -278,7 +400,7 @@ onUnmounted(() => {
                 </NButton>
               </NSpace>
             </div>
-            <div v-if="!store.activeInstance?.url" class="queue-empty">
+            <div v-if="!targetUrl" class="queue-empty">
               {{ $t('monitor.needInstanceUrl') }}
             </div>
             <div v-else-if="historyLoading && !historySnapshot" class="queue-empty">
@@ -378,6 +500,70 @@ onUnmounted(() => {
 
 .queue-panel {
   margin-top: 16px;
+}
+
+.preview-panel {
+  margin-top: 16px;
+}
+
+.remote-note {
+  margin-bottom: 14px;
+  border-radius: 14px;
+}
+
+.preview-box {
+  border-radius: 12px;
+  overflow: hidden;
+  background: $color-bg-soft;
+  border: 1px solid $color-border;
+  display: grid;
+  place-items: center;
+  min-height: 160px;
+}
+
+.preview-img {
+  max-width: 100%;
+  max-height: 360px;
+  display: block;
+}
+
+.preview-empty {
+  color: $color-text-muted-ink;
+  font-size: 13px;
+  padding: 40px 12px;
+  text-align: center;
+}
+
+.node-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.node-progress-row {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  gap: 10px;
+  align-items: center;
+}
+
+.node-id {
+  font-size: 11px;
+  color: $color-text-muted-ink;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jobs-block {
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px dashed $color-border;
+}
+
+.jobs-block .panel-head {
+  margin-bottom: 8px;
 }
 
 .queue-empty {

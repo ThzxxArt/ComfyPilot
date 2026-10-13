@@ -150,7 +150,7 @@ const h = vi.hoisted(() => {
 // module mocks
 // ---------------------------------------------------------------------------
 vi.mock('os', async (importOriginal) => {
-  const actual = await importOriginal()
+  const actual = (await importOriginal()) as Record<string, unknown>
   const patched = {
     ...actual,
     homedir: () => h.state.homeDir
@@ -332,9 +332,9 @@ function cfg(over: Partial<ComfyInstanceConfig> = {}): ComfyInstanceConfig {
   }
 }
 
-function register(...list: Array<Record<string, unknown>>): void {
+function register(...list: Array<ComfyInstanceConfig | Record<string, unknown>>): void {
   h.state.instances.length = 0
-  for (const c of list) h.state.instances.push({ ...c })
+  for (const c of list) h.state.instances.push({ ...(c as Record<string, unknown>) })
 }
 
 function okStats(url: string): Promise<unknown> {
@@ -1305,7 +1305,8 @@ describe('start()', () => {
     h.state.fetchImpl = okStats
     const info = await svc.start('adopt')
     expect(info.status).toBe('running')
-    expect(info.managed).toBeUndefined() // managed is not on ComfyInstanceInfo
+    // managed is an internal runtime flag, never serialised into the info DTO
+    expect(info).not.toHaveProperty('managed')
     expect(h.state.spawnCount).toBe(0)
     const logs = svc.getLogs('adopt').map((l) => l.message)
     expect(logs.some((m) => m.includes('Adopted already-running'))).toBe(true)
@@ -1971,5 +1972,59 @@ describe('branch coverage extras', () => {
       // 0.1.9 default: ComfyPilot owns window opening.
       '--disable-auto-launch'
     ])
+  })
+})
+
+// ===========================================================================
+// Startup self-check (0.1.10)
+// ===========================================================================
+describe('runStartupSelfCheck (0.1.10)', () => {
+  it('streams output VERBATIM so the node load report parses it', async () => {
+    register(cfg({ id: 'selfcheck' }))
+    write(join(COMFY, 'main.py'), 'print(1)')
+    h.state.execHandler = (_cmd, args) => {
+      if (args.includes('--quick-test-for-ci')) {
+        return {
+          stdout:
+            [
+              'Prestartup times for custom nodes:',
+              '    0.1 seconds (PRESTARTUP FAILED): C:/x/custom_nodes/PreBad',
+              'Import times for custom nodes:',
+              '    0.2 seconds: C:/x/custom_nodes/Good',
+              '    3.0 seconds (IMPORT FAILED): C:/x/custom_nodes/Bad',
+              'Cannot import C:/x/custom_nodes/Bad module for custom nodes: No module named "cv2"'
+            ].join('\n') + '\n'
+        }
+      }
+      return { stdout: '' }
+    }
+    const result = await svc.runStartupSelfCheck('selfcheck')
+    expect(result.ok).toBe(true)
+
+    // The whole point: the self-check output must be parseable by the SAME
+    // parser used for real boot logs — otherwise the report comes back empty.
+    const { parseNodeLoadReport } = await import('@shared/nodeLoadReport')
+    const report = parseNodeLoadReport(svc.getLogs('selfcheck', 5000))
+    expect(report?.available).toBe(true)
+    expect(report?.entries).toHaveLength(3)
+    expect(report!.entries.find((e) => e.folder === 'Good')?.ok).toBe(true)
+    const bad = report!.entries.find((e) => e.folder === 'Bad')!
+    expect(bad.ok).toBe(false)
+    expect(bad.error).toContain('cv2')
+  })
+
+  it('refuses while the process is alive, without main.py, and for unknown ids', async () => {
+    register(cfg({ id: 'sc-busy' }))
+    write(join(COMFY, 'main.py'), 'x')
+    const rt = (
+      svc as unknown as { ensureRuntime: (c: ComfyInstanceConfig) => { process?: unknown } }
+    ).ensureRuntime(cfg({ id: 'sc-busy' }))
+    rt.process = { exitCode: null }
+    await expect(svc.runStartupSelfCheck('sc-busy')).rejects.toThrow(/running/)
+    rt.process = undefined
+
+    rmSync(join(COMFY, 'main.py'), { force: true })
+    await expect(svc.runStartupSelfCheck('sc-busy')).rejects.toThrow(/main\.py not found/)
+    await expect(svc.runStartupSelfCheck('missing')).rejects.toThrow(/Instance not found/)
   })
 })

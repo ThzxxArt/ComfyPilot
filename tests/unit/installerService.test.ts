@@ -21,7 +21,7 @@ const h = vi.hoisted(() => ({
       ) => unknown),
   getPathImpl: (): string => join(tmpdir(), 'cp-inst-svc'),
   fetchImpl: async (): Promise<Response> => new Response('zip-bytes', { status: 200 }),
-  unzipImpl: async (): Promise<void> => undefined
+  unzipImpl: async (_zip: string, _dest: string): Promise<void> => undefined
 }))
 
 vi.mock('electron', () => ({
@@ -491,13 +491,23 @@ describe('installer service internals', () => {
 
     it('getStatus exposes progress; cancel kills children and rejects runners', async () => {
       const { installerService } = await import('../../src/main/services/installer')
-      expect(installerService.getStatus()).toBeTruthy() // leftover from other tests or null
       const anySvc = installerService as unknown as {
+        progress: unknown
         children: Set<unknown>
         runRejects: Set<(e: Error) => void>
         cancelled: boolean
         killTree: (c: unknown) => Promise<void>
       }
+      // Explicit setup — never rely on a previous test's leftover progress.
+      anySvc.progress = {
+        runId: 'status-test',
+        status: 'running',
+        steps: [],
+        step: 'bootstrap',
+        message: '',
+        percent: 0
+      }
+      expect(installerService.getStatus()).toBeTruthy()
       let rejected: Error | null = null
       anySvc.runRejects.add((e) => {
         rejected = e
@@ -577,7 +587,7 @@ describe('installer service internals', () => {
       const { installerService } = await import('../../src/main/services/installer')
       const anySvc = installerService as unknown as {
         fetchComfyZip: (d: string) => Promise<void>
-        progress: { bytes?: unknown } | null
+        progress: Record<string, unknown> | null
       }
       anySvc.progress = {
         steps: [],
@@ -621,14 +631,20 @@ describe('installer service internals', () => {
 
     it('rejects when no instance registered / instance id not found', async () => {
       const { installerService } = await import('../../src/main/services/installer')
-      const { loadInstanceConfigs, saveSettings } = await import('../../src/main/services/db')
-      void saveSettings
-      // ensure empty instance list by writing nothing — instances.jsonc may exist from other tests
-      const cfgs = loadInstanceConfigs()
-      if (cfgs.length === 0) {
+      const { loadInstanceConfigs, deleteInstanceConfig, upsertInstanceConfig } =
+        await import('../../src/main/services/db')
+      // Deterministically clear every instance so the no-instance branch is
+      // really exercised (a conditional `if (cfgs.length === 0)` was vacuous
+      // whenever another test had already registered one).
+      const backup = loadInstanceConfigs()
+      for (const c of backup) deleteInstanceConfig(c.id)
+      try {
+        expect(loadInstanceConfigs()).toHaveLength(0)
         await expect(
           installerService.installStarter({ id: 'sd15-v1-5-pruned-emaonly' })
         ).rejects.toThrow(/No instance registered/)
+      } finally {
+        for (const c of backup) upsertInstanceConfig(c)
       }
       await expect(
         installerService.installStarter({

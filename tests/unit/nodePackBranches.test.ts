@@ -245,14 +245,38 @@ vi.mock('electron', () => ({
   }
 }))
 
-vi.mock('child_process', () => ({
-  execFile: vi.fn((_c: string, _a: string[], _o: unknown, cb?: unknown) => {
-    if (typeof cb === 'function') (cb as (e: null, o: string, s: string) => void)(null, 'ok', '')
-    return { pid: 1 }
-  }),
-  execFileSync: vi.fn(() => 'abc1234'),
-  spawn: vi.fn(() => ({ pid: 1, kill: () => undefined }))
-}))
+vi.mock('child_process', () => {
+  // Stream-aware spawn stub: env.runStreaming attaches stdout/stderr 'data'
+  // listeners and an 'error'/'close' pair; close fires (code 0) on the next
+  // microtask so streaming git commands resolve successfully.
+  const spawn = vi.fn(() => {
+    const handlers: Record<string, Array<(...a: unknown[]) => void>> = {}
+    const stream = {
+      on(ev: string, cb: (...a: unknown[]) => void) {
+        ;(handlers['s:' + ev] ||= []).push(cb)
+      }
+    }
+    return {
+      pid: 1,
+      stdout: stream,
+      stderr: stream,
+      kill: () => undefined,
+      exitCode: 0,
+      on(ev: string, cb: (...a: unknown[]) => void) {
+        ;(handlers[ev] ||= []).push(cb)
+        if (ev === 'close') queueMicrotask(() => cb(0))
+      }
+    }
+  })
+  return {
+    execFile: vi.fn((_c: string, _a: string[], _o: unknown, cb?: unknown) => {
+      if (typeof cb === 'function') (cb as (e: null, o: string, s: string) => void)(null, 'ok', '')
+      return { pid: 1 }
+    }),
+    execFileSync: vi.fn(() => 'abc1234'),
+    spawn
+  }
+})
 
 import {
   sanitizeInstallNameForTest,
@@ -436,10 +460,11 @@ describe('list() meta name/version fallbacks', () => {
     writeFile(join(dir, 'pyproject.toml'), 'name = ""\n')
     writeFile(join(dir, '__init__.py'), 'NODE_CLASS_MAPPINGS = {"N": None}\n')
     const packs = nodePackService.list('C:/fake/ComfyUI')
-    // name match `name = ""` gives empty string which is falsy → falls to folder
-    // (the regex captures empty; `if (n) name = n[1]` assigns '')
-    const p = packs.find((x) => x.name === '' || x.name === 'EmptyName')
-    expect(p).toBeTruthy()
+    // The name regex requires ≥1 char, so `name = ""` never matches and the
+    // folder name wins deterministically.
+    const p = packs.find((x) => x.path === dir)!
+    expect(p.name).toBe('EmptyName')
+    expect(p.version).toBe('0.0.0')
   })
 
   it('NO_ENTRY warning is recorded and status stays installed', () => {
@@ -491,8 +516,10 @@ describe('managerChannelList field fallbacks', () => {
     expect(ids).toContain('HasId')
     // dup title skipped
     expect(ids.filter((i) => i === 'OnlyTitle').length).toBe(1)
-    // empty id skipped
+    // empty id skipped — and the id list must never contain holes or the
+    // literal string 'undefined' (a String(undefined) leak).
     expect(ids).not.toContain('undefined')
+    expect(ids.every((i) => typeof i === 'string' && i.length > 0)).toBe(true)
     const has = list.find((x) => x.id === 'HasId')!
     expect(has.name).toBe('HasName')
     expect(has.displayName).toBe('HasTitle')
@@ -872,7 +899,7 @@ describe('smokeTest nodeList iteration', () => {
       }
     ]
     const { execFile } = await import('child_process')
-    const execMock = execFile as ReturnType<typeof vi.fn>
+    const execMock = execFile as unknown as ReturnType<typeof vi.fn>
     execMock.mockImplementation((_c: string, _a: string[], _o: unknown, cb?: unknown) => {
       if (typeof cb === 'function') (cb as (e: null, o: string, s: string) => void)(null, 'ok', '')
       return { pid: 1 }
@@ -925,11 +952,9 @@ describe('list() meta empty-name and no-version fallbacks', () => {
     writeFile(join(dir, 'pyproject.toml'), 'name = ""\n')
     writeFile(join(dir, '__init__.py'), 'x')
     const packs = nodePackService.list('C:/fake/ComfyUI')
-    // `if (n) name = n[1]` assigns empty string, then `meta.name || name` uses folder
-    const p = packs.find((x) => x.path === dir)
-    expect(p).toBeTruthy()
-    // name is either '' (meta.name) or 'FallbackName' (folder fallback)
-    expect(['', 'FallbackName']).toContain(p!.name)
+    // The name regex requires ≥1 char — the folder name is the deterministic result.
+    const p = packs.find((x) => x.path === dir)!
+    expect(p.name).toBe('FallbackName')
   })
 
   it('pack without any meta files gets default version 0.0.0 and empty nodeList', () => {
@@ -993,12 +1018,10 @@ describe('git pack update hits afterInstall fallbacks', () => {
     const events: Array<Record<string, unknown>> = []
     nodePackService.on('install-progress', (e: Record<string, unknown>) => events.push(e))
     nodePackService.on('op-progress', (e: Record<string, unknown>) => events.push({ __op: e }))
-    try {
-      // no instanceId → afterInstall's `instanceId || 'default'` fallback fires
-      await nodePackService.update('GitPack')
-    } catch {
-      // may fail in mock env — we only need the emit paths
-    }
+    // No instanceId → afterInstall's `instanceId || 'default'` fallback fires.
+    // The exec mock succeeds by default, so this update must run to completion —
+    // swallowing a failure here would make the emit assertions meaningless.
+    await nodePackService.update('GitPack')
     nodePackService.removeAllListeners()
     expect(events.length).toBeGreaterThan(0)
     const opEvents = events.filter((e) => e.__op)
@@ -1026,20 +1049,48 @@ describe('git pack update hits afterInstall fallbacks', () => {
       }
     ]
     const cp = await import('child_process')
-    const execMock = cp.execFile as ReturnType<typeof vi.fn>
+    const execMock = cp.execFile as unknown as ReturnType<typeof vi.fn>
+    const spawnMock = cp.spawn as ReturnType<typeof vi.fn>
     execMock.mockImplementation((_c: string, _a: string[], _o: unknown, cb?: unknown) => {
       if (typeof cb === 'function')
         (cb as (e: Error, o: string, s: string) => void)(new Error('pull failed'), '', '')
       return { pid: 1 }
     })
-    await expect(nodePackService.update('GitFail', undefined, 'inst-1')).rejects.toThrow(
-      'git pull failed'
-    )
-    // restore
-    execMock.mockImplementation((_c: string, _a: string[], _o: unknown, cb?: unknown) => {
-      if (typeof cb === 'function') (cb as (e: null, o: string, s: string) => void)(null, 'ok', '')
-      return { pid: 1 }
+    // git pull is streamed through spawn (env.runStreaming) — make the stream
+    // exit non-zero so the failure wraps for real.
+    const defaultSpawn = spawnMock.getMockImplementation()!
+    spawnMock.mockImplementation(() => {
+      const handlers: Record<string, Array<(...a: unknown[]) => void>> = {}
+      const stream = {
+        on(ev: string, cb: (...a: unknown[]) => void) {
+          ;(handlers['s:' + ev] ||= []).push(cb)
+        }
+      }
+      return {
+        pid: 1,
+        stdout: stream,
+        stderr: stream,
+        kill: () => undefined,
+        exitCode: 1,
+        on(ev: string, cb: (...a: unknown[]) => void) {
+          ;(handlers[ev] ||= []).push(cb)
+          if (ev === 'close') queueMicrotask(() => cb(1))
+        }
+      }
     })
+    try {
+      await expect(nodePackService.update('GitFail', undefined, 'inst-1')).rejects.toThrow(
+        'git pull failed'
+      )
+    } finally {
+      // restore
+      execMock.mockImplementation((_c: string, _a: string[], _o: unknown, cb?: unknown) => {
+        if (typeof cb === 'function')
+          (cb as (e: null, o: string, s: string) => void)(null, 'ok', '')
+        return { pid: 1 }
+      })
+      spawnMock.mockImplementation(defaultSpawn)
+    }
   })
 })
 

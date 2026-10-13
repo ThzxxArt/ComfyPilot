@@ -72,7 +72,7 @@ describe('security: path safety', () => {
     const { safeResolveUnder } = await import('@main/services/security')
     // Should reject escaping
     const escape = safeResolveUnder('/a/b', '../../etc/passwd')
-    expect(escape === null || escape === false).toBe(true)
+    expect(escape).toBeNull()
     // Absolute input is NOT honored as a system path: per the comfy-pilot:// protocol
     // contract, leading separators are stripped and the result must stay under the root.
     const abs = safeResolveUnder('/a/b', '/etc/passwd')
@@ -275,7 +275,7 @@ describe('media module', () => {
   it('toMediaUrl handles empty', async () => {
     const { toMediaUrl } = await import('@main/services/media')
     expect(toMediaUrl('')).toBeFalsy()
-    expect(toMediaUrl(undefined)).toBeFalsy()
+    expect(toMediaUrl(undefined as unknown as string)).toBeFalsy()
   })
 })
 

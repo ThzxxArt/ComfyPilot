@@ -23,6 +23,8 @@ import type {
   DownloadTask,
   DuplicateGroup,
   ModelCategory,
+  ModelReconcileFolder,
+  ModelReconcileResult,
   ModelRecord,
   ModelScanProgress,
   StorageStats
@@ -41,6 +43,7 @@ import {
   userDataDir
 } from './db'
 import { resolveInsideAnyRoot, assertSafeRelativeFilename, isSafeExternalUrl } from './security'
+import { normalizeForCompare } from './security'
 
 const MODEL_EXT = new Set(['.safetensors', '.ckpt', '.pt', '.pth', '.bin', '.gguf', '.onnx'])
 
@@ -84,6 +87,23 @@ export function categorize(path: string): ModelCategory {
     if (norm.includes(`/${key}/`)) return cat
   }
   return 'other'
+}
+
+/** Instance HTTP base (same host normalization as p1p2.instanceUrl). */
+function instanceBaseUrlOf(inst: { listen?: string; port?: number }): string {
+  const listen = inst.listen || '127.0.0.1'
+  const host = listen === '0.0.0.0' || listen === '::' || listen === '[::]' ? '127.0.0.1' : listen
+  return `http://${host}:${inst.port || 8188}`
+}
+
+async function fetchJsonSafe(url: string, timeoutMs = 4000): Promise<unknown> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) })
+    if (!res.ok) return null
+    return (await res.json()) as unknown
+  } catch {
+    return null
+  }
 }
 
 function inferArchitecture(name: string): string | undefined {
@@ -1169,6 +1189,143 @@ export class ModelService extends EventEmitter {
   /** Storage analysis: bytes per top-level folder under model roots. */
   storageAnalysis(): StorageStats[] {
     return this.storageStats()
+  }
+
+  /**
+   * Reconcile the LOCAL model index against what a RUNNING instance actually
+   * sees (0.1.10). Prefers /experiment/models (folder paths + extensions);
+   * falls back to /models + /models/<folder> when the experiment routes are
+   * unavailable. Legacy `clip` / `unet` folder names are mapped to their
+   * canonical categories before comparison.
+   */
+  async reconcile(instanceId?: string): Promise<ModelReconcileResult> {
+    const configs = loadInstanceConfigsSafe()
+    const inst = instanceId ? configs.find((c) => c.id === instanceId) : configs[0]
+    if (!inst) {
+      return {
+        ok: false,
+        source: 'none',
+        error: 'No instance configured',
+        folders: [],
+        uncoveredRoots: []
+      }
+    }
+    const base = instanceBaseUrlOf(inst)
+
+    type FolderInfo = { folders: string[]; extensions: string[]; names: string[] }
+    const perFolder = new Map<string, FolderInfo>()
+    let source: ModelReconcileResult['source'] = 'none'
+
+    const exp = await fetchJsonSafe(`${base}/experiment/models`, 6000)
+    if (Array.isArray(exp)) {
+      source = 'experiment'
+      const entries = (exp as unknown[]).filter(
+        (e): e is Record<string, unknown> => Boolean(e) && typeof e === 'object'
+      )
+      await Promise.all(
+        entries.map(async (entry) => {
+          const name = String(entry.name || '')
+          if (!name) return
+          const folders = Array.isArray(entry.folders)
+            ? (entry.folders as unknown[]).map(String)
+            : []
+          const extensions = Array.isArray(entry.extensions)
+            ? (entry.extensions as unknown[]).map((x) => String(x).toLowerCase())
+            : []
+          const list = await fetchJsonSafe(`${base}/experiment/models/${encodeURIComponent(name)}`)
+          const names = Array.isArray(list)
+            ? (list as Array<Record<string, unknown> | string>)
+                .map((x) =>
+                  typeof x === 'string' ? x : String((x as Record<string, unknown>)?.name || '')
+                )
+                .filter(Boolean)
+            : []
+          perFolder.set(name, { folders, extensions, names })
+        })
+      )
+    } else {
+      const legacy = await fetchJsonSafe(`${base}/models`, 6000)
+      if (Array.isArray(legacy)) {
+        source = 'legacy'
+        await Promise.all(
+          (legacy as unknown[])
+            .map(String)
+            .filter(Boolean)
+            .map(async (name) => {
+              const list = await fetchJsonSafe(`${base}/models/${encodeURIComponent(name)}`)
+              const names = Array.isArray(list) ? (list as unknown[]).map(String) : []
+              perFolder.set(name, { folders: [], extensions: [], names })
+            })
+        )
+      }
+    }
+    if (source === 'none') {
+      return {
+        ok: false,
+        source,
+        error: 'Model listing endpoints are unavailable on this instance',
+        folders: [],
+        uncoveredRoots: []
+      }
+    }
+
+    // Local index: canonical category → fileNames.
+    const localModels = listModels()
+    const localByCategory = new Map<string, string[]>()
+    for (const m of localModels) {
+      const arr = localByCategory.get(m.category) || []
+      arr.push(m.fileName)
+      localByCategory.set(m.category, arr)
+    }
+    const allLocalFileNames = new Set(localModels.map((m) => m.fileName))
+    const settings = loadSettings()
+    const knownRoots = new Set(
+      [
+        ...settings.modelScanRoots,
+        // extra_model_paths.yaml roots are already visible to the scanner —
+        // reporting them as "uncovered" would be a false alarm.
+        ...parseExtraModelPaths(undefined, false, { modelOnly: true }),
+        ...loadInstanceConfigsSafe().map((c) => c.path && join(c.path, 'models'))
+      ]
+        .filter(Boolean)
+        .map((r) => normalizeForCompare(String(r)))
+    )
+
+    const folders: ModelReconcileFolder[] = []
+    const uncovered = new Set<string>()
+    for (const [rawName, info] of [...perFolder.entries()].sort((a, b) =>
+      a[0].localeCompare(b[0])
+    )) {
+      const canonical =
+        (CATEGORY_BY_DIR[rawName.toLowerCase()] as ModelCategory | undefined) || rawName
+      const localNames = localByCategory.get(canonical as ModelCategory) || []
+      const instanceSet = new Set(info.names)
+      const missingLocally = info.names
+        .filter((n) => !allLocalFileNames.has(n))
+        .sort()
+        .slice(0, 200)
+      const extraLocally: string[] = []
+      const formatHidden: string[] = []
+      for (const fileName of localNames) {
+        if (instanceSet.has(fileName)) continue
+        const ext = extname(fileName).toLowerCase()
+        if (info.extensions.length && !info.extensions.includes(ext)) formatHidden.push(fileName)
+        else extraLocally.push(fileName)
+      }
+      for (const folderPath of info.folders) {
+        if (!knownRoots.has(normalizeForCompare(folderPath))) uncovered.add(folderPath)
+      }
+      folders.push({
+        folder: canonical,
+        instanceFolders: info.folders,
+        extensions: info.extensions,
+        missingLocally,
+        extraLocally: extraLocally.sort().slice(0, 200),
+        formatHidden: formatHidden.sort().slice(0, 200)
+      })
+    }
+
+    return { ok: true, source, folders, uncoveredRoots: [...uncovered].sort() }
   }
 }
 

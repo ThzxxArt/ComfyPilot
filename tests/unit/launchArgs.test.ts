@@ -189,4 +189,105 @@ describe('warnLaunchArgs', () => {
     expect(launchArgWarningKey('recent-flag')).toBe('launchArgs.warnRecentFlag')
     expect(launchArgWarningKey('duplicate-listen')).toBe('launchArgs.warnDuplicateListen')
   })
+
+  // ---------- 0.1.10 additions ----------
+
+  it('renders base directories + device + runtime toggles in canonical order', () => {
+    const args = renderLaunchProfile({
+      disableNvmlPressure: true,
+      tritonBackend: 'off',
+      baseDirectory: 'D:/shared/ComfyUI',
+      modelsDirectory: 'D:/models',
+      userDirectory: 'D:/user-a',
+      defaultDevice: 1,
+      assets: true,
+      assetHashing: true
+    })
+    expect(args).toEqual([
+      '--disable-nvml-pressure',
+      '--disable-triton-backend',
+      '--base-directory',
+      'D:/shared/ComfyUI',
+      '--models-directory',
+      'D:/models',
+      '--user-directory',
+      'D:/user-a',
+      '--default-device',
+      '1',
+      '--enable-assets',
+      '--enable-asset-hashing'
+    ])
+    expect(renderLaunchProfile({ assets: false, tritonBackend: 'on' })).toEqual([
+      '--enable-triton-backend',
+      '--disable-assets'
+    ])
+  })
+
+  it('validates --default-device numeric range', () => {
+    expect(validateLaunchArgs(['--default-device', '2'])).toEqual([])
+    expect(validateLaunchArgs(['--default-device', '99'])).toEqual([
+      { code: 'invalid-number', flag: '--default-device' }
+    ])
+    expect(validateLaunchArgs(['--default-device'])).toEqual([
+      { code: 'invalid-number', flag: '--default-device' }
+    ])
+  })
+
+  it('tightens recent-flag warnings when the running version is known', () => {
+    // Confirmed build (0.39.0, where every recent entry was verified): silent.
+    expect(warnLaunchArgs(['--fast-disk', '--enable-assets'], { version: '0.39.0' })).toEqual([])
+    expect(warnLaunchArgs(['--use-ck-attention'], { version: '0.40.1' })).toEqual([])
+    // Older known build: explicit warning (may still work — not silently trusted).
+    const older = warnLaunchArgs(['--fast-disk'], { version: '0.30.0' })
+    expect(older).toEqual([{ code: 'recent-flag', flag: '--fast-disk', level: 'warning' }])
+    // Unknown version: informational, exactly as before.
+    const unknown = warnLaunchArgs(['--fast-disk'])
+    expect(unknown).toEqual([{ code: 'recent-flag', flag: '--fast-disk', level: 'info' }])
+    // Unknown/typo flags warn regardless of version.
+    expect(warnLaunchArgs(['--nope'], { version: '0.39.0' })).toEqual([
+      { code: 'unknown-flag', flag: '--nope', level: 'warning' }
+    ])
+  })
+
+  it('exposes the confirmed-version constant used for warning tightening', async () => {
+    const mod = await import('../../src/shared/launchArgs')
+    expect(mod.RECENT_FLAGS_SINCE).toBe('0.39.0')
+    expect(mod.versionAtLeast('0.39.0', mod.RECENT_FLAGS_SINCE)).toBe(true)
+    expect(mod.versionAtLeast('0.38.2', mod.RECENT_FLAGS_SINCE)).toBe(false)
+  })
+
+  it('recommends a VRAM-aware profile only when it helps', async () => {
+    const { recommendLaunchProfile } = await import('../../src/shared/launchArgs')
+    const GB = 1024 ** 3
+    expect(recommendLaunchProfile(undefined)).toBeUndefined()
+    expect(recommendLaunchProfile([])).toBeUndefined()
+    expect(recommendLaunchProfile([{ vramTotal: 0 }])).toBeUndefined()
+    expect(recommendLaunchProfile([{ vramTotal: 24 * GB }])).toBeUndefined()
+    expect(recommendLaunchProfile([{ vramTotal: 10 * GB }])).toEqual({
+      reserveVram: 0.8,
+      fastDisk: true
+    })
+    expect(recommendLaunchProfile([{ vramTotal: 6 * GB }])).toEqual({
+      reserveVram: 1,
+      fastDisk: true,
+      cache: 'lru',
+      cacheLru: 6
+    })
+    expect(recommendLaunchProfile([{ vramTotal: 4 * GB }])).toEqual({
+      reserveVram: 2,
+      fastDisk: true,
+      cache: 'none'
+    })
+    // Multi-GPU: the largest card decides (10GB wins over 6GB → 8GB+ tier).
+    expect(recommendLaunchProfile([{ vramTotal: 6 * GB }, { vramTotal: 10 * GB }])).toEqual({
+      reserveVram: 0.8,
+      fastDisk: true
+    })
+    // A single ample card beats a small sibling → no recommendation.
+    expect(recommendLaunchProfile([{ vramTotal: 24 * GB }, { vramTotal: 8 * GB }])).toBeUndefined()
+    // The recommendation must render to a valid argv.
+    const args = renderLaunchProfile(recommendLaunchProfile([{ vramTotal: 4 * GB }]))
+    expect(args).toEqual(['--reserve-vram', '2', '--cache-none', '--fast-disk'])
+    expect(validateLaunchArgs(args)).toEqual([])
+  })
 })

@@ -344,7 +344,16 @@ export class BatchService extends EventEmitter {
               cfg: job.params.cfg
             })
             seed = built.seed
-            const promptId = await client.queuePrompt(built.prompt, COMFY_CLIENT_ID)
+            const promptId = await client.queuePrompt(built.prompt, COMFY_CLIENT_ID, {
+              metadata: {
+                source: 'comfypilot',
+                batchJobId: job.id,
+                ...(item.workflowId ? { workflowId: item.workflowId } : {}),
+                ...(item.workflowName
+                  ? { workflowName: String(item.workflowName).slice(0, 80) }
+                  : {})
+              }
+            })
             const after = this.list().find((j) => j.id === id)
             if (!this.runningIds.has(id) || after?.status === 'cancelled') {
               // Result arrived after cancel — do not count as success.
@@ -664,7 +673,9 @@ export class BatchService extends EventEmitter {
     upsertBatchJob(job)
     this.emit('progress', job)
 
-    // Fire-and-forget dequeue of this leg's still-pending prompts.
+    // Fire-and-forget cancel of this leg's prompts. ComfyUI 0.39+'s atomic
+    // /api/jobs cancel can stop the RUNNING one too; older builds fall back to
+    // dequeuing the still-pending prompts only.
     void (async () => {
       try {
         const instances = loadInstanceConfigs()
@@ -672,7 +683,11 @@ export class BatchService extends EventEmitter {
         if (!inst) return
         const client = new ComfyApiClient(instanceUrl(inst))
         const ids = [...item.promptIds]
-        if (ids.length) await this.tryDequeue(client, ids)
+        if (!ids.length) return
+        const atomic = await client.jobsCancel(ids)
+        // Per-leg fallback stays dequeue-only: a directed interrupt on an older
+        // build would be GLOBAL and could kill a sibling leg's running prompt.
+        if (!atomic) await this.tryDequeue(client, ids)
       } catch {
         /* ignore */
       }
@@ -693,7 +708,7 @@ export class BatchService extends EventEmitter {
     upsertBatchJob(job)
     this.emit('progress', job)
 
-    // Fire-and-forget dequeue of still-pending prompts.
+    // Fire-and-forget cancel: atomic jobs cancel on 0.39+, plain dequeue otherwise.
     void (async () => {
       try {
         const instances = loadInstanceConfigs()
@@ -701,7 +716,16 @@ export class BatchService extends EventEmitter {
         if (!inst) return
         const client = new ComfyApiClient(instanceUrl(inst))
         const ids = job.items.flatMap((it) => it.promptIds)
-        if (ids.length) await client.deleteQueueItems(ids)
+        if (!ids.length) return
+        const atomic = await client.jobsCancel(ids)
+        if (!atomic) {
+          // Legacy fallback: drop pending prompts, then directed-interrupt the
+          // most recently submitted ones. On 0.39+ a prompt_id only interrupts
+          // THAT running job; older builds ignore the body (a global interrupt,
+          // acceptable here because the user cancelled the WHOLE job).
+          await client.deleteQueueItems(ids)
+          for (const pid of ids.slice(-5).reverse()) void client.interrupt(pid, 1500)
+        }
       } catch {
         /* ignore */
       }

@@ -48,7 +48,11 @@ const h = vi.hoisted(() => {
     uvInstalled: false,
     uvPath: 'C:/fake/uv.exe',
     sessionFetch: null as ((url: string) => unknown) | null,
-    unzipImpl: null as ((zip: string, dest: string) => void) | null
+    unzipImpl: null as ((zip: string, dest: string) => void) | null,
+    /** One-shot injected copy failures (matched on from OR to path). */
+    failCopyOnce: new Set<string>(),
+    /** Injected rmSync failures when the path contains any of these substrings. */
+    failRmPrefix: [] as string[]
   }
 
   function fsKey(p: unknown): string {
@@ -163,7 +167,13 @@ vi.mock('fs', () => {
       state.exists.delete(s)
     },
     mkdirSync: (p: unknown) => mkdirPath(fsKey(p)),
-    rmSync: (p: unknown) => rmPath(fsKey(p)),
+    rmSync: (p: unknown) => {
+      const s = fsKey(p)
+      if (state.failRmPrefix.some((prefix) => s.includes(prefix))) {
+        throw new Error('EBUSY (injected)')
+      }
+      rmPath(s)
+    },
     renameSync: (from: unknown, to: unknown) => {
       const f = fsKey(from)
       const t = fsKey(to)
@@ -173,12 +183,24 @@ vi.mock('fs', () => {
     copyFileSync: (from: unknown, to: unknown) => {
       const f = fsKey(from)
       const t = fsKey(to)
+      if (state.failCopyOnce.has(f) || state.failCopyOnce.has(t)) {
+        state.failCopyOnce.delete(f)
+        state.failCopyOnce.delete(t)
+        throw new Error('EACCES (injected copy failure)')
+      }
       state.files.set(t, state.files.get(f) ?? '')
       state.exists.add(t)
       attach(t)
     },
     cpSync: (from: unknown, to: unknown) => {
-      copyPath(fsKey(from), fsKey(to))
+      const f = fsKey(from)
+      const t = fsKey(to)
+      if (state.failCopyOnce.has(f) || state.failCopyOnce.has(t)) {
+        state.failCopyOnce.delete(f)
+        state.failCopyOnce.delete(t)
+        throw new Error('EACCES (injected copy failure)')
+      }
+      copyPath(f, t)
     }
   }
 })
@@ -400,6 +422,8 @@ function resetState(): void {
   h.state.doctorResult = { checks: [], summary: { pass: 5, warn: 0 } }
   h.state.doctorErr = null
   h.state.uvInstalled = false
+  h.state.failCopyOnce.clear()
+  h.state.failRmPrefix = []
   // Default: a minimal valid archive that just re-writes main.py
   h.state.sessionFetch = async () => ({
     ok: true,
@@ -1711,27 +1735,30 @@ describe('progress helpers', () => {
 // Edge branches for coverage
 // =====================================================================
 describe('edge branches', () => {
-  it('copyCoreTree skips entries whose copy throws', () => {
+  it('copyCoreTree skips entries whose copy throws (real injected failure)', () => {
     h.mkdirPath(join(COMFY, 'comfy'))
     h.writeFile(join(COMFY, 'main.py'), 'm')
-    // Make copyFileSync throw for a phantom unreadable entry by removing it mid-loop is hard;
-    // instead verify the catch path via an entry that statSync reports as a dir but cpSync fails.
-    // We approximate by confirming unreadable/missing children are skipped without throwing.
-    h.state.dirs.set(key(COMFY), [...(h.state.dirs.get(key(COMFY)) || []), 'ghost.bin'])
+    h.writeFile(join(COMFY, 'bad.bin'), 'b')
     const dest = join(COMFY, '.cp-backup-ghost')
     h.mkdirPath(dest)
+    h.state.failCopyOnce.add(h.fsKey(join(COMFY, 'bad.bin')))
     expect(() => svc.copyCoreTree(COMFY, dest)).not.toThrow()
+    // The failing entry was skipped; everything else went through.
+    expect(fget(join(dest, 'main.py'))).toBe('m')
+    expect(fget(join(dest, 'bad.bin'))).toBeUndefined()
   })
 
-  it('overlayTree skips entries whose copy throws', () => {
+  it('overlayTree skips entries whose copy throws and still copies the rest', () => {
     const src = join(COMFY, 'st')
     const dest = join(COMFY, 'dt')
     h.mkdirPath(src)
     h.mkdirPath(dest)
     h.writeFile(join(src, 'ok.py'), 'ok')
-    h.state.dirs.set(key(src), [...(h.state.dirs.get(key(src)) || []), 'ghost.py'])
+    h.writeFile(join(src, 'bad.py'), 'bad')
+    h.state.failCopyOnce.add(h.fsKey(join(src, 'bad.py')))
     expect(() => svc.overlayTree(src, dest)).not.toThrow()
     expect(fget(join(dest, 'ok.py'))).toBe('ok')
+    expect(fget(join(dest, 'bad.py'))).toBeUndefined()
   })
 
   it('performRollback rethrows a restore failure with the entry name', async () => {
@@ -1739,23 +1766,13 @@ describe('edge branches', () => {
     h.mkdirPath(backup)
     h.writeFile(join(backup, 'manifest.json'), '{}')
     h.writeFile(join(backup, 'main.py'), 'RESTORED')
-    // make the dest directory unwritable by replacing it with a file
-    h.rmPath(join(COMFY, 'main.py'))
-    h.writeFile(join(COMFY, 'main.py'), 'x')
-    // Force copyFileSync to fail by making the source vanish after listing:
-    // easiest deterministic failure: make manifest exist but an entry unreadable
-    // by pointing readdirSync at an entry that then fails stat/copy.
-    // Use a directory entry whose child copy throws.
-    h.mkdirPath(join(backup, 'comfy'))
-    h.writeFile(join(backup, 'comfy', 'a.py'), 'A')
-    // Replace copyFileSync behavior for this path via rm of source after readdir is not possible;
-    // instead assert the success path and the explicit throw on missing manifest separately.
-    const ok = await svc.performRollback(COMFY, backup, 'files')
-    expect(ok).toBe(true)
-    expect(fget(join(COMFY, 'main.py'))).toBe('RESTORED')
+    // Inject the failure on the destination copy — the restore must rethrow
+    // with the offending entry name instead of silently succeeding.
+    h.state.failCopyOnce.add(h.fsKey(join(COMFY, 'main.py')))
+    await expect(svc.performRollback(COMFY, backup, 'files')).rejects.toThrow(/restore main\.py/)
   })
 
-  it('fetchAndOverlayZip cleans up staging even when rm throws', async () => {
+  it('fetchAndOverlayZip survives staging cleanup failures', async () => {
     h.mkdirPath(COMFY)
     h.state.sessionFetch = async () => ({
       ok: true,
@@ -1766,14 +1783,15 @@ describe('edge branches', () => {
     h.state.unzipImpl = (zip, dest) => {
       h.writeFile(join(dest, 'main.py'), 'ok')
     }
-    // Should not throw even if cleanup is noisy
+    // The staging rmSync throws — the overlay must still succeed.
+    h.state.failRmPrefix.push('._comfyui_staging_')
     await expect(svc.fetchAndOverlayZip(COMFY)).resolves.toBeUndefined()
     expect(fget(join(COMFY, 'main.py'))).toBe('ok')
   })
 
-  it('check flags zip when current is a prefix of latest and vice versa', async () => {
+  it('check flags zip when current and latest are prefixes of each other', async () => {
     seedZipInstall()
-    // current is a prefix of latest �� updatable
+    // current is a SHORT prefix of latest (same commit) → NOT updatable
     h.writeFile(join(COMFY, '.comfypilot-env.json'), JSON.stringify({ comfyCommit: 'abcdef1' }))
     h.state.sessionFetch = async () => ({
       ok: true,
@@ -1786,7 +1804,7 @@ describe('edge branches', () => {
     let info = await comfyUpdaterService.check('inst-1')
     expect(info.updatable).toBe(false)
 
-    // latest is a prefix of current �� updatable
+    // latest is a SHORT prefix of current (same commit) → NOT updatable
     h.writeFile(
       join(COMFY, '.comfypilot-env.json'),
       JSON.stringify({ comfyCommit: 'abcdef1234567890' })

@@ -41,8 +41,10 @@ import {
 } from '@/composables/useComfyUpdate'
 import NodeOpProgressModal from '@/components/NodeOpProgressModal.vue'
 import { useAppStore } from '@/stores/app'
+import { packLoadStatusOf, packLoadFailureOf, type PackLoadStatus } from '@shared/nodeLoadReport'
 import type {
   NodeCheckStatus,
+  NodeLoadReport,
   NodeNameConflict,
   NodePackIssue,
   NodePackRecord,
@@ -100,6 +102,69 @@ const issuesPackId = ref('')
 /** Display title for the modal. */
 const issuesPackTitle = ref('')
 const issuesList = ref<NodePackIssue[]>([])
+/** Boot-log load report (0.1.10) — what ComfyUI actually loaded last start. */
+const loadReport = ref<NodeLoadReport | null>(null)
+const selfChecking = ref(false)
+/** Filter toggle: show only packs that failed to load on the last boot. */
+const loadFailedOnly = ref(false)
+const loadFailedCount = computed(
+  () =>
+    packs.value.filter(
+      (p) => packLoad(p) === 'import-failed' || packLoad(p) === 'prestartup-failed'
+    ).length
+)
+
+/** Folder identity for load-report matching (`.disabled` forms normalized). */
+function packFolder(pack: NodePackRecord): string {
+  const base =
+    (pack.path || '')
+      .replace(/[\\/]+$/, '')
+      .split(/[\\/]/)
+      .pop() || ''
+  return base.endsWith('.disabled') ? base.slice(0, -'.disabled'.length) : base
+}
+
+function packLoad(pack: NodePackRecord): PackLoadStatus {
+  // Disabled packs are never loaded by ComfyUI — do not badge them as failed.
+  if (pack.status === 'disabled') return 'unknown'
+  return packLoadStatusOf(packFolder(pack), loadReport.value)
+}
+
+function packLoadError(pack: NodePackRecord): string {
+  return packLoadFailureOf(packFolder(pack), loadReport.value)?.error || ''
+}
+
+const loadSummary = computed(() => {
+  const entries = loadReport.value?.available ? loadReport.value.entries : null
+  if (!entries) return null
+  const fail = entries.filter((e) => !e.ok).length
+  return { ok: entries.length - fail, fail }
+})
+
+/** One-click boot self-check: ComfyUI loads every custom node then exits. */
+async function runSelfCheck(): Promise<void> {
+  const inst = store.activeInstance
+  if (!inst) return
+  if (inst.status === 'running' || inst.status === 'starting') {
+    message.warning(t('nodes.selfCheckNeedStopped'))
+    return
+  }
+  selfChecking.value = true
+  try {
+    const r = await ipc('instance.runStartupSelfCheck', inst.id)
+    if (r.ok) message.success(t('nodes.selfCheckPassed'))
+    else message.error(t('nodes.selfCheckFailed', { code: r.exitCode ?? '?' }))
+    try {
+      loadReport.value = await ipc('node.loadReport', inst.id)
+    } catch {
+      /* keep the previous report */
+    }
+  } catch (err) {
+    message.error(describeNodeError(t, err))
+  } finally {
+    selfChecking.value = false
+  }
+}
 
 /** Card title: fall back to the directory name when displayName is empty. */
 function packTitle(pack: NodePackRecord): string {
@@ -110,6 +175,8 @@ function packTitle(pack: NodePackRecord): string {
 function packStatusLabel(pack: NodePackRecord): string {
   if (pack.status === 'disabled') return t('nodes.disabled')
   if (pack.status === 'error') return t('nodes.sevError')
+  if (pack.status === 'not-installed') return t('nodes.statusNotInstalled')
+  if (pack.status === 'installing') return t('nodes.statusInstalling')
   return t('nodes.enabled')
 }
 
@@ -134,9 +201,15 @@ function clearSearch(): void {
 }
 
 const filteredPacks = computed(() => {
+  let list = packs.value
+  if (loadFailedOnly.value) {
+    list = list.filter(
+      (p) => packLoad(p) === 'import-failed' || packLoad(p) === 'prestartup-failed'
+    )
+  }
   const q = installedQuery.value.trim().toLowerCase()
-  if (!q) return packs.value
-  return packs.value.filter((p) =>
+  if (!q) return list
+  return list.filter((p) =>
     [p.name, p.displayName, p.description, ...(p.tags || [])].join(' ').toLowerCase().includes(q)
   )
 })
@@ -210,6 +283,11 @@ async function refresh(): Promise<void> {
     packs.value = await ipc('node.refresh', instId)
     conflicts.value = await ipc('node.conflicts', instId)
     snapshots.value = await ipc('node.snapshots', instId)
+    try {
+      loadReport.value = await ipc('node.loadReport', instId)
+    } catch {
+      loadReport.value = null
+    }
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   } finally {
@@ -555,6 +633,23 @@ watch(
               : $t('nodes.checkUpdates')
           }}
         </NButton>
+        <NTooltip trigger="hover">
+          <template #trigger>
+            <NButton
+              secondary
+              :loading="selfChecking"
+              :disabled="
+                !store.activeInstance ||
+                store.activeInstance.status === 'running' ||
+                store.activeInstance.status === 'starting'
+              "
+              @click="runSelfCheck"
+            >
+              {{ $t('nodes.selfCheck') }}
+            </NButton>
+          </template>
+          {{ $t('nodes.selfCheckTip') }}
+        </NTooltip>
         <NPopconfirm @positive-click="updateAllPacks">
           <template #trigger>
             <NButton
@@ -624,6 +719,41 @@ watch(
             {{ $t('nodes.viewProgress') }}
           </NButton>
         </div>
+        <NSpace
+          v-if="loadSummary || packs.length"
+          align="center"
+          style="margin-bottom: 10px"
+          :wrap="true"
+        >
+          <NTag
+            v-if="loadSummary"
+            size="small"
+            round
+            :type="loadSummary.fail ? 'error' : 'success'"
+            :title="
+              loadSummary.fail
+                ? packs
+                    .filter(
+                      (p) => packLoad(p) === 'import-failed' || packLoad(p) === 'prestartup-failed'
+                    )
+                    .map((p) => `${packTitle(p)}: ${packLoadError(p)}`)
+                    .join('\n')
+                : ''
+            "
+          >
+            {{ $t('nodes.loadSummary', { ok: loadSummary.ok, fail: loadSummary.fail }) }}
+          </NTag>
+          <span v-else class="hint">{{ $t('nodes.loadUnknownHint') }}</span>
+          <NButton
+            size="small"
+            secondary
+            :type="loadFailedOnly ? 'primary' : 'default'"
+            :disabled="!loadFailedCount && !loadFailedOnly"
+            @click="loadFailedOnly = !loadFailedOnly"
+          >
+            {{ $t('nodes.filterLoadFailed', { n: loadFailedCount }) }}
+          </NButton>
+        </NSpace>
         <NSpace
           v-if="Object.keys(checks).length"
           align="center"
@@ -709,6 +839,24 @@ watch(
                   "
                 >
                   {{ packStatusLabel(pack) }}
+                </NTag>
+                <NTag
+                  v-if="packLoad(pack) === 'import-failed'"
+                  size="tiny"
+                  round
+                  type="error"
+                  :title="packLoadError(pack)"
+                >
+                  {{ $t('nodes.loadFailed') }}
+                </NTag>
+                <NTag
+                  v-else-if="packLoad(pack) === 'prestartup-failed'"
+                  size="tiny"
+                  round
+                  type="warning"
+                  :title="packLoadError(pack)"
+                >
+                  {{ $t('nodes.loadPrestartupFailed') }}
                 </NTag>
                 <NTag size="tiny" round>{{ packSourceLabel(pack) }}</NTag>
                 <NTag v-if="pack.locked" size="tiny" round type="warning">{{

@@ -363,7 +363,14 @@ export default {
     copyDiagPathDone: 'Diagnostics package path copied to clipboard: {path}',
     copyDiagPathFailed: 'Copy diagnostics path failed: {error}',
     diagnostics: 'Diagnostics',
-    pythonLabelShort: 'Python'
+    pythonLabelShort: 'Python',
+    onlineBadge: 'Online',
+    onlineVersionTip: 'Real version reported by the running instance (/system_stats)',
+    runtimeLabel: 'Runtime',
+    frontendLabel: 'Frontend package',
+    frontendMatch: 'Frontend package matches the core: {version}',
+    frontendMismatch:
+      'Frontend package version mismatch: installed {installed}, required {required}'
   },
   install: {
     title: 'One-click install',
@@ -583,7 +590,22 @@ export default {
     parseExtraBrowse: 'Browse…',
     parseExtraRun: 'Parse',
     parseExtraEmpty: 'No paths parsed yet.',
-    parseExtraCount: 'Parsed {n} path(s)'
+    parseExtraCount: 'Parsed {n} path(s)',
+    reconcile: 'Reconcile with instance',
+    reconcileTitle: 'Instance model reconciliation (online)',
+    reconcileTip:
+      'Compares the models the instance can actually see with the local index — explains "why is this model missing from the loader?" (needs a running instance)',
+    reconcileIdle: 'Click "Reconcile with instance" to fetch the instance-visible model list',
+    reconcileSourceExperiment: 'Source: /experiment/models (includes folders + extensions)',
+    reconcileSourceLegacy: 'Source: /models (legacy endpoint, no folder info)',
+    reconcileFailed: 'Reconcile failed: {error}',
+    reconcileEmpty: 'No differences — the instance view matches the local index',
+    reconcileMissing: 'Instance-only · missing locally {n}',
+    reconcileExtra: 'Local-only {n}',
+    reconcileFormatHidden: 'Format hidden {n}',
+    reconcileMissingList: 'Missing detail',
+    reconcileAddRoots: 'Add {n} scan root(s)',
+    reconcileAdded: 'Added {n} scan root(s) and rescanning'
   },
   nodes: {
     title: 'Node manager',
@@ -701,7 +723,21 @@ export default {
     uninstallKeepDeps: 'Keep dependencies',
     uninstalledWithDeps: 'Uninstalled (with dependencies)',
     opCancelled: 'Operation cancelled',
-    cancelNothing: 'Nothing to cancel right now.'
+    cancelNothing: 'Nothing to cancel right now.',
+    loadSummary: 'Last boot: {ok} loaded · {fail} failed',
+    loadFailed: 'Import failed',
+    loadPrestartupFailed: 'Prestartup failed',
+    loadUnknownHint: 'No boot log yet — start the instance once to see per-pack load status',
+    filterLoadFailed: 'Load failures only ({n})',
+    selfCheck: 'Startup self-check',
+    selfCheckTip:
+      'Runs main.py with --quick-test-for-ci --cpu (stop the instance first) to verify every custom node loads',
+    selfCheckRunning: 'Self-checking…',
+    selfCheckPassed: 'Startup self-check passed',
+    selfCheckFailed: 'Startup self-check failed (exit {code})',
+    selfCheckNeedStopped: 'Stop the instance before running the startup self-check',
+    statusNotInstalled: 'Not installed',
+    statusInstalling: 'Installing'
   },
   market: {
     title: 'Plugin market',
@@ -854,7 +890,8 @@ export default {
       cancelled: 'Cancelled'
     },
     instanceNotRunning: 'Instance not running',
-    startInstance: 'Start instance'
+    startInstance: 'Start instance',
+    remoteNotSupported: 'Batch submission is local-only — switch to a local instance'
   },
   workflows: {
     title: 'Workflows',
@@ -959,7 +996,24 @@ export default {
     historyLoadFailed: 'Failed to load history: {error}',
     needInstanceUrl: 'Start and select an instance first',
     loading: 'Loading…',
-    queueLoadFailed: 'Failed to load the queue — the instance may not be ready'
+    queueLoadFailed: 'Failed to load the queue — the instance may not be ready',
+    previewTitle: 'Live preview',
+    previewSub:
+      'Live sampling preview streamed from the instance WebSocket (legacy frame format is auto-detected)',
+    previewEmpty: 'No preview yet — launch the instance and queue a prompt',
+    nodeDoneCount: '{n} node(s) finished',
+    remoteReadonlyTitle: 'Monitoring a remote instance',
+    remoteReadonlyBody:
+      'Showing queue and history of remote instance "{name}" in read-only mode — start/stop/update from the machine that hosts it.',
+    jobsTitle: 'Jobs (/api/jobs)',
+    jobsCount: 'last {n}',
+    job: {
+      pending: 'Pending',
+      in_progress: 'Running',
+      completed: 'Completed',
+      failed: 'Failed',
+      cancelled: 'Cancelled'
+    }
   },
   embed: {
     back: 'Back',
@@ -1057,6 +1111,7 @@ export default {
     gAttention: 'Attention & acceleration',
     gPrecision: 'Precision',
     gIo: 'IO / memory',
+    gBase: 'Base directories',
     gNetwork: 'Network',
     gMisc: 'Launch & logging',
     fVram: 'VRAM mode',
@@ -1078,6 +1133,25 @@ export default {
     fAsyncOffload: 'Async weight offload',
     fDisablePinnedMemory: 'Disable pinned memory',
     fMmapTorchFiles: 'mmap ckpt/pt files',
+    fTriton: 'Triton backend',
+    fNvmlPressure: 'Disable NVML pressure checks',
+    fBaseDirectory: 'Base directory (--base-directory)',
+    fUserDirectory: 'User directory (--user-directory)',
+    fModelsDirectory: 'Models directory (--models-directory)',
+    fDefaultDevice: 'Default GPU index',
+    baseDirPlaceholder: 'Empty = instance root',
+    baseDirNote:
+      'Share one ComfyUI source tree with isolated user/output dirs (multi-instance setups). Changes where the instance reads/writes — make sure the target exists.',
+    optTritonOn: 'On (--enable-triton-backend)',
+    optTritonOff: 'Off (--disable-triton-backend)',
+    fAssets: 'Assets DB',
+    optAssetsOn: 'On (--enable-assets)',
+    optAssetsOff: 'Off (--disable-assets)',
+    fAssetHashing: 'Enable asset hashing (--enable-asset-hashing)',
+    recommend: 'Recommend for this GPU',
+    recommendApply:
+      '{gb}GB VRAM detected — apply the memory-saving preset (reserve + fast disk + cache policy)',
+    recommendNone: '{gb}GB VRAM detected — ample; no memory-saving preset needed',
     fCors: 'CORS header',
     fCorsPlaceholder: '* (allow all origins) or a specific origin',
     fMaxUpload: 'Max upload (MB)',

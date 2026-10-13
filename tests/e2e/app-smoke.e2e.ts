@@ -50,9 +50,9 @@ describe.skipIf(skip)('electron app smoke (real bundle)', () => {
     }
   })
 
-  it('main bundle starts, logs boot, and exits cleanly on quit', async () => {
+  it('main bundle starts, mounts the renderer, and exits cleanly on quit', async () => {
     const bin = electronBin()
-    expect(existsSync(bin) || bin.endsWith('electron') || bin.endsWith('electron.cmd')).toBe(true)
+    expect(existsSync(bin), `electron binary not found at ${bin} — run npm install`).toBe(true)
 
     const result = await new Promise<{ code: number | null; text: string }>((resolve) => {
       // Real Electron (not ELECTRON_RUN_AS_NODE) loading the packaged entry.
@@ -102,6 +102,20 @@ describe.skipIf(skip)('electron app smoke (real bundle)', () => {
     if (result.code === 3221225781 || result.code === -1073741515) {
       throw new Error(
         'Electron cannot start: missing system DLL (install Microsoft Visual C++ Redistributable)'
+      )
+    }
+    // The renderer must have actually MOUNTED (the main process probes #app
+    // after did-finish-load and prints a marker) — a bare exit code only
+    // proves "a process ran".
+    if (!result.text.includes('[e2e] renderer-mounted')) {
+      throw new Error(
+        `renderer did not mount — got: ${
+          result.text.includes('[e2e] renderer-empty')
+            ? '[e2e] renderer-empty'
+            : result.text.includes('[e2e] renderer-probe-failed')
+              ? '[e2e] renderer-probe-failed'
+              : 'no marker'
+        }; output tail: ${result.text.slice(-400)}`
       )
     }
     expect(result.code === 0 || result.code === null).toBe(true)

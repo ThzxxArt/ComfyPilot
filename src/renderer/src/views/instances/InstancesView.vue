@@ -867,8 +867,9 @@ function statusClass(s: string): string {
               <span
                 >{{ $t('instance.port') }} <b>{{ item.port }}</b></span
               >
-              <span v-if="item.version"
-                >{{ $t('instance.versionLabel') }} <b>{{ item.version }}</b></span
+              <span v-if="item.version || item.onlineVersion"
+                >{{ $t('instance.versionLabel') }}
+                <b>{{ item.onlineVersion || item.version }}</b></span
               >
               <span v-if="item.pid"
                 >{{ $t('instance.metaPid') }} <b>{{ item.pid }}</b></span
@@ -1166,6 +1167,7 @@ function statusClass(s: string): string {
         <LaunchProfileEditor
           v-model="editProfile"
           :extra-args="editExtraArgs.split(/\s+/).filter(Boolean)"
+          :gpus="store.system?.gpus"
         />
         <NFormItem :label="$t('instance.extraArgs')">
           <NInput v-model:value="editExtraArgs" />
@@ -1244,6 +1246,7 @@ function statusClass(s: string): string {
         <LaunchProfileEditor
           v-model="draftProfile"
           :extra-args="extraArgsText.split(/\s+/).filter(Boolean)"
+          :gpus="store.system?.gpus"
         />
         <div class="form-row">
           <NFormItem :label="$t('instance.port')">

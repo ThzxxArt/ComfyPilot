@@ -32,6 +32,7 @@ import { MODEL_CATEGORY_LABELS, STARTER_MODELS } from '@shared/constants'
 import type {
   DownloadTask,
   ModelRecord,
+  ModelReconcileResult,
   StorageStats,
   DuplicateGroup,
   StarterModel,
@@ -75,6 +76,48 @@ const civitaiResult = ref<Record<string, unknown> | null>(null)
 const extraPathsFile = ref('')
 const extraPathsResult = ref<string[]>([])
 const extraPathsLoading = ref(false)
+
+// 0.1.10: online reconciliation against a running instance
+const reconciling = ref(false)
+const reconcileResult = ref<ModelReconcileResult | null>(null)
+const reconcileDiff = computed(() =>
+  (reconcileResult.value?.folders || []).filter(
+    (f) => f.missingLocally.length || f.extraLocally.length || f.formatHidden.length
+  )
+)
+
+async function runReconcile(): Promise<void> {
+  reconciling.value = true
+  try {
+    reconcileResult.value = await ipc('model.reconcile', store.activeInstanceId || undefined)
+  } catch (err) {
+    reconcileResult.value = {
+      ok: false,
+      source: 'none',
+      error: err instanceof Error ? err.message : String(err),
+      folders: [],
+      uncoveredRoots: []
+    }
+  } finally {
+    reconciling.value = false
+  }
+}
+
+/** Add every instance search path the app does not scan yet, then rescan. */
+async function addUncoveredRoots(): Promise<void> {
+  const roots = reconcileResult.value?.uncoveredRoots || []
+  if (!roots.length) return
+  try {
+    const settings = await ipc('settings.get')
+    const next = [...new Set([...(settings.modelScanRoots || []), ...roots])]
+    await ipc('settings.set', { modelScanRoots: next })
+    if (store.settings) store.settings.modelScanRoots = next
+    message.success(t('models.reconcileAdded', { n: roots.length }))
+    await scan(false)
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
 
 /** Real category set — mirrors ComfyUI's registered model folders (folder_paths.py). */
 const CATEGORY_KEYS: ModelCategory[] = [
@@ -719,6 +762,69 @@ onUnmounted(() => {
         <div v-else class="panel-sub">{{ $t('models.parseExtraEmpty') }}</div>
       </div>
 
+      <div class="card scan-settings-card">
+        <div class="dup-head">
+          <div>
+            <div class="panel-title">{{ $t('models.reconcileTitle') }}</div>
+            <div class="panel-sub">{{ $t('models.reconcileTip') }}</div>
+          </div>
+          <NSpace>
+            <NButton
+              v-if="reconcileResult?.uncoveredRoots?.length"
+              secondary
+              @click="addUncoveredRoots"
+            >
+              {{ $t('models.reconcileAddRoots', { n: reconcileResult.uncoveredRoots.length }) }}
+            </NButton>
+            <NButton type="primary" :loading="reconciling" @click="runReconcile">
+              {{ $t('models.reconcile') }}
+            </NButton>
+          </NSpace>
+        </div>
+        <div v-if="reconcileResult" class="reconcile-body">
+          <div v-if="!reconcileResult.ok" class="panel-sub">
+            {{ $t('models.reconcileFailed', { error: reconcileResult.error || '' }) }}
+          </div>
+          <template v-else>
+            <div class="meta">
+              {{
+                reconcileResult.source === 'experiment'
+                  ? $t('models.reconcileSourceExperiment')
+                  : $t('models.reconcileSourceLegacy')
+              }}
+            </div>
+            <div v-if="!reconcileDiff.length" class="panel-sub">
+              {{ $t('models.reconcileEmpty') }}
+            </div>
+            <div v-for="f in reconcileDiff" :key="f.folder" class="reconcile-row">
+              <div class="reconcile-head">
+                <span class="mono reconcile-folder">{{ f.folder }}</span>
+                <NTag v-if="f.missingLocally.length" size="tiny" type="warning" round>
+                  {{ $t('models.reconcileMissing', { n: f.missingLocally.length }) }}
+                </NTag>
+                <NTag v-if="f.extraLocally.length" size="tiny" round>
+                  {{ $t('models.reconcileExtra', { n: f.extraLocally.length }) }}
+                </NTag>
+                <NTag v-if="f.formatHidden.length" size="tiny" type="info" round>
+                  {{ $t('models.reconcileFormatHidden', { n: f.formatHidden.length }) }}
+                </NTag>
+                <span v-if="f.extensions.length" class="meta mono">{{
+                  f.extensions.join(' ')
+                }}</span>
+              </div>
+              <div v-if="f.instanceFolders.length" class="meta mono reconcile-paths">
+                {{ f.instanceFolders.join(' · ') }}
+              </div>
+              <div v-if="f.missingLocally.length" class="meta mono reconcile-missing">
+                {{ $t('models.reconcileMissingList') }}: {{ f.missingLocally.slice(0, 8).join(', ')
+                }}{{ f.missingLocally.length > 8 ? '…' : '' }}
+              </div>
+            </div>
+          </template>
+        </div>
+        <div v-else class="panel-sub">{{ $t('models.reconcileIdle') }}</div>
+      </div>
+
       <div class="card dup-card">
         <div class="dup-head">
           <div>
@@ -1070,6 +1176,35 @@ onUnmounted(() => {
   font-size: 11.5px;
   color: $color-text-secondary;
   word-break: break-all;
+}
+.reconcile-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.reconcile-row {
+  padding: 10px 0;
+  border-top: 1px solid $color-border;
+}
+.reconcile-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.reconcile-folder {
+  font-weight: 700;
+  color: $color-text;
+  font-size: 12.5px;
+}
+.reconcile-paths,
+.reconcile-missing {
+  word-break: break-all;
+  font-size: 11px;
+  margin-top: 4px;
+}
+.reconcile-missing {
+  color: $color-warning;
 }
 .detail-body {
   display: flex;

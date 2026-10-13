@@ -535,14 +535,19 @@ describe('i18n parity', () => {
 })
 
 describe('APP_VERSION consistency', () => {
-  it('constants.ts has 0.1.9 fallback', () => {
+  it('constants.ts fallback matches package.json (no hardcoded release number)', () => {
+    const pkg = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf-8'))
     const src = readFileSync(join(__dirname, '..', '..', 'src', 'shared', 'constants.ts'), 'utf-8')
-    expect(src).toContain('0.1.9')
+    // The dev fallback must always equal the package version — checked
+    // dynamically so a release bump cannot break the suite.
+    expect(typeof pkg.version).toBe('string')
+    expect(pkg.version).toMatch(/^\d+\.\d+\.\d+$/)
+    expect(src).toContain(`'${pkg.version}'`)
   })
 
-  it('package.json version is 0.1.9', () => {
+  it('package.json version is a valid semver', () => {
     const pkg = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf-8'))
-    expect(pkg.version).toBe('0.1.9')
+    expect(pkg.version).toMatch(/^0\.\d+\.\d+$/)
   })
 })
 

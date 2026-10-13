@@ -1,0 +1,113 @@
+/**
+ * Custom-node boot-log parsing (0.1.10) — shared by main (report via IPC) and
+ * renderer (status badges). Pure functions over log lines; never guesses.
+ *
+ * ComfyUI prints on every boot:
+ *
+ *   Import times for custom nodes:
+ *      0.3 seconds: C:\...\custom_nodes\Foo
+ *      9.1 seconds (IMPORT FAILED): C:\...\custom_nodes\Bar
+ *
+ *   Prestartup times for custom nodes:
+ *      0.1 seconds (PRESTARTUP FAILED): C:\...\custom_nodes\Baz
+ */
+import type { NodeLoadEntry, NodeLoadReport } from './types'
+
+const IMPORT_HEADER = 'Import times for custom nodes:'
+const PRESTARTUP_HEADER = 'Prestartup times for custom nodes:'
+const LINE_RE = /^\s*([\d.]+)\s+seconds(\s+\((IMPORT FAILED|PRESTARTUP FAILED)\))?:\s*(.+?)\s*$/
+
+/** Directory basename of a module path printed by ComfyUI (`.disabled` stripped). */
+export function packFolderOf(modulePath: string): string {
+  const base =
+    String(modulePath || '')
+      .replace(/[\\/]+$/, '')
+      .split(/[\\/]/)
+      .pop() || ''
+  return base.endsWith('.disabled') ? base.slice(0, -'.disabled'.length) : base
+}
+
+export function parseNodeLoadReport(
+  lines: Array<{ message: string; ts?: number }>
+): NodeLoadReport | null {
+  let importIdx = -1
+  let prestartupIdx = -1
+  for (let i = 0; i < lines.length; i++) {
+    const msg = lines[i].message
+    if (msg.includes(IMPORT_HEADER)) importIdx = i
+    if (msg.includes(PRESTARTUP_HEADER)) prestartupIdx = i
+  }
+  if (importIdx < 0 && prestartupIdx < 0) return null
+
+  // Failure reasons: module path → message.
+  const reasons = new Map<string, string>()
+  for (const line of lines) {
+    const imp = line.message.match(/Cannot import (.+?) module for custom nodes:\s*(.*)$/)
+    if (imp) {
+      reasons.set(imp[1].trim(), imp[2].trim() || 'Import failed')
+      continue
+    }
+    const skip = line.message.match(
+      /Skip (.+?) module for custom nodes due to the lack of NODE_CLASS_MAPPINGS/
+    )
+    if (skip) {
+      reasons.set(skip[1].trim(), 'No NODE_CLASS_MAPPINGS or comfy_entrypoint found')
+    }
+  }
+
+  const entries: NodeLoadEntry[] = []
+  // Emit rows in LOG ORDER: the prestartup block normally prints first.
+  const ranges: Array<{ start: number; prestartup: boolean }> = []
+  if (prestartupIdx >= 0) ranges.push({ start: prestartupIdx, prestartup: true })
+  if (importIdx >= 0) ranges.push({ start: importIdx, prestartup: false })
+  ranges.sort((a, b) => a.start - b.start)
+  for (const range of ranges) {
+    for (let i = range.start + 1; i < lines.length; i++) {
+      const msg = lines[i].message
+      // Any later header restarts a section (worker logs interleave).
+      if (msg.includes(IMPORT_HEADER) || msg.includes(PRESTARTUP_HEADER)) break
+      const m = msg.match(LINE_RE)
+      if (!m) continue
+      const modulePath = m[4]
+      const failed = range.prestartup ? m[3] === 'PRESTARTUP FAILED' : m[3] === 'IMPORT FAILED'
+      entries.push({
+        modulePath,
+        folder: packFolderOf(modulePath),
+        seconds: Number(m[1]) || 0,
+        ok: !failed,
+        prestartup: range.prestartup,
+        error: failed
+          ? reasons.get(modulePath) ||
+            (range.prestartup ? 'Prestartup script failed' : 'Import failed')
+          : undefined
+      })
+    }
+  }
+  const observedAt =
+    importIdx >= 0 ? lines[importIdx].ts : prestartupIdx >= 0 ? lines[prestartupIdx].ts : undefined
+  return { available: true, entries, observedAt }
+}
+
+/** Per-pack load status derived from the boot-log report (0.1.10). */
+export type PackLoadStatus = 'loaded' | 'import-failed' | 'prestartup-failed' | 'unknown'
+
+export function packLoadStatusOf(
+  folder: string,
+  report: NodeLoadReport | null | undefined
+): PackLoadStatus {
+  if (!report || !report.available || !folder) return 'unknown'
+  const hits = report.entries.filter((e) => e.folder === folder)
+  if (!hits.length) return 'unknown'
+  if (hits.some((h) => !h.ok && !h.prestartup)) return 'import-failed'
+  if (hits.some((h) => !h.ok && h.prestartup)) return 'prestartup-failed'
+  return 'loaded'
+}
+
+/** First failure detail for a folder, for tooltips. */
+export function packLoadFailureOf(
+  folder: string,
+  report: NodeLoadReport | null | undefined
+): NodeLoadEntry | undefined {
+  if (!report || !folder) return undefined
+  return report.entries.find((e) => e.folder === folder && !e.ok)
+}

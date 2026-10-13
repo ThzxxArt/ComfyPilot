@@ -28,6 +28,9 @@ jobs:
       - name: Typecheck (web)
         run: npx vue-tsc --noEmit -p tsconfig.web.json
 
+      - name: Typecheck (tests)
+        run: npx tsc --noEmit -p tsconfig.test.json
+
       - name: i18n key parity & dynamic domains
         run: node scripts/check-i18n.cjs
 

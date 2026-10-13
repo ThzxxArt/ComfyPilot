@@ -1,6 +1,6 @@
 {
   "name": "comfy-pilot",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "ComfyPilot - all-in-one control tower for ComfyUI instances, models, node packs, workflows, monitoring and diagnostics.",
   "main": "./out/main/bootstrap.cjs",
   "author": "ThzxxArt",
@@ -30,6 +30,7 @@
     "build:mac": "npm run build && electron-builder --mac",
     "build:linux": "npm run build && electron-builder --linux",
     "typecheck": "vue-tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
+    "typecheck:test": "tsc --noEmit -p tsconfig.test.json",
     "lint": "eslint . --fix",
     "lint:check": "eslint .",
     "format": "prettier --write \"src/**/*.{vue,ts,tsx,css,scss,json,md}\"",

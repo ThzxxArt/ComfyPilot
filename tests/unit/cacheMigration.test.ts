@@ -5,11 +5,35 @@
  * on first access, without ever overwriting newer destination data.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from 'fs'
+import { mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, symlinkSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
 const ROOT = join(tmpdir(), `cp-cache-migrate-${process.pid}`)
+
+/**
+ * Symlink support probe (Windows without developer mode / hardened CI forbids
+ * it). Probed eagerly so the affected case is reported as SKIPPED instead of
+ * silently passing via an early `return`.
+ */
+const canSymlink = ((): boolean => {
+  const target = join(tmpdir(), `cp-symlink-target-${process.pid}`)
+  const probe = join(tmpdir(), `cp-symlink-probe-${process.pid}`)
+  try {
+    mkdirSync(target, { recursive: true })
+    symlinkSync(target, probe, 'dir')
+    return true
+  } catch {
+    return false
+  } finally {
+    try {
+      rmSync(probe, { force: true })
+      rmSync(target, { recursive: true, force: true })
+    } catch {
+      /* best-effort cleanup */
+    }
+  }
+})()
 
 vi.mock('electron', () => ({
   app: { getPath: () => ROOT }
@@ -55,19 +79,13 @@ describe('legacy cache migration (0.1.9)', () => {
     expect(readFileSync(target, 'utf-8')).toBe('one')
   })
 
-  it('never descends into symlinked legacy entries', async () => {
+  it.skipIf(!canSymlink)('never descends into symlinked legacy entries', async () => {
     const legacy = join(ROOT, 'cache')
     const real = join(ROOT, 'real-thumbs')
     mkdirSync(real, { recursive: true })
     writeFileSync(join(real, 'linked.png'), 'x')
     mkdirSync(legacy, { recursive: true })
-    try {
-      // Windows without developer mode / restricted CI may forbid symlinks.
-      const { symlinkSync } = await import('fs')
-      symlinkSync(real, join(legacy, 'thumbs'), 'dir')
-    } catch {
-      return
-    }
+    symlinkSync(real, join(legacy, 'thumbs'), 'dir')
     const { cacheDir } = await import('../../src/main/services/db')
     cacheDir()
     // The link target's contents must NOT be moved away.

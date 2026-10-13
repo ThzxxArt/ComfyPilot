@@ -35,7 +35,7 @@ describe('media URL gate', () => {
     const url = toMediaUrl(file)
     expect(url).toBe('comfy-pilot-media:thumbs/abc123.png')
     expect(thumbnailDisplayUrl(file)).toBe(url)
-    expect(thumbnailDisplayUrl(url)).toBe(url)
+    expect(thumbnailDisplayUrl(url!)).toBe(url)
     expect(resolveMediaUrlToPath(url!)).toBe(file)
   })
 

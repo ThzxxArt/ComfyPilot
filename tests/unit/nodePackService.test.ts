@@ -40,6 +40,8 @@ const h = vi.hoisted(() => {
     writeFail: new Set<string>(),
     unlinkFail: new Set<string>(),
     rmFail: new Set<string>(),
+    /** Substrings whose statSync calls throw (injected reliability tests). */
+    statFail: new Set<string>(),
     runtimePython: null as string | null,
     runtimePythonThrow: null as Error | null,
     execSyncOut: 'abc1234',
@@ -177,6 +179,9 @@ vi.mock('fs', () => {
     },
     statSync: (p: unknown) => {
       const s = fsKey(p)
+      for (const frag of state.statFail) {
+        if (s.includes(frag)) throw new Error(`ENOENT (injected stat failure): ${s}`)
+      }
       const st = state.statStamp.get(s) || { size: 0, mtimeMs: 0 }
       return {
         isDirectory: () => state.isDir.has(s) || state.dirs.has(s),
@@ -350,6 +355,7 @@ vi.mock('child_process', () => {
       stdout: InstanceType<typeof EventEmitter>
       stderr: InstanceType<typeof EventEmitter>
       kill: () => void
+      emit: (ev: string, ...a: unknown[]) => void
     }
     child.stdout = new EventEmitter()
     child.stderr = new EventEmitter()
@@ -586,6 +592,7 @@ function resetState(): void {
   h.state.writeFail.clear()
   h.state.unlinkFail.clear()
   h.state.rmFail.clear()
+  h.state.statFail.clear()
   h.state.runtimePython = null
   h.state.runtimePythonThrow = null
   h.state.execSyncOut = 'abc1234'
@@ -3065,7 +3072,19 @@ describe('batch update progress (0.1.9)', () => {
     return { dirA, dirB }
   }
 
-  function batchExecHandler(dirA: string, dirB: string): (cmd: string, args: string[]) => unknown {
+  function batchExecHandler(
+    dirA: string,
+    dirB: string
+  ): (
+    cmd: string,
+    args: string[]
+  ) => {
+    stdout?: string
+    stderr?: string
+    error?: Error
+    code?: number
+    hang?: boolean
+  } {
     return (cmd, args) => {
       if (args.includes('fetch')) return { stdout: '' }
       if (args.includes('@{u}')) return { stdout: 'origin/main\n' }
@@ -3579,15 +3598,12 @@ describe('edge branches', () => {
 
   it('list skips entries whose statSync throws', () => {
     seedPack({ name: 'Good' })
-    // a phantom child whose stat throws
+    // A phantom child whose statSync genuinely throws (injected): the catch
+    // path must skip it while the healthy pack still lists.
     h.state.dirs.set(ROOT, ['Good', 'Phantom'])
-    const orig = h.state.isDir
-    // make statSync throw for Phantom by deleting all markers and not adding to dirs under it
-    // Our statSync never throws; emulate via a dir with no entry that still lists.
-    // Instead assert the catch path is unreachable-safe: Good is still returned.
+    h.state.statFail.add('Phantom')
     const packs = nodePackService.list('inst-1')
-    expect(packs.map((p) => p.name)).toContain('Good')
-    void orig
+    expect(packs.map((p) => p.name)).toEqual(['Good'])
   })
 
   it('checkUpdates persists latestVersion only when it changed', async () => {
@@ -3657,15 +3673,15 @@ describe('install progress lifecycle', () => {
     nodePackService.on('install-progress', (e: { phase: string; op?: string }) => {
       phases.push({ phase: e.phase, op: e.op })
     })
-    h.state.execHandler = (_cmd, args) => {
+    cpMock.__setExecHandler((_cmd, args) => {
       if (args.includes('clone')) {
-        const dest = String(args[args.length - 1]).replace(/\\/g, '/')
-        h.state.dirs.add(dest)
-        h.state.files.set(dest + '/__init__.py', 'x')
-        h.state.files.set(dest + '/pyproject.toml', 'name = "DonePack2"\nversion = "1.0.0"\n')
+        const dest = args[args.length - 1]
+        h.mkdirPath(dest)
+        h.writeFile(join(dest, '__init__.py'), 'x')
+        h.writeFile(join(dest, 'pyproject.toml'), 'name = "DonePack2"\nversion = "1.0.0"\n')
       }
       return { stdout: '' }
-    }
+    })
     try {
       await nodePackService.install({
         id: 'https://github.com/u/DonePack2.git',
@@ -3708,10 +3724,10 @@ describe('install progress lifecycle', () => {
     nodePackService.on('install-progress', (e: { phase: string; op?: string }) => {
       phases.push({ phase: e.phase, op: e.op })
     })
-    h.state.execHandler = (_cmd, args) => {
+    cpMock.__setExecHandler((_cmd, args) => {
       if (args.includes('pull')) return { stdout: 'ok' }
       return { stdout: '' }
-    }
+    })
     try {
       await nodePackService.update('UpPack', undefined, 'inst-1')
     } finally {
@@ -4056,6 +4072,110 @@ describe('cancellation and exclusivity follow-ups (0.1.9)', () => {
       })
     } finally {
       controllers.delete('inst-1')
+    }
+  })
+})
+
+// =====================================================================
+// pip dependency recording + removal (0.1.10 — closes the last coverage gap)
+// =====================================================================
+describe('pip deps recording and removal (0.1.10)', () => {
+  function seedReqPack(name: string, reqText: string): string {
+    return seedPack({
+      name,
+      pyproject: `name = "${name}"\nversion = "1.0.0"\n`,
+      requirements: reqText
+    })
+  }
+
+  it('pipDeps parses requirements.txt (comments/options/URLs stripped) and prefers recorded names', () => {
+    resetState()
+    seedReqPack(
+      'DepsPack',
+      'requests>=2\n# comment\nnumpy==1.26.0\n-e .\nhttps://x/y.whl\npkg[x] ; python_version < "3.12"\n'
+    )
+    expect(nodePackService.pipDeps('DepsPack', 'inst-1')).toEqual(['requests', 'numpy', 'pkg'])
+
+    // A recorded list wins (it also survives a deleted requirements.txt).
+    const rec = nodePackService.list('inst-1')[0]
+    h.state.nodePacks = [{ ...rec, pipRequirements: ['pkg-a', 'pkg-b'] }]
+    expect(nodePackService.pipDeps('DepsPack', 'inst-1')).toEqual(['pkg-a', 'pkg-b'])
+    expect(nodePackService.pipDeps('unknown-pack', 'inst-1')).toEqual([])
+  })
+
+  it('uninstall({removePipDeps}) uninstalls in batches of 20', async () => {
+    resetState()
+    seedReqPack('RemoveDeps', 'a\n')
+    const rec = nodePackService.list('inst-1')[0]
+    h.state.nodePacks = [
+      {
+        ...rec,
+        pipRequirements: Array.from({ length: 21 }, (_, i) => `p${i}`)
+      }
+    ]
+    const batchSizes: number[] = []
+    cpMock.__setExecHandler((cmd, args) => {
+      if (args.includes('uninstall')) {
+        batchSizes.push(args.filter((x) => x.startsWith('p') && !x.startsWith('pip')).length)
+      }
+      return { stdout: 'ok' }
+    })
+    try {
+      const removed = await nodePackService.uninstall('RemoveDeps', 'inst-1', {
+        removePipDeps: true
+      })
+      expect(removed).toBe(true)
+      expect(batchSizes).toEqual([20, 1])
+    } finally {
+      cpMock.__setExecHandler(null)
+    }
+  })
+
+  it('uninstall aborts (AbortError propagates) instead of counting pip failures', async () => {
+    resetState()
+    seedReqPack('AbortDeps', 'x\n')
+    const rec = nodePackService.list('inst-1')[0]
+    h.state.nodePacks = [{ ...rec, pipRequirements: ['p1'] }]
+    cpMock.__setExecHandler((_cmd, args) => {
+      if (args.includes('uninstall')) {
+        const err = new Error('aborted') as Error & { name: string }
+        err.name = 'AbortError'
+        return { error: err }
+      }
+      return { stdout: 'ok' }
+    })
+    try {
+      await expect(
+        nodePackService.uninstall('AbortDeps', 'inst-1', { removePipDeps: true })
+      ).rejects.toMatchObject({ name: 'AbortError' })
+    } finally {
+      cpMock.__setExecHandler(null)
+    }
+  })
+
+  it('removePipDeps falls back to per-name retries when a batch fails for non-abort reasons', async () => {
+    resetState()
+    seedReqPack('RetryDeps', 'x\n')
+    const rec = nodePackService.list('inst-1')[0]
+    h.state.nodePacks = [{ ...rec, pipRequirements: ['bad', 'good'] }]
+    const attempted: string[] = []
+    cpMock.__setExecHandler((_cmd, args) => {
+      if (args.includes('uninstall')) {
+        const names = args.filter((a) => a === 'bad' || a === 'good')
+        if (names.length === 2) {
+          // Batch call fails (e.g. one name not installed).
+          return { error: new Error('No matching distribution found for bad') }
+        }
+        attempted.push(names[0])
+        return { stdout: 'ok' }
+      }
+      return { stdout: 'ok' }
+    })
+    try {
+      await nodePackService.uninstall('RetryDeps', 'inst-1', { removePipDeps: true })
+      expect(attempted.sort()).toEqual(['bad', 'good'])
+    } finally {
+      cpMock.__setExecHandler(null)
     }
   })
 })

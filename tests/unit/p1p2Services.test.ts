@@ -392,6 +392,10 @@ describe('p1p2 services', () => {
       expect(promptCall.url).toContain('http://127.0.0.1:8188/prompt')
       expect(promptCall.method).toBe('POST')
       expect((promptCall.body as { client_id: string }).client_id).toBe('comfy-pilot')
+      // 0.1.10: workflow_metadata carries batch attribution into every event.
+      expect(
+        (promptCall.body as { workflow_metadata: Record<string, unknown> }).workflow_metadata
+      ).toMatchObject({ source: 'comfypilot', batchJobId: job.id })
 
       // history was polled
       expect(calls.some((c) => c.url.includes('/history'))).toBe(true)
@@ -858,7 +862,7 @@ describe('p1p2 services', () => {
   // ========== cancel / remove ==========
 
   describe('BatchService.cancel / remove', () => {
-    it('cancel posts /queue delete for pending prompt ids', async () => {
+    it('cancel prefers the atomic /api/jobs cancel when available (0.1.10)', async () => {
       const { batchService } = await freshP1p2()
       await seedInstance()
       const { upsertBatchJob } = await import('../../src/main/services/db')
@@ -879,9 +883,92 @@ describe('p1p2 services', () => {
       expect(cancelled.status).toBe('cancelled')
       expect(cancelled.finishedAt).toBeGreaterThan(0)
       await new Promise((r) => setTimeout(r, 20))
+      const jobs = calls.find((c) => c.url.includes('/api/jobs/cancel'))
+      expect(jobs).toBeTruthy()
+      expect((jobs!.body as { job_ids: string[] }).job_ids).toEqual(['pend-1', 'pend-2'])
+      // Atomic path succeeded — no legacy dequeue needed.
+      expect(calls.find((c) => c.url.includes('/queue'))).toBeFalsy()
+    })
+
+    it('cancel falls back to /queue delete when the jobs API is unavailable', async () => {
+      const { batchService } = await freshP1p2()
+      await seedInstance()
+      const { upsertBatchJob } = await import('../../src/main/services/db')
+      const p = join(ROOT, 'wf', 'c-fallback.json')
+      writeFileSync(p, uiGraph())
+      const job = batchService.create({
+        name: 'cf',
+        instanceId: 'inst-1',
+        items: [{ workflowPath: p, count: 1 }]
+      })
+      const stored = batchService.list().find((j) => j.id === job.id)!
+      stored.items[0].promptIds = ['pend-1', 'pend-2']
+      upsertBatchJob(stored)
+
+      const calls = stubFetch((url) =>
+        url.includes('/api/jobs') ? new Response('nope', { status: 404 }) : jsonResponse({})
+      )
+      batchService.cancel(job.id)
+      await new Promise((r) => setTimeout(r, 20))
       const q = calls.find((c) => c.url.includes('/queue'))
       expect(q).toBeTruthy()
       expect((q!.body as { delete: string[] }).delete).toEqual(['pend-1', 'pend-2'])
+      // 0.1.10: directed interrupt is issued for the most recent prompt ids on
+      // the legacy path (whole-job cancel, body {prompt_id}).
+      const interrupts = calls.filter((c) => c.url.includes('/interrupt'))
+      const pids = interrupts
+        .map((c) => (c.body as { prompt_id?: string })?.prompt_id)
+        .filter(Boolean)
+        .sort()
+      expect(pids).toEqual(['pend-1', 'pend-2'])
+    })
+
+    it('cancelItem prefers the atomic jobs cancel and never touches /queue or /interrupt', async () => {
+      const { batchService } = await freshP1p2()
+      await seedInstance()
+      const { upsertBatchJob } = await import('../../src/main/services/db')
+      const p = join(ROOT, 'wf', 'ci-atomic.json')
+      writeFileSync(p, uiGraph())
+      const job = batchService.create({
+        name: 'ci',
+        instanceId: 'inst-1',
+        items: [{ workflowPath: p, count: 1 }]
+      })
+      const stored = batchService.list().find((j) => j.id === job.id)!
+      stored.items[0].promptIds = ['ci-1', 'ci-2']
+      upsertBatchJob(stored)
+
+      const calls = stubFetch(() => jsonResponse({}))
+      batchService.cancelItem(job.id, p)
+      await new Promise((r) => setTimeout(r, 20))
+      expect(calls.some((c) => c.url.includes('/api/jobs/cancel'))).toBe(true)
+      expect(calls.some((c) => c.url.includes('/queue'))).toBe(false)
+      expect(calls.some((c) => c.url.includes('/interrupt'))).toBe(false)
+    })
+
+    it('cancelItem fallback dequeues only — never interrupts a sibling leg', async () => {
+      const { batchService } = await freshP1p2()
+      await seedInstance()
+      const { upsertBatchJob } = await import('../../src/main/services/db')
+      const p = join(ROOT, 'wf', 'ci-fallback.json')
+      writeFileSync(p, uiGraph())
+      const job = batchService.create({
+        name: 'cif',
+        instanceId: 'inst-1',
+        items: [{ workflowPath: p, count: 1 }]
+      })
+      const stored = batchService.list().find((j) => j.id === job.id)!
+      stored.items[0].promptIds = ['ci-9']
+      upsertBatchJob(stored)
+
+      const calls = stubFetch((url) =>
+        url.includes('/api/jobs') ? new Response('nope', { status: 404 }) : jsonResponse({})
+      )
+      batchService.cancelItem(job.id, p)
+      await new Promise((r) => setTimeout(r, 20))
+      expect(calls.find((c) => c.url.includes('/queue'))).toBeTruthy()
+      // A global interrupt would kill other legs on legacy builds — forbidden.
+      expect(calls.some((c) => c.url.includes('/interrupt'))).toBe(false)
     })
 
     it('cancel without prompt ids still resolves and remove deletes', async () => {

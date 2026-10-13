@@ -122,15 +122,21 @@ describe('APP_VERSION injection branches', () => {
   })
 
   it('falls back to the literal when __APP_VERSION__ is absent or empty', async () => {
+    const pkg = JSON.parse(
+      (await import('fs')).readFileSync(
+        (await import('path')).join(__dirname, '..', '..', 'package.json'),
+        'utf-8'
+      )
+    ) as { version: string }
     vi.resetModules()
     delete (globalThis as Record<string, unknown>)['__APP_VERSION__']
     const mod = await import('../../src/shared/constants')
-    expect(mod.APP_VERSION).toBe('0.1.9')
+    expect(mod.APP_VERSION).toBe(pkg.version)
 
     vi.resetModules()
     ;(globalThis as Record<string, unknown>)['__APP_VERSION__'] = ''
     const mod2 = await import('../../src/shared/constants')
-    expect(mod2.APP_VERSION).toBe('0.1.9')
+    expect(mod2.APP_VERSION).toBe(pkg.version)
     delete (globalThis as Record<string, unknown>)['__APP_VERSION__']
   })
 })

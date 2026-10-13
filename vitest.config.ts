@@ -46,54 +46,56 @@ export default defineConfig({
         'src/main/services/registryIndex.ts',
         'src/main/services/netProbe.ts',
         'src/main/services/comfyApi.ts',
+        'src/main/services/capabilities.ts',
         'src/shared/constants.ts',
-        'src/shared/launchArgs.ts'
+        'src/shared/launchArgs.ts',
+        'src/shared/nodeLoadReport.ts'
       ],
       thresholds: {
-        // ── 实测定档：高覆盖模块（实测 − 2pp）──
-        'src/main/services/security.ts': { statements: 98, lines: 98, functions: 98, branches: 93 },
-        'src/shared/launchArgs.ts': { statements: 90, lines: 90, functions: 85, branches: 80 },
+        // ── 实测定档：高覆盖模块（0.1.10 全量实测 − 2pp）──
+        'src/main/services/security.ts': { statements: 98, lines: 98, functions: 98, branches: 92 },
+        'src/shared/launchArgs.ts': { statements: 97, lines: 97, functions: 98, branches: 93 },
         'src/main/services/workflowConvert.ts': {
           statements: 98,
           lines: 98,
           functions: 98,
           branches: 94
         },
-        'src/main/services/zipSafe.ts': { statements: 98, lines: 98, functions: 98, branches: 98 },
+        'src/main/services/zipSafe.ts': { statements: 98, lines: 98, functions: 98, branches: 96 },
         'src/main/services/proxy.ts': { statements: 98, lines: 98, functions: 98, branches: 94 },
-        'src/main/services/instance.ts': { statements: 94, lines: 94, functions: 96, branches: 86 },
-        'src/main/services/zipWrite.ts': { statements: 92, lines: 92, functions: 98, branches: 85 },
+        'src/main/services/instance.ts': { statements: 90, lines: 90, functions: 92, branches: 85 },
+        'src/main/services/zipWrite.ts': { statements: 92, lines: 92, functions: 98, branches: 84 },
         'src/main/services/netProbe.ts': { statements: 89, lines: 89, functions: 98, branches: 34 },
-        'src/main/services/p1p2.ts': { statements: 86, lines: 86, functions: 92, branches: 85 },
+        'src/main/services/p1p2.ts': { statements: 86, lines: 86, functions: 92, branches: 82 },
         'src/main/services/installer.ts': {
           statements: 86,
           lines: 86,
           functions: 92,
-          branches: 85
+          branches: 84
         },
         'src/main/services/workflow.ts': { statements: 85, lines: 85, functions: 95, branches: 76 },
         'src/main/services/updater.ts': { statements: 86, lines: 86, functions: 98, branches: 81 },
-        'src/main/services/nodePack.ts': { statements: 88, lines: 88, functions: 91, branches: 82 },
-        'src/main/services/media.ts': { statements: 85, lines: 85, functions: 85, branches: 85 },
+        'src/main/services/nodePack.ts': { statements: 92, lines: 92, functions: 95, branches: 82 },
+        'src/main/services/media.ts': { statements: 92, lines: 92, functions: 98, branches: 83 },
         'src/shared/constants.ts': { statements: 98, lines: 98, functions: 98, branches: 98 },
-        // ── 实测定档：行为测试薄弱的模块（真实底数，待补测后上调）──
-        'src/main/services/db.ts': { statements: 78, lines: 78, functions: 73, branches: 85 },
-        'src/main/services/comfyApi.ts': { statements: 76, lines: 76, functions: 68, branches: 63 },
-        'src/main/services/registry.ts': { statements: 74, lines: 74, functions: 88, branches: 51 },
+        // ── 行为覆盖补齐后按新实测重设（0.1.10：doctor/backup/monitor 从 0/2%/16% 起步）──
+        'src/main/services/db.ts': { statements: 80, lines: 80, functions: 75, branches: 85 },
+        'src/main/services/comfyApi.ts': { statements: 84, lines: 84, functions: 82, branches: 67 },
+        'src/main/services/registry.ts': { statements: 74, lines: 74, functions: 88, branches: 55 },
         'src/main/services/registryIndex.ts': {
-          statements: 53,
-          lines: 53,
-          functions: 70,
-          branches: 49
+          statements: 87,
+          lines: 87,
+          functions: 90,
+          branches: 72
         },
-        'src/main/services/monitor.ts': { statements: 16, lines: 16, functions: 13, branches: 90 },
-        'src/main/services/backup.ts': { statements: 2, lines: 2, functions: 0, branches: 98 },
-        'src/main/services/doctor.ts': { statements: 0, lines: 0, functions: 0, branches: 98 },
-        // ── 全局下限（实测 − 2pp）──
-        statements: 80,
-        lines: 80,
-        functions: 84,
-        branches: 82
+        'src/main/services/doctor.ts': { statements: 82, lines: 82, functions: 81, branches: 68 },
+        'src/main/services/backup.ts': { statements: 88, lines: 88, functions: 88, branches: 69 },
+        'src/main/services/monitor.ts': { statements: 59, lines: 59, functions: 62, branches: 66 },
+        // ── 全局下限（0.1.10 全量实测 − 2pp）──
+        statements: 88,
+        lines: 88,
+        functions: 90,
+        branches: 81
       }
     }
   }

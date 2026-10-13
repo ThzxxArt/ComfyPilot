@@ -71,7 +71,8 @@ describe('JSONC store (integration)', () => {
       enabled: true,
       notes: '',
       autoStart: false,
-      frontendVersion: ''
+      frontendVersion: '',
+      pinned: false
     })
     expect(db.loadInstanceConfigs().some((c) => c.id === 'i1')).toBe(true)
     expect(db.deleteInstanceConfig('i1')).toBe(true)

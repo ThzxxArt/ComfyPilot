@@ -460,9 +460,47 @@ export class DoctorService extends EventEmitter {
       case 'write-extra-model-paths': {
         const file = join(installPath, 'extra_model_paths.yaml')
         if (!existsSync(file)) {
+          // Full key template (0.1.10): mirrors the canonical folder list in
+          // ComfyUI's folder_paths.py, with block scalars for multi-path keys.
+          const base = installPath.replace(/\\/g, '/')
           writeFileSync(
             file,
-            `# ComfyPilot generated\ncomfyui:\n  base_path: ${installPath.replace(/\\/g, '/')}\n  checkpoints: models/checkpoints\n  loras: models/loras\n  vae: models/vae\n`
+            [
+              '# ComfyPilot generated — extra_model_paths.yaml',
+              '# Values must be strings; multiple paths = one per line (block scalar).',
+              '# Relative paths resolve against this file; base_path prefixes them.',
+              'comfyui:',
+              `  base_path: ${base}`,
+              '  is_default: true',
+              '  checkpoints: models/checkpoints',
+              '  loras: models/loras',
+              '  vae: models/vae',
+              '  text_encoders: |',
+              '    models/text_encoders',
+              '    models/clip',
+              '  diffusion_models: |',
+              '    models/diffusion_models',
+              '    models/unet',
+              '  controlnet: |',
+              '    models/controlnet',
+              '    models/t2i_adapter',
+              '  clip_vision: models/clip_vision',
+              '  style_models: models/style_models',
+              '  embeddings: models/embeddings',
+              '  upscale_models: models/upscale_models',
+              '  latent_upscale_models: models/latent_upscale_models',
+              '  gligen: models/gligen',
+              '  photomaker: models/photomaker',
+              '  model_patches: models/model_patches',
+              '  audio_encoders: models/audio_encoders',
+              '  hypernetworks: models/hypernetworks',
+              '  background_removal: models/background_removal',
+              '  frame_interpolation: models/frame_interpolation',
+              '  geometry_estimation: models/geometry_estimation',
+              '  optical_flow: models/optical_flow',
+              '  detection: models/detection',
+              ''
+            ].join('\n')
           )
           return { ok: true, message: `Wrote ${file}` }
         }

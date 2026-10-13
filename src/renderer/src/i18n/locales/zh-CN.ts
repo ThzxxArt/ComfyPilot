@@ -352,7 +352,13 @@ export default {
     copyDiagPathDone: '诊断包路径已复制到剪贴板：{path}',
     copyDiagPathFailed: '复制诊断路径失败：{error}',
     diagnostics: '诊断',
-    pythonLabelShort: 'Python'
+    pythonLabelShort: 'Python',
+    onlineBadge: '在线',
+    onlineVersionTip: '来自运行中实例 /system_stats 的真实版本',
+    runtimeLabel: '运行时',
+    frontendLabel: '前端包',
+    frontendMatch: '前端包与核心版本匹配：{version}',
+    frontendMismatch: '前端包版本不一致：已装 {installed}，要求 {required}'
   },
   install: {
     title: '一键装机',
@@ -568,7 +574,22 @@ export default {
     parseExtraBrowse: '浏览…',
     parseExtraRun: '解析',
     parseExtraEmpty: '尚未解析到路径。',
-    parseExtraCount: '已解析出 {n} 条路径'
+    parseExtraCount: '已解析出 {n} 条路径',
+    reconcile: '与实例对账',
+    reconcileTitle: '实例模型对账（在线）',
+    reconcileTip:
+      '对比实例实际可见的模型与本地索引——解释“为什么加载器里没有这个模型”（需实例运行中）',
+    reconcileIdle: '点击“与实例对账”拉取实例当前可见的模型清单',
+    reconcileSourceExperiment: '数据源：/experiment/models（含目录与扩展名）',
+    reconcileSourceLegacy: '数据源：/models（兼容接口，无目录信息）',
+    reconcileFailed: '对账失败：{error}',
+    reconcileEmpty: '未发现差异——实例可见与本地索引一致',
+    reconcileMissing: '实例可见·本地缺失 {n}',
+    reconcileExtra: '本地多出 {n}',
+    reconcileFormatHidden: '格式不可见 {n}',
+    reconcileMissingList: '缺失明细',
+    reconcileAddRoots: '添加 {n} 个扫描根',
+    reconcileAdded: '已添加 {n} 个扫描根并重新扫描'
   },
   nodes: {
     title: '节点管理',
@@ -679,7 +700,21 @@ export default {
     uninstallKeepDeps: '保留依赖',
     uninstalledWithDeps: '已卸载（含依赖）',
     opCancelled: '操作已取消',
-    cancelNothing: '当前没有可取消的操作。'
+    cancelNothing: '当前没有可取消的操作。',
+    loadSummary: '上次启动：{ok} 加载成功 · {fail} 失败',
+    loadFailed: '加载失败',
+    loadPrestartupFailed: '启动脚本失败',
+    loadUnknownHint: '暂无启动日志——启动一次实例后即可查看各包的加载状态',
+    filterLoadFailed: '仅看加载失败（{n}）',
+    selfCheck: '启动自检',
+    selfCheckTip:
+      '以 --quick-test-for-ci --cpu 运行一次 main.py（需先停止实例），验证全部自定义节点能否加载',
+    selfCheckRunning: '自检中…',
+    selfCheckPassed: '启动自检通过',
+    selfCheckFailed: '启动自检失败（退出码 {code}）',
+    selfCheckNeedStopped: '请先停止实例，再运行启动自检',
+    statusNotInstalled: '未安装',
+    statusInstalling: '安装中'
   },
   market: {
     title: '插件市场',
@@ -824,7 +859,8 @@ export default {
       cancelled: '已取消'
     },
     instanceNotRunning: '实例未运行',
-    startInstance: '一键启动实例'
+    startInstance: '一键启动实例',
+    remoteNotSupported: '远程实例不支持本机批量提交——请切换到本地实例'
   },
   workflows: {
     title: '工作流库',
@@ -925,7 +961,23 @@ export default {
     historyLoadFailed: '加载历史失败：{error}',
     needInstanceUrl: '请先启动一个实例并选择它',
     loading: '加载中…',
-    queueLoadFailed: '队列加载失败——实例可能未就绪'
+    queueLoadFailed: '队列加载失败——实例可能未就绪',
+    previewTitle: '生成预览',
+    previewSub: '来自实例 WebSocket 的实时采样预览（旧版实例自动使用兼容帧格式）',
+    previewEmpty: '暂无预览——启动实例并提交任务后，这里会显示实时采样画面',
+    nodeDoneCount: '已完成 {n} 个节点',
+    remoteReadonlyTitle: '正在监控远程实例',
+    remoteReadonlyBody:
+      '当前显示远程实例「{name}」的队列与历史，只读模式——启停/更新请在实例所在机器操作。',
+    jobsTitle: '作业列表（/api/jobs）',
+    jobsCount: '最近 {n} 个',
+    job: {
+      pending: '等待中',
+      in_progress: '执行中',
+      completed: '已完成',
+      failed: '失败',
+      cancelled: '已取消'
+    }
   },
   embed: {
     back: '返回',
@@ -1015,6 +1067,7 @@ export default {
     gAttention: '注意力与加速',
     gPrecision: '精度',
     gIo: 'IO / 内存',
+    gBase: '基础目录',
     gNetwork: '网络',
     gMisc: '启动与日志',
     fVram: '显存模式',
@@ -1036,6 +1089,24 @@ export default {
     fAsyncOffload: '异步权重卸载',
     fDisablePinnedMemory: '禁用锁定内存',
     fMmapTorchFiles: 'mmap 加载 ckpt/pt',
+    fTriton: 'Triton 后端',
+    fNvmlPressure: '禁用 NVML 压力检测',
+    fBaseDirectory: '基础目录 (--base-directory)',
+    fUserDirectory: '用户目录 (--user-directory)',
+    fModelsDirectory: '模型目录 (--models-directory)',
+    fDefaultDevice: '默认显卡编号',
+    baseDirPlaceholder: '留空 = 实例根目录',
+    baseDirNote:
+      '用于共享同一份 ComfyUI 源码、隔离 user/output（多实例同源部署）；改动会影响实例实际读写位置，请确认目标目录可用。',
+    optTritonOn: '开启 (--enable-triton-backend)',
+    optTritonOff: '关闭 (--disable-triton-backend)',
+    fAssets: 'Assets 资产库',
+    optAssetsOn: '开启 (--enable-assets)',
+    optAssetsOff: '关闭 (--disable-assets)',
+    fAssetHashing: '启用资产哈希 (--enable-asset-hashing)',
+    recommend: '按当前显存推荐',
+    recommendApply: '检测到 {gb}GB 显存——一键应用省显存配置（预留+快速磁盘+缓存策略）',
+    recommendNone: '检测到 {gb}GB 显存——显存充足，无需省显存配置',
     fCors: 'CORS 头',
     fCorsPlaceholder: '*（允许所有来源）或具体 Origin',
     fMaxUpload: '最大上传 (MB)',

@@ -956,15 +956,26 @@ export class WorkflowService {
 
     const client = new ComfyApiClient(url)
     const { COMFY_CLIENT_ID } = await import('./comfyApi')
+    // Sidecar map: lets OutputService.walk attribute the later output files
+    // to this workflow even when PNG meta lacks the workflow id.
+    let wf: WorkflowRecord | undefined
+    try {
+      wf = listWorkflows().find((w) => w.path === opts.workflowPath)
+    } catch {
+      /* best-effort */
+    }
     // queuePrompt throws with ComfyUI's error body on rejection — propagate it.
-    const promptId = await client.queuePrompt(prompt, COMFY_CLIENT_ID)
+    const promptId = await client.queuePrompt(prompt, COMFY_CLIENT_ID, {
+      metadata: {
+        source: 'comfypilot',
+        ...(wf?.id ? { workflowId: wf.id } : {}),
+        ...(wf?.name ? { workflowName: String(wf.name).slice(0, 80) } : {})
+      }
+    })
     if (!promptId) {
       throw new Error('ComfyUI accepted the prompt but returned no prompt_id')
     }
-    // Sidecar map: lets OutputService.walk attribute the later output files
-    // to this workflow even when PNG meta lacks the workflow id.
     try {
-      const wf = listWorkflows().find((w) => w.path === opts.workflowPath)
       recordPromptWorkflowLink(promptId, wf?.id, wf?.name)
     } catch {
       /* best-effort */

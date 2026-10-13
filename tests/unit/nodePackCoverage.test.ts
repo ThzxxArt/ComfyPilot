@@ -394,6 +394,7 @@ vi.mock('child_process', () => {
         stdout: InstanceType<typeof EventEmitter>
         stderr: InstanceType<typeof EventEmitter>
         kill: () => void
+        emit: (ev: string, ...a: unknown[]) => void
       }
       child.stdout = new EventEmitter()
       child.stderr = new EventEmitter()
@@ -660,11 +661,13 @@ const registryIndexMock = registryIndexMod as unknown as {
 const cpMock = cp as unknown as {
   execFile: (cmd: string, args: string[], opts: unknown, cb?: ExecCallback) => unknown
   __setExecHandler: (
-    fn: (
-      cmd: string,
-      args: string[],
-      opts: unknown
-    ) => { stdout?: string; stderr?: string; error?: unknown; code?: number }
+    fn:
+      | ((
+          cmd: string,
+          args: string[],
+          opts: unknown
+        ) => { stdout?: string; stderr?: string; error?: unknown; code?: number })
+      | null
   ) => void
 }
 

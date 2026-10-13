@@ -94,6 +94,23 @@ export interface LaunchProfile {
   /** --disable-auto-launch — recommended: ComfyPilot opens the window itself. */
   disableAutoLaunch?: boolean
   verbose?: boolean
+  // ---------- 0.1.10: base directories + device + runtime toggles ----------
+  /** --base-directory: share one source tree while keeping user/output separate. */
+  baseDirectory?: string
+  /** --user-directory: per-instance user dir (settings/workflows/db). */
+  userDirectory?: string
+  /** --models-directory: relocate the models root. */
+  modelsDirectory?: string
+  /** --default-device N: preferred CUDA device index in multi-GPU hosts. */
+  defaultDevice?: number
+  /** --enable-triton-backend / --disable-triton-backend. */
+  tritonBackend?: 'default' | 'on' | 'off'
+  /** --disable-nvml-pressure (DynamicVRAM falls back to CUDA pressure checks). */
+  disableNvmlPressure?: boolean
+  /** --enable-assets / --disable-assets (assets DB, default off upstream). */
+  assets?: boolean
+  /** --enable-asset-hashing (content hashing for the assets DB). */
+  assetHashing?: boolean
 }
 
 export interface ComfyInstanceConfig {
@@ -120,6 +137,8 @@ export interface ComfyInstanceInfo extends ComfyInstanceConfig {
   status: InstanceStatus
   pid?: number
   version?: string
+  /** Real version reported by the running instance (/system_stats), when known. */
+  onlineVersion?: string
   managerEnabled?: boolean
   url?: string
   startedAt?: number
@@ -169,6 +188,86 @@ export interface WaitReadyResult {
   info: ComfyInstanceInfo
   error?: string
   elapsedMs: number
+}
+
+// ---------- Instance capabilities (0.1.10) ----------
+/**
+ * Runtime-probed facts about a RUNNING ComfyUI instance. Kept deliberately
+ * factual: fields are only set when the server actually reported them.
+ */
+export interface InstanceCapabilities {
+  instanceId: string
+  baseUrl: string
+  online: boolean
+  /** system.comfyui_version */
+  version?: string
+  requiredFrontendVersion?: string
+  installedTemplatesVersion?: string
+  requiredTemplatesVersion?: string
+  pythonVersion?: string
+  pytorchVersion?: string
+  embeddedPython?: boolean
+  deployEnvironment?: string
+  /** Launch argv exactly as the server reported it. */
+  argv: string[]
+  /** comfy_package_versions[] (name/installed/required). */
+  packages: Array<{ name: string; installed: string; required: string }>
+  /** /features feature-flag map (shape tolerated). */
+  features: Record<string, unknown>
+  /** /api/jobs answered a probe request (probed, not version-guessed). */
+  jobsApi: boolean
+  /** workflow_metadata is only sent on builds known to support it (0.39.0+). */
+  workflowMetadata: boolean
+  error?: string
+  probedAt: number
+}
+
+// ---------- Node load report (0.1.10) ----------
+/** One custom-node import entry parsed from the boot log block. */
+export interface NodeLoadEntry {
+  /** Absolute module path as printed by ComfyUI. */
+  modulePath: string
+  /** Directory basename (`.disabled` stripped) — matches on-disk pack folders. */
+  folder: string
+  seconds: number
+  ok: boolean
+  prestartup: boolean
+  /** First traceback / error line related to this module, when parseable. */
+  error?: string
+}
+
+export interface NodeLoadReport {
+  /** False when no "Import times" block exists in the available logs. */
+  available: boolean
+  entries: NodeLoadEntry[]
+  /** When the block was observed (log line ts), for staleness hints. */
+  observedAt?: number
+}
+
+// ---------- Model reconciliation (0.1.10) ----------
+export interface ModelReconcileFolder {
+  /** Canonical folder type (legacy clip/unet already mapped). */
+  folder: string
+  /** Absolute search paths the instance actually uses for this folder. */
+  instanceFolders: string[]
+  extensions: string[]
+  /** Names visible to the instance but absent from the local index (unscanned). */
+  missingLocally: string[]
+  /** Local index entries the instance cannot see (dir not indexed / not found). */
+  extraLocally: string[]
+  /** Local entries whose extension the instance does not list for this folder. */
+  formatHidden: string[]
+  error?: string
+}
+
+export interface ModelReconcileResult {
+  ok: boolean
+  /** Which endpoint answered: experiment (richer) → legacy → none. */
+  source: 'experiment' | 'legacy' | 'none'
+  error?: string
+  folders: ModelReconcileFolder[]
+  /** Instance search paths not covered by the app's scan roots (offer to add). */
+  uncoveredRoots: string[]
 }
 
 /** Result of startAll/stopAll — per-instance outcome so the UI can summarize. */
@@ -426,6 +525,14 @@ export interface QueueSnapshot {
   history: Array<{ promptId: string; status: string; completedAt?: number }>
 }
 
+/** Normalized /api/jobs list entry (ComfyUI 0.39+). */
+export interface ComfyJobSummary {
+  id: string
+  status: string
+  workflowId?: string
+  createdAt?: number
+}
+
 export interface ComfyLogLine {
   ts: number
   level: 'info' | 'warn' | 'error' | 'debug'
@@ -433,14 +540,41 @@ export interface ComfyLogLine {
   source?: string
 }
 
+/** Per-node execution progress from the `progress_state` WS event (0.39+). */
+export interface ExecNodeProgress {
+  nodeId: string
+  value: number
+  max: number
+  /** pending | running | finished | error */
+  state: string
+  promptId?: string
+  displayNodeId?: string
+}
+
 export interface ExecProgressEvent {
-  type: 'progress' | 'executing' | 'executed' | 'status' | 'execution_error' | 'preview'
+  type:
+    | 'progress'
+    | 'executing'
+    | 'executed'
+    | 'status'
+    | 'execution_error'
+    | 'preview'
+    | 'progress_state'
+    | 'execution_start'
+    | 'execution_success'
+    | 'execution_interrupted'
+    | 'execution_cached'
   nodeId?: string
   value?: number
   max?: number
   promptId?: string
+  /** Preview frame as a data: URL (both legacy and metadata frame formats). */
   image?: string
   text?: string
+  /** progress_state payload: nodeId → progress. */
+  nodes?: Record<string, ExecNodeProgress>
+  /** execution_cached payload. */
+  cachedNodes?: string[]
 }
 
 export interface OutputAsset {
@@ -976,6 +1110,11 @@ export type IpcChannelMap = {
   'instance.updateStatus': { args: []; result: UpdateProgress | null }
   'instance.cancelUpdate': { args: []; result: boolean }
   'instance.repairEnv': { args: [string, RepairEnvOptions?]; result: EnvProbe }
+  'instance.capabilities': { args: [string]; result: InstanceCapabilities | null }
+  'instance.runStartupSelfCheck': {
+    args: [string]
+    result: { ok: boolean; exitCode: number | null; output: string }
+  }
 
   // models
   'model.list': { args: []; result: ModelRecord[] }
@@ -999,6 +1138,7 @@ export type IpcChannelMap = {
   'model.parseExtraPaths': { args: [string?]; result: string[] }
   'model.fetchCivitaiMeta': { args: [string]; result: Record<string, unknown> | null }
   'model.ensureThumbs': { args: []; result: number }
+  'model.reconcile': { args: [string?]; result: ModelReconcileResult }
   'model.batchRename': {
     args: [{ ids: string[]; pattern: string; dryRun?: boolean }]
     result: Array<{ from: string; to: string; ok: boolean; error?: string }>
@@ -1073,6 +1213,7 @@ export type IpcChannelMap = {
   'node.deleteSnapshot': { args: [string, string?]; result: boolean }
   'node.checkUpdates': { args: [string?]; result: NodeUpdateCheckResult[] }
   'node.updateAll': { args: [string?]; result: NodeUpdateAllResult[] }
+  'node.loadReport': { args: [string?]; result: NodeLoadReport | null }
 
   // workflows
   'workflow.list': { args: [{ includeMissing?: boolean }?]; result: WorkflowRecord[] }
@@ -1120,6 +1261,7 @@ export type IpcChannelMap = {
   'monitor.system': { args: []; result: SystemSnapshot }
   'monitor.queue': { args: [string?]; result: QueueSnapshot }
   'monitor.history': { args: [string?]; result: QueueSnapshot }
+  'monitor.jobs': { args: [string?]; result: ComfyJobSummary[] | null }
   'monitor.connectWs': { args: [string]; result: boolean }
   'monitor.disconnectWs': { args: []; result: boolean }
 

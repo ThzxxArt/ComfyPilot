@@ -363,11 +363,22 @@ app.whenReady().then(async () => {
   }
 
   if (e2e) {
-    // Boot the real window then quit cleanly for the smoke suite
+    // Boot the real window, verify the renderer actually MOUNTED (not just
+    // "the process spawned"), then quit cleanly for the smoke suite.
     const quitE2e = (): void => app.quit()
     setTimeout(() => {
       try {
-        mainWindow?.webContents.once('did-finish-load', () => setTimeout(quitE2e, 300))
+        mainWindow?.webContents.once('did-finish-load', () => {
+          void mainWindow?.webContents
+            .executeJavaScript(
+              'Boolean(document.getElementById("app") && document.getElementById("app").childElementCount > 0)'
+            )
+            .then((mounted) => {
+              console.log(mounted ? '[e2e] renderer-mounted' : '[e2e] renderer-empty')
+            })
+            .catch(() => console.log('[e2e] renderer-probe-failed'))
+            .finally(() => setTimeout(quitE2e, 300))
+        })
       } catch {
         /* ignore */
       }

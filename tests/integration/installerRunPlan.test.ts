@@ -32,6 +32,7 @@ const h = vi.hoisted(() => ({
       }
     ]
   } as {
+    runtimesDir: string
     pythonPath: string
     pythonOrigin: string
     zipInstallReady: boolean

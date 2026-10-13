@@ -421,6 +421,14 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       return probe
     })
   )
+  ipcMain.handle(
+    'instance.capabilities',
+    wrap((id: string) => instanceService.getCapabilities(sanitizeId(id)))
+  )
+  ipcMain.handle(
+    'instance.runStartupSelfCheck',
+    wrap((id: string) => instanceService.runStartupSelfCheck(sanitizeId(id)))
+  )
 
   // models
   ipcMain.handle(
@@ -499,6 +507,10 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle(
     'model.parseExtraPaths',
     wrap((file?: string) => import('../services/model').then((m) => m.parseExtraModelPaths(file)))
+  )
+  ipcMain.handle(
+    'model.reconcile',
+    wrap((instanceId?: string) => modelService.reconcile(safeInstanceId(instanceId)))
   )
   ipcMain.handle(
     'model.fetchCivitaiMeta',
@@ -648,6 +660,10 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     wrap((id: string, instanceId?: string) =>
       nodePackService.checkIssues(id, safeInstanceId(instanceId))
     )
+  )
+  ipcMain.handle(
+    'node.loadReport',
+    wrap((instanceId?: string) => nodePackService.loadReport(safeInstanceId(instanceId)))
   )
   ipcMain.handle(
     'node.conflicts',
@@ -860,6 +876,13 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     wrap((baseUrl?: string) => {
       if (baseUrl && !isTrustedComfyUrl(baseUrl)) throw new Error('Blocked untrusted monitor URL')
       return monitorService.history(baseUrl)
+    })
+  )
+  ipcMain.handle(
+    'monitor.jobs',
+    wrap((baseUrl?: string) => {
+      if (baseUrl && !isTrustedComfyUrl(baseUrl)) throw new Error('Blocked untrusted monitor URL')
+      return monitorService.jobsSnapshot(baseUrl)
     })
   )
   ipcMain.handle(

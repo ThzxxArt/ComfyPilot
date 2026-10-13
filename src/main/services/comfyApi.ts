@@ -1,3 +1,5 @@
+import type { ComfyJobSummary } from '@shared/types'
+
 /** Stable client id so WS progress events match queued prompts. */
 export const COMFY_CLIENT_ID = 'comfy-pilot'
 
@@ -29,12 +31,30 @@ export class ComfyApiClient {
     }
   }
 
-  async queuePrompt(prompt: Record<string, unknown>, clientId: string): Promise<string | null> {
+  async queuePrompt(
+    prompt: Record<string, unknown>,
+    clientId: string,
+    opts?: { metadata?: Record<string, unknown> }
+  ): Promise<string | null> {
     try {
+      const body: Record<string, unknown> = { prompt, client_id: clientId }
+      // workflow_metadata (≤256 BYTES — the server validates the encoded
+      // length) is merged into every prompt-scoped event by ComfyUI 0.39+;
+      // older servers just ignore the extra top-level key. Oversized metadata
+      // is dropped entirely (UTF-8 aware — a CJK name must not sneak past).
+      if (opts?.metadata) {
+        try {
+          if (Buffer.byteLength(JSON.stringify(opts.metadata), 'utf-8') <= 256) {
+            body.workflow_metadata = opts.metadata
+          }
+        } catch {
+          /* non-serializable metadata is dropped, never fatal */
+        }
+      }
       const res = await fetch(this.url('/prompt'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, client_id: clientId }),
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(8000)
       })
       if (!res.ok) {
@@ -173,11 +193,70 @@ export class ComfyApiClient {
     }
   }
 
-  async interrupt(): Promise<boolean> {
+  /**
+   * Interrupt execution. With a promptId only that RUNNING prompt is
+   * interrupted (ComfyUI 0.39+); without one the global interrupt flag is set.
+   */
+  async interrupt(promptId?: string, timeoutMs = 3000): Promise<boolean> {
     try {
       const res = await fetch(this.url('/interrupt'), {
         method: 'POST',
-        signal: AbortSignal.timeout(3000)
+        headers: promptId ? { 'Content-Type': 'application/json' } : undefined,
+        body: promptId ? JSON.stringify({ prompt_id: promptId }) : undefined,
+        signal: AbortSignal.timeout(timeoutMs)
+      })
+      return res.ok
+    } catch {
+      return false
+    }
+  }
+
+  // ---------- /api/jobs (ComfyUI 0.39+; callers must fall back on null/false) ----------
+
+  /** Unified job list. `limit` is ALWAYS sent — the server returns everything without it. */
+  async jobsList(limit = 50, status?: string): Promise<ComfyJob[] | null> {
+    try {
+      const q = new URLSearchParams({ limit: String(Math.max(1, Math.min(500, limit))) })
+      if (status) q.set('status', status)
+      const res = await fetch(this.url(`/api/jobs?${q.toString()}`), {
+        signal: AbortSignal.timeout(5000)
+      })
+      if (!res.ok) return null
+      const data = (await res.json()) as { jobs?: Array<Record<string, unknown>> }
+      if (!Array.isArray(data.jobs)) return null
+      return data.jobs.map((j) => ({
+        id: String(j.id ?? ''),
+        status: String(j.status ?? ''),
+        workflowId: j.workflow_id ? String(j.workflow_id) : undefined,
+        createdAt: typeof j.created_at === 'number' ? j.created_at : undefined
+      }))
+    } catch {
+      return null
+    }
+  }
+
+  /** Atomically cancel ONE job (running → interrupt, pending → dequeue). */
+  async jobCancel(id: string): Promise<boolean> {
+    try {
+      const res = await fetch(this.url(`/api/jobs/${encodeURIComponent(id)}/cancel`), {
+        method: 'POST',
+        signal: AbortSignal.timeout(5000)
+      })
+      return res.ok
+    } catch {
+      return false
+    }
+  }
+
+  /** Batch cancel (all-or-nothing validation server-side). */
+  async jobsCancel(ids: string[]): Promise<boolean> {
+    if (!ids.length) return true
+    try {
+      const res = await fetch(this.url('/api/jobs/cancel'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_ids: ids }),
+        signal: AbortSignal.timeout(5000)
       })
       return res.ok
     } catch {
@@ -185,3 +264,6 @@ export class ComfyApiClient {
     }
   }
 }
+
+/** Normalized /api/jobs list entry (alias of the shared type). */
+export type ComfyJob = ComfyJobSummary

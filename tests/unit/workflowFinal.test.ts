@@ -10,8 +10,8 @@ import { seedTestInstance } from '../helpers/testInstance'
 
 const ROOT = join(tmpdir(), `cp-workflow-final-${process.pid}`)
 
-const openExternal = vi.fn(async () => undefined)
-const showItemInFolder = vi.fn(() => undefined)
+const openExternal = vi.fn(async (..._a: unknown[]) => undefined)
+const showItemInFolder = vi.fn((..._a: unknown[]) => undefined)
 
 vi.mock('electron', async () => {
   return {

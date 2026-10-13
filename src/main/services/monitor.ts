@@ -2,7 +2,14 @@ import { EventEmitter } from 'events'
 import { execFile } from 'child_process'
 import si from 'systeminformation'
 import WebSocket from 'ws'
-import type { ExecProgressEvent, GpuInfo, QueueSnapshot, SystemSnapshot } from '@shared/types'
+import type {
+  ComfyJobSummary,
+  ExecNodeProgress,
+  ExecProgressEvent,
+  GpuInfo,
+  QueueSnapshot,
+  SystemSnapshot
+} from '@shared/types'
 import { ComfyApiClient, COMFY_CLIENT_ID } from './comfyApi'
 import { isLocalhostUrl } from './security'
 import { loadInstanceConfigs, listRemotes } from './db'
@@ -138,6 +145,8 @@ export class MonitorService extends EventEmitter {
    * reconnect against the current wsBaseUrl (which would open a duplicate WS).
    */
   private wsGeneration = 0
+  /** Preview frame throttle (0.1.10): at most one emitted frame per 300ms. */
+  private lastPreviewAt = 0
 
   /** Never rejects: partial si failures degrade instead of blowing up the tick. */
   async systemSnapshot(): Promise<SystemSnapshot> {
@@ -234,6 +243,17 @@ export class MonitorService extends EventEmitter {
     return this.queueSnapshot(baseUrl)
   }
 
+  /**
+   * Job list via /api/jobs (ComfyUI 0.39+). Returns null when the endpoint is
+   * unavailable — callers keep the legacy queue view (0.1.10, probed not guessed).
+   */
+  async jobsSnapshot(baseUrl?: string): Promise<ComfyJobSummary[] | null> {
+    if (!baseUrl) return null
+    assertMonitorBaseUrl(baseUrl)
+    const client = new ComfyApiClient(baseUrl)
+    return client.jobsList(30)
+  }
+
   connectWs(baseUrl: string): boolean {
     assertMonitorBaseUrl(baseUrl)
     this.disconnectWs()
@@ -253,25 +273,36 @@ export class MonitorService extends EventEmitter {
         if (gen !== this.wsGeneration) return
         this.reconnectAttempts = 0
         this.emit('ws', { type: 'status', text: 'connected' } as ExecProgressEvent)
+        // Ask for metadata-framed previews (event=4). Only the FIRST message is
+        // treated as negotiation by the server, so this must go out immediately;
+        // older servers ignore it and keep emitting legacy frames (still parsed).
+        try {
+          ws.send(
+            JSON.stringify({ type: 'feature_flags', data: { supports_preview_metadata: true } })
+          )
+        } catch {
+          /* negotiation is best-effort */
+        }
       })
       ws.on('message', (raw) => {
         if (gen !== this.wsGeneration) return
         try {
           const buf = Buffer.isBuffer(raw) ? raw : Buffer.from(raw as ArrayBuffer)
-          if (buf.length > 0 && buf[0] === 0x00) return // binary preview frame
+          // Binary frames start with a big-endian event number (1/2/3/4).
+          // JSON frames start with '{' (0x7B) — route by event code, never by
+          // "first byte == 0x00" (the old guard silently dropped every preview).
+          if (buf.length >= 4) {
+            const event = buf.readUInt32BE(0)
+            if (event === 1 || event === 2 || event === 3 || event === 4) {
+              this.handleBinaryFrame(gen, event, buf)
+              return
+            }
+          }
           const msg = JSON.parse(buf.toString('utf-8')) as {
             type: string
             data?: Record<string, unknown>
           }
-          const evt: ExecProgressEvent = {
-            type: msg.type as ExecProgressEvent['type'],
-            nodeId: msg.data?.node ? String(msg.data.node) : undefined,
-            value: msg.data?.value as number | undefined,
-            max: msg.data?.max as number | undefined,
-            promptId: msg.data?.prompt_id ? String(msg.data.prompt_id) : undefined,
-            text: msg.data?.text ? String(msg.data.text) : undefined
-          }
-          this.emit('ws', evt)
+          this.emit('ws', this.buildExecEvent(msg))
         } catch {
           /* ignore malformed */
         }
@@ -291,6 +322,89 @@ export class MonitorService extends EventEmitter {
       this.scheduleReconnect(gen)
       return false
     }
+  }
+
+  /**
+   * Decode binary WS frames (0.1.10). Two preview generations exist:
+   *  - event 1/2: [4B event][4B imageType] + image (1=JPEG, 2=PNG)
+   *  - event 4:   [4B event][4B metaLen][JSON metadata][image]
+   *  - event 3 is progress TEXT — ignored (no consumer).
+   * Unknown/truncated frames are dropped silently; previews are throttled.
+   */
+  private handleBinaryFrame(gen: number, event: number, buf: Buffer): void {
+    if (gen !== this.wsGeneration) return
+    if (event === 3) return
+    try {
+      if (event === 1 || event === 2) {
+        if (buf.length <= 8) return
+        const imgType = buf.readUInt32BE(4)
+        const mime = imgType === 1 ? 'image/jpeg' : 'image/png'
+        this.emitPreview(mime, buf.subarray(8))
+        return
+      }
+      if (event === 4) {
+        if (buf.length < 8) return
+        const metaLen = buf.readUInt32BE(4)
+        if (!Number.isFinite(metaLen) || metaLen < 0 || buf.length < 8 + metaLen) return
+        let meta: Record<string, unknown> = {}
+        try {
+          meta = JSON.parse(buf.toString('utf-8', 8, 8 + metaLen)) as Record<string, unknown>
+        } catch {
+          /* keep empty meta; the image bytes are still valid */
+        }
+        const image = buf.subarray(8 + metaLen)
+        if (!image.length) return
+        this.emitPreview(String(meta.image_type || 'image/png'), image, meta)
+      }
+    } catch {
+      /* malformed frame — never crash the socket handler */
+    }
+  }
+
+  private emitPreview(mime: string, image: Buffer, meta?: Record<string, unknown>): void {
+    const now = Date.now()
+    if (now - this.lastPreviewAt < 300) return
+    this.lastPreviewAt = now
+    this.emit('ws', {
+      type: 'preview',
+      image: `data:${mime};base64,${image.toString('base64')}`,
+      nodeId: meta?.node_id ? String(meta.node_id) : undefined,
+      promptId: meta?.prompt_id ? String(meta.prompt_id) : undefined
+    } satisfies ExecProgressEvent)
+  }
+
+  /** JSON event → ExecProgressEvent (adds progress_state / execution_cached). */
+  private buildExecEvent(msg: { type: string; data?: Record<string, unknown> }): ExecProgressEvent {
+    const d = (msg.data || {}) as Record<string, unknown>
+    const evt: ExecProgressEvent = {
+      type: msg.type as ExecProgressEvent['type'],
+      nodeId: d.node ? String(d.node) : undefined,
+      value: d.value as number | undefined,
+      max: d.max as number | undefined,
+      promptId: d.prompt_id ? String(d.prompt_id) : undefined,
+      text: d.text ? String(d.text) : undefined
+    }
+    if (msg.type === 'progress_state' && d.nodes && typeof d.nodes === 'object') {
+      const nodes: Record<string, ExecNodeProgress> = {}
+      for (const [id, raw] of Object.entries(d.nodes as Record<string, Record<string, unknown>>)) {
+        if (!raw || typeof raw !== 'object') continue
+        nodes[id] = {
+          nodeId: id,
+          value: Number(raw.value ?? 0),
+          max: Number(raw.max ?? 0),
+          state: String(raw.state || ''),
+          promptId: raw.prompt_id ? String(raw.prompt_id) : undefined,
+          displayNodeId: raw.display_node_id ? String(raw.display_node_id) : undefined
+        }
+      }
+      evt.nodes = nodes
+      const running = Object.entries(nodes).filter(([, n]) => n.state === 'running')
+      if (running.length) evt.nodeId = running[running.length - 1][0]
+    }
+    if (msg.type === 'execution_cached' && Array.isArray(d.nodes)) {
+      evt.cachedNodes = (d.nodes as unknown[]).map(String)
+    }
+    return evt
   }
 
   private scheduleReconnect(gen: number): void {

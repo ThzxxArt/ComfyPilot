@@ -16,6 +16,7 @@ import type { LaunchProfile } from '@shared/types'
 import {
   LAUNCH_ARG_ERROR_KEYS,
   launchArgWarningKey,
+  recommendLaunchProfile,
   renderLaunchProfile,
   validateLaunchArgs,
   warnLaunchArgs
@@ -27,9 +28,25 @@ import {
  * are modeled as single selects, and the live validation line catches
  * conflicts coming from free-text extraArgs (passed in via `extraArgs`).
  */
-const props = defineProps<{ extraArgs?: string[] }>()
+const props = defineProps<{
+  extraArgs?: string[]
+  /** Live GPU facts (store.system.gpus) — enables the VRAM advisor. */
+  gpus?: Array<{ vramTotal?: number }>
+}>()
 const profile = defineModel<LaunchProfile>({ required: true })
 const { t } = useI18n()
+
+const recommended = computed(() => recommendLaunchProfile(props.gpus))
+const vramGbText = computed(() => {
+  const bytes = Math.max(0, ...(props.gpus || []).map((g) => Number(g.vramTotal) || 0))
+  return bytes > 0 ? String(Math.round(bytes / 1024 ** 3)) : ''
+})
+
+function applyRecommendation(): void {
+  const rec = recommended.value
+  if (!rec) return
+  profile.value = { ...profile.value, ...rec }
+}
 
 const opt = (label: string, value: string): { label: string; value: string } => ({
   label: t(label),
@@ -100,6 +117,28 @@ const asyncOptions = computed(() => [
   opt('launchArgs.optAsyncOn', 'on'),
   opt('launchArgs.optAsyncOff', 'off')
 ])
+const tritonOptions = computed(() => [
+  { label: t('launchArgs.optDefault'), value: 'default' },
+  opt('launchArgs.optTritonOn', 'on'),
+  opt('launchArgs.optTritonOff', 'off')
+])
+const assetsOptions = computed(() => [
+  { label: t('launchArgs.optDefault'), value: 'default' },
+  opt('launchArgs.optAssetsOn', 'on'),
+  opt('launchArgs.optAssetsOff', 'off')
+])
+
+/** profile.assets is boolean|undefined; the select uses tri-state strings. */
+const assetsChoice = computed<'default' | 'on' | 'off'>({
+  get: () =>
+    profile.value.assets === true ? 'on' : profile.value.assets === false ? 'off' : 'default',
+  set: (v) => {
+    profile.value = {
+      ...profile.value,
+      assets: v === 'default' ? undefined : v === 'on'
+    }
+  }
+})
 
 const fullArgs = computed(() => [...renderLaunchProfile(profile.value), ...(props.extraArgs || [])])
 const errors = computed(() => validateLaunchArgs(fullArgs.value))
@@ -119,6 +158,18 @@ function errorText(e: { code: string; flag?: string }): string {
   <NCollapse class="profile-editor" :default-expanded-names="[]">
     <NCollapseItem :title="t('launchArgs.title')" name="profile">
       <NText depth="3" class="pe-note">{{ t('launchArgs.intro') }}</NText>
+      <div v-if="props.gpus?.length" class="pe-recommend">
+        <NButton size="tiny" secondary :disabled="!recommended" @click="applyRecommendation">
+          {{ t('launchArgs.recommend') }}
+        </NButton>
+        <NText depth="3" class="pe-hint">
+          {{
+            recommended
+              ? t('launchArgs.recommendApply', { gb: vramGbText })
+              : t('launchArgs.recommendNone', { gb: vramGbText })
+          }}
+        </NText>
+      </div>
 
       <NCollapse :default-expanded-names="['vram']" class="pe-groups">
         <NCollapseItem :title="t('launchArgs.gVram')" name="vram">
@@ -225,7 +276,43 @@ function errorText(e: { code: string; flag?: string }): string {
             <NFormItem :label="t('launchArgs.fMmapTorchFiles')" class="pe-field">
               <NSwitch v-model:value="profile.mmapTorchFiles" />
             </NFormItem>
+            <NFormItem :label="t('launchArgs.fTriton')" class="pe-field">
+              <NSelect v-model:value="profile.tritonBackend" :options="tritonOptions" />
+            </NFormItem>
+            <NFormItem :label="t('launchArgs.fNvmlPressure')" class="pe-field">
+              <NSwitch v-model:value="profile.disableNvmlPressure" />
+            </NFormItem>
           </div>
+        </NCollapseItem>
+
+        <NCollapseItem :title="t('launchArgs.gBase')" name="base">
+          <div class="pe-row">
+            <NFormItem :label="t('launchArgs.fBaseDirectory')" class="pe-field">
+              <NInput
+                v-model:value="profile.baseDirectory"
+                :placeholder="t('launchArgs.baseDirPlaceholder')"
+                clearable
+              />
+            </NFormItem>
+            <NFormItem :label="t('launchArgs.fUserDirectory')" class="pe-field">
+              <NInput
+                v-model:value="profile.userDirectory"
+                :placeholder="t('launchArgs.baseDirPlaceholder')"
+                clearable
+              />
+            </NFormItem>
+            <NFormItem :label="t('launchArgs.fModelsDirectory')" class="pe-field">
+              <NInput
+                v-model:value="profile.modelsDirectory"
+                :placeholder="t('launchArgs.baseDirPlaceholder')"
+                clearable
+              />
+            </NFormItem>
+            <NFormItem :label="t('launchArgs.fDefaultDevice')" class="pe-field">
+              <NInputNumber v-model:value="profile.defaultDevice" :min="0" :max="31" clearable />
+            </NFormItem>
+          </div>
+          <NText depth="3" class="pe-hint">{{ t('launchArgs.baseDirNote') }}</NText>
         </NCollapseItem>
 
         <NCollapseItem :title="t('launchArgs.gNetwork')" name="network">
@@ -250,6 +337,12 @@ function errorText(e: { code: string; flag?: string }): string {
             </NFormItem>
             <NFormItem :label="t('launchArgs.fOffline')" class="pe-field">
               <NSwitch v-model:value="profile.offline" />
+            </NFormItem>
+            <NFormItem :label="t('launchArgs.fAssets')" class="pe-field">
+              <NSelect v-model:value="assetsChoice" :options="assetsOptions" />
+            </NFormItem>
+            <NFormItem :label="t('launchArgs.fAssetHashing')" class="pe-field">
+              <NSwitch v-model:value="profile.assetHashing" />
             </NFormItem>
           </div>
         </NCollapseItem>
@@ -301,6 +394,17 @@ function errorText(e: { code: string; flag?: string }): string {
   display: block;
   margin-bottom: 8px;
   line-height: 1.6;
+}
+
+.pe-recommend {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.pe-recommend .pe-hint {
+  margin-bottom: 0;
 }
 
 .pe-groups {

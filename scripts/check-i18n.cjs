@@ -260,7 +260,9 @@ const dynamicDomains = {
     'clip',
     'unet',
     'other'
-  ]
+  ],
+  // Must match /api/jobs statuses handled by MonitorView.jobStatusLabel
+  'monitor.job.*': ['pending', 'in_progress', 'completed', 'failed', 'cancelled']
 }
 let dynBad = 0
 for (const [pattern, leafs] of Object.entries(dynamicDomains)) {

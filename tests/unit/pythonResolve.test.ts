@@ -30,6 +30,8 @@ function cfg(partial: Partial<ComfyInstanceConfig>): ComfyInstanceConfig {
     id: 'test',
     name: 'test',
     path: '',
+    pythonPath: '',
+    venvPath: '',
     port: 8188,
     listen: '127.0.0.1',
     extraArgs: [],

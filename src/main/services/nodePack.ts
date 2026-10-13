@@ -16,6 +16,7 @@ import { promisify } from 'util'
 import { EventEmitter } from 'events'
 import type {
   NodeCheckProgressEvent,
+  NodeLoadReport,
   NodeNameConflict,
   NodeOpLogEvent,
   NodePackIssue,
@@ -29,6 +30,7 @@ import type {
   UpdateStep,
   UpdateStepId
 } from '@shared/types'
+import { parseNodeLoadReport } from '@shared/nodeLoadReport'
 import {
   deleteNodePack,
   listNodePacks,
@@ -46,7 +48,7 @@ import { proxyEnv } from './proxy'
 import { runStreaming } from './env'
 import { sanitizeId, isPathInside, normalizePathEverySegment } from './security'
 import { assertSafeGitUrl, applyGithubMirror, assertSafeBranch } from './installer'
-import { resolveInstancePythonPath, resolveRuntimesPythonSync } from './instance'
+import { instanceService, resolveInstancePythonPath, resolveRuntimesPythonSync } from './instance'
 import { findInRuntimes } from './bootstrap'
 
 const execFileAsync = promisify(execFile)
@@ -2887,6 +2889,24 @@ export class NodePackService extends EventEmitter {
 
   checkIssues(idOrName: string, instanceId?: string): NodePackIssue[] {
     return this.list(instanceId).find((p) => p.id === idOrName || p.name === idOrName)?.issues || []
+  }
+
+  /**
+   * Boot-log load report (0.1.10): what ComfyUI actually loaded on its last
+   * start, including IMPORT FAILED packs that look fine on disk.
+   * NOTE: reads the log TAIL (last 5000 lines) — on very long-running sessions
+   * the boot block can roll out; the parser then returns null and the UI shows
+   * its neutral "no boot log yet" hint (never a guess).
+   */
+  loadReport(instanceId?: string): NodeLoadReport | null {
+    const cfg = resolveInstanceConfig(instanceId)
+    if (!cfg) return null
+    try {
+      const logs = instanceService.getLogs(cfg.id, 5000)
+      return parseNodeLoadReport(logs)
+    } catch {
+      return null
+    }
   }
 
   conflicts(instanceId?: string): NodeNameConflict[] {

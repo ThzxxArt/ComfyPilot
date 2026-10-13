@@ -54,8 +54,12 @@ function isBusy(status: string): boolean {
   return status === 'submitting' || status === 'running'
 }
 
-/** ComfyPilot never auto-starts an instance — batch run is gated on this. */
-const instanceRunning = computed(() => store.activeInstance?.status === 'running')
+/** ComfyPilot never auto-starts an instance — batch run is gated on this.
+ *  Remote targets are read-only in 0.1.10: batch submission requires a LOCAL
+ *  running instance (submitting to a remote backend is not supported yet). */
+const instanceRunning = computed(
+  () => !store.isRemoteActive && store.activeInstance?.status === 'running'
+)
 const needInstanceHint = computed(() => t('batch.needRunningInstance'))
 // Hoisted to setup scope — calling useLaunch() inside a dialog callback would
 // lose the router injection.
@@ -194,6 +198,10 @@ async function createJob(): Promise<void> {
 
 async function start(id: string): Promise<void> {
   if (startingId.value) return
+  if (store.isRemoteActive) {
+    message.warning(t('batch.remoteNotSupported'))
+    return
+  }
   if (!instanceRunning.value) {
     message.warning(needInstanceHint.value)
     return

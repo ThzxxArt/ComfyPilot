@@ -96,6 +96,17 @@ export function renderLaunchProfile(profile?: LaunchProfile): string[] {
   if (p.mmapTorchFiles) args.push('--mmap-torch-files')
   if (p.disableCudaGraphs) args.push('--disable-cuda-graphs')
   if (p.disableSmartMemory) args.push('--disable-smart-memory')
+  if (p.disableNvmlPressure) args.push('--disable-nvml-pressure')
+  if (p.tritonBackend === 'on') args.push('--enable-triton-backend')
+  else if (p.tritonBackend === 'off') args.push('--disable-triton-backend')
+
+  // 0.1.10: base directories (multi-instance isolation) + device selection.
+  if (p.baseDirectory) args.push('--base-directory', p.baseDirectory)
+  if (p.modelsDirectory) args.push('--models-directory', p.modelsDirectory)
+  if (p.userDirectory) args.push('--user-directory', p.userDirectory)
+  if (typeof p.defaultDevice === 'number' && p.defaultDevice >= 0) {
+    args.push('--default-device', String(Math.floor(p.defaultDevice)))
+  }
 
   if (p.corsHeader) {
     // Bare flag means '*'; the origin form takes a value.
@@ -105,12 +116,60 @@ export function renderLaunchProfile(profile?: LaunchProfile): string[] {
   if (typeof p.maxUploadSize === 'number' && p.maxUploadSize > 0) {
     args.push('--max-upload-size', String(p.maxUploadSize))
   }
+  if (p.assets === true) args.push('--enable-assets')
+  else if (p.assets === false) args.push('--disable-assets')
+  if (p.assetHashing) args.push('--enable-asset-hashing')
   if (p.multiUser) args.push('--multi-user')
   if (p.offline) args.push('--offline')
   if (p.disableAutoLaunch) args.push('--disable-auto-launch')
   if (p.verbose) args.push('--verbose')
 
   return args
+}
+
+/**
+ * Minimal dotted-version comparator shared by capability gates and launch-arg
+ * warnings (both main and renderer need it).
+ */
+export function versionAtLeast(version: string | undefined, min: string): boolean {
+  if (!version || !min) return false
+  const parse = (v: string): number[] | null => {
+    const m = String(v)
+      .trim()
+      .match(/^v?(\d+(?:\.\d+)*)/)
+    if (!m) return null
+    return m[1].split('.').map((n) => Number(n) || 0)
+  }
+  const a = parse(version)
+  const b = parse(min)
+  if (!a || !b) return false
+  const len = Math.max(a.length, b.length)
+  for (let i = 0; i < len; i++) {
+    const x = a[i] ?? 0
+    const y = b[i] ?? 0
+    if (x !== y) return x > y
+  }
+  return true
+}
+
+/**
+ * VRAM-based launch profile recommendation (0.1.10).
+ * ComfyUI 0.39+ enables DynamicVRAM by default, so the useful knobs are a
+ * reserved floor + fast-disk offload; tighter VRAM additionally caps the cache.
+ * Returns undefined when the GPU has ample VRAM (no change recommended) or
+ * when no GPU facts are available.
+ */
+export function recommendLaunchProfile(
+  gpus?: Array<{ vramTotal?: number }>
+): LaunchProfile | undefined {
+  if (!gpus?.length) return undefined
+  const vramBytes = Math.max(0, ...gpus.map((g) => Number(g.vramTotal) || 0))
+  const gb = vramBytes / 1024 ** 3
+  if (gb <= 0) return undefined
+  if (gb >= 16) return undefined
+  if (gb >= 8) return { reserveVram: 0.8, fastDisk: true }
+  if (gb >= 6) return { reserveVram: 1, fastDisk: true, cache: 'lru', cacheLru: 6 }
+  return { reserveVram: 2, fastDisk: true, cache: 'none' }
 }
 
 const VRAM_FLAGS = ['--gpu-only', '--highvram', '--lowvram', '--novram', '--cpu']
@@ -275,19 +334,42 @@ const CATALOG: CatalogEntry[] = [
   { flag: '--comfy-api-base', recent: true },
   { flag: '--enable-manager', recent: true },
   { flag: '--disable-manager-ui', recent: true },
-  { flag: '--enable-manager-legacy-ui', recent: true }
+  { flag: '--enable-manager-legacy-ui', recent: true },
+  { flag: '--enable-asset-hashing', recent: true },
+  { flag: '--enable-triton-backend', recent: true },
+  { flag: '--disable-triton-backend', recent: true },
+  { flag: '--list-feature-flags', recent: true }
 ]
 
 const CATALOG_MAP = new Map(CATALOG.map((e) => [e.flag, e]))
+
+/**
+ * Version confirmed to understand every `recent: true` catalog entry (ComfyUI
+ * 0.39.0, verified against source during 0.1.10 development). Used ONLY to
+ * tighten wording when the running version is known:
+ *  - version >= SINCE  → no warning at all (flag is confirmed supported)
+ *  - version <  SINCE  → explicit warning level (it may still work — we do not
+ *    claim those flags were absent before; only that we have not verified them)
+ *  - unknown           → informational warning (default behaviour)
+ */
+export const RECENT_FLAGS_SINCE = '0.39.0'
+
+export interface WarnLaunchArgsOptions {
+  /** Running instance version (from capability probing), when known. */
+  version?: string
+}
 
 /**
  * Non-blocking advisories for the FINAL argv: unrecognized flags (typos or
  * version drift) and flags that only newer ComfyUI builds accept. Unknown
  * flags are WARNINGS, never errors — the free-text escape hatch stays open.
  */
-export function warnLaunchArgs(args: string[]): LaunchArgWarning[] {
+export function warnLaunchArgs(args: string[], opts?: WarnLaunchArgsOptions): LaunchArgWarning[] {
   const out: LaunchArgWarning[] = []
   const seen = new Set<string>()
+  const version = String(opts?.version || '').trim()
+  // true: confirmed supported here; false: confirmed older; undefined: unknown.
+  const recentSupported = version ? versionAtLeast(version, RECENT_FLAGS_SINCE) : undefined
   for (const a of args) {
     if (!a.startsWith('--') || seen.has(a)) continue
     seen.add(a)
@@ -296,7 +378,15 @@ export function warnLaunchArgs(args: string[]): LaunchArgWarning[] {
       out.push({ code: 'unknown-flag', flag: a, level: 'warning' })
       continue
     }
-    if (entry.recent) out.push({ code: 'recent-flag', flag: a, level: 'info' })
+    if (entry.recent) {
+      // Confirmed-supported version: silence the advisory entirely.
+      if (recentSupported === true) continue
+      out.push({
+        code: 'recent-flag',
+        flag: a,
+        level: recentSupported === false ? 'warning' : 'info'
+      })
+    }
   }
   // Duplicate --listen is legal (last wins) but almost always a mistake when
   // it comes from free text on top of the template/config value.
@@ -345,7 +435,8 @@ export function validateLaunchArgs(args: string[]): LaunchArgValidationError[] {
     ['--max-upload-size', 0.01, 1000000],
     ['--preview-size', 1, 8192],
     ['--cache-lru', 0, 1000000],
-    ['--port', 1, 65535]
+    ['--port', 1, 65535],
+    ['--default-device', 0, 31]
   ]
   // Check EVERY occurrence: a user can append a second (possibly bare) flag in
   // extraArgs, and indexOf-only let the first valid value mask it.

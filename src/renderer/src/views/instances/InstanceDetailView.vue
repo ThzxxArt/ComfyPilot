@@ -42,6 +42,7 @@ import type {
   ComfyLogLine,
   ComfyUpdateInfo,
   EnvCreateRequest,
+  InstanceCapabilities,
   LaunchCommandPreview,
   LaunchProfile
 } from '@shared/types'
@@ -58,6 +59,33 @@ const loading = ref(true)
 const logs = ref<ComfyLogLine[]>([])
 const instance = ref<ComfyInstanceInfo | null>(null)
 const preview = ref<LaunchCommandPreview | null>(null)
+/** Online facts from /system_stats + /features (0.1.10, running instances only). */
+const capabilities = ref<InstanceCapabilities | null>(null)
+
+/** The server-reported version wins over the install stamp while running. */
+const onlineVersion = computed(() => instance.value?.onlineVersion || '')
+const runtimeLine = computed(() => {
+  const caps = capabilities.value
+  if (!caps) return ''
+  const parts: string[] = []
+  if (caps.pythonVersion) parts.push(caps.pythonVersion)
+  if (caps.pytorchVersion) parts.push(`torch ${caps.pytorchVersion}`)
+  return parts.join(' · ')
+})
+/** Frontend package drift between installed and required (yellow badge). */
+const frontendPkg = computed(() => {
+  const caps = capabilities.value
+  if (!caps) return null
+  const pkg = caps.packages.find((p) => p.name === 'comfyui-frontend-package')
+  const installed = pkg?.installed || ''
+  const required = pkg?.required || caps.requiredFrontendVersion || ''
+  if (!installed && !required) return null
+  return {
+    installed: installed || '—',
+    required: required || '—',
+    mismatch: Boolean(installed && required && installed !== required)
+  }
+})
 // ---------- 0.1.9: structured launch tuning (detail-page panel) ----------
 const profileDraft = ref<LaunchProfile>({})
 const savingProfile = ref(false)
@@ -188,6 +216,19 @@ async function refresh(): Promise<void> {
     const logsResult = await ipc('instance.getLogs', forId, 400)
     if (seq !== refreshSeq || forId !== id.value) return
     logs.value = logsResult
+    // Online capabilities (0.1.10): only meaningful while running; failures are
+    // silent (the panel simply shows dashes).
+    if (instance.value?.status === 'running') {
+      try {
+        const caps = await ipc('instance.capabilities', forId)
+        if (seq !== refreshSeq || forId !== id.value) return
+        capabilities.value = caps
+      } catch {
+        if (seq === refreshSeq && forId === id.value) capabilities.value = null
+      }
+    } else if (seq === refreshSeq && forId === id.value) {
+      capabilities.value = null
+    }
     // Always re-fetch the preview — config (port/args/path) can change under us.
     try {
       const p = await ipc('instance.previewLaunch', forId)
@@ -406,6 +447,28 @@ async function copyDiagPath(): Promise<void> {
   }
 }
 
+/** Startup self-check (0.1.10): loads every custom node with --quick-test-for-ci. */
+const selfChecking = ref(false)
+async function runSelfCheck(): Promise<void> {
+  const inst = instance.value
+  if (!inst) return
+  if (inst.status === 'running' || inst.status === 'starting') {
+    message.warning(t('nodes.selfCheckNeedStopped'))
+    return
+  }
+  selfChecking.value = true
+  try {
+    const r = await ipc('instance.runStartupSelfCheck', inst.id)
+    if (r.ok) message.success(t('nodes.selfCheckPassed'))
+    else message.error(t('nodes.selfCheckFailed', { code: r.exitCode ?? '?' }))
+    await refresh()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    selfChecking.value = false
+  }
+}
+
 let off: (() => void) | null = null
 let offLog: (() => void) | null = null
 
@@ -436,6 +499,7 @@ watch(
     instance.value = null
     logs.value = []
     preview.value = null
+    capabilities.value = null
     updateInfo.value = null
     showUpdateModal.value = false
     updateModalTitle.value = ''
@@ -560,9 +624,45 @@ watch(
               <NDescriptionsItem :label="$t('instance.listen')"
                 >{{ instance?.listen }}:{{ instance?.port }}</NDescriptionsItem
               >
-              <NDescriptionsItem :label="$t('common.version')">{{
-                instance?.version || '—'
+              <NDescriptionsItem :label="$t('common.version')">
+                <NSpace align="center" :size="6">
+                  <span>{{ instance?.onlineVersion || instance?.version || '—' }}</span>
+                  <NTag
+                    v-if="onlineVersion"
+                    size="tiny"
+                    round
+                    type="success"
+                    :title="$t('instance.onlineVersionTip')"
+                    >{{ $t('instance.onlineBadge') }}</NTag
+                  >
+                </NSpace>
+              </NDescriptionsItem>
+              <NDescriptionsItem :label="$t('instance.runtimeLabel')">{{
+                runtimeLine || '—'
               }}</NDescriptionsItem>
+              <NDescriptionsItem :label="$t('instance.frontendLabel')">
+                <NTag
+                  v-if="frontendPkg"
+                  size="tiny"
+                  round
+                  :type="frontendPkg.mismatch ? 'warning' : 'success'"
+                  :title="
+                    frontendPkg.mismatch
+                      ? $t('instance.frontendMismatch', {
+                          installed: frontendPkg.installed,
+                          required: frontendPkg.required
+                        })
+                      : $t('instance.frontendMatch', { version: frontendPkg.installed })
+                  "
+                >
+                  {{
+                    frontendPkg.mismatch
+                      ? `${frontendPkg.installed} → ${frontendPkg.required}`
+                      : frontendPkg.installed
+                  }}
+                </NTag>
+                <template v-else>—</template>
+              </NDescriptionsItem>
               <NDescriptionsItem label="Python">{{
                 instance?.pythonPath || $t('instance.pythonSystem')
               }}</NDescriptionsItem>
@@ -631,6 +731,21 @@ watch(
                 >
                   {{ $t('instance.copyDiagPath') }}
                 </NButton>
+                <NTooltip trigger="hover">
+                  <template #trigger>
+                    <NButton
+                      secondary
+                      :loading="selfChecking"
+                      :disabled="
+                        !instance || instance.status === 'running' || instance.status === 'starting'
+                      "
+                      @click="runSelfCheck"
+                    >
+                      {{ $t('nodes.selfCheck') }}
+                    </NButton>
+                  </template>
+                  {{ $t('nodes.selfCheckTip') }}
+                </NTooltip>
               </NSpace>
             </div>
 
@@ -691,6 +806,7 @@ watch(
                 <LaunchProfileEditor
                   v-model="profileDraft"
                   :extra-args="instance?.extraArgs || []"
+                  :gpus="store.system?.gpus"
                 />
                 <NSpace justify="end" style="margin-top: 10px">
                   <NButton

@@ -79,7 +79,7 @@ describe('DB: default settings', () => {
   it('saveSettings strips unknown keys', async () => {
     const { saveSettings } = await import('@main/services/db')
     const next = saveSettings({ unknownKey: 'evil' } as Record<string, unknown> as never)
-    expect((next as Record<string, unknown>).unknownKey).toBeUndefined()
+    expect((next as unknown as Record<string, unknown>).unknownKey).toBeUndefined()
   })
 })
 

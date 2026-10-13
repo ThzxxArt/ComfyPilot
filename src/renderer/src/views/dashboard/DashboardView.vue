@@ -86,15 +86,20 @@ function vramPercent(gpu: { vramUsed: number; vramTotal: number; utilization?: n
   return clampPercent(gpu.utilization || 0)
 }
 
+/** 0.1.10: queue follows the active target (remote baseUrl or local instance). */
+const targetRunning = computed(() =>
+  store.isRemoteActive ? Boolean(store.activeRemote) : activeStatus.value === 'running'
+)
+
 async function refreshQueue(): Promise<void> {
   try {
-    const inst = store.activeInstance
-    if (!inst?.url || inst.status !== 'running') {
+    const url = store.activeTargetUrl
+    if (!url || !targetRunning.value) {
       queue.value = null
       queueError.value = false
       return
     }
-    queue.value = await ipc('monitor.queue', inst.url)
+    queue.value = await ipc('monitor.queue', url)
     queueError.value = false
   } catch {
     queue.value = null
@@ -328,10 +333,7 @@ async function runDoctor(): Promise<void> {
                 })
               }}
             </div>
-            <div
-              v-else-if="queueError && activeStatus === 'running'"
-              class="hero-queue hero-queue-error"
-            >
+            <div v-else-if="queueError && targetRunning" class="hero-queue hero-queue-error">
               {{ $t('dashboard.queueError') }}
             </div>
             <div v-if="store.activeInstance?.lastError" class="hero-error">
