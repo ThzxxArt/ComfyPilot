@@ -81,12 +81,26 @@ const CATEGORY_BY_DIR: Record<string, ModelCategory> = {
   detection: 'detection'
 }
 
-export function categorize(path: string): ModelCategory {
+export function categorize(path: string, hint?: ModelCategory): ModelCategory {
+  // An explicit hint (scan-root basename or extra_model_paths key) beats any
+  // path heuristics — it is the ground truth of what folder this is (0.1.11).
+  if (hint) return hint
   const norm = path.replace(/\\/g, '/').toLowerCase()
   for (const [key, cat] of Object.entries(CATEGORY_BY_DIR)) {
     if (norm.includes(`/${key}/`)) return cat
   }
   return 'other'
+}
+
+/** Category implied by a scan root's basename (e.g. `D:/models/loras` → loras). */
+export function categoryHintForRoot(root: string): ModelCategory | undefined {
+  const base =
+    String(root || '')
+      .replace(/[\\/]+$/, '')
+      .split(/[\\/]/)
+      .pop()
+      ?.toLowerCase() || ''
+  return CATEGORY_BY_DIR[base]
 }
 
 /** Instance HTTP base (same host normalization as p1p2.instanceUrl). */
@@ -180,6 +194,21 @@ export function parseExtraModelPaths(
   includeMissing = true,
   opts?: { modelOnly?: boolean }
 ): string[] {
+  return parseExtraModelPathsDetailed(filePath, includeMissing, opts).map((r) => r.path)
+}
+
+export interface ExtraModelPathRoot {
+  path: string
+  /** Category implied by the yaml key (checkpoints/loras/…) — scan hint (0.1.11). */
+  categoryHint?: ModelCategory
+}
+
+/** Detailed form of parseExtraModelPaths — keeps the yaml-key category hint. */
+export function parseExtraModelPathsDetailed(
+  filePath?: string,
+  includeMissing = true,
+  opts?: { modelOnly?: boolean }
+): ExtraModelPathRoot[] {
   const candidates: string[] = []
   if (filePath) {
     candidates.push(filePath)
@@ -195,7 +224,7 @@ export function parseExtraModelPaths(
       /* db not ready — fall through */
     }
   }
-  const roots: string[] = []
+  const roots: ExtraModelPathRoot[] = []
   for (const file of candidates) {
     if (!file || !existsSync(file)) continue
     try {
@@ -212,17 +241,18 @@ export function parseExtraModelPaths(
           if (key === 'base_path') {
             // Only a valid explicit base_path is a root; a malformed value must
             // not silently add the yaml's own directory to the scan.
-            if (validBase) roots.push(validBase)
+            if (validBase) roots.push({ path: validBase })
             continue
           }
           if (!EXTRA_PATH_KEYS.has(key) || typeof val !== 'string') continue
           if (opts?.modelOnly && NON_MODEL_PATH_KEYS.has(key)) continue
+          const hint = CATEGORY_BY_DIR[key.toLowerCase()]
           // Values may be YAML block scalars (`key: |`) — one path per line.
           for (const raw of val.split(/\r?\n/)) {
             const trimmed = raw.trim()
             if (!trimmed) continue
             const full = trimmed.match(/^[a-zA-Z]:[\\/]|^\//) ? trimmed : join(sectionBase, trimmed)
-            if (includeMissing || existsSync(full)) roots.push(full)
+            if (includeMissing || existsSync(full)) roots.push({ path: full, categoryHint: hint })
           }
         }
       }
@@ -230,7 +260,16 @@ export function parseExtraModelPaths(
       /* ignore malformed yaml */
     }
   }
-  return [...new Set(roots.map((r) => r.replace(/\\/g, '/')))]
+  // De-duplicate by normalized path, keeping the first (most specific) hint.
+  const seen = new Set<string>()
+  const out: ExtraModelPathRoot[] = []
+  for (const r of roots) {
+    const key = r.path.replace(/\\/g, '/')
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(r)
+  }
+  return out
 }
 
 function readFileSyncSafe(file: string): string {
@@ -395,26 +434,44 @@ export class ModelService extends EventEmitter {
     const settings = loadSettings()
     // When the caller passes explicit roots, honour ONLY those — do not silently
     // widen the scan to every instance's models/ dir (that defeats scoping).
-    let allRoots: string[]
+    // Every root carries an optional category hint derived from its basename or
+    // extra_model_paths.yaml key (0.1.11).
+    let allRoots: Array<{ root: string; hint?: ModelCategory }>
     if (opts?.roots?.length) {
-      allRoots = [...new Set(opts.roots.filter(Boolean))]
+      allRoots = [...new Set(opts.roots.filter(Boolean))].map((root) => ({
+        root,
+        hint: categoryHintForRoot(root)
+      }))
     } else {
-      const extraRoots = parseExtraModelPaths(undefined, false, { modelOnly: true }).filter((p) =>
-        existsSync(p)
-      )
-      const scanRoots = [...settings.modelScanRoots, ...extraRoots].filter(Boolean)
+      const extraRoots = parseExtraModelPathsDetailed(undefined, false, {
+        modelOnly: true
+      }).filter((r) => existsSync(r.path))
+      const roots: Array<{ root: string; hint?: ModelCategory }> = []
+      for (const r of settings.modelScanRoots.filter(Boolean)) {
+        roots.push({ root: r, hint: categoryHintForRoot(r) })
+      }
+      for (const r of extraRoots) roots.push({ root: r.path, hint: r.categoryHint })
       // Default behaviour: settings roots + models/ under EVERY configured instance.
-      const instanceModels = loadInstanceConfigsSafe()
-        .map((c) => c.path && join(c.path, 'models'))
-        .filter(Boolean) as string[]
-      allRoots = [...new Set([...scanRoots, ...instanceModels])]
+      for (const c of loadInstanceConfigsSafe()) {
+        if (c.path) roots.push({ root: join(c.path, 'models') })
+      }
+      const seen = new Set<string>()
+      allRoots = []
+      for (const r of roots) {
+        if (seen.has(r.root)) continue
+        seen.add(r.root)
+        allRoots.push(r)
+      }
     }
 
     const files: string[] = []
-    for (const root of allRoots) {
+    /** Category hint per file, resolved from its scan root (0.1.11). */
+    const rootHintByFile = new Map<string, ModelCategory>()
+    for (const { root, hint } of allRoots) {
       if (!existsSync(root)) continue
       const bucket: string[] = []
       this.walk(root, bucket)
+      for (const f of bucket) rootHintByFile.set(f, hint ?? categorize(f))
       files.push(...bucket)
     }
 
@@ -431,7 +488,7 @@ export class ModelService extends EventEmitter {
       try {
         const st = statSync(file)
         const id = createHash('sha1').update(file).digest('hex').slice(0, 16)
-        const category = categorize(file)
+        const category = rootHintByFile.get(file) ?? categorize(file)
         const existing = findModelByPath(file)
         let hash = existing?.hashSha256
         if (opts?.hash && !hash) {
@@ -493,7 +550,7 @@ export class ModelService extends EventEmitter {
           baseModel,
           trainedWords,
           duplicateOf: existing?.duplicateOf,
-          pathRoot: allRoots.find((r) => file.startsWith(r)) || dirname(file)
+          pathRoot: allRoots.find((r) => file.startsWith(r.root))?.root || dirname(file)
         }
         upsertModel(rec)
       } catch {

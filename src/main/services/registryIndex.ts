@@ -249,6 +249,12 @@ export class RegistryIndexService extends EventEmitter {
     }
   }
 
+  /**
+   * Contract (0.1.11): these lookups read the IN-MEMORY index only and never
+   * call `ensure()` themselves — callers MUST await `ensure()` first, or an
+   * unbuilt index silently yields empty results. Results keep the index order
+   * (fetch order ≈ download popularity); there is no relevance ranking.
+   */
   searchPacks(query: string, limit = 200): RegistryNodePack[] {
     const all = this.items || []
     const q = String(query || '').trim()
@@ -260,6 +266,7 @@ export class RegistryIndexService extends EventEmitter {
    * Look up a catalog entry by git repository URL. Tolerates the common URL
    * spellings (https / scp-style ssh / git+ / trailing .git / trailing slash)
    * so a manually cloned pack can still be matched to its registry entry.
+   * Requires an ensured index (see searchPacks contract above).
    */
   findByRepository(repository: string): RegistryNodePack | null {
     const needle = normalizeRepositoryUrl(repository)

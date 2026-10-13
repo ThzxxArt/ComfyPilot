@@ -89,6 +89,23 @@ function workflowName(id: string): string {
   return workflows.value.find((w) => w.id === id)?.name || id.slice(0, 8)
 }
 
+/**
+ * All record ids the filter must include for the selected workflow (0.1.11):
+ * same NAME (library/instance copies) AND same content fingerprint (renamed
+ * copies) — outputs linked to any copy match the filter.
+ */
+const workflowFilterIds = computed<string[]>(() => {
+  if (!workflowFilter.value) return []
+  const sel = workflows.value.find((w) => w.id === workflowFilter.value)
+  if (!sel) return [workflowFilter.value]
+  const ids = new Set<string>([workflowFilter.value])
+  for (const w of workflows.value) {
+    if (w.name === sel.name) ids.add(w.id)
+    if (sel.contentHash && w.contentHash === sel.contentHash) ids.add(w.id)
+  }
+  return [...ids]
+})
+
 const detail = ref<OutputAsset | null>(null)
 const showDetail = ref(false)
 const pngMeta = ref<Record<string, unknown> | null>(null)
@@ -164,7 +181,8 @@ async function refresh(): Promise<void> {
       offset: (page.value - 1) * pageSize.value,
       favorite: onlyFavorites.value ? true : undefined,
       batchJobId: batchFilter.value || undefined,
-      workflowId: workflowFilter.value || undefined,
+      // Any-of ids: every duplicate-name record of the selected workflow matches.
+      workflowIds: workflowFilter.value ? workflowFilterIds.value : undefined,
       sort: sort.value,
       order: order.value,
       createdFrom: dateRange.value?.[0] ?? undefined,
@@ -189,6 +207,23 @@ async function refresh(): Promise<void> {
       refreshing.value = false
     }
   }
+}
+
+/** Instance output dir incl. --output-directory overrides — mirrors the main
+ *  process's resolveOutputDir (0.1.11) so "Rescan" walks the REAL folder. */
+function defaultOutputRoot(): string {
+  const inst = store.activeInstance
+  if (!inst?.path) return ''
+  const args = inst.extraArgs || []
+  const idx = args.indexOf('--output-directory')
+  if (idx >= 0 && args[idx + 1]) {
+    const p = args[idx + 1]
+    if (/^[a-zA-Z]:[\\/]|^\//.test(p)) return p
+    const base = inst.path.replace(/[\\/]+$/, '')
+    return `${base}${base.includes('\\') ? '\\' : '/'}${p}`
+  }
+  const base = inst.path.replace(/[\\/]+$/, '')
+  return `${base}${base.includes('\\') ? '\\' : '/'}output`
 }
 
 async function pickRoot(): Promise<void> {
@@ -448,11 +483,9 @@ onMounted(async () => {
     /* non-fatal  -filter dropdown just stays empty */
   }
   try {
-    // Default to the active instance's output dir — no global setting needed.
-    if (store.activeInstance?.path) {
-      const base = store.activeInstance.path.replace(/[\\/]+$/, '')
-      root.value = `${base}${base.includes('\\') ? '\\' : '/'}output`
-    }
+    // Default to the active instance's output dir (honours --output-directory)
+    // — no global setting needed.
+    root.value = defaultOutputRoot()
   } catch {
     /* keep empty */
   }
@@ -647,10 +680,20 @@ onUnmounted(() => {
           class="empty"
         >
           <template #extra>
-            <NButton v-if="hasFilter" secondary @click="clearFilters">{{
-              $t('common.clearFilters')
-            }}</NButton>
-            <NButton v-else type="primary" @click="pickRoot">{{ $t('output.browse') }}</NButton>
+            <NSpace vertical align="center" :size="10">
+              <div v-if="workflowFilter" class="wf-empty-hint">
+                {{ $t('output.workflowEmptyHint') }}
+              </div>
+              <NSpace>
+                <NButton v-if="hasFilter" secondary @click="clearFilters">{{
+                  $t('common.clearFilters')
+                }}</NButton>
+                <NButton v-if="workflowFilter" secondary :loading="refreshing" @click="refresh">
+                  {{ $t('output.rescan') }}
+                </NButton>
+                <NButton v-else type="primary" @click="pickRoot">{{ $t('output.browse') }}</NButton>
+              </NSpace>
+            </NSpace>
           </template>
         </NEmpty>
       </NSpin>
@@ -926,6 +969,13 @@ onUnmounted(() => {
 }
 .empty {
   padding: 64px 0;
+}
+.wf-empty-hint {
+  font-size: 12.5px;
+  color: $color-text-muted-ink;
+  max-width: 460px;
+  text-align: center;
+  line-height: 1.6;
 }
 .detail-body {
   display: flex;

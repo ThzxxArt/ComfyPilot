@@ -12,15 +12,16 @@ import {
   RefreshOutline,
   CloudDownloadOutline,
   ArrowUpCircleOutline,
-  ConstructOutline
+  ConstructOutline,
+  ArrowDownOutline
 } from '@vicons/ionicons5'
 import {
   NButton,
   NIcon,
   NTag,
   NSpace,
-  NScrollbar,
   NSpin,
+  NSwitch,
   NDescriptions,
   NDescriptionsItem,
   NCollapse,
@@ -29,12 +30,15 @@ import {
   NModal,
   NSelect,
   NTooltip,
+  NTabs,
+  NTabPane,
   useMessage
 } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 import { ipc, onInstanceStatus, onIpc, IPC_EVENTS } from '@/composables/useIpc'
 import { useLaunch } from '@/composables/useLaunch'
 import { useComfyUpdate } from '@/composables/useComfyUpdate'
+import { useAutoFollow } from '@/composables/useAutoFollow'
 import ComfyUpdateProgressModal from '@/components/ComfyUpdateProgressModal.vue'
 import { useI18n } from 'vue-i18n'
 import type {
@@ -48,6 +52,7 @@ import type {
 } from '@shared/types'
 import LaunchProfileEditor from '@/components/LaunchProfileEditor.vue'
 import { LAUNCH_ARG_ERROR_KEYS, launchArgWarningKey } from '@shared/launchArgs'
+import { versionMismatch } from '@/utils/versionDisplay'
 
 const route = useRoute()
 const router = useRouter()
@@ -62,8 +67,42 @@ const preview = ref<LaunchCommandPreview | null>(null)
 /** Online facts from /system_stats + /features (0.1.10, running instances only). */
 const capabilities = ref<InstanceCapabilities | null>(null)
 
+/** Tab layout (0.1.11): basic info / launch tuning / terminal logs. */
+type DetailTab = 'basic' | 'profile' | 'logs'
+const TAB_NAMES: readonly DetailTab[] = ['basic', 'profile', 'logs']
+
+/** Restore the tab from the URL hash so deep links / refreshes keep it. */
+function initialTab(): DetailTab {
+  const h = String(route.hash || '').replace(/^#/, '')
+  return (TAB_NAMES as readonly string[]).includes(h) ? (h as DetailTab) : 'basic'
+}
+
+const tab = ref<DetailTab>(initialTab())
+
+/** Terminal log pane — deeper history + auto-follow (0.1.11). */
+const LOG_FETCH_LIMIT = 2000
+const LOG_KEEP_MAX = 2000
+const {
+  el: logBox,
+  follow: logFollow,
+  showJump: logShowJump,
+  onScroll: onLogScroll,
+  requestScroll: requestLogScroll,
+  jumpToBottom: logJumpToBottom
+} = useAutoFollow()
+
+// `logBox` is consumed by the template's ref="logBox" binding, which this
+// ESLint config's template-ref detection does not see — keep an explicit use.
+void logBox
+
 /** The server-reported version wins over the install stamp while running. */
 const onlineVersion = computed(() => instance.value?.onlineVersion || '')
+/** Install record vs running version drift (0.1.11 — yellow badge + tooltip).
+ *  Only comparable when BOTH sides are dotted versions; a commit-sha install
+ *  stamp must never produce a false mismatch against `0.39.0` (0.1.11.1). */
+const onlineVersionMismatch = computed(() =>
+  versionMismatch(instance.value?.version, instance.value?.onlineVersion)
+)
 const runtimeLine = computed(() => {
   const caps = capabilities.value
   if (!caps) return ''
@@ -134,6 +173,7 @@ async function restartWithProfile(): Promise<void> {
   if (!saved || instance.value?.id !== target.id) return
   await restart(target)
   await refresh()
+  void store.syncWs()
 }
 
 const id = computed(() => String(route.params.id || ''))
@@ -184,6 +224,34 @@ async function clearLogs(): Promise<void> {
   }
 }
 
+async function copyLogs(): Promise<void> {
+  if (!logs.value.length) return
+  try {
+    const text = logs.value
+      .map((l) => `[${new Date(l.ts).toLocaleString()}] ${l.level.toUpperCase()} ${l.message}`)
+      .join('\n')
+    await ipc('shell.writeClipboard', text)
+    message.success(t('instance.logCopied', { n: logs.value.length }))
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+/** Export the full log to a file (0.1.11) — the main process writes + reveals. */
+const exportingLogs = ref(false)
+async function exportLogs(): Promise<void> {
+  if (!id.value) return
+  exportingLogs.value = true
+  try {
+    const r = await ipc('instance.exportLogs', id.value)
+    message.success(t('instance.logExported', { path: r.path }))
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    exportingLogs.value = false
+  }
+}
+
 async function doLaunch(open: 'embed' | 'browser' | 'none' = 'none'): Promise<void> {
   if (!instance.value) return
   await launch(instance.value, { open })
@@ -213,9 +281,10 @@ async function refresh(): Promise<void> {
       profileSyncedFor = forId
       profileDraft.value = { ...(instance.value?.launchProfile || {}) }
     }
-    const logsResult = await ipc('instance.getLogs', forId, 400)
+    const logsResult = await ipc('instance.getLogs', forId, LOG_FETCH_LIMIT)
     if (seq !== refreshSeq || forId !== id.value) return
     logs.value = logsResult
+    requestLogScroll()
     // Online capabilities (0.1.10): only meaningful while running; failures are
     // silent (the panel simply shows dashes).
     if (instance.value?.status === 'running') {
@@ -254,12 +323,28 @@ async function copyCommand(): Promise<void> {
 }
 
 // ---------- ComfyUI update / repair (0.1.4) ----------
-const { startUpdate, checkComfyUpdate, repairEnv, updating } = useComfyUpdate()
+const {
+  startUpdate,
+  checkComfyUpdate,
+  repairEnv,
+  updating,
+  repairing: repairInFlight,
+  progress
+} = useComfyUpdate()
 const showUpdateModal = ref(false)
 const updateModalTitle = ref('')
 const updateInfo = ref<ComfyUpdateInfo | null>(null)
 const checkingUpdate = ref(false)
 const repairing = ref(false)
+
+/** Reopen the (now closable) progress modal after the user hid it (0.1.11). */
+function reopenUpdateModal(): void {
+  // Repair and update share the stream — label by what actually runs.
+  updateModalTitle.value = repairInFlight.value
+    ? t('instance.repairEnv')
+    : t('instance.updateComfy')
+  showUpdateModal.value = true
+}
 
 function sourceLabel(source: ComfyUpdateInfo['source']): string {
   if (source === 'git') return t('instance.sourceGit')
@@ -447,14 +532,17 @@ async function copyDiagPath(): Promise<void> {
   }
 }
 
-/** Startup self-check (0.1.10): loads every custom node with --quick-test-for-ci. */
+/**
+ * Startup self-check (0.1.10 / concurrency 0.1.11): loads every custom node
+ * with `--quick-test-for-ci --cpu`. A running instance no longer blocks it —
+ * the check runs on its own ephemeral port; results stream into this log.
+ */
 const selfChecking = ref(false)
 async function runSelfCheck(): Promise<void> {
   const inst = instance.value
   if (!inst) return
   if (inst.status === 'running' || inst.status === 'starting') {
-    message.warning(t('nodes.selfCheckNeedStopped'))
-    return
+    message.info(t('nodes.selfCheckConcurrent'))
   }
   selfChecking.value = true
   try {
@@ -477,11 +565,12 @@ onMounted(() => {
   off = onInstanceStatus(() => {
     void refresh()
   })
-  // Live log tail — append without full refresh
+  // Live log tail — append without full refresh (bounded, with auto-follow).
   offLog = onIpc(IPC_EVENTS.instanceLog, (payload) => {
     const p = payload as { id: string; line: ComfyLogLine }
     if (p?.id === id.value && p.line) {
-      logs.value = [...logs.value.slice(-499), p.line]
+      logs.value = [...logs.value.slice(-(LOG_KEEP_MAX - 1)), p.line]
+      requestLogScroll()
     }
   })
 })
@@ -489,6 +578,14 @@ onMounted(() => {
 onUnmounted(() => {
   off?.()
   offLog?.()
+})
+
+// Entering the logs tab re-pins the terminal to the bottom (the pane is not
+// mounted while hidden, so scroll metrics only exist after activation) and
+// the URL hash mirrors the active tab (0.1.11 — refresh keeps the tab).
+watch(tab, (v) => {
+  void router.replace({ hash: `#${v}` })
+  if (v === 'logs') requestLogScroll()
 })
 
 // /instances/A → /instances/B reuses this component — reset per-instance state.
@@ -505,6 +602,7 @@ watch(
     updateModalTitle.value = ''
     checkingUpdate.value = false
     repairing.value = false
+    tab.value = initialTab()
     void refresh()
   }
 )
@@ -583,7 +681,16 @@ watch(
     </div>
 
     <div class="page-body">
-      <NSpin :show="loading">
+      <!-- The progress modal is closable while running (0.1.11); this banner
+           keeps the operation reachable until it settles. -->
+      <div v-if="updating" class="update-running-banner card">
+        <NTag size="small" type="info" round>{{ $t('update.inProgress') }}</NTag>
+        <span class="meta update-running-msg mono">{{ progress?.message || '' }}</span>
+        <NButton size="tiny" secondary @click="reopenUpdateModal">{{
+          $t('nodes.viewProgress')
+        }}</NButton>
+      </div>
+      <NSpin :show="loading" content-class="page-body-spin-fill">
         <div v-if="notFound" class="card not-found">
           <div class="not-found-title">{{ $t('instance.notFoundTitle') }}</div>
           <div class="not-found-hint">{{ $t('instance.notFoundHint') }}</div>
@@ -592,268 +699,304 @@ watch(
             {{ $t('instance.backToList') }}
           </NButton>
         </div>
-        <div v-else class="grid layout">
-          <section class="card panel">
-            <div class="panel-title">{{ $t('instance.basicInfo') }}</div>
-            <NDescriptions bordered size="small" :column="2" label-placement="left" class="desc">
-              <NDescriptionsItem :label="$t('common.status')" :span="2">
-                <NSpace align="center" :size="8">
+        <NTabs v-else v-model:value="tab" type="line" class="detail-tabs">
+          <NTabPane name="basic" key="basic" :tab="$t('instance.tabBasic')">
+            <section class="card panel">
+              <NDescriptions bordered size="small" :column="2" label-placement="left" class="desc">
+                <NDescriptionsItem :label="$t('common.status')" :span="2">
+                  <NSpace align="center" :size="8">
+                    <NTag
+                      :type="
+                        instance?.status === 'running'
+                          ? 'success'
+                          : instance?.status === 'error'
+                            ? 'error'
+                            : 'default'
+                      "
+                      round
+                    >
+                      {{ statusLabel(instance?.status) }}
+                    </NTag>
+                    <span
+                      v-if="instance?.status === 'error' && instance?.lastError"
+                      class="last-error"
+                    >
+                      {{ instance.lastError }}
+                    </span>
+                  </NSpace>
+                </NDescriptionsItem>
+                <NDescriptionsItem :label="$t('instance.metaPid')">{{
+                  instance?.pid || '—'
+                }}</NDescriptionsItem>
+                <NDescriptionsItem :label="$t('instance.listen')"
+                  >{{ instance?.listen }}:{{ instance?.port }}</NDescriptionsItem
+                >
+                <NDescriptionsItem :label="$t('common.version')">
+                  <NSpace align="center" :size="6">
+                    <span>{{ instance?.onlineVersion || instance?.version || '—' }}</span>
+                    <NTag
+                      v-if="onlineVersion"
+                      size="tiny"
+                      round
+                      :type="onlineVersionMismatch ? 'warning' : 'success'"
+                      :title="
+                        onlineVersionMismatch
+                          ? $t('instance.onlineVersionMismatch', {
+                              installed: instance?.version || '—',
+                              online: onlineVersion
+                            })
+                          : $t('instance.onlineVersionTip')
+                      "
+                    >
+                      {{
+                        onlineVersionMismatch
+                          ? $t('instance.onlineVersionBadgeWarn')
+                          : $t('instance.onlineBadge')
+                      }}
+                    </NTag>
+                  </NSpace>
+                </NDescriptionsItem>
+                <NDescriptionsItem :label="$t('instance.runtimeLabel')">{{
+                  runtimeLine || '—'
+                }}</NDescriptionsItem>
+                <NDescriptionsItem :label="$t('instance.frontendLabel')">
                   <NTag
-                    :type="
-                      instance?.status === 'running'
-                        ? 'success'
-                        : instance?.status === 'error'
-                          ? 'error'
-                          : 'default'
-                    "
-                    round
-                  >
-                    {{ statusLabel(instance?.status) }}
-                  </NTag>
-                  <span
-                    v-if="instance?.status === 'error' && instance?.lastError"
-                    class="last-error"
-                  >
-                    {{ instance.lastError }}
-                  </span>
-                </NSpace>
-              </NDescriptionsItem>
-              <NDescriptionsItem :label="$t('instance.metaPid')">{{
-                instance?.pid || '—'
-              }}</NDescriptionsItem>
-              <NDescriptionsItem :label="$t('instance.listen')"
-                >{{ instance?.listen }}:{{ instance?.port }}</NDescriptionsItem
-              >
-              <NDescriptionsItem :label="$t('common.version')">
-                <NSpace align="center" :size="6">
-                  <span>{{ instance?.onlineVersion || instance?.version || '—' }}</span>
-                  <NTag
-                    v-if="onlineVersion"
+                    v-if="frontendPkg"
                     size="tiny"
                     round
-                    type="success"
-                    :title="$t('instance.onlineVersionTip')"
-                    >{{ $t('instance.onlineBadge') }}</NTag
+                    :type="frontendPkg.mismatch ? 'warning' : 'success'"
+                    :title="
+                      frontendPkg.mismatch
+                        ? $t('instance.frontendMismatch', {
+                            installed: frontendPkg.installed,
+                            required: frontendPkg.required
+                          })
+                        : $t('instance.frontendMatch', { version: frontendPkg.installed })
+                    "
                   >
+                    {{
+                      frontendPkg.mismatch
+                        ? `${frontendPkg.installed} → ${frontendPkg.required}`
+                        : frontendPkg.installed
+                    }}
+                  </NTag>
+                  <template v-else>—</template>
+                </NDescriptionsItem>
+                <NDescriptionsItem label="Python">{{
+                  instance?.pythonPath || $t('instance.pythonSystem')
+                }}</NDescriptionsItem>
+                <NDescriptionsItem :label="$t('instance.metaAutoStart')">{{
+                  instance?.autoStart ? $t('common.yes') : $t('common.no')
+                }}</NDescriptionsItem>
+                <NDescriptionsItem label="URL" :span="2">
+                  <span class="mono url-line">{{ instance?.url }}</span>
+                </NDescriptionsItem>
+              </NDescriptions>
+
+              <div class="update-actions">
+                <NSpace>
+                  <NButton secondary :loading="checkingUpdate" @click="doCheckUpdate">
+                    <template #icon><NIcon :component="CloudDownloadOutline" /></template>
+                    {{ $t('instance.checkUpdate') }}
+                  </NButton>
+                  <NPopconfirm @positive-click="runUpdateComfy">
+                    <template #trigger>
+                      <NButton type="primary" secondary :loading="updating">
+                        <template #icon><NIcon :component="ArrowUpCircleOutline" /></template>
+                        {{ $t('instance.updateComfy') }}
+                      </NButton>
+                    </template>
+                    <div class="confirm-body">
+                      <div>{{ $t('instance.confirmUpdateComfyBody') }}</div>
+                      <div class="confirm-note">{{ $t('instance.preserveNote') }}</div>
+                    </div>
+                  </NPopconfirm>
+                  <NPopconfirm @positive-click="runRepairEnv">
+                    <template #trigger>
+                      <NButton secondary :loading="repairing">
+                        <template #icon><NIcon :component="ConstructOutline" /></template>
+                        {{ $t('instance.repairEnv') }}
+                      </NButton>
+                    </template>
+                    {{ $t('install.repairConfirm', { name: instance?.name || '' }) }}
+                  </NPopconfirm>
                 </NSpace>
-              </NDescriptionsItem>
-              <NDescriptionsItem :label="$t('instance.runtimeLabel')">{{
-                runtimeLine || '—'
-              }}</NDescriptionsItem>
-              <NDescriptionsItem :label="$t('instance.frontendLabel')">
-                <NTag
-                  v-if="frontendPkg"
-                  size="tiny"
-                  round
-                  :type="frontendPkg.mismatch ? 'warning' : 'success'"
-                  :title="
-                    frontendPkg.mismatch
-                      ? $t('instance.frontendMismatch', {
-                          installed: frontendPkg.installed,
-                          required: frontendPkg.required
-                        })
-                      : $t('instance.frontendMatch', { version: frontendPkg.installed })
-                  "
-                >
+              </div>
+
+              <div class="update-actions env-actions">
+                <div class="update-result-title">{{ $t('instance.diagnostics') }}</div>
+                <NSpace>
+                  <NPopconfirm @positive-click="recreateVenv">
+                    <template #trigger>
+                      <NButton secondary :loading="recreatingVenv" :disabled="!instance">
+                        {{ $t('instance.recreateVenv') }}
+                      </NButton>
+                    </template>
+                    {{ $t('instance.recreateVenvConfirm') }}
+                  </NPopconfirm>
+                  <NButton
+                    secondary
+                    :loading="reinstallingTorch"
+                    :disabled="!instance"
+                    @click="openTorchModal"
+                  >
+                    {{ $t('instance.reinstallTorch') }}
+                  </NButton>
+                  <NButton
+                    secondary
+                    :loading="copyingDiag"
+                    :disabled="!instance"
+                    @click="copyDiagPath"
+                  >
+                    {{ $t('instance.copyDiagPath') }}
+                  </NButton>
+                  <NTooltip trigger="hover">
+                    <template #trigger>
+                      <NButton
+                        secondary
+                        :loading="selfChecking"
+                        :disabled="!instance"
+                        @click="runSelfCheck"
+                      >
+                        {{ $t('nodes.selfCheck') }}
+                      </NButton>
+                    </template>
+                    {{ $t('nodes.selfCheckTip') }}
+                  </NTooltip>
+                </NSpace>
+              </div>
+
+              <div v-if="updateInfo" class="update-result">
+                <div class="update-result-title">{{ $t('instance.checkUpdate') }}</div>
+                <div class="update-result-line">
+                  <span>{{ $t('instance.versionLabel') }}: {{ updateInfo.current }}</span>
+                  <span v-if="updateInfo.latest">{{
+                    $t('nodes.hasUpdate', { version: updateInfo.latest })
+                  }}</span>
+                  <span v-if="typeof updateInfo.behindCount === 'number'">
+                    {{ $t('instance.behindCount', { n: updateInfo.behindCount }) }}
+                  </span>
+                  <span>{{ sourceLabel(updateInfo.source) }}</span>
+                </div>
+                <NTag size="small" round :type="updateInfo.updatable ? 'warning' : 'success'">
                   {{
-                    frontendPkg.mismatch
-                      ? `${frontendPkg.installed} → ${frontendPkg.required}`
-                      : frontendPkg.installed
+                    updateInfo.updatable
+                      ? $t('instance.updateAvailable', {
+                          latest: updateInfo.latest || updateInfo.current,
+                          current: updateInfo.current
+                        })
+                      : $t('instance.updateNone')
                   }}
                 </NTag>
-                <template v-else>—</template>
-              </NDescriptionsItem>
-              <NDescriptionsItem label="Python">{{
-                instance?.pythonPath || $t('instance.pythonSystem')
-              }}</NDescriptionsItem>
-              <NDescriptionsItem :label="$t('instance.metaAutoStart')">{{
-                instance?.autoStart ? $t('common.yes') : $t('common.no')
-              }}</NDescriptionsItem>
-              <NDescriptionsItem label="URL" :span="2">
-                <span class="mono url-line">{{ instance?.url }}</span>
-              </NDescriptionsItem>
-            </NDescriptions>
-
-            <div class="update-actions">
-              <NSpace>
-                <NButton secondary :loading="checkingUpdate" @click="doCheckUpdate">
-                  <template #icon><NIcon :component="CloudDownloadOutline" /></template>
-                  {{ $t('instance.checkUpdate') }}
-                </NButton>
-                <NPopconfirm @positive-click="runUpdateComfy">
-                  <template #trigger>
-                    <NButton type="primary" secondary :loading="updating">
-                      <template #icon><NIcon :component="ArrowUpCircleOutline" /></template>
-                      {{ $t('instance.updateComfy') }}
-                    </NButton>
-                  </template>
-                  <div class="confirm-body">
-                    <div>{{ $t('instance.confirmUpdateComfyBody') }}</div>
-                    <div class="confirm-note">{{ $t('instance.preserveNote') }}</div>
-                  </div>
-                </NPopconfirm>
-                <NPopconfirm @positive-click="runRepairEnv">
-                  <template #trigger>
-                    <NButton secondary :loading="repairing">
-                      <template #icon><NIcon :component="ConstructOutline" /></template>
-                      {{ $t('instance.repairEnv') }}
-                    </NButton>
-                  </template>
-                  {{ $t('install.repairConfirm', { name: instance?.name || '' }) }}
-                </NPopconfirm>
-              </NSpace>
-            </div>
-
-            <div class="update-actions env-actions">
-              <div class="update-result-title">{{ $t('instance.diagnostics') }}</div>
-              <NSpace>
-                <NPopconfirm @positive-click="recreateVenv">
-                  <template #trigger>
-                    <NButton secondary :loading="recreatingVenv" :disabled="!instance">
-                      {{ $t('instance.recreateVenv') }}
-                    </NButton>
-                  </template>
-                  {{ $t('instance.recreateVenvConfirm') }}
-                </NPopconfirm>
-                <NButton
-                  secondary
-                  :loading="reinstallingTorch"
-                  :disabled="!instance"
-                  @click="openTorchModal"
-                >
-                  {{ $t('instance.reinstallTorch') }}
-                </NButton>
-                <NButton
-                  secondary
-                  :loading="copyingDiag"
-                  :disabled="!instance"
-                  @click="copyDiagPath"
-                >
-                  {{ $t('instance.copyDiagPath') }}
-                </NButton>
-                <NTooltip trigger="hover">
-                  <template #trigger>
-                    <NButton
-                      secondary
-                      :loading="selfChecking"
-                      :disabled="
-                        !instance || instance.status === 'running' || instance.status === 'starting'
-                      "
-                      @click="runSelfCheck"
-                    >
-                      {{ $t('nodes.selfCheck') }}
-                    </NButton>
-                  </template>
-                  {{ $t('nodes.selfCheckTip') }}
-                </NTooltip>
-              </NSpace>
-            </div>
-
-            <div v-if="updateInfo" class="update-result">
-              <div class="update-result-title">{{ $t('instance.checkUpdate') }}</div>
-              <div class="update-result-line">
-                <span>{{ $t('instance.versionLabel') }}: {{ updateInfo.current }}</span>
-                <span v-if="updateInfo.latest">{{
-                  $t('nodes.hasUpdate', { version: updateInfo.latest })
-                }}</span>
-                <span v-if="typeof updateInfo.behindCount === 'number'">
-                  {{ $t('instance.behindCount', { n: updateInfo.behindCount }) }}
-                </span>
-                <span>{{ sourceLabel(updateInfo.source) }}</span>
-              </div>
-              <NTag size="small" round :type="updateInfo.updatable ? 'warning' : 'success'">
-                {{
-                  updateInfo.updatable
-                    ? $t('instance.updateAvailable', {
-                        latest: updateInfo.latest || updateInfo.current,
-                        current: updateInfo.current
-                      })
-                    : $t('instance.updateNone')
-                }}
-              </NTag>
-              <div v-if="updateInfo.error" class="update-error">
-                {{ $t('instance.updateCheckFailed', { error: updateInfo.error }) }}
-              </div>
-            </div>
-
-            <NCollapse v-if="preview" class="cmd-collapse">
-              <NCollapseItem :title="$t('instance.launchCmdTitle')" name="cmd">
-                <div class="cmd-box">
-                  <div class="mono cmd-cwd">cwd: {{ preview.cwd }}</div>
-                  <pre class="mono cmd-line">{{ preview.commandLine }}</pre>
-                  <div v-if="preview.validationErrors?.length" class="cmd-errs">
-                    <div v-for="(e, i) in preview.validationErrors" :key="i" class="cmd-err">
-                      • {{ errorCodeLabel(e) }}
-                    </div>
-                  </div>
-                  <div v-if="preview.validationWarnings?.length" class="cmd-warns">
-                    <div v-for="(w, i) in preview.validationWarnings" :key="i" class="cmd-warn">
-                      • {{ warningText(w) }}
-                    </div>
-                  </div>
-                  <NButton size="tiny" secondary @click="copyCommand">
-                    <template #icon><NIcon :component="TerminalOutline" /></template>
-                    {{ $t('instance.copyCmd') }}
-                  </NButton>
+                <div v-if="updateInfo.error" class="update-error">
+                  {{ $t('instance.updateCheckFailed', { error: updateInfo.error }) }}
                 </div>
-              </NCollapseItem>
-            </NCollapse>
+              </div>
 
-            <!-- 0.1.9: structured launch tuning lives here too, not just in the
-                 edit modal — same editor, save + restart-required hint. -->
-            <NCollapse class="cmd-collapse">
-              <NCollapseItem :title="$t('launchArgs.title')" name="launchArgs">
-                <LaunchProfileEditor
-                  v-model="profileDraft"
-                  :extra-args="instance?.extraArgs || []"
-                  :gpus="store.system?.gpus"
-                />
-                <NSpace justify="end" style="margin-top: 10px">
-                  <NButton
-                    size="small"
-                    secondary
-                    :disabled="!instanceRunning"
-                    @click="restartWithProfile"
-                  >
-                    {{ $t('instance.restart') }}
+              <NCollapse v-if="preview" class="cmd-collapse">
+                <NCollapseItem :title="$t('instance.launchCmdTitle')" name="cmd">
+                  <div class="cmd-box">
+                    <div class="mono cmd-cwd">cwd: {{ preview.cwd }}</div>
+                    <pre class="mono cmd-line">{{ preview.commandLine }}</pre>
+                    <div v-if="preview.validationErrors?.length" class="cmd-errs">
+                      <div v-for="(e, i) in preview.validationErrors" :key="i" class="cmd-err">
+                        • {{ errorCodeLabel(e) }}
+                      </div>
+                    </div>
+                    <div v-if="preview.validationWarnings?.length" class="cmd-warns">
+                      <div v-for="(w, i) in preview.validationWarnings" :key="i" class="cmd-warn">
+                        • {{ warningText(w) }}
+                      </div>
+                    </div>
+                    <NButton size="tiny" secondary @click="copyCommand">
+                      <template #icon><NIcon :component="TerminalOutline" /></template>
+                      {{ $t('instance.copyCmd') }}
+                    </NButton>
+                  </div>
+                </NCollapseItem>
+              </NCollapse>
+            </section>
+          </NTabPane>
+
+          <NTabPane name="profile" key="profile" :tab="$t('instance.tabProfile')">
+            <section class="card panel">
+              <!-- Flat editor (0.1.11): no nested same-name collapse. -->
+              <LaunchProfileEditor
+                v-model="profileDraft"
+                :extra-args="instance?.extraArgs || []"
+                :gpus="store.system?.gpus"
+                :version="instance?.onlineVersion || ''"
+                :baseline="instance?.launchProfile"
+              />
+              <NSpace justify="end" style="margin-top: 12px">
+                <NButton
+                  size="small"
+                  secondary
+                  :disabled="!instanceRunning"
+                  @click="restartWithProfile"
+                >
+                  {{ $t('instance.restart') }}
+                </NButton>
+                <NButton size="small" type="primary" :loading="savingProfile" @click="saveProfile">
+                  {{ $t('common.save') }}
+                </NButton>
+              </NSpace>
+            </section>
+          </NTabPane>
+
+          <NTabPane
+            name="logs"
+            key="logs"
+            :tab="$t('instance.tabLogs')"
+            display-directive="show"
+          >
+            <section class="card panel logs">
+              <div class="panel-head log-head">
+                <div class="panel-title">{{ $t('instance.liveLogs') }}</div>
+                <NSpace :size="10" align="center">
+                  <NSpace :size="6" align="center">
+                    <NSwitch v-model:value="logFollow" size="small" />
+                    <span class="log-follow-label">{{ $t('instance.logAutoFollow') }}</span>
+                  </NSpace>
+                  <NButton size="tiny" secondary :disabled="!logs.length" @click="copyLogs">
+                    {{ $t('instance.logCopy') }}
                   </NButton>
                   <NButton
-                    size="small"
-                    type="primary"
-                    :loading="savingProfile"
-                    @click="saveProfile"
+                    size="tiny"
+                    secondary
+                    :disabled="!logs.length"
+                    :loading="exportingLogs"
+                    @click="exportLogs"
                   >
-                    {{ $t('common.save') }}
+                    {{ $t('instance.logExport') }}
+                  </NButton>
+                  <NButton size="tiny" secondary @click="clearLogs">
+                    {{ $t('instance.clearLogs') }}
+                  </NButton>
+                  <NButton size="tiny" secondary @click="refresh">
+                    <template #icon><NIcon :component="RefreshOutline" /></template>
+                    {{ $t('common.refresh') }}
                   </NButton>
                 </NSpace>
-              </NCollapseItem>
-            </NCollapse>
-          </section>
-
-          <section class="card panel logs">
-            <div class="panel-head">
-              <div class="panel-title">{{ $t('instance.liveLogs') }}</div>
-              <NSpace :size="6">
-                <NButton size="tiny" secondary @click="clearLogs">
-                  {{ $t('instance.clearLogs') }}
-                </NButton>
-                <NButton size="tiny" secondary @click="refresh">
-                  <template #icon><NIcon :component="RefreshOutline" /></template>
-                  {{ $t('common.refresh') }}
-                </NButton>
-              </NSpace>
-            </div>
-            <NScrollbar class="log-scroll" style="height: 420px">
-              <div class="log-inner">
-                <div v-if="!logs.length" class="log-empty">{{ $t('instance.logEmptyHint') }}</div>
-                <div v-for="(line, idx) in logs" :key="idx" class="log-line" :class="line.level">
-                  <span class="log-time">{{ new Date(line.ts).toLocaleTimeString() }}</span>
-                  <span class="log-msg">{{ line.message }}</span>
-                </div>
               </div>
-            </NScrollbar>
-          </section>
-        </div>
+              <div class="term-wrap">
+                <div ref="logBox" class="term" @scroll.passive="onLogScroll">
+                  <div v-if="!logs.length" class="term-empty">
+                    {{ $t('instance.logEmptyHint') }}
+                  </div>
+                  <div v-for="(line, idx) in logs" :key="idx" class="term-line" :class="line.level">
+                    <span class="term-time">{{ new Date(line.ts).toLocaleTimeString() }}</span>
+                    <span class="term-msg">{{ line.message }}</span>
+                  </div>
+                </div>
+                <button v-if="logShowJump" type="button" class="term-jump" @click="logJumpToBottom">
+                  <NIcon :size="14" :component="ArrowDownOutline" />
+                  {{ $t('instance.logJumpBottom') }}
+                </button>
+              </div>
+            </section>
+          </NTabPane>
+        </NTabs>
       </NSpin>
     </div>
 
@@ -889,16 +1032,36 @@ watch(
 <style lang="scss" scoped>
 @use '@/styles/variables.scss' as *;
 
-.layout {
-  grid-template-columns: 1.1fr 1fr;
-  align-items: stretch;
+.detail-tabs {
+  margin-top: 4px;
 }
 
-/* 窄窗口下双栏挤成一团，退化为单栏（日志区在下方完整展示） */
-@media (max-width: 1280px) {
-  .layout {
-    grid-template-columns: 1fr;
-  }
+/* ---------- Definite-height layout chain (0.1.11.1) ----------
+   .page-body → .n-spin-container → [.n-spin-content] → .n-tabs must all be
+   flex so the tab pane gets a definite height. NSpin injects .n-spin-content
+   (a naive internal, not reachable from scoped CSS) — it is chained via
+   content-class="page-body-spin-fill" in index.scss. Without the FULL chain
+   the PAGE (.page-body) owned the scrollbar — the terminal could never own
+   its own scrollbar and auto-follow scrolled an element the user was not
+   looking at. */
+.page-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.page-body > .n-spin-container {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The logs pane fills the pane box exactly; the terminal inside owns the
+   scrollbar (never the pane, never the page). */
+.logs {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
 }
 
 .detail-title {
@@ -907,6 +1070,22 @@ watch(
 
 .btn-wrap {
   display: inline-flex;
+}
+
+.update-running-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+}
+
+.update-running-msg {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .not-found {
@@ -943,6 +1122,19 @@ watch(
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.log-head {
+  margin-bottom: 10px;
+
+  .panel-title {
+    margin-bottom: 0;
+  }
+}
+
+.log-follow-label {
+  font-size: 12px;
+  color: $color-text-secondary;
 }
 
 .desc {
@@ -1044,56 +1236,89 @@ watch(
   line-height: 1.55;
 }
 
-.log-scroll {
-  height: 420px;
-  background: $color-bg-soft;
-  border: 1px solid $color-border;
-  border-radius: 14px;
-  /* no padding here — padding on NScrollbar breaks its own height calc
-     and the outer page ends up scrolling instead of the log */
-  overflow: hidden;
-}
-
-.log-inner {
-  padding: 12px;
-}
-
-.log-line {
+/* ---------- Terminal log pane (0.1.11) ---------- */
+.term-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
   display: flex;
-  gap: 10px;
+}
+
+.term {
+  flex: 1;
+  min-width: 0;
+  /* Usable floor on tiny viewports — beyond this the PANE scrolls (acceptable
+     degradation) instead of squeezing the terminal to nothing. */
+  min-height: 160px;
+  background: $term-bg;
+  border: 1px solid $term-border;
+  border-radius: 14px;
+  padding: 12px 14px;
+  overflow-y: auto;
   font-family: $font-mono;
   font-size: 12px;
   line-height: 1.65;
-  padding: 2px 0;
+}
 
-  &.error {
-    color: $color-danger;
+.term-empty {
+  color: $term-dim;
+  font-size: 13px;
+  padding: 24px;
+  text-align: center;
+}
+
+.term-line {
+  display: flex;
+  gap: 10px;
+  padding: 1px 0;
+
+  &.info {
+    color: $term-text;
   }
   &.warn {
-    color: $color-warning;
+    color: $term-warn;
   }
-  &.info {
-    color: $color-text-secondary;
+  &.error {
+    color: $term-error;
+  }
+  &.debug {
+    color: $term-dim;
   }
 }
 
-.log-time {
-  color: $color-text-muted-ink;
+.term-time {
+  color: $term-dim;
   flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
 }
 
-.log-msg {
+.term-msg {
   flex: 1;
   min-width: 0;
   white-space: pre-wrap;
   word-break: break-all;
 }
 
-.log-empty {
-  color: $color-text-muted-ink;
-  font-size: 13px;
-  padding: 24px;
-  text-align: center;
+.term-jump {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba($color-primary, 0.4);
+  background: $color-surface;
+  color: $color-primary;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: $shadow-md;
+
+  &:hover {
+    background: rgba($color-primary, 0.08);
+  }
 }
 
 .url-line {

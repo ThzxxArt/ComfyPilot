@@ -23,6 +23,7 @@ import type {
   NodePackRecord,
   NodeSnapshot,
   NodeUpdateAllResult,
+  NodeUpdateAllOptions,
   NodeUpdateBatchEvent,
   NodeUpdateCheckResult,
   RegistryNodePack,
@@ -31,6 +32,7 @@ import type {
   UpdateStepId
 } from '@shared/types'
 import { parseNodeLoadReport } from '@shared/nodeLoadReport'
+import { compareVersions, isUpdateAvailable } from '@shared/version'
 import {
   deleteNodePack,
   listNodePacks,
@@ -186,55 +188,10 @@ export async function resolveRepoUrl(
 }
 
 /**
- * Minimal version comparator for node packs.
- * - numeric dotted versions (1.2.3, 1.2.3.4) compare segment-wise
- * - pre-release suffix (1.2.3-beta) sorts before plain 1.2.3
- * - non-semver strings fall back to localeCompare (equality still works)
- * Returns >0 when a > b, <0 when a < b, 0 when equal/incomparable-as-equal.
+ * Version comparison moved to @shared/version (0.1.11) so renderer + main use
+ * identical rules; re-exported here for existing importers and tests.
  */
-export function compareVersions(a: string, b: string): number {
-  const na = String(a || '').trim()
-  const nb = String(b || '').trim()
-  if (!na && !nb) return 0
-  if (!na) return -1
-  if (!nb) return 1
-  if (na === nb) return 0
-
-  const parse = (v: string): { nums: number[]; pre: string } => {
-    const m = v.match(/^v?(\d+(?:\.\d+)*)(?:[-+.]?(.*))?$/i)
-    if (!m) return { nums: [], pre: v.toLowerCase() }
-    const nums = m[1].split('.').map((s) => Number(s) || 0)
-    return { nums, pre: (m[2] || '').toLowerCase() }
-  }
-  const A = parse(na)
-  const B = parse(nb)
-  if (A.nums.length && B.nums.length) {
-    const len = Math.max(A.nums.length, B.nums.length)
-    for (let i = 0; i < len; i++) {
-      const x = A.nums[i] ?? 0
-      const y = B.nums[i] ?? 0
-      if (x !== y) return x - y
-    }
-    // same numeric core: a release (no pre) > a pre-release
-    if (A.pre && !B.pre) return -1
-    if (!A.pre && B.pre) return 1
-    return A.pre.localeCompare(B.pre)
-  }
-  return na.localeCompare(nb)
-}
-
-/** True when `latest` is strictly newer than `current`. */
-export function isUpdateAvailable(current: string, latest: string): boolean {
-  if (!current || !latest) return false
-  // Non-comparable free-form strings: treat any difference as "unknown", not an update.
-  const looksNumeric = (v: string): boolean => /^v?\d/i.test(v.trim())
-  if (!looksNumeric(current) || !looksNumeric(latest)) {
-    // commit shas: different means "maybe", but we only flag when latest is a
-    // clearly longer/different git describe — keep conservative (no update flag).
-    return false
-  }
-  return compareVersions(latest, current) > 0
-}
+export { compareVersions, isUpdateAvailable } from '@shared/version'
 
 function sanitizeInstallName(name: string): string {
   const cleaned = String(name)
@@ -2261,22 +2218,33 @@ export class NodePackService extends EventEmitter {
           { timeout: 10000, env: gitEnv }
         )
         const behind = Number(behindOut.trim()) || 0
+        // `describe` on a --depth 1 clone routinely resolves to an OLD tag at
+        // the shallow boundary. Only trust it when it is actually NEWER than
+        // the local version; otherwise report the behind count honestly and
+        // never rewrite the stored latestVersion (0.1.11).
         const { stdout: remoteVer } = await execFileAsync(
           gitBin,
           ['-C', pack.path, 'describe', '--tags', '--abbrev=0', compareRef],
           { timeout: 10000, env: gitEnv }
         ).catch(() => ({ stdout: '' }))
-        const latest = remoteVer.trim() || pack.latestVersion
+        const described = remoteVer.trim()
+        // Only trust the tag when there are ALSO new commits: a same-commit
+        // build whose pyproject lags behind the tag would otherwise light a
+        // phantom "update available" that a pull can never satisfy (0.1.11).
+        const trustworthy =
+          behind > 0 && Boolean(described) && compareVersions(described, pack.version) > 0
+        const latest = trustworthy ? described : pack.latestVersion
         const result: NodeUpdateCheckResult = {
           ...base,
           latestVersion: latest,
           updatable: behind > 0,
           updateSource: 'git',
+          behindCount: behind,
           checkStatus: behind > 0 ? 'updatable' : 'up-to-date',
           reason: behind > 0 ? `${behind} commit(s) behind` : 'Up to date',
           reasonKey: behind > 0 ? undefined : 'nodes.upToDate'
         }
-        this.persistCheck(pack, latest)
+        this.persistCheck(pack, trustworthy ? described : undefined)
         return result
       } catch (e) {
         // A fetch failure is a FAILED CHECK — never silently "not updatable".
@@ -2293,6 +2261,9 @@ export class NodePackService extends EventEmitter {
       }
     }
 
+    // Registry matching policy (locked by tests, 0.1.11): an exact repository
+    // URL match wins over a unique exact-name match; ambiguous names are never
+    // trusted; a version is persisted only when the update is CONFIRMED.
     const remote =
       (pack.registryId && registryLatest.get(pack.registryId)) ||
       registryLatest.get(pack.name) ||
@@ -2362,7 +2333,10 @@ export class NodePackService extends EventEmitter {
    * queue, the current pack and a monotonic overall bar. Cancel stops the
    * remaining queue after aborting the in-flight pack.
    */
-  async updateAll(instancePathOrId?: string): Promise<NodeUpdateAllResult[]> {
+  async updateAll(
+    instancePathOrId?: string,
+    opts?: NodeUpdateAllOptions
+  ): Promise<NodeUpdateAllResult[]> {
     const key = instancePathOrId || 'default'
     // One batch per instance: a second concurrent "update all" (or a batch
     // started while a single op is in flight) would abort/clobber the other
@@ -2395,24 +2369,37 @@ export class NodePackService extends EventEmitter {
         total: 0
       })
       const checks = await this.checkUpdates(instancePathOrId)
-      const updatable = checks.filter((c) => c.updatable)
-      state.total = updatable.length
+      // `includeCheckFailed` (0.1.11): a flaky git fetch must not silently
+      // exclude a pack the user clearly wants updated. Only packs whose
+      // transport is known are retried; each outcome is reported per pack.
+      const attempted = checks.filter(
+        (c) =>
+          c.updatable ||
+          (opts?.includeCheckFailed === true &&
+            c.checkStatus === 'check-failed' &&
+            // Any pack with a known transport is retried; `none` has nothing
+            // to pull from (0.1.11 — the earlier git/registry whitelist had an
+            // unreachable registry arm).
+            c.updateSource !== 'none')
+      )
+      const attemptedNames = new Set(attempted.map((c) => c.name))
+      state.total = attempted.length
       this.emitBatch({
         batchId,
         instanceId: key,
         phase: 'start',
         index: 0,
-        total: updatable.length
+        total: attempted.length
       })
       // No snapshot for a no-op / already-cancelled batch.
-      if (updatable.length && !state.cancelled) {
+      if (attempted.length && !state.cancelled) {
         try {
           this.createSnapshot('auto-pre-update-all', instancePathOrId)
         } catch {
           /* best-effort */
         }
       }
-      for (const c of updatable) {
+      for (const c of attempted) {
         if (state.cancelled) {
           out.push({ name: c.name, ok: false, error: 'cancelled', skipped: true })
           continue
@@ -2457,7 +2444,7 @@ export class NodePackService extends EventEmitter {
       }
       // Preserve the legacy shape: one entry per non-updatable check.
       for (const c of checks) {
-        if (!c.updatable) {
+        if (!c.updatable && !attemptedNames.has(c.name)) {
           out.push({ name: c.name, ok: true, skipped: true, checkStatus: c.checkStatus })
         }
       }
@@ -2479,7 +2466,9 @@ export class NodePackService extends EventEmitter {
     const ok = out.filter((r) => r.ok && !r.skipped).length
     const fail = out.filter((r) => !r.ok && !r.skipped).length
     const skip = out.filter((r) => r.skipped).length
-    const checkFailed = out.filter((r) => r.checkStatus === 'check-failed').length
+    // Skipped check-failures only — retried-but-updated packs are successes,
+    // matching the renderer summary (0.1.11).
+    const checkFailed = out.filter((r) => r.skipped && r.checkStatus === 'check-failed').length
     this.emitBatch({
       batchId,
       instanceId: key,

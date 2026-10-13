@@ -1,4 +1,4 @@
-import { Tray, Menu, nativeImage, BrowserWindow, app, shell } from 'electron'
+import { Tray, Menu, nativeImage, BrowserWindow, app, shell, Notification } from 'electron'
 import { join } from 'path'
 import { existsSync } from 'fs'
 import { APP_NAME } from '@shared/constants'
@@ -19,8 +19,22 @@ type TrayStrings = {
   stopAll: string
   noInstances: string
   quit: string
+  actionFailed: string
   header: (r: number, t: number) => string
   tip: (r: number, t: number) => string
+}
+
+/** System notification for a failed tray action (0.1.11 — failures used to
+ *  be silently swallowed with no user feedback). */
+function notifyTrayFailure(s: TrayStrings, err: unknown): void {
+  try {
+    new Notification({
+      title: s.actionFailed,
+      body: err instanceof Error ? err.message : String(err)
+    }).show()
+  } catch {
+    /* notifications are best-effort */
+  }
 }
 
 const TRAY_STRINGS: Record<'zh-CN' | 'en-US', TrayStrings> = {
@@ -33,6 +47,7 @@ const TRAY_STRINGS: Record<'zh-CN' | 'en-US', TrayStrings> = {
     stopAll: '停止全部实例',
     noInstances: '（暂无实例）',
     quit: '退出',
+    actionFailed: '操作失败',
     header: (r: number, t: number) => `${APP_NAME} · ${r} 运行中 / ${t} 实例`,
     tip: (r: number, t: number) => `${APP_NAME} — ${r}/${t} 实例运行中`
   },
@@ -45,6 +60,7 @@ const TRAY_STRINGS: Record<'zh-CN' | 'en-US', TrayStrings> = {
     stopAll: 'Stop all instances',
     noInstances: '(no instances)',
     quit: 'Quit',
+    actionFailed: 'Action failed',
     header: (r: number, t: number) => `${APP_NAME} · ${r} running / ${t} total`,
     tip: (r: number, t: number) => `${APP_NAME} — ${r}/${t} running`
   }
@@ -136,14 +152,22 @@ async function buildMenu(): Promise<Menu> {
       label: s.startAll,
       enabled: stopped.length > 0,
       click: () => {
-        void instanceService.startAll().then(refreshTray)
+        // Failures surface as a system notification (0.1.11) instead of a
+        // silently swallowed unhandled rejection.
+        void instanceService
+          .startAll()
+          .catch((err) => notifyTrayFailure(s, err))
+          .then(() => refreshTray())
       }
     },
     {
       label: s.stopAll,
       enabled: running.length > 0,
       click: () => {
-        void instanceService.stopAll().then(refreshTray)
+        void instanceService
+          .stopAll()
+          .catch((err) => notifyTrayFailure(s, err))
+          .then(() => refreshTray())
       }
     },
     { type: 'separator' },
@@ -187,10 +211,28 @@ export function createTray(handlers: { onShowWindow: () => void }): void {
   tray.on('click', () => onShowWindow?.())
   tray.on('double-click', () => onShowWindow?.())
   void refreshTray()
-  // Keep the menu fresh as instance status changes
-  instanceService.on('status', () => {
-    void refreshTray()
-  })
+  // Keep the menu fresh as instance status changes — throttled to 300ms so a
+  // burst of status/log transitions cannot rebuild the menu dozens of times
+  // per second (0.1.11).
+  instanceService.on('status', () => scheduleTrayRefresh())
+}
+
+let trayRefreshTimer: NodeJS.Timeout | null = null
+let trayRefreshQueued = false
+
+function scheduleTrayRefresh(): void {
+  if (trayRefreshTimer) {
+    trayRefreshQueued = true
+    return
+  }
+  void refreshTray()
+  trayRefreshTimer = setTimeout(() => {
+    trayRefreshTimer = null
+    if (trayRefreshQueued) {
+      trayRefreshQueued = false
+      scheduleTrayRefresh()
+    }
+  }, 300)
 }
 
 export function destroyTray(): void {

@@ -3,6 +3,17 @@
 // ---------- App ----------
 export type AppLocale = 'zh-CN' | 'en-US'
 
+/** Manual app self-update check (0.1.11 — makes the auto-update channel visible). */
+export interface AppUpdateStatus {
+  /** unsupported = dev build / updater unavailable. */
+  status: 'unsupported' | 'checking' | 'available' | 'not-available' | 'error'
+  currentVersion: string
+  /** Version offered by the update server, when available. */
+  availableVersion?: string
+  error?: string
+  checkedAt: number
+}
+
 export type ProxyProtocol = 'http' | 'https' | 'socks5'
 
 export interface ProxySettings {
@@ -487,6 +498,28 @@ export interface WorkflowRecord {
   missing?: boolean
   favorite?: boolean
   importedAt?: number
+  /** Transient content fingerprint (computed on workflow.list, never persisted). */
+  contentHash?: string
+}
+
+/** Side-by-side comparison of two workflow records (0.1.11). */
+export interface WorkflowCompareDiff {
+  /** Field label key (stable machine id; renderer maps to i18n). */
+  field: string
+  a: string
+  b: string
+  /** True when the values differ. */
+  changed: boolean
+}
+
+export interface WorkflowCompareResult {
+  a: { id: string; name: string }
+  b: { id: string; name: string }
+  diffs: WorkflowCompareDiff[]
+  /** Node-class types only present in A / only in B. */
+  nodesOnlyA: string[]
+  nodesOnlyB: string[]
+  missingNodes: string[]
 }
 
 // ---------- Monitor ----------
@@ -499,6 +532,10 @@ export interface GpuInfo {
   utilization: number
   temperature?: number
   powerDraw?: number
+  /** Windows GPU Adapter Memory "Shared Usage" — system RAM shared with the GPU (0.1.11). */
+  sharedUsed?: number
+  /** Windows GPU Adapter Memory "Shared Limit" (0.1.11). */
+  sharedTotal?: number
 }
 
 export interface SystemSnapshot {
@@ -1010,6 +1047,16 @@ export interface NodeUpdateCheckResult {
   checkStatus: NodeCheckStatus
   /** Populated when checkStatus === 'check-failed'. */
   error?: string
+  /** Git packs: commits behind the upstream ref (0.1.11 — honest "latest" signal). */
+  behindCount?: number
+}
+
+export interface NodeUpdateAllOptions {
+  /**
+   * Also attempt packs whose pre-check failed (git fetch timeout etc.).
+   * Default false in main; the UI opts in explicitly (0.1.11).
+   */
+  includeCheckFailed?: boolean
 }
 
 export interface NodeUpdateAllResult {
@@ -1105,6 +1152,7 @@ export type IpcChannelMap = {
   'instance.probeEnv': { args: [string]; result: EnvProbe }
   'instance.exportDiagnostics': { args: [string]; result: DiagnosticPackage }
   'instance.copyDiagnostics': { args: [string]; result: string }
+  'instance.exportLogs': { args: [string]; result: { path: string } }
   'instance.checkComfyUpdate': { args: [string]; result: ComfyUpdateInfo }
   'instance.updateComfy': { args: [string, ComfyUpdateOptions?]; result: UpdateProgress }
   'instance.updateStatus': { args: []; result: UpdateProgress | null }
@@ -1212,7 +1260,7 @@ export type IpcChannelMap = {
   'node.restoreSnapshot': { args: [string, string?]; result: boolean }
   'node.deleteSnapshot': { args: [string, string?]; result: boolean }
   'node.checkUpdates': { args: [string?]; result: NodeUpdateCheckResult[] }
-  'node.updateAll': { args: [string?]; result: NodeUpdateAllResult[] }
+  'node.updateAll': { args: [string?, NodeUpdateAllOptions?]; result: NodeUpdateAllResult[] }
   'node.loadReport': { args: [string?]; result: NodeLoadReport | null }
 
   // workflows
@@ -1256,6 +1304,7 @@ export type IpcChannelMap = {
     result: string | null
   }
   'workflow.parsePngMeta': { args: [string]; result: Record<string, unknown> | null }
+  'workflow.compare': { args: [string, string]; result: WorkflowCompareResult }
 
   // monitor
   'monitor.system': { args: []; result: SystemSnapshot }
@@ -1384,6 +1433,8 @@ export type IpcChannelMap = {
         favorite?: boolean
         batchJobId?: string
         workflowId?: string
+        /** Any-of match across workflow records (0.1.11 — duplicate-name copies). */
+        workflowIds?: string[]
         sort?: 'createdAt' | 'size' | 'name'
         order?: 'asc' | 'desc'
         createdFrom?: number
@@ -1405,6 +1456,12 @@ export type IpcChannelMap = {
   'remote.remove': { args: [string]; result: boolean }
   'remote.test': { args: [string]; result: RemoteInstanceStatus }
   'remote.listStatus': { args: []; result: RemoteInstanceStatus[] }
+  /** POST /free {unload_models, free_memory} against a remote instance (0.1.11). */
+  'remote.freeMemory': { args: [string]; result: { ok: boolean; error?: string } }
+  /** App self-update check (electron-updater); dev builds report unsupported. */
+  'app.checkUpdate': { args: []; result: AppUpdateStatus }
+  /** Last known self-update status (seeds the Settings view, 0.1.11). */
+  'app.updateStatus': { args: []; result: AppUpdateStatus }
 
   // market
   'market.list': {
@@ -1464,7 +1521,8 @@ export const IPC_EVENTS = {
   nodeOpLog: 'event:node-op-log',
   nodeCheckProgress: 'event:node-check-progress',
   repairProgress: 'event:repair-progress',
-  nodeOperationProgress: 'event:node-operation-progress'
+  nodeOperationProgress: 'event:node-operation-progress',
+  appUpdate: 'event:app-update'
 } as const
 
 export interface AppNotification {

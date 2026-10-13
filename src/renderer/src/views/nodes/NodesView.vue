@@ -29,6 +29,7 @@ import {
   NInput,
   NModal,
   NPopconfirm,
+  NCheckbox,
   NTabs,
   NTabPane,
   NTooltip
@@ -94,6 +95,8 @@ const checking = ref(false)
 const updatingOne = ref<string | null>(null)
 const lockingOne = ref<string | null>(null)
 const batchRunning = ref(false)
+/** "Update all" also retries packs whose pre-check failed (default on, 0.1.11). */
+const includeCheckFailed = ref(true)
 // node.checkIssues modal state
 const showIssues = ref(false)
 const issuesLoading = ref(false)
@@ -141,13 +144,13 @@ const loadSummary = computed(() => {
   return { ok: entries.length - fail, fail }
 })
 
-/** One-click boot self-check: ComfyUI loads every custom node then exits. */
+/** One-click boot self-check: ComfyUI loads every custom node then exits.
+ *  0.1.11: a running instance no longer blocks it (own ephemeral port). */
 async function runSelfCheck(): Promise<void> {
   const inst = store.activeInstance
   if (!inst) return
   if (inst.status === 'running' || inst.status === 'starting') {
-    message.warning(t('nodes.selfCheckNeedStopped'))
-    return
+    message.info(t('nodes.selfCheckConcurrent'))
   }
   selfChecking.value = true
   try {
@@ -221,20 +224,20 @@ function hasUpdatePack(pack: NodePackRecord): boolean {
   if (pack.status === 'disabled') return false
   const c = checks.value[pack.id]
   if (c) return Boolean(c.updatable)
-  if (pack.status === 'update-available') return true
-  // Only flag string-difference when both look like numeric versions —
-  // commit shas / 'detected' must not light up the badge.
-  const looksNumeric = (v: string): boolean => /^v?\d/i.test(String(v || '').trim())
-  if (
-    pack.latestVersion &&
-    pack.version &&
-    looksNumeric(pack.latestVersion) &&
-    looksNumeric(pack.version) &&
-    pack.latestVersion !== pack.version
-  ) {
-    return true
+  // 0.1.11: the old direct `latestVersion` fallback was REMOVED. Only two
+  // facts may light the badge now — a fresh check result, or the main
+  // process's own direction-aware status from list(). Rows without a check
+  // show "not checked" instead of a guess.
+  return pack.status === 'update-available'
+}
+
+/** Update badge text: honest commit distance for git packs (0.1.11). */
+function updateBadgeText(pack: NodePackRecord): string {
+  const c = checks.value[pack.id]
+  if (c?.updateSource === 'git' && typeof c.behindCount === 'number' && c.behindCount > 0) {
+    return t('nodes.behindCommits', { n: c.behindCount })
   }
-  return false
+  return t('nodes.hasUpdate', { version: pack.latestVersion || pack.version })
 }
 
 /**
@@ -309,7 +312,10 @@ async function checkUpdates(): Promise<void> {
       map[r.id] = r
       const pack = packs.value.find((p) => p.name === r.name || p.id === r.id)
       if (pack) {
-        if (r.latestVersion) pack.latestVersion = r.latestVersion
+        // Only trust a reported version when the update is CONFIRMED (0.1.11):
+        // an unconfirmed value (stale shallow tag / failed fetch) must not
+        // overwrite the stored latestVersion and light a false badge.
+        if (r.updatable && r.latestVersion) pack.latestVersion = r.latestVersion
         if (r.updatable) pack.status = 'update-available'
       }
     }
@@ -340,6 +346,12 @@ const checkSummary = computed(() => {
   return out
 })
 
+/** Check-failed packs the "try anyway" option can still reach (0.1.11) —
+ *  keeps "update all" clickable when a flaky fetch is the ONLY finding. */
+const checkFailRetryable = computed(
+  () => includeCheckFailed.value && checkSummary.value['check-failed'] > 0
+)
+
 /** Per-card check reason (tooltip) — never blank when a check ran. */
 function checkReason(pack: NodePackRecord): string {
   const c = checks.value[pack.id]
@@ -349,6 +361,25 @@ function checkReason(pack: NodePackRecord): string {
 
 function checkFailed(pack: NodePackRecord): boolean {
   return checks.value[pack.id]?.checkStatus === 'check-failed'
+}
+
+/** A pack that just updated successfully IS up to date — flip its check row
+ *  in place so the summary counters move (0.1.11.1: dropping the row left
+ *  "已最新 N" frozen and re-lit the "待检查" badge on just-updated packs). */
+function markPackUpdated(pack: NodePackRecord): void {
+  const current = checks.value[pack.id]
+  if (!current) return
+  checks.value = {
+    ...checks.value,
+    [pack.id]: {
+      ...current,
+      updatable: false,
+      checkStatus: 'up-to-date',
+      latestVersion: pack.version,
+      reason: undefined,
+      reasonKey: 'nodes.upToDate'
+    }
+  }
 }
 
 async function updatePack(pack: NodePackRecord): Promise<void> {
@@ -361,9 +392,13 @@ async function updatePack(pack: NodePackRecord): Promise<void> {
     // (e.g. `Foo` + `.disabled/Foo`) and name lookup would be ambiguous.
     await ipc('node.update', pack.id, undefined, store.activeInstanceId || undefined)
     message.success(t('nodes.updateDone', { name: pack.displayName || pack.name }))
-    // Drop the stale check result so the "has update" badge clears.
-    delete checks.value[pack.id]
     await refresh()
+    // The pack is now up to date — flip its check row (0.1.11.1). Prefer the
+    // stable path-derived id; a registry reinstall may have renamed the folder,
+    // so fall back to the (usually stable) pack name.
+    const refreshed =
+      packs.value.find((p) => p.id === pack.id) || packs.value.find((p) => p.name === pack.name)
+    if (refreshed) markPackUpdated(refreshed)
   } catch (err) {
     // The modal stays open (0.1.9): it holds the full failure log + rollback
     // state. Only a toast summarizes the error. OP_BUSY means nothing started,
@@ -382,7 +417,9 @@ async function updateAllPacks(): Promise<void> {
   opModalMode.value = 'batch'
   showOpModal.value = true
   try {
-    const results = await ipc('node.updateAll', store.activeInstanceId || undefined)
+    const results = await ipc('node.updateAll', store.activeInstanceId || undefined, {
+      includeCheckFailed: includeCheckFailed.value
+    })
     const ok = results.filter((r) => r.ok && !r.skipped).length
     const fail = results.filter((r) => !r.ok && !r.skipped).length
     const skip = results.filter((r) => r.skipped).length
@@ -395,7 +432,13 @@ async function updateAllPacks(): Promise<void> {
     if (cancelled) message.warning(t('nodes.batchCancelled'))
     else if (fail > 0 || checkFailed > 0) message.warning(summary)
     else message.success(summary)
+    // Flip successfully-updated packs to "up to date" AFTER the refresh so the
+    // summary counters move and the "待检查" badge stays off (0.1.11.1).
+    const updatedNames = new Set(results.filter((r) => r.ok && !r.skipped).map((r) => r.name))
     await refresh()
+    for (const p of packs.value) {
+      if (updatedNames.has(p.name)) markPackUpdated(p)
+    }
   } catch (err) {
     message.error(describeNodeError(t, err))
     // Nothing started (busy) — the stale stream must not linger on screen.
@@ -403,8 +446,8 @@ async function updateAllPacks(): Promise<void> {
       showOpModal.value = false
     }
   } finally {
-    // Drop stale check results even when the batch errored halfway.
-    checks.value = {}
+    // Check rows are per-pack facts — a half-error must not erase what the
+    // earlier pass actually verified (0.1.11).
     batchRunning.value = false
   }
 }
@@ -607,8 +650,10 @@ watch(
     // Check results are per-instance: stale rows would mislabel same-named
     // packs on the new instance and could enable "update all" wrongly.
     checks.value = {}
-    nodeCheck.value = null
     selectNodeOpInstance(store.activeInstanceId || '')
+    // Reset AFTER the select mirror — a fresh instance must not inherit the
+    // previous one's check counter (0.1.11).
+    nodeCheck.value = null
     void refresh()
   }
 )
@@ -638,11 +683,7 @@ watch(
             <NButton
               secondary
               :loading="selfChecking"
-              :disabled="
-                !store.activeInstance ||
-                store.activeInstance.status === 'running' ||
-                store.activeInstance.status === 'starting'
-              "
+              :disabled="!store.activeInstance"
               @click="runSelfCheck"
             >
               {{ $t('nodes.selfCheck') }}
@@ -656,7 +697,7 @@ watch(
               secondary
               type="primary"
               :disabled="
-                !updatablePacks.length ||
+                (!updatablePacks.length && !checkFailRetryable) ||
                 Boolean(updatingOne || nodeUpdatingPack) ||
                 nodeBatchActive
               "
@@ -666,7 +707,15 @@ watch(
               >{{ $t('nodes.updateAll') }}
             </NButton>
           </template>
-          {{ $t('nodes.confirmUpdateAll', { n: updatablePacks.length }) }}
+          <div class="confirm-update-all">
+            <div>{{ $t('nodes.confirmUpdateAll', { n: updatablePacks.length }) }}</div>
+            <div v-if="checkSummary['check-failed']" class="meta">
+              {{ $t('nodes.checkFailedCount', { n: checkSummary['check-failed'] }) }}
+            </div>
+            <NCheckbox v-model:checked="includeCheckFailed">
+              {{ $t('nodes.tryCheckFailed') }}
+            </NCheckbox>
+          </div>
         </NPopconfirm>
         <NButton secondary @click="refresh">
           <template #icon><NIcon :component="RefreshOutline" /></template>{{ $t('nodes.refresh') }}
@@ -677,7 +726,7 @@ watch(
     </div>
 
     <NTabs v-model:value="tab" type="line">
-      <NTabPane name="installed" :tab="$t('nodes.tabInstalled', { n: packs.length })">
+      <NTabPane name="installed" key="installed" :tab="$t('nodes.tabInstalled', { n: packs.length })">
         <NSpace style="margin-bottom: 12px" justify="space-between">
           <NInput
             v-model:value="installedQuery"
@@ -863,7 +912,10 @@ watch(
                   $t('nodes.locked')
                 }}</NTag>
                 <NTag v-if="hasUpdatePack(pack)" size="tiny" round type="warning">
-                  {{ $t('nodes.hasUpdate', { version: pack.latestVersion || pack.version }) }}
+                  {{ updateBadgeText(pack) }}
+                </NTag>
+                <NTag v-else-if="!checks[pack.id] && canUpdatePack(pack)" size="tiny" round>
+                  {{ $t('nodes.notChecked') }}
                 </NTag>
                 <NTag
                   v-if="checkFailed(pack)"
@@ -981,7 +1033,7 @@ watch(
         </NSpin>
       </NTabPane>
 
-      <NTabPane name="conflicts" :tab="$t('nodes.tabConflicts', { n: conflicts.length })">
+      <NTabPane name="conflicts" key="conflicts" :tab="$t('nodes.tabConflicts', { n: conflicts.length })">
         <NSpin :show="loading">
           <div v-if="conflicts.length" class="card">
             <div v-for="c in conflicts" :key="c.nodeName" class="conflict-row">
@@ -995,7 +1047,7 @@ watch(
         </NSpin>
       </NTabPane>
 
-      <NTabPane name="snapshots" :tab="$t('nodes.tabSnapshots', { n: snapshots.length })">
+      <NTabPane name="snapshots" key="snapshots" :tab="$t('nodes.tabSnapshots', { n: snapshots.length })">
         <NSpin :show="loading">
           <div v-if="snapshots.length" class="card">
             <div v-for="s in snapshots" :key="s.id" class="snap-row">
@@ -1235,6 +1287,13 @@ watch(
 }
 .empty {
   padding: 64px 0;
+}
+.confirm-update-all {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 280px;
+  line-height: 1.55;
 }
 .meta {
   font-size: 12px;

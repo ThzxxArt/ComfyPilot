@@ -43,7 +43,7 @@ import { useAppStore } from '@/stores/app'
 import { ipc } from '@/composables/useIpc'
 import { COLORS } from '@/styles/tokens'
 import ListSkeleton from '@/components/ListSkeleton.vue'
-import type { WorkflowRecord } from '@shared/types'
+import type { WorkflowCompareResult, WorkflowRecord } from '@shared/types'
 
 const { t } = useI18n()
 const store = useAppStore()
@@ -74,6 +74,56 @@ const tagsValue = ref<string[]>([])
 const showDetail = ref(false)
 const detail = ref<WorkflowRecord | null>(null)
 const openingFrontend = ref(false)
+
+// ---------- compare two workflows (0.1.11, README roadmap「工作流版本对照」) ----------
+const showCompare = ref(false)
+const compareA = ref<string | null>(null)
+const compareB = ref<string | null>(null)
+const compareResult = ref<WorkflowCompareResult | null>(null)
+const comparing = ref(false)
+
+/** Flat i18n keys for diff fields — never a dynamic domain. */
+const CMP_FIELD_KEYS: Record<string, string> = {
+  name: 'workflows.cmpFieldName',
+  format: 'workflows.cmpFieldFormat',
+  version: 'workflows.cmpFieldVersion',
+  nodeCount: 'workflows.cmpFieldNodeCount',
+  seed: 'workflows.cmpFieldSeed',
+  modelUsed: 'workflows.cmpFieldModel',
+  origin: 'workflows.cmpFieldOrigin',
+  tags: 'workflows.cmpFieldTags',
+  updatedAt: 'workflows.cmpFieldUpdatedAt'
+}
+
+function cmpFieldLabel(field: string): string {
+  return CMP_FIELD_KEYS[field] ? t(CMP_FIELD_KEYS[field]) : field
+}
+
+const compareOptions = computed(() =>
+  items.value.map((w) => ({ label: `${w.name} (${originLabel(w.origin)})`, value: w.id }))
+)
+
+function openCompare(pick?: WorkflowRecord): void {
+  if (pick) compareA.value = pick.id
+  if (compareB.value === compareA.value) compareB.value = null
+  compareResult.value = null
+  showCompare.value = true
+}
+
+async function runCompare(): Promise<void> {
+  if (!compareA.value || !compareB.value) {
+    message.warning(t('workflows.comparePick'))
+    return
+  }
+  comparing.value = true
+  try {
+    compareResult.value = await ipc('workflow.compare', compareA.value, compareB.value)
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    comparing.value = false
+  }
+}
 
 /** ComfyPilot never auto-starts an instance —gate every live action on this. */
 const instanceRunning = computed(() => store.activeInstance?.status === 'running')
@@ -410,6 +460,7 @@ onMounted(async () => {
           <template #icon><NIcon :component="RefreshOutline" /></template
           >{{ $t('workflows.refresh') }}
         </NButton>
+        <NButton secondary @click="openCompare()">{{ $t('workflows.compare') }}</NButton>
         <NButton type="primary" @click="importFile">{{ $t('workflows.import') }}</NButton>
       </NSpace>
     </div>
@@ -766,6 +817,92 @@ onMounted(async () => {
           <NButton secondary @click="detail && reveal(detail)">{{
             $t('workflows.reveal')
           }}</NButton>
+          <NButton v-if="detail" type="primary" @click="openCompare(detail)">{{
+            $t('workflows.compareWith')
+          }}</NButton>
+        </NSpace>
+      </template>
+    </NModal>
+
+    <!-- Compare (0.1.11) -->
+    <NModal
+      v-model:show="showCompare"
+      preset="card"
+      :title="$t('workflows.compareTitle')"
+      style="width: 760px; border-radius: 20px"
+    >
+      <NSpace vertical :size="14">
+        <div class="cmp-pick">
+          <NSelect
+            v-model:value="compareA"
+            :options="compareOptions"
+            :placeholder="$t('workflows.compareA')"
+            filterable
+          />
+          <NSelect
+            v-model:value="compareB"
+            :options="compareOptions"
+            :placeholder="$t('workflows.compareB')"
+            filterable
+          />
+          <NButton
+            type="primary"
+            :loading="comparing"
+            :disabled="!compareA || !compareB || compareA === compareB"
+            @click="runCompare"
+          >
+            {{ $t('workflows.compareRun') }}
+          </NButton>
+        </div>
+        <template v-if="compareResult">
+          <table class="cmp-table">
+            <thead>
+              <tr>
+                <th>{{ $t('workflows.compareField') }}</th>
+                <th>{{ compareResult.a.name }}</th>
+                <th>{{ compareResult.b.name }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="d in compareResult.diffs" :key="d.field" :class="{ changed: d.changed }">
+                <td class="cmp-field">{{ cmpFieldLabel(d.field) }}</td>
+                <td class="mono">{{ d.a }}</td>
+                <td class="mono">{{ d.b }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-if="compareResult.nodesOnlyA.length" class="cmp-nodes">
+            <b>{{ $t('workflows.compareOnlyA') }}</b>
+            <NSpace style="margin-top: 6px">
+              <NTag
+                v-for="n in compareResult.nodesOnlyA.slice(0, 24)"
+                :key="n"
+                size="tiny"
+                round
+                type="warning"
+                >{{ n }}</NTag
+              >
+            </NSpace>
+          </div>
+          <div v-if="compareResult.nodesOnlyB.length" class="cmp-nodes">
+            <b>{{ $t('workflows.compareOnlyB') }}</b>
+            <NSpace style="margin-top: 6px">
+              <NTag
+                v-for="n in compareResult.nodesOnlyB.slice(0, 24)"
+                :key="n"
+                size="tiny"
+                round
+                type="info"
+                >{{ n }}</NTag
+              >
+            </NSpace>
+          </div>
+        </template>
+        <NEmpty v-else :description="$t('workflows.compareIdle')" style="padding: 24px 0" />
+      </NSpace>
+      <template #footer>
+        <NSpace justify="end">
+          <NButton @click="showCompare = false">{{ $t('common.close') }}</NButton>
         </NSpace>
       </template>
     </NModal>
@@ -888,5 +1025,45 @@ onMounted(async () => {
 }
 .empty {
   padding: 64px 0;
+}
+
+/* ---------- compare (0.1.11) ---------- */
+.cmp-pick {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 10px;
+}
+
+.cmp-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+
+  th,
+  td {
+    text-align: left;
+    padding: 7px 10px;
+    border-bottom: 1px solid $color-border;
+    word-break: break-all;
+  }
+
+  th {
+    color: $color-text-secondary;
+    font-weight: 700;
+  }
+
+  tr.changed td {
+    background: rgba($color-warning, 0.08);
+  }
+}
+
+.cmp-field {
+  color: $color-text-muted-ink;
+  white-space: nowrap;
+}
+
+.cmp-nodes {
+  font-size: 12.5px;
+  color: $color-text-secondary;
 }
 </style>

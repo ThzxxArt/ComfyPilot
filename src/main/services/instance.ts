@@ -308,7 +308,7 @@ export class InstanceService extends EventEmitter {
       version: this.probeVersion(rt.config.path),
       // Real version reported by the running server (0.1.10) — only set when a
       // recent capability probe hit the instance while online.
-      onlineVersion: capabilityService.cachedForUrl(this.baseUrlOf(rt.config))?.version
+      onlineVersion: capabilityService.knownVersionForUrl(this.baseUrlOf(rt.config))
     }
   }
 
@@ -333,7 +333,7 @@ export class InstanceService extends EventEmitter {
       commandLine,
       validationErrors: validateLaunchArgs(args),
       validationWarnings: warnLaunchArgs(args, {
-        version: capabilityService.cachedForUrl(this.baseUrlOf(config))?.version
+        version: capabilityService.knownVersionForUrl(this.baseUrlOf(config))
       })
     }
   }
@@ -399,15 +399,27 @@ export class InstanceService extends EventEmitter {
     const config = loadInstanceConfigs().find((c) => c.id === id)
     if (!config) throw new Error(`Instance not found: ${id}`)
     const rt = this.ensureRuntime(config)
-    if (rt.process && rt.process.exitCode === null) {
-      throw new Error('Instance is running — stop it before running a startup self-check')
-    }
+    const running = Boolean(rt.process && rt.process.exitCode === null)
     if (!existsSync(join(config.path, 'main.py'))) {
       throw new Error(`main.py not found under ${config.path}`)
     }
     const python = this.resolvePython(config)
+    // 0.1.11: a running instance no longer blocks the self-check. The runner
+    // keeps its port and GPU; the check loads nodes on CPU with
+    // --quick-test-for-ci on an ephemeral port and exits. Only the user/db
+    // files are shared (same trade-off ComfyUI makes for concurrent runs).
     const args = [join(config.path, 'main.py'), '--quick-test-for-ci', '--cpu']
-    this.pushLog(rt, 'info', `Startup self-check: ${[python, ...args].join(' ')}`)
+    if (running) {
+      const port = await this.pickEphemeralPort(config.port || 8188)
+      args.push('--port', String(port))
+    }
+    this.pushLog(
+      rt,
+      'info',
+      running
+        ? `Startup self-check (instance keeps running; check uses its own port): ${[python, ...args].join(' ')}`
+        : `Startup self-check: ${[python, ...args].join(' ')}`
+    )
     const result = await new Promise<{ ok: boolean; exitCode: number | null; output: string }>(
       (resolveP) => {
         execFile(
@@ -493,6 +505,8 @@ export class InstanceService extends EventEmitter {
       }
       rt.process = undefined
     }
+    // A removed instance must not keep a stale online version around.
+    capabilityService.invalidate(id)
     this.runtimes.delete(id)
     return deleteInstanceConfig(id)
   }
@@ -676,6 +690,25 @@ export class InstanceService extends EventEmitter {
     // Nothing free among the probed candidates — throw rather than hand back a
     // known-busy port (8188) that would silently fail to start.
     throw new Error('No free port found in the probed ranges')
+  }
+
+  /**
+   * Free port for a concurrent one-shot run (startup self-check) — random
+   * high range first (0.1.11), sequential fallback, never the instance's own.
+   */
+  private async pickEphemeralPort(avoid: number): Promise<number> {
+    for (let i = 0; i < 16; i++) {
+      const candidate = 8310 + Math.floor(Math.random() * 600)
+      if (candidate === avoid) continue
+      const check = await this.checkPort(candidate)
+      if (check.available) return candidate
+    }
+    for (let p = 8910; p < 8960; p++) {
+      if (p === avoid) continue
+      const check = await this.checkPort(p)
+      if (check.available) return p
+    }
+    throw new Error('No free port found for the startup self-check')
   }
 
   async probeEnv(id: string): Promise<EnvProbe> {
@@ -898,6 +931,26 @@ export class InstanceService extends EventEmitter {
   }
 
   /**
+   * Export the full instance log to a file (0.1.11). Unlike the clipboard
+   * copy, this streams the ENTIRE buffer + log file to disk and reveals it.
+   */
+  async exportLogs(id: string): Promise<{ path: string }> {
+    const lines = this.getLogs(id, 100_000)
+    const dir = join(userDataDir(), 'exports')
+    mkdirSync(dir, { recursive: true })
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const file = join(dir, `${id}-${stamp}.log`)
+    writeFileSync(
+      file,
+      lines
+        .map((l) => `[${new Date(l.ts).toISOString()}] ${l.level.toUpperCase()} ${l.message}`)
+        .join('\n') + '\n',
+      'utf-8'
+    )
+    return { path: file }
+  }
+
+  /**
    * Resolve the interpreter for an instance (shared implementation —
    * instance launch / env probe / node-pack pip all use the same rules).
    */
@@ -1106,6 +1159,10 @@ export class InstanceService extends EventEmitter {
               rt.readyPollTimer = undefined
             }
             this.pushLog(rt, 'info', `ComfyUI ready at ${base} (${Date.now() - started}ms)`)
+            // Establish the online-version fact immediately (0.1.11.1): before
+            // this, the card showed it only inside the 30s probe window and
+            // then flipped back to the install stamp (a commit sha).
+            void capabilityService.probe(rt.config.id).catch(() => undefined)
             this.settleReadyWaiters(rt)
             return
           }
@@ -1325,6 +1382,8 @@ export class InstanceService extends EventEmitter {
         rt.status = intentional ? 'stopped' : code === 0 ? 'stopped' : 'error'
         if (!intentional && code !== 0) rt.lastError = `Exited with code ${code}`
         this.clearReadyProbe(rt)
+        // The process is gone — its online version is no longer "online".
+        capabilityService.invalidate(rt.config.id)
         this.pushLog(
           rt,
           code === 0 || intentional ? 'info' : 'error',
@@ -1356,6 +1415,18 @@ export class InstanceService extends EventEmitter {
     const out: InstanceActionResult[] = []
     for (const c of configs) {
       try {
+        // A pack already mid-start must be WAITED for, not rejected — the old
+        // path let the startingIds guard throw "already in progress" and the
+        // batch summary reported a bogus failure (0.1.11).
+        if (this.startingIds.has(c.id)) {
+          const waited = await this.waitReady(c.id)
+          out.push({
+            ...waited.info,
+            ok: waited.ready,
+            error: waited.ready ? undefined : waited.error || 'Start did not complete'
+          })
+          continue
+        }
         const info = await this.start(c.id)
         out.push({ ...info, ok: true })
       } catch (err) {
@@ -1401,6 +1472,8 @@ export class InstanceService extends EventEmitter {
     rt.pid = undefined
     rt.status = 'stopped'
     this.clearReadyProbe(rt, wasManaged ? 'Stopped' : 'External process left running')
+    // Drop the online version — a stopped instance shows the install stamp.
+    capabilityService.invalidate(id)
     let adopted = false
     if (child) {
       try {
@@ -1460,6 +1533,7 @@ export class InstanceService extends EventEmitter {
     rt.process = undefined
     rt.pid = undefined
     this.clearReadyProbe(rt, 'Force killed')
+    capabilityService.invalidate(id)
     let adopted = false
     if (child) {
       try {

@@ -46,12 +46,38 @@ export function assertMonitorBaseUrl(baseUrl: string): void {
   throw new Error(`Monitor: URL origin not allowed: ${origin}`)
 }
 
-export type GpuMemAdapter = { used: number; total: number }
+/** Bearer headers for a configured remote whose origin matches this baseUrl
+ *  (0.1.11) — monitoring a protected remote must authenticate like the probe. */
+function remoteAuthHeadersForUrl(baseUrl: string): Record<string, string> {
+  try {
+    const origin = new URL(baseUrl).origin
+    for (const remote of listRemotes()) {
+      try {
+        if (new URL(remote.baseUrl).origin === origin && remote.apiKey) {
+          return { Authorization: `Bearer ${remote.apiKey}` }
+        }
+      } catch {
+        /* skip malformed remote */
+      }
+    }
+  } catch {
+    /* invalid url */
+  }
+  return {}
+}
+
+export type GpuMemAdapter = {
+  used: number
+  total: number
+  sharedUsed?: number
+  sharedTotal?: number
+}
 
 /**
  * systeminformation often omits memoryUsed/memoryTotal on Windows
  * (nvidia-smi/NVML unavailable). Fall back to the GPU Adapter Memory
  * performance counters, which report Dedicated Usage / Limit in bytes.
+ * 0.1.11: also samples Shared Usage / Limit (system RAM shared with the GPU).
  */
 let gpuMemCache: { at: number; adapters: GpuMemAdapter[] } | null = null
 
@@ -63,10 +89,14 @@ export async function sampleWindowsGpuMemory(): Promise<GpuMemAdapter[]> {
     "$ErrorActionPreference='SilentlyContinue'",
     "$u=Get-Counter '\\GPU Adapter Memory(*)\\Dedicated Usage' -ErrorAction SilentlyContinue",
     "$l=Get-Counter '\\GPU Adapter Memory(*)\\Dedicated Limit' -ErrorAction SilentlyContinue",
+    "$su=Get-Counter '\\GPU Adapter Memory(*)\\Shared Usage' -ErrorAction SilentlyContinue",
+    "$sl=Get-Counter '\\GPU Adapter Memory(*)\\Shared Limit' -ErrorAction SilentlyContinue",
     '$map=@{}',
-    'foreach($s in @($u.CounterSamples)){ $k=$s.InstanceName; if(-not $map[$k]){$map[$k]=@{used=0;total=0}}; $map[$k].used=[long]$s.CookedValue }',
-    'foreach($s in @($l.CounterSamples)){ $k=$s.InstanceName; if(-not $map[$k]){$map[$k]=@{used=0;total=0}}; $map[$k].total=[long]$s.CookedValue }',
-    "$map.GetEnumerator() | Sort-Object Name | ForEach-Object { Write-Output ($_.Name + ',' + $_.Value.used + ',' + $_.Value.total) }"
+    'foreach($s in @($u.CounterSamples)){ $k=$s.InstanceName; if(-not $map[$k]){$map[$k]=@{used=0;total=0;sharedUsed=0;sharedTotal=0}}; $map[$k].used=[long]$s.CookedValue }',
+    'foreach($s in @($l.CounterSamples)){ $k=$s.InstanceName; if(-not $map[$k]){$map[$k]=@{used=0;total=0;sharedUsed=0;sharedTotal=0}}; $map[$k].total=[long]$s.CookedValue }',
+    'foreach($s in @($su.CounterSamples)){ $k=$s.InstanceName; if(-not $map[$k]){$map[$k]=@{used=0;total=0;sharedUsed=0;sharedTotal=0}}; $map[$k].sharedUsed=[long]$s.CookedValue }',
+    'foreach($s in @($sl.CounterSamples)){ $k=$s.InstanceName; if(-not $map[$k]){$map[$k]=@{used=0;total=0;sharedUsed=0;sharedTotal=0}}; $map[$k].sharedTotal=[long]$s.CookedValue }',
+    "$map.GetEnumerator() | Sort-Object Name | ForEach-Object { Write-Output ($_.Name + ',' + $_.Value.used + ',' + $_.Value.total + ',' + $_.Value.sharedUsed + ',' + $_.Value.sharedTotal) }"
   ].join('; ')
   try {
     const out = await new Promise<string>((resolve, reject) => {
@@ -79,11 +109,15 @@ export async function sampleWindowsGpuMemory(): Promise<GpuMemAdapter[]> {
     })
     const adapters: GpuMemAdapter[] = []
     for (const line of out.split(/\r?\n/)) {
-      const m = line.trim().match(/^.+,(\d+),(\d+)$/)
+      const m = line.trim().match(/^.+,(\d+),(\d+),(\d+),(\d+)$/)
       if (!m) continue
       const used = Number(m[1])
       const total = Number(m[2])
-      if (Number.isFinite(used) && Number.isFinite(total)) adapters.push({ used, total })
+      const sharedUsed = Number(m[3])
+      const sharedTotal = Number(m[4])
+      if (Number.isFinite(used) && Number.isFinite(total)) {
+        adapters.push({ used, total, sharedUsed, sharedTotal })
+      }
     }
     gpuMemCache = { at: now, adapters }
     return adapters
@@ -100,16 +134,23 @@ export function mergeGpuMemory(
     memoryTotal?: number | null
   }>,
   adapters: GpuMemAdapter[]
-): Array<{ vramTotal: number; vramUsed: number }> {
+): Array<{ vramTotal: number; vramUsed: number; sharedUsed?: number; sharedTotal?: number }> {
   const free = adapters.map((a, i) => ({ ...a, i, taken: false }))
   return controllers.map((c) => {
     const siTotal = (c.memoryTotal || 0) * 1024 * 1024
     const siUsed = (c.memoryUsed || 0) * 1024 * 1024
     const vramBytes = (c.vram || 0) * 1024 * 1024
 
-    // Prefer explicit si values when they look real
+    // Prefer explicit si values when they look real. Shared memory has no si
+    // source — attach the first adapter that actually reports a shared limit.
     if (siTotal > 0 && siUsed > 0) {
-      return { vramTotal: siTotal, vramUsed: Math.min(siUsed, siTotal) }
+      const sharedSrc = adapters.find((a) => (a.sharedTotal || 0) > 0)
+      return {
+        vramTotal: siTotal,
+        vramUsed: Math.min(siUsed, siTotal),
+        sharedUsed: sharedSrc?.sharedUsed,
+        sharedTotal: sharedSrc?.sharedTotal
+      }
     }
 
     // Match a perf-counter adapter by closest dedicated limit
@@ -126,11 +167,25 @@ export function mergeGpuMemory(
       hit.taken = true
       const total = hit.total > 0 ? hit.total : vramBytes
       const used = Math.min(Math.max(hit.used, 0), total || hit.used)
-      return { vramTotal: total || vramBytes, vramUsed: used }
+      return {
+        vramTotal: total || vramBytes,
+        vramUsed: used,
+        sharedUsed: hit.sharedUsed,
+        sharedTotal: hit.sharedTotal
+      }
     }
 
     return { vramTotal: vramBytes, vramUsed: 0 }
   })
+}
+
+/** WebSocket#readyState values, numeric so the mocked `ws` in tests needs no statics. */
+const WS_CONNECTING = 0
+const WS_OPEN = 1
+const WS_CLOSED = 3
+
+function isWsLive(ws: WebSocket): boolean {
+  return ws.readyState === WS_CONNECTING || ws.readyState === WS_OPEN
 }
 
 export class MonitorService extends EventEmitter {
@@ -170,7 +225,10 @@ export class MonitorService extends EventEmitter {
         // integer percent — renderer prints this verbatim
         utilization: Math.round(c.utilizationGpu || 0),
         temperature: c.temperatureGpu != null ? Math.round(c.temperatureGpu) : undefined,
-        powerDraw: (c.powerDraw || 0) > 0 ? Math.round((c.powerDraw || 0) * 10) / 10 : undefined
+        powerDraw: (c.powerDraw || 0) > 0 ? Math.round((c.powerDraw || 0) * 10) / 10 : undefined,
+        // Shared (system RAM) usage — Windows counters only; undefined elsewhere.
+        sharedUsed: memPair[index]?.sharedUsed,
+        sharedTotal: memPair[index]?.sharedTotal
       }))
 
       const root = fsSize && fsSize[0]
@@ -206,9 +264,11 @@ export class MonitorService extends EventEmitter {
     const empty: QueueSnapshot = { running: [], pending: [], doneCount: 0, history: [] }
     if (!baseUrl) return empty
     assertMonitorBaseUrl(baseUrl)
-    const client = new ComfyApiClient(baseUrl)
+    const auth = remoteAuthHeadersForUrl(baseUrl)
+    const client = new ComfyApiClient(baseUrl, { headers: auth })
     try {
       const res = await fetch(`${baseUrl.replace(/\/$/, '')}/queue`, {
+        headers: auth,
         signal: AbortSignal.timeout(2000)
       })
       if (!res.ok) return empty
@@ -250,24 +310,63 @@ export class MonitorService extends EventEmitter {
   async jobsSnapshot(baseUrl?: string): Promise<ComfyJobSummary[] | null> {
     if (!baseUrl) return null
     assertMonitorBaseUrl(baseUrl)
-    const client = new ComfyApiClient(baseUrl)
+    const client = new ComfyApiClient(baseUrl, { headers: remoteAuthHeadersForUrl(baseUrl) })
     return client.jobsList(30)
   }
 
   connectWs(baseUrl: string): boolean {
     assertMonitorBaseUrl(baseUrl)
+    // Idempotent for the same live target: repeated UI subscribes (route
+    // re-entry, status ticks) must keep the current socket. Tearing down and
+    // reopening back-to-back races the ComfyUI server session tables — the
+    // old connection's teardown pops the shared `sockets`/`sockets_metadata`
+    // entry AFTER the replacement registered, so the new socket goes
+    // invisible and its first feature_flags message dies with
+    // `KeyError: 'comfy-pilot'` (0.1.11.1).
+    if (this.ws && this.wsBaseUrl === baseUrl && isWsLive(this.ws)) return true
+
+    const prev = this.ws
     this.disconnectWs()
     this.reconnectAttempts = 0
     this.wsBaseUrl = baseUrl
-    const gen = ++this.wsGeneration
-    return this.openWs(baseUrl, gen)
+    const gen = this.wsGeneration
+    const open = (): void => {
+      if (gen === this.wsGeneration && this.wsBaseUrl === baseUrl) this.openWs(baseUrl, gen)
+    }
+    if (prev && prev.readyState !== WS_CLOSED) {
+      // Serialize: let the old socket finish its close handshake (plus a
+      // small grace for the server-side handler teardown) before opening the
+      // replacement. Overlapping sockets under one clientId are the race
+      // described above.
+      let started = false
+      const start = (): void => {
+        if (started) return
+        started = true
+        setTimeout(open, 250)
+      }
+      try {
+        prev.once('close', start)
+        prev.once('error', start)
+      } catch {
+        start()
+      }
+      // Safety net: proceed even if the old socket never reports close.
+      setTimeout(start, 1000)
+    } else {
+      open()
+    }
+    return true
   }
 
   private openWs(baseUrl: string, gen: number): boolean {
     const wsUrl =
       baseUrl.replace(/^http/, 'ws').replace(/\/$/, '') + '/ws?clientId=' + COMFY_CLIENT_ID
     try {
-      const ws = new WebSocket(wsUrl)
+      // Protected remotes authenticate the WS upgrade too (0.1.11).
+      const wsAuth = remoteAuthHeadersForUrl(baseUrl)
+      const ws = Object.keys(wsAuth).length
+        ? new WebSocket(wsUrl, { headers: wsAuth })
+        : new WebSocket(wsUrl)
       this.ws = ws
       ws.on('open', () => {
         if (gen !== this.wsGeneration) return
@@ -438,6 +537,10 @@ export class MonitorService extends EventEmitter {
     if (this.ws) {
       try {
         this.ws.removeAllListeners()
+        // An intentional close can still surface as an 'error' event (e.g. an
+        // aborted handshake). Without any listener Node re-throws it as
+        // ERR_UNHANDLED_ERROR inside the main process.
+        this.ws.on('error', () => {})
         this.ws.close()
       } catch {
         /* ignore */

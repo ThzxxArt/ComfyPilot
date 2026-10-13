@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { PulseOutline, HardwareChipOutline } from '@vicons/ionicons5'
 import {
@@ -19,6 +20,7 @@ import ListSkeleton from '@/components/ListSkeleton.vue'
 import { useAppStore } from '@/stores/app'
 import { ipc, onIpc, onMonitorTick, IPC_EVENTS } from '@/composables/useIpc'
 import { clampPercent, formatBytes, formatPercent } from '@/utils/format'
+import { buildQueueSections } from '@/utils/queueView'
 import { COLORS } from '@/styles/tokens'
 import type {
   ComfyJobSummary,
@@ -31,11 +33,25 @@ import type {
 const store = useAppStore()
 const { t, te } = useI18n()
 const message = useMessage()
+const router = useRouter()
 const queue = ref<QueueSnapshot | null>(null)
 const queueError = ref(false)
 const history = ref<number[]>([])
 /** /api/jobs snapshot (0.39+); null when the endpoint is unavailable. */
 const jobs = ref<ComfyJobSummary[] | null>(null)
+
+/**
+ * De-duplicated queue view (0.1.11): /queue running/pending + terminal jobs
+ * from /api/jobs. The same task used to render twice — once「运行中」and once
+ * 「执行中」— because both sources were painted side by side.
+ */
+const queueSections = computed(() => buildQueueSections(queue.value, jobs.value))
+
+/** Open the active target's frontend (local embed or remote URL). */
+function openFrontend(): void {
+  const url = store.isRemoteActive ? store.activeRemote?.baseUrl : store.activeInstance?.url
+  if (url) void router.push({ path: '/embed', query: { url } })
+}
 
 // monitor.history — task history for the active instance
 const historySnapshot = ref<QueueSnapshot | null>(null)
@@ -292,7 +308,9 @@ onUnmounted(() => {
           <div class="panel-title">{{ $t('monitor.gpuTitle') }}</div>
           <div v-if="store.system?.gpus?.length" class="gpu-list">
             <div v-for="gpu in store.system.gpus" :key="gpu.index" class="gpu-item">
-              <div class="gpu-name">{{ gpu.model }}</div>
+              <div class="gpu-name">
+                <span class="gpu-index">GPU {{ gpu.index }}</span> {{ gpu.model }}
+              </div>
               <div class="gpu-metrics">
                 <NProgress
                   type="line"
@@ -305,6 +323,14 @@ onUnmounted(() => {
                   VRAM {{ formatBytes(gpu.vramUsed) }} / {{ formatBytes(gpu.vramTotal) }}
                   <span v-if="gpu.utilization"> · GPU {{ formatPercent(gpu.utilization) }}</span>
                   <span v-if="gpu.temperature"> · {{ gpu.temperature }}°C</span>
+                </div>
+                <div v-if="gpu.sharedTotal" class="gpu-sub">
+                  {{
+                    $t('monitor.sharedLabel', {
+                      used: formatBytes(gpu.sharedUsed || 0),
+                      total: formatBytes(gpu.sharedTotal)
+                    })
+                  }}
                 </div>
               </div>
             </div>
@@ -322,7 +348,18 @@ onUnmounted(() => {
         </div>
         <div class="preview-box">
           <img v-if="lastPreview" :src="lastPreview" class="preview-img" alt="" />
-          <div v-else class="preview-empty">{{ $t('monitor.previewEmpty') }}</div>
+          <div v-else class="preview-empty">
+            <div>{{ $t('monitor.previewEmpty') }}</div>
+            <NButton
+              v-if="targetReady"
+              size="small"
+              secondary
+              style="margin-top: 10px"
+              @click="openFrontend"
+            >
+              {{ $t('monitor.openFrontend') }}
+            </NButton>
+          </div>
         </div>
         <div v-if="runningNodes.length || finishedNodeCount" class="node-progress">
           <div v-for="n in runningNodes" :key="n.nodeId" class="node-progress-row">
@@ -350,45 +387,52 @@ onUnmounted(() => {
             }
           "
         >
-          <NTabPane name="queue" :tab="$t('monitor.tabQueue')">
+          <NTabPane name="queue" key="queue" :tab="$t('monitor.tabQueue')">
             <div class="panel-title">{{ $t('monitor.queueTitle') }}</div>
-            <!-- /api/jobs (0.39+) — richer state incl. completed/failed/cancelled -->
-            <div v-if="jobs && jobs.length" class="jobs-block">
-              <div class="panel-head">
-                <span class="meta">{{ $t('monitor.jobsTitle') }}</span>
-                <span class="meta">{{ $t('monitor.jobsCount', { n: jobs.length }) }}</span>
-              </div>
-              <div class="queue-list">
-                <div v-for="j in jobs.slice(0, 8)" :key="j.id" class="queue-row">
-                  <span class="chip" :class="jobChip(j.status)">{{
-                    jobStatusLabel(j.status)
-                  }}</span>
-                  <span class="mono history-prompt">{{ j.id }}</span>
-                  <span v-if="j.createdAt" class="meta history-time">
-                    {{ new Date(j.createdAt).toLocaleTimeString() }}
-                  </span>
-                </div>
-              </div>
-            </div>
-            <ListSkeleton v-if="!queue && !queueError && targetReady" :rows="3" />
-            <div
-              v-else-if="!queue || (!queue.running.length && !queue.pending.length)"
-              class="queue-empty"
-            >
+            <ListSkeleton v-if="!queue && !jobs && !queueError && targetReady" :rows="3" />
+            <div v-else-if="!queueSections.length" class="queue-empty">
               {{ queueError ? $t('monitor.queueLoadFailed') : $t('monitor.queueEmpty') }}
             </div>
             <div v-else class="queue-list">
-              <div v-for="r in queue.running" :key="r.promptId" class="queue-row">
-                <span class="chip chip-success">{{ $t('status.running') }}</span>
-                <span class="mono">{{ r.promptId }}</span>
-              </div>
-              <div v-for="p in queue.pending" :key="p.promptId" class="queue-row">
-                <span class="chip chip-warning">{{ $t('monitor.pending') }}</span>
-                <span class="mono">{{ p.promptId }}</span>
-              </div>
+              <template v-for="sec in queueSections" :key="sec.key">
+                <div class="queue-section-label">
+                  <span>{{
+                    sec.key === 'running'
+                      ? $t('status.running')
+                      : sec.key === 'pending'
+                        ? $t('monitor.pending')
+                        : $t('monitor.jobsRecent')
+                  }}</span>
+                  <span class="meta">· {{ sec.items.length }}</span>
+                </div>
+                <div v-for="it in sec.items" :key="`${sec.key}:${it.id}`" class="queue-row">
+                  <span
+                    class="chip"
+                    :class="
+                      sec.key === 'running'
+                        ? 'chip-success'
+                        : sec.key === 'pending'
+                          ? 'chip-warning'
+                          : jobChip(it.status)
+                    "
+                  >
+                    {{
+                      sec.key === 'running'
+                        ? $t('status.running')
+                        : sec.key === 'pending'
+                          ? $t('monitor.pending')
+                          : jobStatusLabel(it.status)
+                    }}
+                  </span>
+                  <span class="mono history-prompt">{{ it.id }}</span>
+                  <span v-if="it.at" class="meta history-time">
+                    {{ new Date(it.at).toLocaleTimeString() }}
+                  </span>
+                </div>
+              </template>
             </div>
           </NTabPane>
-          <NTabPane name="history" :tab="$t('monitor.tabHistory')">
+          <NTabPane name="history" key="history" :tab="$t('monitor.tabHistory')">
             <div class="panel-head">
               <div class="panel-title">{{ $t('monitor.historyTitle') }}</div>
               <NSpace :size="8" align="center">
@@ -492,6 +536,18 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
+.gpu-index {
+  display: inline-block;
+  padding: 0 6px;
+  margin-right: 4px;
+  border-radius: 6px;
+  background: rgba($color-primary, 0.12);
+  color: $color-primary;
+  font-size: 10.5px;
+  font-weight: 700;
+  vertical-align: 1px;
+}
+
 .gpu-sub {
   margin-top: 6px;
   font-size: 12px;
@@ -554,6 +610,16 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.queue-section-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: $color-text-secondary;
+  margin: 8px 0 2px;
 }
 
 .jobs-block {

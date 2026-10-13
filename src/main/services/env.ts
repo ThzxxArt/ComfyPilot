@@ -110,13 +110,37 @@ export async function runStreaming(
     const cleanup = (): void => {
       if (opts.signal) opts.signal.removeEventListener('abort', onAbort)
     }
+    /**
+     * Line-split buffers (0.1.11): a line cut across chunks must not be emitted
+     * in halves (git's `Receiving objects: N%` parsing depends on whole lines),
+     * and bare-`\r` progress rewrites are treated as their own lines.
+     */
+    let outPending = ''
+    let errPending = ''
+    const emitLines = (text: string, isErr: boolean): void => {
+      const sink = opts.onLine
+      if (!sink) return
+      const parts = ((isErr ? errPending : outPending) + text).split(/\r\n|\r|\n/)
+      const rest = parts.pop() ?? ''
+      if (isErr) errPending = rest
+      else outPending = rest
+      for (const line of parts) {
+        if (line.trim()) sink(line)
+      }
+    }
+    const flushPending = (): void => {
+      const sink = opts.onLine
+      if (!sink) return
+      if (outPending.trim()) sink(outPending)
+      if (errPending.trim()) sink(errPending)
+      outPending = ''
+      errPending = ''
+    }
     const feed = (buf: Buffer, isErr: boolean): void => {
       const text = buf.toString('utf-8')
       if (isErr) errOut += text
       else out += text
-      for (const line of text.split(/\r?\n/)) {
-        if (line.trim()) opts.onLine?.(line)
-      }
+      emitLines(text, isErr)
     }
     child.stdout?.on('data', (b: Buffer) => feed(b, false))
     child.stderr?.on('data', (b: Buffer) => feed(b, true))
@@ -130,7 +154,10 @@ export async function runStreaming(
       if (!settle()) return
       if (timer) clearTimeout(timer)
       cleanup()
-      if (code === 0) resolveP(out)
+      flushPending()
+      // Success still folds stderr into the returned text (0.1.11): pip can
+      // exit 0 while printing `ERROR:` on stderr, and callers scan for it.
+      if (code === 0) resolveP(errOut ? (out ? `${out}\n${errOut}` : errOut) : out)
       else reject(new Error(errOut || out || `exit ${code}`))
     })
   })

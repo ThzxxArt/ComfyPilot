@@ -21,7 +21,8 @@ import {
   InformationCircleOutline,
   CloudDownloadOutline,
   ArrowUpCircleOutline,
-  ConstructOutline
+  ConstructOutline,
+  AlertCircleOutline
 } from '@vicons/ionicons5'
 import {
   NButton,
@@ -54,6 +55,7 @@ import ComfyUpdateProgressModal from '@/components/ComfyUpdateProgressModal.vue'
 import LaunchProfileEditor from '@/components/LaunchProfileEditor.vue'
 import { useI18n } from 'vue-i18n'
 import { formatUptime } from '@/utils/format'
+import { versionMismatch } from '@/utils/versionDisplay'
 import type {
   ComfyInstanceConfig,
   ComfyInstanceInfo,
@@ -502,10 +504,18 @@ async function probeEnv(info: ComfyInstanceInfo): Promise<void> {
 }
 
 // ---------- ComfyUI update / repair (0.1.4) ----------
-const { startUpdate, checkComfyUpdate, repairEnv } = useComfyUpdate()
+const { startUpdate, checkComfyUpdate, repairEnv, updating, repairing, progress } =
+  useComfyUpdate()
 const showUpdateModal = ref(false)
 const updateModalTitle = ref('')
 const updateInfos = ref<Record<string, ComfyUpdateInfo>>({})
+
+/** Reopen the (now closable) progress modal after the user hid it (0.1.11). */
+function reopenUpdateModal(): void {
+  // Repair and update share the stream — label by what actually runs.
+  updateModalTitle.value = repairing.value ? t('instance.repairEnv') : t('instance.updateComfy')
+  showUpdateModal.value = true
+}
 
 function sourceLabel(source: ComfyUpdateInfo['source']): string {
   if (source === 'git') return t('instance.sourceGit')
@@ -626,13 +636,28 @@ function confirmStartAll(): void {
   })
 }
 
+/** Any instance live — gates the "stop all" button (0.1.11). */
+const anyRunning = computed(() =>
+  store.instances.some((i) => i.status === 'running' || i.status === 'starting')
+)
+
 async function startAll(): Promise<void> {
+  // Snapshot running ids so the summary can tell "started" from "already up".
+  const beforeRunning = new Set(
+    store.instances.filter((i) => i.status === 'running').map((i) => i.id)
+  )
   try {
     const results = await ipc('instance.startAll')
     await store.refreshInstances()
+    void store.syncWs()
     const ok = results.filter((r) => r.ok).length
     const fail = results.length - ok
-    const text = t('instance.startAllSummary', { ok, fail })
+    const already = results.filter((r) => r.ok && beforeRunning.has(r.id)).length
+    const text = t('instance.startAllSummary', {
+      started: Math.max(0, ok - already),
+      already,
+      fail
+    })
     if (fail === 0) message.success(text)
     else message.warning(text)
   } catch (err) {
@@ -644,6 +669,7 @@ async function stopAll(): Promise<void> {
   try {
     const results = await ipc('instance.stopAll')
     await store.refreshInstances()
+    void store.syncWs()
     const ok = results.filter((r) => r.ok).length
     const fail = results.length - ok
     const text = t('instance.stopAllSummary', { ok, fail })
@@ -818,12 +844,14 @@ function statusClass(s: string): string {
         </NTooltip>
         <NTooltip trigger="hover">
           <template #trigger>
-            <NButton secondary type="warning" @click="confirmStopAll">
-              <template #icon><NIcon :component="StopOutline" /></template>
-              {{ $t('instance.stopAll') }}
-            </NButton>
+            <span class="btn-wrap">
+              <NButton secondary type="warning" :disabled="!anyRunning" @click="confirmStopAll">
+                <template #icon><NIcon :component="StopOutline" /></template>
+                {{ $t('instance.stopAll') }}
+              </NButton>
+            </span>
           </template>
-          {{ $t('instance.confirmStopAll') }}
+          {{ anyRunning ? $t('instance.confirmStopAll') : $t('instance.stopAllDisabled') }}
         </NTooltip>
         <NButton secondary @click="openDiscover">
           <template #icon><NIcon :component="FolderOpenOutline" /></template>
@@ -837,6 +865,15 @@ function statusClass(s: string): string {
     </div>
 
     <div class="page-body">
+      <!-- The progress modal is closable while running (0.1.11); this banner
+           keeps the operation reachable until it settles. -->
+      <div v-if="updating" class="update-running-banner card">
+        <NTag size="small" type="info" round>{{ $t('update.inProgress') }}</NTag>
+        <span class="meta update-running-msg mono">{{ progress?.message || '' }}</span>
+        <NButton size="tiny" secondary @click="reopenUpdateModal">{{
+          $t('nodes.viewProgress')
+        }}</NButton>
+      </div>
       <NSpin :show="loading">
         <div v-if="filtered.length" class="grid cards">
           <article
@@ -865,11 +902,31 @@ function statusClass(s: string): string {
 
             <div class="meta-row">
               <span
-                >{{ $t('instance.port') }} <b>{{ item.port }}</b></span
+                >{{ $t('instance.listen') }}
+                <b class="mono">{{ item.listen }}:{{ item.port }}</b></span
               >
               <span v-if="item.version || item.onlineVersion"
                 >{{ $t('instance.versionLabel') }}
-                <b>{{ item.onlineVersion || item.version }}</b></span
+                <b>{{ item.onlineVersion || item.version }}</b>
+                <NTag
+                  v-if="item.onlineVersion"
+                  size="tiny"
+                  round
+                  :type="versionMismatch(item.version, item.onlineVersion) ? 'warning' : 'success'"
+                  :title="
+                    versionMismatch(item.version, item.onlineVersion)
+                      ? $t('instance.onlineVersionMismatch', {
+                          installed: item.version,
+                          online: item.onlineVersion
+                        })
+                      : $t('instance.onlineVersionTip')
+                  "
+                  >{{
+                    versionMismatch(item.version, item.onlineVersion)
+                      ? $t('instance.onlineVersionBadgeWarn')
+                      : $t('instance.onlineBadge')
+                  }}</NTag
+                ></span
               >
               <span v-if="item.pid"
                 >{{ $t('instance.metaPid') }} <b>{{ item.pid }}</b></span
@@ -885,6 +942,11 @@ function statusClass(s: string): string {
               <span v-if="item.managerEnabled"
                 ><NTag size="tiny" type="info" round>{{ $t('instance.metaManager') }}</NTag></span
               >
+            </div>
+
+            <div v-if="item.lastError" class="inst-error" :title="item.lastError">
+              <NIcon :size="13" :component="AlertCircleOutline" />
+              <span class="inst-error-text">{{ item.lastError }}</span>
             </div>
 
             <div v-if="envProbes[item.id]" class="env-box">
@@ -1168,6 +1230,8 @@ function statusClass(s: string): string {
           v-model="editProfile"
           :extra-args="editExtraArgs.split(/\s+/).filter(Boolean)"
           :gpus="store.system?.gpus"
+          :version="editing?.onlineVersion || ''"
+          :baseline="editing?.launchProfile"
         />
         <NFormItem :label="$t('instance.extraArgs')">
           <NInput v-model:value="editExtraArgs" />
@@ -1317,11 +1381,43 @@ function statusClass(s: string): string {
 <style lang="scss" scoped>
 @use '@/styles/variables.scss' as *;
 .cards {
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
 }
 .inst {
-  padding: 18px;
+  padding: 20px;
   cursor: pointer;
+}
+.btn-wrap {
+  display: inline-flex;
+}
+.update-running-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+}
+.update-running-msg {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.inst-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: -4px 0 10px;
+  font-size: 12px;
+  color: $color-danger;
+  min-width: 0;
+}
+.inst-error-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .inst-top {
   display: flex;
@@ -1359,14 +1455,22 @@ function statusClass(s: string): string {
   word-break: break-all;
 }
 .meta-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
+  /* Two-column info grid (0.1.11) — every cell aligns, long values ellipsize. */
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 10px;
   margin: 12px 0;
   font-size: 12.5px;
   color: $color-text-secondary;
   b {
     color: $color-text;
+  }
+
+  > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
 .env-box {

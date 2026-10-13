@@ -78,6 +78,10 @@ export function useLaunch() {
         relocatePort: false
       })
       await store.refreshInstances()
+      // Belt-and-braces: connect the progress WS the moment the instance is up
+      // (the store also watches status, but the launch path must not rely on
+      // event ordering). 0.1.11
+      void store.syncWs()
       await openFrontend(result, open)
       if (wasRunning) {
         ui().message.info(t('launch.alreadyRunning', { name: result.name }))
@@ -140,6 +144,7 @@ export function useLaunch() {
                 open: 'none'
               })
               await store.refreshInstances()
+              void store.syncWs()
               await openFrontend(result, open)
               ui().message.success(t('launch.readyOnPort', { name: info.name, port: suggested }))
             } catch (err2) {
@@ -164,6 +169,7 @@ export function useLaunch() {
     try {
       const result = await ipc('instance.stop', info.id)
       await store.refreshInstances()
+      void store.syncWs()
       if (result.adopted) {
         // External process was only signalled — it keeps running outside ComfyPilot.
         ui().message.warning(t('launch.signalledExternal', { name: info.name }))
@@ -184,6 +190,7 @@ export function useLaunch() {
     try {
       await ipc('instance.restart', info.id, { ...opts, open: 'none', relocatePort: false })
       await store.refreshInstances()
+      void store.syncWs()
       const after = store.instances.find((i) => i.id === info.id) || info
       await openFrontend(after, open)
       ui().message.success(t('launch.restarted', { name: info.name }))

@@ -49,10 +49,20 @@ describe('0.1.9 node-op modal contracts', () => {
     expect(src).toContain("progressKind.value === 'node-op'")
   })
 
-  it('the ComfyUI-update modal never clears node-op state on close', () => {
+  it('the ComfyUI-update modal is closable at any time and preserves streams (0.1.11)', () => {
     const src = read('src/renderer/src/components/ComfyUpdateProgressModal.vue')
-    expect(src).toContain("progressKind.value === 'comfy-update'")
-    expect(src).not.toContain('if (!v) clearProgress()')
+    // Never locks the user out mid-update.
+    expect(src).not.toContain(':closable="!updating"')
+    expect(src).not.toContain(':mask-closable="!updating"')
+    // Closing must not wipe any progress stream — the banner reopens the modal.
+    expect(src).not.toContain('clearProgress()')
+    // Both instance views own a "view progress" banner for the closable modal.
+    expect(read('src/renderer/src/views/instances/InstancesView.vue')).toContain(
+      'update.inProgress'
+    )
+    expect(read('src/renderer/src/views/instances/InstanceDetailView.vue')).toContain(
+      'update.inProgress'
+    )
   })
 
   it('NodesView keys check results by pack id (duplicate names are legal)', () => {

@@ -6,6 +6,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 class FakeWS {
   static OPEN = 1
+  static CONNECTING = 0
+  static CLOSED = 3
+  static count = 0
   static last: FakeWS | null = null
   handlers: Record<string, Array<(...a: unknown[]) => void>> = {}
   sent: string[] = []
@@ -14,16 +17,20 @@ class FakeWS {
   constructor(url: string) {
     this.url = url
     FakeWS.last = this
+    FakeWS.count += 1
     queueMicrotask(() => this.fire('open'))
   }
   on(ev: string, cb: (...a: unknown[]) => void): void {
+    ;(this.handlers[ev] ||= []).push(cb)
+  }
+  once(ev: string, cb: (...a: unknown[]) => void): void {
     ;(this.handlers[ev] ||= []).push(cb)
   }
   removeAllListeners(): void {
     this.handlers = {}
   }
   close(): void {
-    /* noop */
+    this.readyState = 2
   }
   send(s: string): void {
     this.sent.push(s)
@@ -60,6 +67,7 @@ describe('monitor WS protocol (0.1.10)', () => {
     vi.useFakeTimers({ now: 1_000_000 })
     vi.resetModules()
     FakeWS.last = null
+    FakeWS.count = 0
   })
 
   afterEach(() => {
@@ -88,6 +96,37 @@ describe('monitor WS protocol (0.1.10)', () => {
       type: 'feature_flags',
       data: { supports_preview_metadata: true }
     })
+  })
+
+  it('keeps the live socket when connectWs repeats for the same target (0.1.11.1)', async () => {
+    const { svc, ws } = await connect()
+    expect(svc.connectWs('http://127.0.0.1:8188')).toBe(true)
+    expect(FakeWS.count).toBe(1)
+    expect(FakeWS.last).toBe(ws)
+    expect(ws.sent).toHaveLength(1) // no re-negotiation on repeat subscribes
+  })
+
+  it('serializes reconnects: replacement opens only after the old socket closes (0.1.11.1)', async () => {
+    const { svc, ws } = await connect()
+    svc.connectWs('http://127.0.0.1:9999')
+    // Old socket is closing — the replacement must NOT exist yet. Overlapping
+    // sockets under one stable clientId corrupt the ComfyUI session tables.
+    expect(FakeWS.count).toBe(1)
+    expect(ws.readyState).toBe(2)
+    ws.fire('close')
+    await vi.advanceTimersByTimeAsync(249)
+    expect(FakeWS.count).toBe(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(FakeWS.count).toBe(2)
+    expect(FakeWS.last!.url).toContain('/ws?clientId=comfy-pilot')
+  })
+
+  it('falls back to the safety timer when the old socket never reports close (0.1.11.1)', async () => {
+    const { svc } = await connect()
+    svc.connectWs('http://127.0.0.1:9999')
+    expect(FakeWS.count).toBe(1)
+    await vi.advanceTimersByTimeAsync(1250)
+    expect(FakeWS.count).toBe(2)
   })
 
   it('decodes legacy preview frames (event=1, 8-byte header)', async () => {

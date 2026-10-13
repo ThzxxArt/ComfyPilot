@@ -2013,18 +2013,79 @@ describe('runStartupSelfCheck (0.1.10)', () => {
     expect(bad.error).toContain('cv2')
   })
 
-  it('refuses while the process is alive, without main.py, and for unknown ids', async () => {
+  it('runs concurrently while the process is alive, and still validates preconditions', async () => {
     register(cfg({ id: 'sc-busy' }))
     write(join(COMFY, 'main.py'), 'x')
     const rt = (
       svc as unknown as { ensureRuntime: (c: ComfyInstanceConfig) => { process?: unknown } }
     ).ensureRuntime(cfg({ id: 'sc-busy' }))
     rt.process = { exitCode: null }
-    await expect(svc.runStartupSelfCheck('sc-busy')).rejects.toThrow(/running/)
+    // 0.1.11: a running instance no longer blocks the check — it must run on
+    // an ephemeral port instead of failing (or hijacking the instance's port).
+    const seenArgs: string[][] = []
+    h.state.execHandler = (_cmd, args) => {
+      seenArgs.push([...args])
+      if (args.includes('--quick-test-for-ci')) return { stdout: 'ok\n' }
+      return { stdout: '' }
+    }
+    const result = await svc.runStartupSelfCheck('sc-busy')
+    expect(result.ok).toBe(true)
+    const checkCall = seenArgs.find((a) => a.includes('--quick-test-for-ci'))
+    expect(checkCall).toBeTruthy()
+    expect(checkCall).toContain('--port')
     rt.process = undefined
+    h.state.execHandler = null
 
     rmSync(join(COMFY, 'main.py'), { force: true })
     await expect(svc.runStartupSelfCheck('sc-busy')).rejects.toThrow(/main\.py not found/)
     await expect(svc.runStartupSelfCheck('missing')).rejects.toThrow(/Instance not found/)
+  })
+})
+
+describe('startAll concurrency (0.1.11)', () => {
+  it('waits for an instance that is already starting instead of reporting a failure', async () => {
+    register(cfg({ id: 'sa-wait' }))
+    const rt = (
+      svc as unknown as {
+        ensureRuntime: (c: ComfyInstanceConfig) => {
+          process?: unknown
+          ready: boolean
+          status: string
+        }
+        startingIds: Set<string>
+      }
+    ).ensureRuntime(cfg({ id: 'sa-wait' }))
+    // Mid-start: the start() guard would previously throw
+    // "Instance start already in progress" and the batch summary reported a
+    // bogus failure. Now startAll must WAIT for readiness instead.
+    rt.process = { exitCode: null }
+    rt.ready = true
+    rt.status = 'running'
+    const internals = svc as unknown as { startingIds: Set<string> }
+    internals.startingIds.add('sa-wait')
+    const results = await svc.startAll()
+    expect(results).toHaveLength(1)
+    expect(results[0].ok).toBe(true)
+  })
+})
+
+describe('exportLogs (0.1.11)', () => {
+  it('writes the full instance log to a file with level + timestamps', async () => {
+    register(cfg({ id: 'exp-1' }))
+    const rt = (
+      svc as unknown as {
+        ensureRuntime: (c: ComfyInstanceConfig) => unknown
+        pushLog: (r: unknown, level: string, message: string) => void
+      }
+    ).ensureRuntime(cfg({ id: 'exp-1' }))
+    const internals = svc as unknown as {
+      pushLog: (r: unknown, level: string, message: string) => void
+    }
+    internals.pushLog(rt, 'info', 'hello export line')
+    const result = await svc.exportLogs('exp-1')
+    expect(result.path.endsWith('.log')).toBe(true)
+    const content = readFileSync(result.path, 'utf-8')
+    expect(content).toContain('hello export line')
+    expect(content).toMatch(/\[.*\] INFO hello export line/)
   })
 })

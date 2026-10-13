@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, h, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRoute } from 'vue-router'
 import {
   CloudDownloadOutline,
   SearchOutline,
@@ -17,16 +18,16 @@ import {
   NTag,
   NModal,
   NEmpty,
+  NSelect,
   useMessage,
   useDialog,
-  NTabs,
-  NTabPane,
   NDynamicTags,
   type DataTableColumns
 } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 import { ipc, onDownloadProgress, onModelScanProgress } from '@/composables/useIpc'
 import { formatBytes } from '@/utils/format'
+import { categoryVisual } from '@/utils/categoryIcons'
 import ListSkeleton from '@/components/ListSkeleton.vue'
 import { MODEL_CATEGORY_LABELS, STARTER_MODELS } from '@shared/constants'
 import type {
@@ -43,6 +44,7 @@ const { t, te } = useI18n()
 const store = useAppStore()
 const message = useMessage()
 const dialog = useDialog()
+const route = useRoute()
 const loading = ref(false)
 const scanning = ref(false)
 const scanProgress = ref('')
@@ -57,6 +59,7 @@ const downloads = ref<DownloadTask[]>([])
 const storage = ref<StorageStats[]>([])
 const duplicates = ref<DuplicateGroup[]>([])
 const tab = ref('all')
+const archFilter = ref<string | null>(null)
 const starterModels = ref<StarterModel[]>(STARTER_MODELS)
 const starterBusy = ref<string | null>(null)
 
@@ -145,6 +148,9 @@ const CATEGORY_KEYS: ModelCategory[] = [
   'geometry_estimation',
   'optical_flow',
   'detection',
+  // Legacy aliases — only present in pre-0.1.8 DB rows; still filterable.
+  'clip',
+  'unet',
   'other'
 ]
 
@@ -153,6 +159,44 @@ function catLabel(key: string): string {
   const i18nKey = `models.cat.${key}`
   return te(i18nKey) ? t(i18nKey) : MODEL_CATEGORY_LABELS[key] || key
 }
+
+/** Live category counts for the filter dropdown / quick chips (0.1.11). */
+const categoryCounts = computed(() => {
+  const m = new Map<string, number>()
+  for (const r of models.value) m.set(r.category, (m.get(r.category) || 0) + 1)
+  return m
+})
+
+const categorySelectOptions = computed(() => [
+  { label: t('models.tabAll'), value: 'all' },
+  ...CATEGORY_KEYS.filter((c) => (categoryCounts.value.get(c) || 0) > 0).map((c) => ({
+    label: `${catLabel(c)}（${categoryCounts.value.get(c)}）`,
+    value: c
+  }))
+])
+
+/** Quick chips for the most common categories. */
+const QUICK_CATEGORIES: ModelCategory[] = [
+  'checkpoints',
+  'loras',
+  'vae',
+  'diffusion_models',
+  'text_encoders'
+]
+const quickCategories = computed(() =>
+  QUICK_CATEGORIES.filter((c) => (categoryCounts.value.get(c) || 0) > 0).map((c) => ({
+    value: c,
+    label: catLabel(c),
+    count: categoryCounts.value.get(c) || 0
+  }))
+)
+
+const architectureOptions = computed(() =>
+  [...new Set(models.value.map((m) => m.architecture).filter(Boolean))].sort().map((a) => ({
+    label: String(a),
+    value: String(a)
+  }))
+)
 
 /** 'total' is a summary, not a category card. */
 const storageTotal = computed(() => storage.value.find((s) => s.category === 'total') || null)
@@ -189,6 +233,7 @@ const filtered = computed(() => {
   const k = keyword.value.trim().toLowerCase()
   let list = models.value
   if (tab.value !== 'all') list = list.filter((m) => m.category === tab.value)
+  if (archFilter.value) list = list.filter((m) => (m.architecture || '') === archFilter.value)
   if (!k) return list
   return list.filter(
     (m) =>
@@ -201,11 +246,14 @@ const filtered = computed(() => {
 })
 
 /** Distinguish "no data at all" from "filters matched nothing". */
-const hasFilter = computed(() => keyword.value.trim().length > 0 || tab.value !== 'all')
+const hasFilter = computed(
+  () => keyword.value.trim().length > 0 || tab.value !== 'all' || Boolean(archFilter.value)
+)
 
 function clearFilters(): void {
   keyword.value = ''
   tab.value = 'all'
+  archFilter.value = null
 }
 
 function hTag(text: string, type: 'info' | 'success' | 'warning' = 'info') {
@@ -340,18 +388,22 @@ const columns = computed<DataTableColumns<ModelRecord>>(() => [
     title: t('models.colName'),
     key: 'name',
     ellipsis: { tooltip: true },
-    render: (row) =>
-      h('div', { style: 'display:flex;align-items:center;gap:8px;min-width:0' }, [
+    render: (row) => {
+      const visual = categoryVisual(row.category)
+      return h('div', { style: 'display:flex;align-items:center;gap:8px;min-width:0' }, [
         row.thumbnail
           ? h('img', {
               src: row.thumbnail,
               alt: '',
               style: 'width:36px;height:36px;border-radius:8px;object-fit:cover;flex:none'
             })
-          : h('span', {
-              style:
-                'width:36px;height:36px;border-radius:8px;background:rgba(79,110,247,0.12);flex:none'
-            }),
+          : h(
+              'span',
+              {
+                style: `width:36px;height:36px;border-radius:8px;display:grid;place-items:center;flex:none;background:${visual.tone}1f;color:${visual.tone}`
+              },
+              [h(NIcon, { size: 19, component: visual.icon })]
+            ),
         h(
           'span',
           {
@@ -362,6 +414,7 @@ const columns = computed<DataTableColumns<ModelRecord>>(() => [
           row.name
         )
       ])
+    }
   },
   {
     title: t('models.colCategory'),
@@ -498,6 +551,14 @@ watch(
   }
 )
 
+// Deep-link query can change while the view is alive (router reuse).
+watch(
+  () => route.query.q,
+  (q) => {
+    if (typeof q === 'string' && q) keyword.value = q
+  }
+)
+
 async function findDuplicates(): Promise<void> {
   try {
     duplicates.value = await ipc('model.findDuplicates')
@@ -589,6 +650,9 @@ let offScan: (() => void) | null = null
 let offDl: (() => void) | null = null
 
 onMounted(async () => {
+  // Deep links from other views: /models?q=<model|node type> (0.1.11).
+  const q = route.query.q
+  if (typeof q === 'string' && q) keyword.value = q
   extraPathsFile.value = defaultExtraPathsFile()
   await refresh()
   downloads.value = await ipc('model.downloads')
@@ -623,6 +687,19 @@ onUnmounted(() => {
         >
           <template #prefix><NIcon :component="SearchOutline" /></template>
         </NInput>
+        <NSelect
+          v-model:value="tab"
+          :options="categorySelectOptions"
+          :placeholder="$t('models.colCategory')"
+          style="width: 190px"
+        />
+        <NSelect
+          v-model:value="archFilter"
+          :options="architectureOptions"
+          :placeholder="$t('models.archPlaceholder')"
+          clearable
+          style="width: 150px"
+        />
         <NButton secondary :loading="scanning" @click="scan(false)">
           <template #icon><NIcon :component="RefreshOutline" /></template>{{ $t('models.scan') }}
         </NButton>
@@ -701,10 +778,29 @@ onUnmounted(() => {
       </div>
 
       <div class="card table-card">
-        <NTabs v-model:value="tab" type="segment" class="tabs">
-          <NTabPane name="all" :tab="$t('models.tabAll')" />
-          <NTabPane v-for="c in CATEGORY_KEYS" :key="c" :name="c" :tab="catLabel(c)" />
-        </NTabs>
+        <!-- Quick category chips replace the 25-tab segment strip (0.1.11). -->
+        <NSpace class="cat-chips" align="center">
+          <NTag
+            size="small"
+            round
+            checkable
+            :checked="tab === 'all'"
+            @update:checked="() => (tab = 'all')"
+          >
+            {{ $t('models.tabAll') }}
+          </NTag>
+          <NTag
+            v-for="c in quickCategories"
+            :key="c.value"
+            size="small"
+            round
+            checkable
+            :checked="tab === c.value"
+            @update:checked="(v: boolean) => (tab = v ? c.value : 'all')"
+          >
+            {{ c.label }} · {{ c.count }}
+          </NTag>
+        </NSpace>
         <NSpin :show="loading && filtered.length > 0">
           <ListSkeleton v-if="loading && !filtered.length" :rows="6" />
           <NDataTable
@@ -1032,6 +1128,9 @@ onUnmounted(() => {
 .table-card {
   padding: 4px 8px 12px;
   margin-bottom: 14px;
+}
+.cat-chips {
+  padding: 10px 8px 6px;
 }
 .tabs {
   padding: 4px 8px 0;

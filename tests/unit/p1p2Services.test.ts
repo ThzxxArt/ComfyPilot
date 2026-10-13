@@ -1546,3 +1546,160 @@ describe('p1p2 services', () => {
     })
   })
 })
+
+// =====================================================================
+// 0.1.11: workflow-id set filter, batch sidecar, remote targets
+// =====================================================================
+describe('0.1.11 attribution and remote targets', () => {
+  beforeAll(() => {
+    mkdirSync(join(ROOT, 'wf'), { recursive: true })
+  })
+
+  it('filters outputs by a set of workflow ids (any-of)', async () => {
+    const { outputService } = await freshP1p2()
+    const dir = join(ROOT, 'out-set')
+    mkdirSync(dir, { recursive: true })
+    const p1 = join(dir, 'set-a.png')
+    const p2 = join(dir, 'set-b.png')
+    writeFileSync(p1, 'a')
+    writeFileSync(p2, 'b')
+    outputService.indexFile(p1, { workflowId: 'w1', workflowName: 'One' })
+    outputService.indexFile(p2, { workflowId: 'w2', workflowName: 'Two' })
+
+    const multi = outputService.list({ workflowIds: ['w1', 'w9'] })
+    expect(multi.items.map((i) => i.fileName)).toEqual(['set-a.png'])
+    // Legacy single-id filter still works.
+    const single = outputService.list({ workflowId: 'w2' })
+    expect(single.items.map((i) => i.fileName)).toEqual(['set-b.png'])
+    // No ids → no filtering.
+    const all = outputService.list({})
+    expect(all.items.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('records the prompt→workflow sidecar on batch submits', async () => {
+    const { batchService } = await freshP1p2()
+    await seedInstance()
+    const p = join(ROOT, 'wf', 'sidecar.json')
+    writeFileSync(p, uiGraph())
+    const job = batchService.create({
+      name: 'sidecar',
+      instanceId: 'inst-1',
+      items: [{ workflowId: 'wf-side', workflowName: 'SC', workflowPath: p, count: 1 }]
+    })
+    stubFetch((url) => {
+      if (url.includes('/prompt')) return jsonResponse({ prompt_id: 'pid-side' })
+      if (url.includes('/history')) {
+        return jsonResponse({ 'pid-side': { status: { status_str: 'success' }, outputs: {} } })
+      }
+      return jsonResponse({})
+    })
+    await batchService.start(job.id)
+
+    const { userDataDir } = await import('../../src/main/services/db')
+    const { readFileSync } = await import('fs')
+    const links = JSON.parse(
+      readFileSync(join(userDataDir(), 'prompt_links.jsonc'), 'utf-8')
+    ) as Record<string, { workflowId?: string; workflowName?: string }>
+    expect(links['pid-side']).toEqual({ workflowId: 'wf-side', workflowName: 'SC' })
+  })
+
+  it('submits to a configured remote target and counts history outputs', async () => {
+    const { batchService } = await freshP1p2()
+    await seedInstance()
+    const { upsertRemote } = await import('../../src/main/services/db')
+    upsertRemote({
+      id: 'r1',
+      name: 'Cloud',
+      baseUrl: 'http://10.7.7.7:9000/',
+      label: '',
+      enabled: true
+    })
+    const p = join(ROOT, 'wf', 'remote.json')
+    writeFileSync(p, uiGraph())
+    const job = batchService.create({
+      name: 'remote',
+      instanceId: 'remote:r1',
+      items: [{ workflowPath: p, count: 1 }]
+    })
+    const calls = stubFetch((url) => {
+      if (url.includes('/prompt')) return jsonResponse({ prompt_id: 'pid-remote' })
+      if (url.includes('/history')) {
+        return jsonResponse({
+          'pid-remote': {
+            status: { status_str: 'success' },
+            outputs: { '1': { images: [{ filename: 'r.png', subfolder: '', type: 'output' }] } }
+          }
+        })
+      }
+      return jsonResponse({})
+    })
+    const result = await batchService.start(job.id)
+    expect(result.status).toBe('done')
+    expect(result.completed).toBe(1)
+    // Remote files cannot be verified locally — produced counts history files.
+    expect(result.produced).toBe(1)
+    // No local output paths are fabricated for a remote target.
+    expect(result.items[0].outputPaths).toEqual([])
+    const promptCall = calls.find((c) => c.url.includes('/prompt'))!
+    expect(promptCall.url.startsWith('http://10.7.7.7:9000/')).toBe(true)
+  })
+
+  it('walks outputs and backfills attribution from the content fingerprint', async () => {
+    const { outputService } = await freshP1p2()
+    const { resetFingerprintCaches } = await import(
+      '../../src/main/services/workflowFingerprint'
+    )
+    resetFingerprintCaches()
+    // A workflow record with NO prior linkage to the output below.
+    const wfPath = join(ROOT, 'wf', 'fp-flow.json')
+    const graph = {
+      nodes: [
+        { id: 1, type: 'KSampler', widgets_values: [1, 'fixed', 10, 7] },
+        { id: 2, type: 'CheckpointLoaderSimple', widgets_values: ['m.safetensors'] }
+      ],
+      links: [],
+      version: 0.4
+    }
+    writeFileSync(wfPath, JSON.stringify(graph))
+    mkdirSync(join(ROOT, 'data'), { recursive: true })
+    writeFileSync(
+      join(ROOT, 'data', 'workflows.jsonc'),
+      JSON.stringify([
+        {
+          id: 'wf-fp',
+          name: 'FingerprintFlow',
+          path: wfPath,
+          format: 'json',
+          nodeCount: 2,
+          tags: [],
+          updatedAt: Date.now(),
+          missingNodes: [],
+          version: '0.4',
+          params: {},
+          origin: 'library'
+        }
+      ])
+    )
+    // Output produced by a ComfyUI-frontend run: PNG with an embedded graph,
+    // a prompt_id that has NO queue-time sidecar.
+    const outDir = join(ROOT, 'comfy', 'output')
+    mkdirSync(outDir, { recursive: true })
+    const outPng = join(outDir, 'fp_out.png')
+    writePng(outPng, [
+      ['workflow', JSON.stringify(graph)],
+      ['prompt_id', 'pid-fp-1']
+    ])
+
+    const res = outputService.list({ root: outDir, limit: 50 })
+    const asset = res.items.find((a) => a.path === outPng)!
+    expect(asset.workflowId).toBe('wf-fp')
+    expect(asset.workflowName).toBe('FingerprintFlow')
+    // The match persists a sidecar so later scans take the cheap path.
+    const { readFileSync: readF } = await import('fs')
+    const links = JSON.parse(readF(join(ROOT, 'data', 'prompt_links.jsonc'), 'utf-8')) as Record<
+      string,
+      { workflowId?: string }
+    >
+    expect(links['pid-fp-1']?.workflowId).toBe('wf-fp')
+  })
+})

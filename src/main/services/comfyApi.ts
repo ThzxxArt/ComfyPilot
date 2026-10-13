@@ -3,17 +3,46 @@ import type { ComfyJobSummary } from '@shared/types'
 /** Stable client id so WS progress events match queued prompts. */
 export const COMFY_CLIENT_ID = 'comfy-pilot'
 
-/** Lightweight ComfyUI HTTP helper used by monitor + batch + embed. */
+/**
+ * Lightweight ComfyUI HTTP helper used by monitor + batch + embed.
+ *
+ * 0.1.11: optional constructor headers. Remote instances with an `apiKey`
+ * need `Authorization: Bearer …` on EVERY request — before this, only the
+ * reachability probe sent the header and real submissions against protected
+ * remotes failed with 401 after a green "online" test.
+ */
 export class ComfyApiClient {
-  constructor(private baseUrl: string) {}
+  private readonly auth: Record<string, string>
+
+  constructor(
+    private baseUrl: string,
+    opts?: { headers?: Record<string, string> }
+  ) {
+    this.auth = opts?.headers || {}
+  }
 
   private url(path: string): string {
     return `${this.baseUrl.replace(/\/$/, '')}${path}`
   }
 
+  /** Merge configured auth headers under any per-call headers (call wins). */
+  private authInit(init?: RequestInit): RequestInit {
+    if (!Object.keys(this.auth).length) return init || {}
+    const merged: Record<string, string> = {
+      ...((init?.headers as Record<string, string> | undefined) || {})
+    }
+    for (const [key, value] of Object.entries(this.auth)) {
+      if (!(key in merged)) merged[key] = value
+    }
+    return { ...(init || {}), headers: merged }
+  }
+
   async systemStats(): Promise<Record<string, unknown> | null> {
     try {
-      const res = await fetch(this.url('/system_stats'), { signal: AbortSignal.timeout(1500) })
+      const res = await fetch(
+        this.url('/system_stats'),
+        this.authInit({ signal: AbortSignal.timeout(1500) })
+      )
       if (!res.ok) return null
       return (await res.json()) as Record<string, unknown>
     } catch {
@@ -23,7 +52,10 @@ export class ComfyApiClient {
 
   async objectInfo(): Promise<Record<string, unknown> | null> {
     try {
-      const res = await fetch(this.url('/object_info'), { signal: AbortSignal.timeout(5000) })
+      const res = await fetch(
+        this.url('/object_info'),
+        this.authInit({ signal: AbortSignal.timeout(5000) })
+      )
       if (!res.ok) return null
       return (await res.json()) as Record<string, unknown>
     } catch {
@@ -51,12 +83,15 @@ export class ComfyApiClient {
           /* non-serializable metadata is dropped, never fatal */
         }
       }
-      const res = await fetch(this.url('/prompt'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(8000)
-      })
+      const res = await fetch(
+        this.url('/prompt'),
+        this.authInit({
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(8000)
+        })
+      )
       if (!res.ok) {
         // Surface ComfyUI's error body so callers can report WHY queueing failed.
         const text = await res.text().catch(() => '')
@@ -93,9 +128,10 @@ export class ComfyApiClient {
   } | null> {
     if (!promptId) return null
     try {
-      const res = await fetch(this.url(`/history/${encodeURIComponent(promptId)}`), {
-        signal: AbortSignal.timeout(3000)
-      })
+      const res = await fetch(
+        this.url(`/history/${encodeURIComponent(promptId)}`),
+        this.authInit({ signal: AbortSignal.timeout(3000) })
+      )
       if (!res.ok) return null
       const data = (await res.json()) as Record<string, Record<string, unknown>>
       const entry = data[promptId]
@@ -166,9 +202,10 @@ export class ComfyApiClient {
     }>
   > {
     try {
-      const res = await fetch(this.url('/history?max_items=' + limit), {
-        signal: AbortSignal.timeout(5000)
-      })
+      const res = await fetch(
+        this.url('/history?max_items=' + limit),
+        this.authInit({ signal: AbortSignal.timeout(5000) })
+      )
       if (!res.ok) return []
       const data = (await res.json()) as Record<string, Record<string, unknown>>
       return this.parseHistoryEntries(data)
@@ -181,12 +218,15 @@ export class ComfyApiClient {
   async deleteQueueItems(promptIds: string[]): Promise<boolean> {
     if (!promptIds.length) return true
     try {
-      const res = await fetch(this.url('/queue'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ delete: promptIds }),
-        signal: AbortSignal.timeout(3000)
-      })
+      const res = await fetch(
+        this.url('/queue'),
+        this.authInit({
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ delete: promptIds }),
+          signal: AbortSignal.timeout(3000)
+        })
+      )
       return res.ok
     } catch {
       return false
@@ -199,12 +239,15 @@ export class ComfyApiClient {
    */
   async interrupt(promptId?: string, timeoutMs = 3000): Promise<boolean> {
     try {
-      const res = await fetch(this.url('/interrupt'), {
-        method: 'POST',
-        headers: promptId ? { 'Content-Type': 'application/json' } : undefined,
-        body: promptId ? JSON.stringify({ prompt_id: promptId }) : undefined,
-        signal: AbortSignal.timeout(timeoutMs)
-      })
+      const res = await fetch(
+        this.url('/interrupt'),
+        this.authInit({
+          method: 'POST',
+          headers: promptId ? { 'Content-Type': 'application/json' } : undefined,
+          body: promptId ? JSON.stringify({ prompt_id: promptId }) : undefined,
+          signal: AbortSignal.timeout(timeoutMs)
+        })
+      )
       return res.ok
     } catch {
       return false
@@ -218,9 +261,10 @@ export class ComfyApiClient {
     try {
       const q = new URLSearchParams({ limit: String(Math.max(1, Math.min(500, limit))) })
       if (status) q.set('status', status)
-      const res = await fetch(this.url(`/api/jobs?${q.toString()}`), {
-        signal: AbortSignal.timeout(5000)
-      })
+      const res = await fetch(
+        this.url(`/api/jobs?${q.toString()}`),
+        this.authInit({ signal: AbortSignal.timeout(5000) })
+      )
       if (!res.ok) return null
       const data = (await res.json()) as { jobs?: Array<Record<string, unknown>> }
       if (!Array.isArray(data.jobs)) return null
@@ -235,29 +279,42 @@ export class ComfyApiClient {
     }
   }
 
-  /** Atomically cancel ONE job (running → interrupt, pending → dequeue). */
-  async jobCancel(id: string): Promise<boolean> {
+  /** Batch cancel (all-or-nothing validation server-side). */
+  async jobsCancel(ids: string[]): Promise<boolean> {
+    if (!ids.length) return true
     try {
-      const res = await fetch(this.url(`/api/jobs/${encodeURIComponent(id)}/cancel`), {
-        method: 'POST',
-        signal: AbortSignal.timeout(5000)
-      })
+      const res = await fetch(
+        this.url('/api/jobs/cancel'),
+        this.authInit({
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ job_ids: ids }),
+          signal: AbortSignal.timeout(5000)
+        })
+      )
       return res.ok
     } catch {
       return false
     }
   }
 
-  /** Batch cancel (all-or-nothing validation server-side). */
-  async jobsCancel(ids: string[]): Promise<boolean> {
-    if (!ids.length) return true
+  /**
+   * POST /free {unload_models, free_memory} — release instance memory.
+   * Used by remote maintenance (0.1.11): ComfyUI has no remote process
+   * start/stop protocol, so memory release is the meaningful remote action.
+   * Auth headers (when configured) travel via the constructor.
+   */
+  async freeMemory(): Promise<boolean> {
     try {
-      const res = await fetch(this.url('/api/jobs/cancel'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ job_ids: ids }),
-        signal: AbortSignal.timeout(5000)
-      })
+      const res = await fetch(
+        this.url('/free'),
+        this.authInit({
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ unload_models: true, free_memory: true }),
+          signal: AbortSignal.timeout(8000)
+        })
+      )
       return res.ok
     } catch {
       return false

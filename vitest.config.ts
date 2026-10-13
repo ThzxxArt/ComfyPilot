@@ -47,6 +47,8 @@ export default defineConfig({
         'src/main/services/netProbe.ts',
         'src/main/services/comfyApi.ts',
         'src/main/services/capabilities.ts',
+        'src/main/services/workflowFingerprint.ts',
+        'src/main/services/appUpdate.ts',
         'src/shared/constants.ts',
         'src/shared/launchArgs.ts',
         'src/shared/nodeLoadReport.ts'
@@ -91,6 +93,19 @@ export default defineConfig({
         'src/main/services/doctor.ts': { statements: 82, lines: 82, functions: 81, branches: 68 },
         'src/main/services/backup.ts': { statements: 88, lines: 88, functions: 88, branches: 69 },
         'src/main/services/monitor.ts': { statements: 59, lines: 59, functions: 62, branches: 66 },
+        // ── 0.1.11 新增模块（首轮实测 − 2pp）──
+        'src/main/services/workflowFingerprint.ts': {
+          statements: 88,
+          lines: 88,
+          functions: 98,
+          branches: 65
+        },
+        'src/main/services/appUpdate.ts': {
+          statements: 85,
+          lines: 85,
+          functions: 98,
+          branches: 73
+        },
         // ── 全局下限（0.1.10 全量实测 − 2pp）──
         statements: 88,
         lines: 88,

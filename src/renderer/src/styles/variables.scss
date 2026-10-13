@@ -49,3 +49,14 @@ $font-sans:
   system-ui,
   sans-serif;
 $font-mono: 'JetBrains Mono', 'Cascadia Code', 'SF Mono', Consolas, monospace;
+
+// Terminal surfaces (0.1.11) — one palette shared by the instance log pane,
+// the node-op modal and the update modal (previously three near-duplicate
+// hardcoded dark palettes).
+$term-bg: #0d1117;
+$term-border: #1f2733;
+$term-text: #c9d1d9;
+$term-dim: #6e7681;
+$term-warn: #e3b341;
+$term-error: #ff7b72;
+$term-accent: #7dd3fc;

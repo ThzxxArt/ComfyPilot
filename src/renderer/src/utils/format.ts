@@ -14,15 +14,28 @@ export function formatPercent(n: number, digits = 0): string {
 
 export function formatBytes(n: number): string {
   if (!n) return '0 B'
+  // Non-finite / negative inputs used to print `Infinity TB` / `-2048 B`
+  // (0.1.11 border cleanup): firmware values and delta displays hit this.
+  if (!Number.isFinite(n)) return '—'
+  const neg = n < 0
   const u = ['B', 'KB', 'MB', 'GB', 'TB']
   let i = 0
-  let v = n
+  let v = Math.abs(n)
   while (v >= 1024 && i < u.length - 1) {
     v /= 1024
     i++
   }
-  // 0 decimals ≥10 units, 1 decimal for small KB/MB — never a long tail
-  return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${u[i]}`
+  // 0 decimals ≥10 units, 1 decimal for small KB/MB — never a long tail.
+  // Rounding first then re-promoting avoids "1024 B" for 1023.6 bytes.
+  let digits = v >= 10 || i === 0 ? 0 : 1
+  let text = v.toFixed(digits)
+  if (Number(text) >= 1024 && i < u.length - 1) {
+    v /= 1024
+    i++
+    digits = v >= 10 || i === 0 ? 0 : 1
+    text = v.toFixed(digits)
+  }
+  return `${neg ? '-' : ''}${text} ${u[i]}`
 }
 
 /** Human uptime from milliseconds: 3h 12m / 5m 3s / 42s */

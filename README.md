@@ -1,7 +1,7 @@
 # ComfyPilot
 
 > **ComfyUI 全能管理器** — 本机 ComfyUI 生产线的控制塔  
-> TypeScript · Vue 3 · Electron · Naive UI · MIT · v0.1.10
+> TypeScript · Vue 3 · Electron · Naive UI · MIT · v0.1.11
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-4f6ef7)](./LICENSE)
 
@@ -132,7 +132,7 @@ node node_modules/electron/install.js
 npm run dev          # 开发模式
 npm run typecheck    # vue-tsc + tsc
 npm run typecheck:test # 测试源码 tsc（CI 门禁）
-npm run test         # 单元 + 集成（2206 tests）
+npm run test         # 单元 + 集成（2269 tests）
 npm run test:coverage
 npm run lint         # ESLint（含 --fix）
 npm run lint:check   # ESLint 只检查（CI 门禁）
@@ -261,7 +261,7 @@ Python 版本、Torch / CUDA、`extra_model_paths.yaml`、端口、磁盘、Regi
 
 ```text
 ComfyPilot/
-├── package.json                 # v0.1.10 · MIT · ThzxxArt
+├── package.json                 # v0.1.11 · MIT · ThzxxArt
 ├── electron.vite.config.ts
 ├── electron-builder.yml         # Win NSIS / macOS DMG / Linux AppImage·deb + GitHub publish
 ├── vitest.config.ts             # 覆盖率门禁（0.1.8 按实测定档，见文件内说明）
@@ -291,7 +291,7 @@ ComfyPilot/
 │           ├── styles/tokens.ts # JS 侧设计 token
 │           └── views/           # dashboard/instances/install/models/…
 ├── tests/
-│   ├── unit/                    # 74 文件（+3 集成 = 77）· 2206 用例全绿 · 行为测试为主
+│   ├── unit/                    # 85 文件（+3 集成 = 88）· 2269 用例全绿 · 行为测试为主
 │   ├── integration/
 │   └── e2e/
 └── .github/workflows/ci.yml
@@ -305,7 +305,7 @@ ComfyPilot/
 npm run dev / typecheck / test / test:coverage / test:e2e / test:all
 ```
 
-**测试：** 2206 用例（77 文件）+ e2e 冒烟（含渲染挂载断言）。覆盖率门禁在 `vitest.config.ts` 内 **按实测定档（实测 − 2pp）**；测试源码纳入 tsc 门禁（`typecheck:test`）。
+**测试：** 2269 用例（88 文件）+ e2e 冒烟（含渲染挂载断言）。覆盖率门禁在 `vitest.config.ts` 内 **按实测定档（实测 − 2pp）**；测试源码纳入 tsc 门禁（`typecheck:test`）。
 
 **门禁脚本：**
 
@@ -408,9 +408,13 @@ ComfyUI 本身采用 GPL-3.0；本项目独立发布，采用 **MIT**。
 - [x] **0.1.10 事实为真**：节点启动加载报告（IMPORT FAILED 可见 + 原因 + 一键启动自检）；实例在线版本；/api/jobs 作业列表与原子取消（旧版自动回退）；workflow_metadata 溯源
 - [x] **0.1.10 模型对账**：/experiment/models（回退 /models）与本地索引差异解释、一键加入扫描根
 - [x] **0.1.10 质量清偿**：doctor/backup/monitor/pip 清理链行为测试补齐（0%/2%/16% → 全绿上调门禁）、10+ 假测试修复、IPC 注册双向契约、测试纳入 tsc、e2e 渲染挂载断言
-- [x] 自动更新通道（GitHub Releases）：electron-builder.yml 配置 GitHub publish，NSIS 产物含 `latest.yml` + `app-update.yml`
-- [ ] 工作流版本对照与打包分享（0.1.5 已含 ZIP 分享）
-- [ ] 更细的 GPU 多卡 / 共享显存展示
+- [x] **0.1.11 监控可用**：进度 WebSocket 生命周期根治（实例启动即自动连接）；监控队列去重（/queue + /api/jobs 按 promptId 精确合并，不再「运行中/执行中」双显）；预览定位诚实化（仅 ComfyPilot 提交的运行；ComfyUI 协议定向实锤）
+- [x] **0.1.11 关联闭环**：工作流→产物**内容指纹反向匹配**（ComfyUI 前端执行的产物同样可关联）+ batch sidecar + 多 id 筛选 + 空态解释与重扫
+- [x] **0.1.11 事实精修**：节点「全部更新」完整性（可选重试检查失败项）+ 版本方向修复（1.0 不再谎报高于 1.2）+ git 落后提交数徽标 + 0.39 `[INFO]` 前缀加载报告修复；最大信息量卡片 + 批量启停防护；实例详情三页签 + 终端日志（自动跟随/2000 行）；调优面板平铺去嵌套；模型库类别下拉+架构筛选+类别图标；Dashboard 内存已用/总值
+- [x] **0.1.11 能力补齐**：远程实例批跑（远程历史产物语义诚实）+ 释放显存；运行中启动自检（独立端口）；工作流对比（字段差异+单侧节点类型）；GPU 多卡索引 + Windows 共享显存；应用自动更新检查可见化（设置页按钮+状态）
+- [x] 自动更新通道（GitHub Releases）：electron-builder.yml 配置 GitHub publish，NSIS 产物含 `latest.yml` + `app-update.yml`；应用内手动检查入口（Settings → 关于）
+- [x] 工作流版本对照与打包分享：0.1.11 工作流对比视图（`workflow.compare`）；打包分享（ZIP 导出，0.1.5 已含）
+- [x] 更细的 GPU 多卡 / 共享显存展示：0.1.11 多卡 `GPU n` 索引徽标 + Windows 共享显存（Shared Usage/Limit 计数器）
 
 ---
 

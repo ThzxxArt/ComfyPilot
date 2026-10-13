@@ -1,0 +1,4 @@
+[INFO] Import times for custom nodes:
+[INFO]    0.3 seconds: C:\ComfyUI\custom_nodes\ComfyUI-KJNodes
+[INFO]    9.1 seconds (IMPORT FAILED): C:\ComfyUI\custom_nodes\BrokenPack
+[INFO] Cannot import C:\ComfyUI\custom_nodes\BrokenPack module for custom nodes: No module named "cv2"

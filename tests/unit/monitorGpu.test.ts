@@ -45,6 +45,24 @@ describe('monitor helpers (0.1.10)', () => {
     expect(merged).toEqual([{ vramTotal: 8192 * MB, vramUsed: 1024 * MB }])
   })
 
+  it('carries shared system-RAM figures when the counters report them (0.1.11)', async () => {
+    const { mergeGpuMemory } = await import('../../src/main/services/monitor')
+    const merged = mergeGpuMemory(
+      [{ vram: 8192, memoryUsed: 0, memoryTotal: 0 }],
+      [{ used: 700 * MB, total: 8192 * MB, sharedUsed: 300 * MB, sharedTotal: 4096 * MB }]
+    )
+    expect(merged[0].sharedUsed).toBe(300 * MB)
+    expect(merged[0].sharedTotal).toBe(4096 * MB)
+
+    // si path attaches the first adapter that reports a shared limit.
+    const si = mergeGpuMemory(
+      [{ vram: 8192, memoryUsed: 1024, memoryTotal: 8192 }],
+      [{ used: 1, total: 2, sharedUsed: 10, sharedTotal: 20 }]
+    )
+    expect(si[0].sharedUsed).toBe(10)
+    expect(si[0].sharedTotal).toBe(20)
+  })
+
   it('mergeGpuMemory matches perf-counter adapters by closest dedicated limit', async () => {
     const { mergeGpuMemory } = await import('../../src/main/services/monitor')
     const merged = mergeGpuMemory(

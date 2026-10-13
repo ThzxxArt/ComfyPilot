@@ -15,7 +15,13 @@ import {
 } from 'fs'
 import { join, extname, basename, dirname } from 'path'
 import { createHash } from 'crypto'
-import type { WorkflowRecord, WorkflowOrigin, ComfyInstanceConfig } from '@shared/types'
+import type {
+  WorkflowRecord,
+  WorkflowOrigin,
+  ComfyInstanceConfig,
+  WorkflowCompareDiff,
+  WorkflowCompareResult
+} from '@shared/types'
 import {
   loadSettings,
   upsertWorkflow,
@@ -24,6 +30,7 @@ import {
   updateWorkflow,
   deleteWorkflow as dbDeleteWorkflow,
   loadInstanceConfigs,
+  listRemotes,
   workflowLibraryDir,
   userDataDir
 } from './db'
@@ -893,6 +900,54 @@ export class WorkflowService {
     return true
   }
 
+  /**
+   * Side-by-side comparison of two workflow records (0.1.11 — README roadmap
+   * "workflow version comparison"): metadata deltas + node-class sets only
+   * present in one side. Pure read of already-analyzed records, no disk re-parse.
+   */
+  compare(idA: string, idB: string): WorkflowCompareResult {
+    const all = listWorkflows()
+    const a = all.find((w) => w.id === idA)
+    const b = all.find((w) => w.id === idB)
+    if (!a || !b) throw new Error('Workflow not found')
+    const fmt = (v: unknown): string => (v == null || v === '' ? '—' : String(v))
+    const diff = (field: string, va: unknown, vb: unknown): WorkflowCompareDiff => {
+      const sa = fmt(va)
+      const sb = fmt(vb)
+      return { field, a: sa, b: sb, changed: sa !== sb }
+    }
+    const typeList = (w: WorkflowRecord): string[] => {
+      const merged = [
+        ...((w.params?.nodeTypes as string[] | undefined) || []),
+        ...((w.params?.classTypes as string[] | undefined) || [])
+      ]
+      return [...new Set(merged.filter(Boolean))].sort()
+    }
+    const typesA = typeList(a)
+    const typesB = typeList(b)
+    const setA = new Set(typesA)
+    const setB = new Set(typesB)
+    const diffs: WorkflowCompareDiff[] = [
+      diff('name', a.name, b.name),
+      diff('format', a.format.toUpperCase(), b.format.toUpperCase()),
+      diff('version', a.version, b.version),
+      diff('nodeCount', a.nodeCount, b.nodeCount),
+      diff('seed', a.seed, b.seed),
+      diff('modelUsed', a.modelUsed, b.modelUsed),
+      diff('origin', a.origin, b.origin),
+      diff('tags', (a.tags || []).join(', '), (b.tags || []).join(', ')),
+      diff('updatedAt', new Date(a.updatedAt).toISOString(), new Date(b.updatedAt).toISOString())
+    ]
+    return {
+      a: { id: a.id, name: a.name },
+      b: { id: b.id, name: b.name },
+      diffs,
+      nodesOnlyA: typesA.filter((t) => !setB.has(t)),
+      nodesOnlyB: typesB.filter((t) => !setA.has(t)),
+      missingNodes: [...new Set([...a.missingNodes, ...b.missingNodes])]
+    }
+  }
+
   libraryInfo(instanceId?: string): {
     root: string
     instanceName: string
@@ -918,14 +973,23 @@ export class WorkflowService {
     seed?: number
   }): Promise<string | null> {
     const instances = loadInstanceConfigs()
-    const inst = instances.find((i) => i.id === opts.instanceId) || instances[0]
-    if (!inst) throw new Error('No instance configured')
+    // `remote:<id>` targets a configured remote instance (0.1.11); local ids
+    // fall back to the first instance exactly like before.
+    const remoteId = opts.instanceId.startsWith('remote:')
+      ? opts.instanceId.slice('remote:'.length)
+      : ''
+    const remote = remoteId ? listRemotes().find((r) => r.id === remoteId) : undefined
+    const inst = remote ? null : instances.find((i) => i.id === opts.instanceId) || instances[0]
+    if (!inst && !remote) throw new Error('No instance configured')
     // Same host normalisation as p1p2.instanceUrl — IPv6 listeners included.
-    const host =
-      inst.listen === '0.0.0.0' || inst.listen === '::' || inst.listen === '[::]'
+    const host = inst
+      ? inst.listen === '0.0.0.0' || inst.listen === '::' || inst.listen === '[::]'
         ? '127.0.0.1'
         : inst.listen
-    const url = `http://${host}:${inst.port}`
+      : ''
+    const url = remote
+      ? remote.baseUrl.replace(/\/+$/, '')
+      : `http://${host}:${inst!.port}`
 
     let rawJson: unknown = null
     const ext = extname(opts.workflowPath).toLowerCase()
@@ -954,7 +1018,10 @@ export class WorkflowService {
     let prompt = toApiPrompt(rawJson)
     if (opts.seed != null) prompt = applySeedToPrompt(prompt, opts.seed)
 
-    const client = new ComfyApiClient(url)
+    const client = new ComfyApiClient(url, {
+      // Protected remotes need the bearer on submissions too (0.1.11).
+      headers: remote?.apiKey ? { Authorization: `Bearer ${remote.apiKey}` } : undefined
+    })
     const { COMFY_CLIENT_ID } = await import('./comfyApi')
     // Sidecar map: lets OutputService.walk attribute the later output files
     // to this workflow even when PNG meta lacks the workflow id.
@@ -991,10 +1058,6 @@ export class WorkflowService {
     if (!st.size) return null
     // tEXt/iTXt live near the head; readPngTextMetaFromFile caps the read.
     return readPngTextMetaFromFile(path)
-  }
-
-  listCached(): WorkflowRecord[] {
-    return listWorkflows()
   }
 }
 

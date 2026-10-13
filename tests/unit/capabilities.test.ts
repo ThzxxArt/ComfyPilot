@@ -88,6 +88,24 @@ describe('capabilityService (0.1.10)', () => {
     expect(versionAtLeast('v0.39.0', '0.39.0')).toBe(true)
   })
 
+  it('remembers the online version for the running lifetime and clears on invalidate (0.1.11.1)', async () => {
+    const { capabilityService } = await fresh()
+    routes.set('/system_stats', () => json(fullStats))
+    routes.set('/features', () => json({}))
+    routes.set('/api/jobs', () => json({ jobs: [] }))
+    await capabilityService.probe('inst-a')
+    const base = 'http://127.0.0.1:8188'
+    expect(capabilityService.knownVersionForUrl(base)).toBe('0.39.0')
+
+    // Stopping the instance drops it (the card falls back to the install stamp).
+    capabilityService.invalidate('inst-a')
+    expect(capabilityService.knownVersionForUrl(base)).toBeUndefined()
+
+    // A fresh probe after a restart re-establishes the fact.
+    await capabilityService.probe('inst-a')
+    expect(capabilityService.knownVersionForUrl(base)).toBe('0.39.0')
+  })
+
   it('parses /system_stats facts exactly as reported', async () => {
     const { capabilityService } = await fresh()
     routes.set('/system_stats', () => json(fullStats))

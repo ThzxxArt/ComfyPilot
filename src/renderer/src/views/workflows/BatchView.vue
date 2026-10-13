@@ -54,12 +54,22 @@ function isBusy(status: string): boolean {
   return status === 'submitting' || status === 'running'
 }
 
-/** ComfyPilot never auto-starts an instance — batch run is gated on this.
- *  Remote targets are read-only in 0.1.10: batch submission requires a LOCAL
- *  running instance (submitting to a remote backend is not supported yet). */
-const instanceRunning = computed(
-  () => !store.isRemoteActive && store.activeInstance?.status === 'running'
-)
+/** Local target needs a running instance; remote targets are checked in main
+ *  (0.1.11 — remote batch submission is now supported). */
+const localTargetRunning = computed(() => store.activeInstance?.status === 'running')
+
+/** Instance options incl. configured remotes (`remote:<id>`). */
+const instanceOptions = computed(() => [
+  ...store.instances.map((i) => ({ label: i.name, value: i.id })),
+  ...store.remotes.map((r) => ({ label: `☁ ${r.name}`, value: `remote:${r.id}` }))
+])
+
+/** Can this job start now: local instance running, or a remote target. */
+function canStartJob(job: BatchJob): boolean {
+  if (job.instanceId?.startsWith('remote:')) return true
+  return localTargetRunning.value
+}
+
 const needInstanceHint = computed(() => t('batch.needRunningInstance'))
 // Hoisted to setup scope — calling useLaunch() inside a dialog callback would
 // lose the router injection.
@@ -94,6 +104,15 @@ const workflowOptions = computed(() =>
     }))
 )
 
+/** Target for new jobs — draft pick, else the header's active target. */
+function resolvedInstanceId(): string {
+  return (
+    draft.value.instanceId ||
+    (store.activeRemoteId ? `remote:${store.activeRemoteId}` : store.activeInstanceId) ||
+    ''
+  )
+}
+
 function statusLabel(status: string): string {
   const key = `batch.status.${status}`
   const s = t(key)
@@ -112,7 +131,11 @@ function statusType(status: string): 'success' | 'error' | 'info' | 'default' | 
 async function refreshJobs(): Promise<void> {
   try {
     jobs.value = await ipc('batch.list')
-    if (!draft.value.instanceId) draft.value.instanceId = store.activeInstanceId || ''
+    if (!draft.value.instanceId) {
+      draft.value.instanceId = store.activeRemoteId
+        ? `remote:${store.activeRemoteId}`
+        : store.activeInstanceId || ''
+    }
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   }
@@ -124,7 +147,11 @@ async function refresh(): Promise<void> {
     jobs.value = await ipc('batch.list')
     // workflow.list is a full disk walk — only fetch it when the create modal
     // actually needs it (openCreate calls loadWorkflows).
-    if (!draft.value.instanceId) draft.value.instanceId = store.activeInstanceId || ''
+    if (!draft.value.instanceId) {
+      draft.value.instanceId = store.activeRemoteId
+        ? `remote:${store.activeRemoteId}`
+        : store.activeInstanceId || ''
+    }
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   } finally {
@@ -159,6 +186,11 @@ async function createJob(): Promise<void> {
     message.warning(t('batch.selectWorkflow'))
     return
   }
+  const targetInstance = resolvedInstanceId()
+  if (!targetInstance) {
+    message.warning(t('common.needRunningInstance'))
+    return
+  }
   if (creating.value) return
   creating.value = true
   try {
@@ -174,7 +206,7 @@ async function createJob(): Promise<void> {
     })
     const job = await ipc('batch.create', {
       name: draft.value.name,
-      instanceId: draft.value.instanceId || store.activeInstanceId || '',
+      instanceId: targetInstance,
       items,
       notes: draft.value.notes,
       params: {
@@ -198,17 +230,14 @@ async function createJob(): Promise<void> {
 
 async function start(id: string): Promise<void> {
   if (startingId.value) return
-  if (store.isRemoteActive) {
-    message.warning(t('batch.remoteNotSupported'))
-    return
-  }
-  if (!instanceRunning.value) {
-    message.warning(needInstanceHint.value)
-    return
-  }
   const job = jobs.value.find((j) => j.id === id)
   if (job && isBusy(job.status)) {
     message.warning(t('batch.alreadyRunning'))
+    return
+  }
+  const target = job?.instanceId || ''
+  if (!target.startsWith('remote:') && !localTargetRunning.value) {
+    message.warning(needInstanceHint.value)
     return
   }
   startingId.value = id
@@ -496,14 +525,14 @@ onUnmounted(() => offBatch?.())
             </div>
 
             <NSpace class="job-actions">
-              <NTooltip trigger="hover" :disabled="instanceRunning">
+              <NTooltip trigger="hover" :disabled="canStartJob(job)">
                 <template #trigger>
                   <span class="btn-wrap">
                     <NButton
                       size="small"
                       type="primary"
                       secondary
-                      :disabled="isBusy(job.status) || startingId === job.id || !instanceRunning"
+                      :disabled="isBusy(job.status) || startingId === job.id || !canStartJob(job)"
                       :loading="startingId === job.id"
                       @click="start(job.id)"
                     >
@@ -573,9 +602,12 @@ onUnmounted(() => offBatch?.())
         </div>
         <NSelect
           v-model:value="draft.instanceId"
-          :options="store.instances.map((i) => ({ label: i.name, value: i.id }))"
+          :options="instanceOptions"
           :placeholder="$t('batch.instancePlaceholder')"
         />
+        <div v-if="draft.instanceId.startsWith('remote:')" class="meta remote-note-inline">
+          {{ $t('batch.remoteOutputsNote') }}
+        </div>
         <div class="matrix">
           <div class="matrix-row">
             <div class="matrix-cell">
@@ -780,5 +812,10 @@ onUnmounted(() => offBatch?.())
 }
 .empty {
   padding: 64px 0;
+}
+.remote-note-inline {
+  margin-top: 6px;
+  color: $color-warning;
+  line-height: 1.55;
 }
 </style>

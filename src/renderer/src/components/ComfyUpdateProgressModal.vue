@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, type Component } from 'vue'
+import { computed, ref, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   CheckmarkCircleOutline,
@@ -16,22 +16,28 @@ const props = defineProps<{ show: boolean; title?: string }>()
 const emit = defineEmits<{ (e: 'update:show', v: boolean): void }>()
 
 const { t } = useI18n()
-const { progress, progressKind, updating, cancelling, cancelUpdate, clearProgress } =
-  useComfyUpdate()
+const { progress, updating, cancelling, cancelUpdate } = useComfyUpdate()
 
 const modalTitle = computed(() => props.title || t('instance.updateComfy'))
 
+/**
+ * 0.1.11: the modal is fully closable WHILE RUNNING and the progress stream
+ * survives — closing only hides the view; the "view progress" banner reopens
+ * it. Matches the node-op modal contract; long updates no longer lock the UI.
+ */
 const visible = computed({
   get: () => props.show,
-  set: (v: boolean) => {
-    emit('update:show', v)
-    // Only clear streams this modal owns. Closing it must NOT wipe a node-op
-    // stream whose state the node modal deliberately preserves (0.1.9).
-    if (!v && (progressKind.value === 'comfy-update' || progressKind.value === 'repair')) {
-      clearProgress()
-    }
-  }
+  set: (v: boolean) => emit('update:show', v)
 })
+
+/** Steps whose full log is expanded (terminal-style pane). */
+const expandedLogs = ref<Set<string>>(new Set())
+function toggleStepLog(id: string): void {
+  const next = new Set(expandedLogs.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  expandedLogs.value = next
+}
 
 const percent = computed(() => Math.max(0, Math.min(100, Math.round(progress.value?.percent || 0))))
 const steps = computed<UpdateStep[]>(() => progress.value?.steps || [])
@@ -93,8 +99,8 @@ async function onCancel(): Promise<void> {
     preset="card"
     :title="modalTitle"
     style="width: 640px; border-radius: 20px"
-    :mask-closable="!updating"
-    :closable="!updating"
+    mask-closable
+    closable
   >
     <div class="upd-head">
       <NProgress
@@ -122,7 +128,20 @@ async function onCancel(): Promise<void> {
         <div class="st-body">
           <div class="st-title">{{ stepTitle(s) }}</div>
           <div v-if="detail(s)" class="st-detail">{{ detail(s) }}</div>
-          <div v-if="s.log?.length" class="st-log mono">{{ s.log[s.log.length - 1] }}</div>
+          <div
+            v-if="s.log?.length"
+            class="st-log mono"
+            :class="{ 'can-expand': s.log.length > 1, expanded: expandedLogs.has(s.id) }"
+            :title="s.log.length > 1 ? t('nodes.terminalTitle') : undefined"
+            @click="s.log.length > 1 && toggleStepLog(s.id)"
+          >
+            <template v-if="expandedLogs.has(s.id)">
+              <div v-for="(line, li) in s.log.slice(-300)" :key="li" class="st-log-line">
+                {{ line }}
+              </div>
+            </template>
+            <template v-else>{{ s.log[s.log.length - 1] }}</template>
+          </div>
         </div>
       </div>
     </NScrollbar>
@@ -144,7 +163,7 @@ async function onCancel(): Promise<void> {
         >
           {{ t('common.cancel') }}
         </NButton>
-        <NButton type="primary" :disabled="updating" @click="visible = false">
+        <NButton type="primary" @click="visible = false">
           {{ t('common.close') }}
         </NButton>
       </NSpace>
@@ -237,6 +256,26 @@ async function onCancel(): Promise<void> {
   color: $color-text-muted-ink;
   margin-top: 2px;
   word-break: break-all;
+
+  &.can-expand:not(.expanded) {
+    cursor: zoom-in;
+  }
+
+  &.expanded {
+    background: $term-bg;
+    color: $term-text;
+    border-radius: 8px;
+    padding: 6px 8px;
+    max-height: 180px;
+    overflow: auto;
+    cursor: zoom-out;
+  }
+}
+
+.st-log-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.5;
 }
 
 .upd-backup {

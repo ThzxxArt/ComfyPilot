@@ -2833,6 +2833,114 @@ describe('updateAll', () => {
     expect(byName.get('AllC')?.ok).toBe(true)
   })
 
+  it('includeCheckFailed retries packs whose pre-check failed (0.1.11)', async () => {
+    const dirOk = seedPack({
+      name: 'CC-Ok',
+      withGit: true,
+      pyproject: 'name = "CC-Ok"\nversion = "1.0.0"\n'
+    })
+    const dirFail = seedPack({
+      name: 'CC-Fail',
+      withGit: true,
+      pyproject: 'name = "CC-Fail"\nversion = "1.0.0"\n'
+    })
+    const ids = listIds()
+    h.state.nodePacks = [
+      {
+        id: ids.get('CC-Ok'),
+        name: 'CC-Ok',
+        locked: false,
+        installSource: 'git',
+        version: '1.0.0',
+        issues: [],
+        tags: [],
+        nodeList: [],
+        path: dirOk
+      },
+      {
+        id: ids.get('CC-Fail'),
+        name: 'CC-Fail',
+        locked: false,
+        installSource: 'git',
+        version: '1.0.0',
+        issues: [],
+        tags: [],
+        nodeList: [],
+        path: dirFail
+      }
+    ]
+    cpMock.__setExecHandler((_cmd, args) => {
+      const isFailPack = args.some((a) => String(a).includes('CC-Fail'))
+      if (args.includes('fetch')) {
+        // A flaky fetch makes the pre-check fail for CC-Fail only.
+        if (isFailPack) return { error: new Error('fetch timeout'), stderr: 'fetch timeout' }
+        return { stdout: '' }
+      }
+      if (args.includes('rev-list')) return { stdout: isFailPack ? '0' : '2' }
+      if (args.includes('describe')) return { stdout: 'v2\n' }
+      if (args.includes('pull')) return { stdout: 'ok' }
+      return { stdout: '' }
+    })
+    try {
+      // Conservative default: a failed check means "not attempted".
+      const conservative = await nodePackService.updateAll('inst-1')
+      const cFail = conservative.find((r) => r.name === 'CC-Fail')!
+      expect(cFail.skipped).toBe(true)
+      expect(cFail.checkStatus).toBe('check-failed')
+
+      // Opt-in retry: the pack IS attempted and its outcome reported.
+      const retried = await nodePackService.updateAll('inst-1', { includeCheckFailed: true })
+      const rFail = retried.find((r) => r.name === 'CC-Fail')!
+      expect(rFail.ok).toBe(true)
+      expect(rFail.skipped).toBeUndefined()
+      expect(rFail.checkStatus).toBe('check-failed')
+    } finally {
+      cpMock.__setExecHandler(null)
+    }
+  })
+
+  it('never lets a stale shallow-clone tag overwrite latestVersion (0.1.11)', async () => {
+    const dir = seedPack({
+      name: 'ShallowTag',
+      withGit: true,
+      pyproject: 'name = "ShallowTag"\nversion = "1.2.0"\n'
+    })
+    const ids = listIds()
+    h.state.nodePacks = [
+      {
+        id: ids.get('ShallowTag'),
+        name: 'ShallowTag',
+        locked: false,
+        installSource: 'git',
+        version: '1.2.0',
+        issues: [],
+        tags: [],
+        nodeList: [],
+        path: dir
+      }
+    ]
+    cpMock.__setExecHandler((_cmd, args) => {
+      if (args.includes('fetch')) return { stdout: '' }
+      if (args.includes('rev-list')) return { stdout: '1' }
+      // `describe` on a --depth 1 clone resolves to an OLD tag (1.0 < 1.2).
+      if (args.includes('describe')) return { stdout: 'v1.0.0\n' }
+      return { stdout: '' }
+    })
+    try {
+      const checks = await nodePackService.checkUpdates('inst-1')
+      const r = checks.find((c) => c.name === 'ShallowTag')!
+      expect(r.updatable).toBe(true)
+      // The honest signal is the commit distance, not the misleading tag.
+      expect(r.behindCount).toBe(1)
+      expect(r.latestVersion).toBeUndefined()
+      // The stored record must not learn the stale tag either.
+      const stored = h.state.nodePacks.find((p) => p.name === 'ShallowTag')
+      expect(stored?.latestVersion).toBeUndefined()
+    } finally {
+      cpMock.__setExecHandler(null)
+    }
+  })
+
   it('emits batch-error and rethrows when the pre-check itself throws', async () => {
     const spy = vi
       .spyOn(nodePackService, 'checkUpdates')

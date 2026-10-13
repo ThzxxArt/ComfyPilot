@@ -97,7 +97,11 @@ function writeProgress(kind: 'comfy-update' | 'repair' | 'node-op', payload: unk
     progressFinished.value = false
     progress.value = payload as UpdateProgress
     const status = (payload as UpdateProgress | null)?.status
-    if (status === 'done' || status === 'failed') progressFinished.value = true
+    // `cancelled` is terminal too (0.1.11) — leaving it out kept the slot
+    // "busy" forever and blocked later streams from claiming it.
+    if (status === 'done' || status === 'failed' || status === 'cancelled') {
+      progressFinished.value = true
+    }
   }
 }
 
@@ -160,6 +164,9 @@ const nodeBatch = ref<NodeUpdateBatchEvent | null>(null)
 const nodeBatchActive = ref(false)
 const nodeBatchEntries = ref<NodeBatchEntry[]>([])
 const nodeCheck = ref<NodeCheckProgressEvent | null>(null)
+/** Check-progress per instance (0.1.11) — switching instances must not show
+ *  another instance's "checking x/y" counter. */
+const nodeCheckByInstance = new Map<string, NodeCheckProgressEvent>()
 
 /**
  * Per-instance node-op state. Two instances can run ops simultaneously; the
@@ -220,14 +227,15 @@ function appendNodeOpLog(
 /** Point the modal at one instance's stream ('' = follow the newest). */
 function selectNodeOpInstance(instanceId: string): void {
   viewedNodeInstanceId.value = instanceId
-  // Banner follows the viewed instance too.
-  if (instanceId) {
-    const b = bannerFor(instanceId)
-    nodeUpdatingPack.value = b.updating
-    nodeUpdateMessage.value = b.updateMsg
-    nodeInstallingPack.value = b.installing
-    nodeInstallMessage.value = b.installMsg
-  }
+  // Banner + check state follow the viewed instance too. An EMPTY id must
+  // reset them — keeping the previous instance's values produced a ghost
+  // "updating…" banner after the instance was removed (0.1.11).
+  const b = bannerFor(instanceId || 'default')
+  nodeUpdatingPack.value = instanceId ? b.updating : null
+  nodeUpdateMessage.value = instanceId ? b.updateMsg : ''
+  nodeInstallingPack.value = instanceId ? b.installing : null
+  nodeInstallMessage.value = instanceId ? b.installMsg : ''
+  nodeCheck.value = nodeCheckByInstance.get(instanceId || 'default') || null
   const view = instanceId ? nodeOpViews.get(instanceId) : undefined
   if (view) {
     nodeOpLogs.value = view.logs
@@ -393,7 +401,13 @@ function ensureNodeSubscribed(): void {
   }
   if (!offCheck) {
     offCheck = onIpc(IPC_EVENTS.nodeCheckProgress, (payload) => {
-      nodeCheck.value = payload as NodeCheckProgressEvent
+      const p = payload as NodeCheckProgressEvent
+      const iid = p?.instanceId || 'default'
+      nodeCheckByInstance.set(iid, p)
+      // Mirror only for the viewed instance; others keep their own counter.
+      if (viewedNodeInstanceId.value === iid || !viewedNodeInstanceId.value) {
+        nodeCheck.value = p
+      }
     })
   }
 }

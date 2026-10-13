@@ -69,13 +69,9 @@ describe('ComfyApiClient jobs API (0.1.10)', () => {
     expect(await client.jobsList()).toBeNull()
   })
 
-  it('jobCancel / jobsCancel post and report honestly', async () => {
+  it('jobsCancel posts and reports honestly (jobCancel removed in 0.1.11)', async () => {
     const { ComfyApiClient } = await import('../../src/main/services/comfyApi')
     const client = new ComfyApiClient('http://127.0.0.1:8188')
-    expect(await client.jobCancel('j1')).toBe(true)
-    expect(calls.at(-1)!.url).toContain('/api/jobs/j1/cancel')
-    expect(calls.at(-1)!.init?.method).toBe('POST')
-
     expect(await client.jobsCancel(['j1', 'j2'])).toBe(true)
     const cancelCall = calls.at(-1)!
     expect(cancelCall.url).toContain('/api/jobs/cancel')
@@ -116,5 +112,48 @@ describe('ComfyApiClient jobs API (0.1.10)', () => {
     })
     const body2 = JSON.parse(String((promptFetch.mock.calls[1] as any[])[1]?.body))
     expect(body2.workflow_metadata).toBeUndefined()
+  })
+
+  it('freeMemory posts /free with unload flags; auth comes from the constructor (0.1.11)', async () => {
+    const { ComfyApiClient } = await import('../../src/main/services/comfyApi')
+    // Auth headers are injected on EVERY request (remote apiKey support).
+    const client = new ComfyApiClient('http://127.0.0.1:8188', {
+      headers: { Authorization: 'Bearer t' }
+    })
+    fetchMock.mockImplementation(async (url: unknown, init?: RequestInit) => {
+      calls.push({ url: String(url), init })
+      return new Response('{}', { status: 200 })
+    })
+    const ok = await client.freeMemory()
+    expect(ok).toBe(true)
+    const call = calls.find((c) => c.url.includes('/free'))!
+    expect(call.init?.method).toBe('POST')
+    expect(JSON.parse(String(call.init?.body))).toEqual({
+      unload_models: true,
+      free_memory: true
+    })
+    expect((call.init?.headers as Record<string, string>).Authorization).toBe('Bearer t')
+    // Server refusal → false (callers surface it, never a fake success).
+    fetchMock.mockResolvedValue(new Response('nope', { status: 500 }))
+    expect(await client.freeMemory()).toBe(false)
+  })
+
+  it('auth headers travel on every API call, not just probes (0.1.11)', async () => {
+    const { ComfyApiClient } = await import('../../src/main/services/comfyApi')
+    const client = new ComfyApiClient('http://10.0.0.5:8188', {
+      headers: { Authorization: 'Bearer k' }
+    })
+    await client.jobsList(5)
+    await client.history(3)
+    await client.deleteQueueItems(['p1'])
+    await client.interrupt('p1')
+    const authed = calls.filter((c) =>
+      (c.init?.headers as Record<string, string> | undefined)?.Authorization
+    )
+    // jobsList + history + queue-delete + interrupt all carried the header.
+    expect(authed.length).toBeGreaterThanOrEqual(4)
+    // Per-call Content-Type survives the merge.
+    const del = calls.find((c) => c.url.includes('/queue') && c.init?.method === 'POST')!
+    expect((del.init?.headers as Record<string, string>)['Content-Type']).toBe('application/json')
   })
 })

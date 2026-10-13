@@ -553,6 +553,12 @@ app.whenReady().then(async () => {
       })
     })
     .catch(() => undefined)
+  // Manual self-update checks stream their state to the renderer (0.1.11).
+  void import('./services/appUpdate')
+    .then(({ setAppUpdateBroadcast }) => {
+      setAppUpdateBroadcast((status) => broadcast(IPC_EVENTS.appUpdate, status))
+    })
+    .catch(() => undefined)
 
   scheduleMonitorTicks(MONITOR_TICK_VISIBLE_MS)
 

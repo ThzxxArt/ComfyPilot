@@ -15,7 +15,20 @@ import type { NodeLoadEntry, NodeLoadReport } from './types'
 
 const IMPORT_HEADER = 'Import times for custom nodes:'
 const PRESTARTUP_HEADER = 'Prestartup times for custom nodes:'
-const LINE_RE = /^\s*([\d.]+)\s+seconds(\s+\((IMPORT FAILED|PRESTARTUP FAILED)\))?:\s*(.+?)\s*$/
+/**
+ * Entry line, tolerating the ANSI level prefix added by ComfyUI 0.39+.
+ *
+ * 0.39 routes these lines through `app/logger.py`'s ColoredFormatter, which
+ * ALWAYS prefixes `[LEVEL] ` with ANSI SGR codes around the tag itself
+ * (no isatty gate), e.g. `\x1b[92m[INFO]\x1b[0m    0.3 seconds: C:\...\Foo`.
+ * Older builds print the bare line (`   0.3 seconds: ...`). The regex accepts
+ * both (and any `[LEVEL]` tag with trailing reset codes), otherwise 0.39 boot
+ * logs parse to zero rows and the UI shows "0 ok / 0 failed".
+ */
+
+const LINE_RE =
+  // eslint-disable-next-line no-control-regex -- ANSI SGR codes are intentional here
+  /^(?:\x1b\[[0-9;]*m)*\s*(?:\[[A-Z]+\](?:\x1b\[[0-9;]*m)*\s*)?([\d.]+)\s+seconds(\s+\((IMPORT FAILED|PRESTARTUP FAILED)\))?:\s*(.+?)\s*$/
 
 /** Directory basename of a module path printed by ComfyUI (`.disabled` stripped). */
 export function packFolderOf(modulePath: string): string {

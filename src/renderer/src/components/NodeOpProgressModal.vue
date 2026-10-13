@@ -481,8 +481,8 @@ function stepTitle(s: UpdateStep): string {
   overflow: auto;
   border: 1px solid $color-border;
   border-radius: 12px;
-  background: #0f172a;
-  color: #d7e3f4;
+  background: $term-bg;
+  color: $term-text;
   font-size: 11.5px;
   line-height: 1.6;
   padding: 8px 10px;
@@ -498,7 +498,7 @@ function stepTitle(s: UpdateStep): string {
 }
 
 .op-log-pack {
-  color: #7dd3fc;
+  color: $term-accent;
   margin-right: 6px;
 }
 

@@ -27,7 +27,12 @@ import {
   loadSettings
 } from './db'
 import { ComfyApiClient } from './comfyApi'
-import { readPngTextMetaFromFile, lookupPromptWorkflowLink } from './workflow'
+import {
+  readPngTextMetaFromFile,
+  lookupPromptWorkflowLink,
+  recordPromptWorkflowLink
+} from './workflow'
+import { lookupWorkflowByFingerprint } from './workflowFingerprint'
 import { assertSafeRelativeFilename } from './security'
 
 // ---------- helpers ----------
@@ -38,6 +43,12 @@ function instanceUrl(inst: { listen: string; port: number }): string {
       ? '127.0.0.1'
       : inst.listen
   return `http://${host}:${inst.port}`
+}
+
+/** Bearer auth for a configured remote — EVERY request must carry it, not just
+ *  the reachability probe (0.1.11: protected remotes 401'd after a green test). */
+function remoteAuthHeaders(remote?: { apiKey?: string }): Record<string, string> | undefined {
+  return remote?.apiKey ? { Authorization: `Bearer ${remote.apiKey}` } : undefined
 }
 
 /**
@@ -266,9 +277,14 @@ export class BatchService extends EventEmitter {
     upsertBatchJob(job)
     this.emit('progress', job)
 
+    // Local instance, or a configured remote (`remote:<id>` instanceId).
     const instances = loadInstanceConfigs()
-    const inst = instances.find((i) => i.id === job.instanceId) || instances[0]
-    if (!inst) {
+    const remoteId = job.instanceId.startsWith('remote:')
+      ? job.instanceId.slice('remote:'.length)
+      : ''
+    const remote = remoteId ? listRemotes().find((r) => r.id === remoteId) : undefined
+    const inst = remote ? null : instances.find((i) => i.id === job.instanceId) || instances[0]
+    if (!inst && !remote) {
       job.status = 'error'
       job.finishedAt = Date.now()
       job.notes = [job.notes, 'No instance configured'].filter(Boolean).join('; ')
@@ -277,8 +293,11 @@ export class BatchService extends EventEmitter {
       this.emit('progress', job)
       throw new Error('No instance')
     }
-    const url = instanceUrl(inst)
-    const client = new ComfyApiClient(url)
+    const url = remote ? remote.baseUrl.replace(/\/+$/, '') : instanceUrl(inst!)
+    // Remote outputs cannot be verified on this machine — `produced` counts
+    // history-reported files instead of indexed local paths (0.1.11).
+    const localInstancePath = inst?.path || ''
+    const client = new ComfyApiClient(url, { headers: remoteAuthHeaders(remote) })
 
     this.runningIds.add(id)
     try {
@@ -366,6 +385,13 @@ export class BatchService extends EventEmitter {
               item.submitted += 1
               job.submitted += 1
               iteration += 1
+              // Persist the prompt→workflow sidecar so an index rebuild can
+              // re-attribute outputs even without the batch record (0.1.11).
+              try {
+                recordPromptWorkflowLink(promptId, item.workflowId, item.workflowName)
+              } catch {
+                /* best-effort */
+              }
             } else {
               // Submit refused — never accepted, so it is NOT an exec failure.
               item.submitFailed += 1
@@ -395,7 +421,7 @@ export class BatchService extends EventEmitter {
       job.status = 'running'
       upsertBatchJob(job)
       this.emit('progress', job)
-      const settledIds = await this.awaitOutputs(job.id, client, inst.path)
+      const settledIds = await this.awaitOutputs(job.id, client, localInstancePath)
 
       // The job may have been removed while we were polling — never resurrect it.
       const latest = this.list().find((j) => j.id === id)
@@ -468,6 +494,28 @@ export class BatchService extends EventEmitter {
     upsertBatchJob(live)
     this.emit('progress', live)
     return live
+  }
+
+  /**
+   * HTTP client for a job's target — local instance, or a configured remote
+   * (`remote:<id>` instanceId). Remote batch runs use the remote baseUrl
+   * directly (0.1.11).
+   */
+  private clientForJob(job: BatchJob): ComfyApiClient | null {
+    const remoteId = job.instanceId.startsWith('remote:')
+      ? job.instanceId.slice('remote:'.length)
+      : ''
+    if (remoteId) {
+      const remote = listRemotes().find((r) => r.id === remoteId)
+      return remote
+        ? new ComfyApiClient(remote.baseUrl.replace(/\/+$/, ''), {
+            headers: remoteAuthHeaders(remote)
+          })
+        : null
+    }
+    const instances = loadInstanceConfigs()
+    const inst = instances.find((i) => i.id === job.instanceId) || instances[0]
+    return inst ? new ComfyApiClient(instanceUrl(inst)) : null
   }
 
   /** Best-effort: ask ComfyUI to drop still-pending prompts. */
@@ -547,18 +595,25 @@ export class BatchService extends EventEmitter {
         // actually exist on disk and are pushed into item.outputPaths — a
         // "success" prompt whose files are missing is NOT a produced image.
         if (ok && h.outputs?.length) {
-          for (const out of h.outputs) {
-            const abs = this.resolveHistoryOutput(out, instancePath)
-            if (!abs) continue
-            let linked = false
-            for (const item of live.items) {
-              if (item.promptIds.includes(pid) && !item.outputPaths.includes(abs)) {
-                item.outputPaths.push(abs)
-                linked = true
+          if (!instancePath) {
+            // Remote target (0.1.11): the remote filesystem is not ours to
+            // scan — count history-reported outputs honestly, never fabricate
+            // local paths.
+            live.produced += h.outputs.length
+          } else {
+            for (const out of h.outputs) {
+              const abs = this.resolveHistoryOutput(out, instancePath)
+              if (!abs) continue
+              let linked = false
+              for (const item of live.items) {
+                if (item.promptIds.includes(pid) && !item.outputPaths.includes(abs)) {
+                  item.outputPaths.push(abs)
+                  linked = true
+                }
               }
+              if (linked) live.produced += 1
+              this.indexPromptOutput(abs, live, pid)
             }
-            if (linked) live.produced += 1
-            this.indexPromptOutput(abs, live, pid)
           }
         }
       }
@@ -678,10 +733,8 @@ export class BatchService extends EventEmitter {
     // dequeuing the still-pending prompts only.
     void (async () => {
       try {
-        const instances = loadInstanceConfigs()
-        const inst = instances.find((i) => i.id === job.instanceId) || instances[0]
-        if (!inst) return
-        const client = new ComfyApiClient(instanceUrl(inst))
+        const client = this.clientForJob(job)
+        if (!client) return
         const ids = [...item.promptIds]
         if (!ids.length) return
         const atomic = await client.jobsCancel(ids)
@@ -711,10 +764,8 @@ export class BatchService extends EventEmitter {
     // Fire-and-forget cancel: atomic jobs cancel on 0.39+, plain dequeue otherwise.
     void (async () => {
       try {
-        const instances = loadInstanceConfigs()
-        const inst = instances.find((i) => i.id === job.instanceId) || instances[0]
-        if (!inst) return
-        const client = new ComfyApiClient(instanceUrl(inst))
+        const client = this.clientForJob(job)
+        if (!client) return
         const ids = job.items.flatMap((it) => it.promptIds)
         if (!ids.length) return
         const atomic = await client.jobsCancel(ids)
@@ -765,6 +816,8 @@ export class OutputService {
     favorite?: boolean
     batchJobId?: string
     workflowId?: string
+    /** Any-of match across workflow ids (0.1.11 — duplicate-name copies). */
+    workflowIds?: string[]
     sort?: 'createdAt' | 'size' | 'name'
     order?: 'asc' | 'desc'
     createdFrom?: number
@@ -803,7 +856,13 @@ export class OutputService {
     if (opts?.type && opts.type !== 'all') all = all.filter((a) => a.type === opts.type)
     if (opts?.favorite) all = all.filter((a) => a.favorite)
     if (opts?.batchJobId) all = all.filter((a) => a.batchJobId === opts.batchJobId)
-    if (opts?.workflowId) all = all.filter((a) => a.workflowId === opts.workflowId)
+    // workflowIds (any-of) wins over the legacy single-id filter.
+    if (opts?.workflowIds?.length) {
+      const wanted = new Set(opts.workflowIds)
+      all = all.filter((a) => Boolean(a.workflowId && wanted.has(a.workflowId)))
+    } else if (opts?.workflowId) {
+      all = all.filter((a) => a.workflowId === opts.workflowId)
+    }
     // Date range filter on createdAt (epoch ms).
     if (opts?.createdFrom != null) all = all.filter((a) => a.createdAt >= opts.createdFrom!)
     if (opts?.createdTo != null) all = all.filter((a) => a.createdAt <= opts.createdTo!)
@@ -863,16 +922,47 @@ export class OutputService {
           prev.createdAt === st.mtimeMs &&
           (ext !== '.png' || Array.isArray(prev.params?.pngKeys))
         ) {
-          const link =
-            prev.promptId && !prev.workflowId ? lookupPromptWorkflowLink(prev.promptId) : undefined
+          let workflowId = prev.workflowId
+          let workflowName = prev.workflowName
+          if (!workflowId && prev.promptId) {
+            const link = lookupPromptWorkflowLink(prev.promptId)
+            if (link?.workflowId) {
+              workflowId = link.workflowId
+              workflowName = workflowName || link.workflowName
+            }
+          }
+          // Still unlinked? A fingerprint match may exist — outputs produced by
+          // direct ComfyUI-frontend runs never had a sidecar (0.1.11). Read the
+          // PNG head once, backfill, and persist a sidecar for cheap rescans.
+          if (!workflowId && type === 'image' && ext === '.png') {
+            try {
+              const meta = readPngTextMetaFromFile(full)
+              const raw = String(meta.prompt || meta.workflow || '')
+              const graph = raw ? (JSON.parse(raw) as Record<string, unknown>) : null
+              const hit = graph ? lookupWorkflowByFingerprint(graph)[0] : undefined
+              if (hit) {
+                workflowId = hit.workflowId
+                workflowName = workflowName || hit.workflowName
+                if (prev.promptId) {
+                  try {
+                    recordPromptWorkflowLink(prev.promptId, hit.workflowId, hit.workflowName)
+                  } catch {
+                    /* best-effort */
+                  }
+                }
+              }
+            } catch {
+              /* unreadable meta — keep unlinked */
+            }
+          }
           out.push({
             ...prev,
             type,
             size: st.size,
             createdAt: st.mtimeMs,
             fileName: basename(full),
-            workflowId: prev.workflowId || link?.workflowId,
-            workflowName: prev.workflowName || link?.workflowName
+            workflowId,
+            workflowName
           })
           continue
         }
@@ -880,6 +970,8 @@ export class OutputService {
         let params: Record<string, unknown> = {}
         let seed: number | undefined
         let promptId: string | undefined
+        /** Embedded graph (prompt or workflow form) for fingerprint matching. */
+        let embeddedGraph: Record<string, unknown> | null = null
         if (type === 'image' && ext === '.png') {
           try {
             const meta = readPngTextMetaFromFile(full)
@@ -889,12 +981,20 @@ export class OutputService {
                   string,
                   { inputs?: Record<string, unknown>; class_type?: string }
                 >
+                embeddedGraph = prompt as Record<string, unknown>
                 params.nodeCount = Object.keys(prompt).length
                 for (const node of Object.values(prompt)) {
                   if (node?.inputs && typeof node.inputs.seed === 'number' && seed == null) {
                     seed = node.inputs.seed as number
                   }
                 }
+              } catch {
+                /* ignore */
+              }
+            }
+            if (!embeddedGraph && meta.workflow) {
+              try {
+                embeddedGraph = JSON.parse(String(meta.workflow)) as Record<string, unknown>
               } catch {
                 /* ignore */
               }
@@ -912,9 +1012,20 @@ export class OutputService {
           }
         }
 
-        // Backfill workflowId from the queue-time sidecar map (task: single-shot
-        // queue runs must attribute outputs to their workflow).
+        // Attribution priority: existing record → queue-time sidecar →
+        // content-fingerprint reverse match (covers ComfyUI-frontend runs).
         const link = promptId ? lookupPromptWorkflowLink(promptId) : undefined
+        let fpHit: { workflowId: string; workflowName: string } | undefined
+        if (!prev?.workflowId && !link?.workflowId && embeddedGraph) {
+          fpHit = lookupWorkflowByFingerprint(embeddedGraph)[0]
+          if (fpHit && promptId) {
+            try {
+              recordPromptWorkflowLink(promptId, fpHit.workflowId, fpHit.workflowName)
+            } catch {
+              /* best-effort */
+            }
+          }
+        }
 
         out.push({
           id: createHash('sha1').update(full).digest('hex').slice(0, 16),
@@ -926,8 +1037,8 @@ export class OutputService {
           seed: seed ?? prev?.seed,
           promptId: promptId ?? prev?.promptId,
           favorite: prev?.favorite,
-          workflowId: prev?.workflowId || link?.workflowId,
-          workflowName: prev?.workflowName || link?.workflowName,
+          workflowId: prev?.workflowId || link?.workflowId || fpHit?.workflowId,
+          workflowName: prev?.workflowName || link?.workflowName || fpHit?.workflowName,
           batchJobId: prev?.batchJobId,
           thumbnail: prev?.thumbnail,
           width: prev?.width,

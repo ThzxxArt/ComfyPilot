@@ -32,6 +32,14 @@ describe('format helpers', () => {
     expect(formatBytes(16376 * 1024 * 1024)).toBe('16 GB')
   })
 
+  it('formatBytes handles rounding, negatives and non-finite input (0.1.11)', () => {
+    // 1023.6 used to round DOWN to `1024 B` instead of promoting to `1.0 KB`.
+    expect(formatBytes(1023.6)).toBe('1.0 KB')
+    expect(formatBytes(-1536)).toBe('-1.5 KB')
+    expect(formatBytes(Number.POSITIVE_INFINITY)).toBe('—')
+    expect(formatBytes(Number.NaN)).toBe('0 B')
+  })
+
   it('formatUptime is human-readable', () => {
     expect(formatUptime(42_000)).toBe('42s')
     expect(formatUptime(5 * 60_000 + 3_000)).toBe('5m 3s')

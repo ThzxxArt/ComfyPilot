@@ -125,6 +125,9 @@ export const useAppStore = defineStore('app', () => {
    * WS is an app-level resource bound to the active instance.
    * Views must NOT disconnect it on unmount — that would kill progress
    * streams for pages listening in the background.
+   * 0.1.11: the socket follows the instance STATUS — running/starting keeps it
+   * connected, anything else drops it. Before this, a launch after app start
+   * never triggered a connect and previews/progress stayed empty forever.
    */
   async function syncWs(): Promise<void> {
     const url = activeTargetUrl.value
@@ -146,12 +149,33 @@ export const useAppStore = defineStore('app', () => {
       } catch {
         /* offline — polling still covers queue */
       }
+    } else {
+      // Target gone / stopped — drop the socket and its reconnect loop; the
+      // next running transition reconnects via the status watch below.
+      try {
+        await ipc('monitor.disconnectWs')
+      } catch {
+        /* ignore */
+      }
     }
   }
 
   watch([activeInstanceId, activeRemoteId], () => {
     void syncWs()
   })
+
+  // Status transitions drive the socket too (0.1.11) — the header's
+  // start/stop button and the tray both mutate status outside the store.
+  watch(
+    () =>
+      instances.value
+        .map((i) => `${i.id}:${i.status}`)
+        .sort()
+        .join('|'),
+    () => {
+      void syncWs()
+    }
+  )
 
   function bindLive(): () => void {
     const off1 = onInstanceStatus((info) => {

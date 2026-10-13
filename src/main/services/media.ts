@@ -106,8 +106,16 @@ export class ThumbnailService {
   }
 
   private placeholderSvg(rec: ModelRecord): string {
-    const label = rec.name.slice(0, 18)
-    const cat = rec.category
+    // XML-escape interpolated text (0.1.11): a model name containing & or <
+    // used to corrupt the SVG document into a broken image.
+    const escapeXml = (s: string): string =>
+      String(s).replace(
+        /[<>&'"]/g,
+        (c) =>
+          ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' })[c] as string
+      )
+    const label = escapeXml(rec.name.slice(0, 18))
+    const cat = escapeXml(rec.category)
     return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
   <defs>

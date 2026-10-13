@@ -105,6 +105,15 @@ export function parseFeatures(features: Record<string, unknown> | null): Record<
 
 export class CapabilityService {
   private cache = new Map<string, { at: number; caps: InstanceCapabilities }>()
+  /**
+   * Last version observed while the instance was RUNNING (0.1.11.1).
+   * Deliberately has NO TTL: a running instance's reported version is a stable
+   * fact, and the UI must not flip between the install stamp (a git commit
+   * sha) and the online version every 30 seconds as the probe cache expires.
+   * Cleared by invalidate() when the process stops / is removed, so a stopped
+   * instance falls back to the install stamp.
+   */
+  private versionCache = new Map<string, string>()
 
   /** Sync peek used by instance.toInfo (no probing on hot paths). */
   cachedForUrl(baseUrl: string): InstanceCapabilities | undefined {
@@ -114,14 +123,24 @@ export class CapabilityService {
     return hit.caps
   }
 
+  /** Last known online version for a base URL (running-instance lifetime). */
+  knownVersionForUrl(baseUrl: string): string | undefined {
+    return this.versionCache.get(baseUrl)
+  }
+
   invalidate(instanceId?: string): void {
     if (!instanceId) {
       this.cache.clear()
+      this.versionCache.clear()
       return
     }
     const configs = loadInstanceConfigs()
     const cfg = configs.find((c) => c.id === instanceId)
-    if (cfg) this.cache.delete(instanceBaseUrl(cfg))
+    if (cfg) {
+      const url = instanceBaseUrl(cfg)
+      this.cache.delete(url)
+      this.versionCache.delete(url)
+    }
   }
 
   /**
@@ -170,6 +189,8 @@ export class CapabilityService {
       probedAt: Date.now()
     }
     this.cache.set(baseUrl, { at: Date.now(), caps })
+    // Remember the online version for the instance's RUNNING lifetime.
+    if (caps.online && caps.version) this.versionCache.set(baseUrl, caps.version)
     return caps
   }
 }

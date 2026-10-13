@@ -1,0 +1,4 @@
+[INFO] Prestartup times for custom nodes:
+[INFO]    0.1 seconds (PRESTARTUP FAILED): /opt/ComfyUI/custom_nodes/PreBad
+[INFO] Import times for custom nodes:
+[INFO]    0.2 seconds: /opt/ComfyUI/custom_nodes/GoodPack

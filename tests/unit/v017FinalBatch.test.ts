@@ -155,9 +155,12 @@ describe('README roadmap', () => {
     expect(src).toContain('0.1.7')
   })
 
-  it('has unchecked items for future', () => {
+  it('roadmap is a delivered checklist (0.1.11: zero-backlog release)', () => {
     const src = readSrc('README.md')
-    expect(src).toContain('- [ ]')
+    // Every roadmap entry has shipped — the checklist must exist and contain
+    // completed items (the 0.1.9-era "must still have unchecked items" rule
+    // was replaced once the backlog reached zero).
+    expect(src).toContain('- [x]')
   })
 })
 

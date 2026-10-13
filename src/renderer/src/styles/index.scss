@@ -138,6 +138,18 @@ html {
   overscroll-behavior: contain;
 }
 
+/* Tab pages that wrap their tabs in NSpin (instance detail): naive injects a
+ * .n-spin-content div between .page-body and .n-tabs. It must continue the
+ * flex chain or the pane never gets a definite height and .page-body owns the
+ * scrollbar instead of the inner terminal (0.1.11.1). Hooked from the view
+ * via content-class="page-body-spin-fill" — no other page is affected. */
+.page-body-spin-fill {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 /* Banner / toolbar rows stay pinned above the scroll region */
 .page > .scan-banner,
 .page > .toolbar {

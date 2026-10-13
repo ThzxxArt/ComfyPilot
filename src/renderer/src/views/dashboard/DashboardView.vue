@@ -469,6 +469,15 @@ async function runDoctor(): Promise<void> {
               <div class="meter">
                 <div class="meter-label">
                   <span>{{ $t('dashboard.memLabel') }}</span>
+                  <span v-if="store.system?.ramTotal" class="meter-sub">
+                    {{
+                      $t('dashboard.ramLabel', {
+                        used: formatBytes(store.system?.ramUsed || 0),
+                        total: formatBytes(store.system?.ramTotal || 0)
+                      })
+                    }}
+                  </span>
+                  <span v-else class="meter-sub">—</span>
                 </div>
                 <NProgress
                   type="line"
@@ -479,7 +488,9 @@ async function runDoctor(): Promise<void> {
               </div>
               <div v-for="gpu in store.system?.gpus || []" :key="gpu.index" class="meter">
                 <div class="meter-label">
-                  <span class="meter-name" :title="gpu.model">{{ gpu.model }}</span>
+                  <span class="meter-name" :title="gpu.model"
+                    ><span class="gpu-index">GPU {{ gpu.index }}</span> {{ gpu.model }}</span
+                  >
                   <span v-if="gpu.vramTotal" class="meter-sub">
                     {{
                       $t('dashboard.vramLabel', {
@@ -496,6 +507,14 @@ async function runDoctor(): Promise<void> {
                   indicator-placement="inside"
                   :color="COLORS.primary2"
                 />
+                <div v-if="gpu.sharedTotal" class="gpu-shared">
+                  {{
+                    $t('dashboard.sharedLabel', {
+                      used: formatBytes(gpu.sharedUsed || 0),
+                      total: formatBytes(gpu.sharedTotal)
+                    })
+                  }}
+                </div>
               </div>
               <div v-if="!(store.system?.gpus || []).length" class="empty-gpu">
                 <TrendingUpOutline style="opacity: 0.5" />
@@ -839,6 +858,25 @@ async function runDoctor(): Promise<void> {
   color: $color-text-muted-ink;
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
+}
+
+.gpu-index {
+  display: inline-block;
+  padding: 0 6px;
+  margin-right: 4px;
+  border-radius: 6px;
+  background: rgba($color-primary, 0.12);
+  color: $color-primary;
+  font-size: 10.5px;
+  font-weight: 700;
+  vertical-align: 1px;
+}
+
+.gpu-shared {
+  margin-top: 4px;
+  font-size: 11px;
+  color: $color-text-muted-ink;
+  font-variant-numeric: tabular-nums;
 }
 
 .empty-gpu {

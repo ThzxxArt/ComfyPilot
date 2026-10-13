@@ -147,3 +147,45 @@ describe('ModelService.reconcile (0.1.10)', () => {
     expect(result.error).toBe('No instance configured')
   })
 })
+
+describe('category hints (0.1.11)', () => {
+  it('categorize prefers the hint, then path segments, then other', async () => {
+    const { categorize, categoryHintForRoot } = await import('../../src/main/services/model')
+    expect(categorize('D:/models/foo/bar.safetensors', 'loras')).toBe('loras')
+    expect(categorize('D:/models/checkpoints/x.safetensors')).toBe('checkpoints')
+    expect(categorize('D:/models/unet/x.safetensors')).toBe('diffusion_models')
+    expect(categorize('D:/random/x.safetensors')).toBe('other')
+    expect(categoryHintForRoot('D:/models/loras/')).toBe('loras')
+    expect(categoryHintForRoot('D:/models/loras')).toBe('loras')
+    expect(categoryHintForRoot('D:/models/ckpt')).toBeUndefined()
+  })
+
+  it('parseExtraModelPathsDetailed keeps the yaml-key category hint', async () => {
+    const { mkdtempSync, writeFileSync: wf } = await import('fs')
+    const { tmpdir: td } = await import('os')
+    const { join: j } = await import('path')
+    const dir = mkdtempSync(j(td(), 'cp-yaml-'))
+    const yaml = j(dir, 'extra_model_paths.yaml')
+    wf(
+      yaml,
+      [
+        'my_models:',
+        '  loras: |',
+        '    D:/loras',
+        '  checkpoints: D:/ckpts',
+        '  custom_nodes: D:/nodes',
+        ''
+      ].join('\n')
+    )
+    const { parseExtraModelPathsDetailed, parseExtraModelPaths } =
+      await import('../../src/main/services/model')
+    const roots = parseExtraModelPathsDetailed(yaml, true, { modelOnly: true })
+    const loras = roots.find((r) => r.path.includes('D:/loras'))
+    expect(loras?.categoryHint).toBe('loras')
+    expect(roots.find((r) => r.path.includes('D:/ckpts'))?.categoryHint).toBe('checkpoints')
+    // modelOnly skips custom_nodes entirely.
+    expect(roots.some((r) => r.path.includes('D:/nodes'))).toBe(false)
+    // The legacy wrapper returns plain path strings (back-compat).
+    expect(parseExtraModelPaths(yaml, true, { modelOnly: true })).toContain(loras!.path)
+  })
+})

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, watch, computed } from 'vue'
+import { onMounted, onUnmounted, ref, watch, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   NButton,
@@ -20,9 +20,10 @@ import {
   NModal
 } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
-import { ipc } from '@/composables/useIpc'
+import { ipc, onIpc, IPC_EVENTS } from '@/composables/useIpc'
 import type {
   AppSettings,
+  AppUpdateStatus,
   RemoteInstanceConfig,
   RemoteInstanceStatus,
   EnvProbe,
@@ -82,9 +83,17 @@ const store = useAppStore()
 const message = useMessage()
 const { t, locale } = useI18n()
 
-function setLocale(loc: 'zh-CN' | 'en-US'): void {
+async function setLocale(loc: 'zh-CN' | 'en-US'): Promise<void> {
   form.value.locale = loc
   locale.value = loc
+  // Persist immediately — leaving the page without Save used to silently
+  // revert the language on next launch (0.1.11).
+  try {
+    const next = await ipc('settings.set', { locale: loc })
+    store.settings = next
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 const form = ref<AppSettings>(cloneSettings(store.settings))
@@ -266,6 +275,55 @@ async function testRemote(id: string): Promise<void> {
   }
 }
 
+/** POST /free against a remote — the meaningful remote "lifecycle" action
+ *  (ComfyUI has no remote process start/stop protocol, 0.1.11). */
+async function freeRemoteMemory(id: string): Promise<void> {
+  try {
+    const r = await ipc('remote.freeMemory', id)
+    if (r.ok) message.success(t('settings.freeMemoryDone'))
+    else message.warning(t('settings.freeMemoryFailed', { error: r.error || '' }))
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+/** Open a remote instance's frontend (remote maintenance companion action). */
+function openRemoteFrontend(r: RemoteInstanceConfig): void {
+  if (!r.baseUrl) return
+  void ipc('shell.openExternal', r.baseUrl).catch(() => undefined)
+}
+
+// ---------- app self-update (0.1.11) ----------
+const appUpdate = ref<AppUpdateStatus | null>(null)
+const checkingAppUpdate = ref(false)
+let offAppUpdate: (() => void) | null = null
+
+function appUpdateText(s: AppUpdateStatus): string {
+  if (s.status === 'available') {
+    return t('settings.updateAvailable', { version: s.availableVersion || '' })
+  }
+  if (s.status === 'not-available') return t('settings.updateNone')
+  if (s.status === 'unsupported') return t('settings.updateUnsupported')
+  if (s.status === 'error') return t('settings.updateFailed', { error: s.error || '' })
+  return t('settings.updateChecking')
+}
+
+async function checkAppUpdate(): Promise<void> {
+  checkingAppUpdate.value = true
+  try {
+    appUpdate.value = await ipc('app.checkUpdate')
+  } catch (err) {
+    appUpdate.value = {
+      status: 'error',
+      currentVersion: APP_VERSION,
+      error: err instanceof Error ? err.message : String(err),
+      checkedAt: Date.now()
+    }
+  } finally {
+    checkingAppUpdate.value = false
+  }
+}
+
 /** remote.listStatus — probe every remote at once and show online/queue state. */
 const remoteStatuses = ref<Record<string, RemoteInstanceStatus>>({})
 const testingRemotes = ref(false)
@@ -308,6 +366,21 @@ onMounted(async () => {
   } catch {
     /* ignore */
   }
+  // Live self-update status stream (0.1.11).
+  offAppUpdate = onIpc(IPC_EVENTS.appUpdate, (p) => {
+    appUpdate.value = p as AppUpdateStatus
+  })
+  // Seed from the last known status so a previous check survives navigation.
+  try {
+    const last = await ipc('app.updateStatus')
+    if (last && last.checkedAt > 0) appUpdate.value = last
+  } catch {
+    /* status is best-effort */
+  }
+})
+
+onUnmounted(() => {
+  offAppUpdate?.()
 })
 </script>
 
@@ -600,6 +673,12 @@ onMounted(async () => {
                   <NButton size="tiny" secondary @click="testRemote(r.id)">{{
                     t('settings.test')
                   }}</NButton>
+                  <NButton size="tiny" secondary @click="openRemoteFrontend(r)">
+                    {{ t('settings.remoteOpen') }}
+                  </NButton>
+                  <NButton size="tiny" secondary @click="freeRemoteMemory(r.id)">
+                    {{ t('settings.freeMemory') }}
+                  </NButton>
                   <NPopconfirm @positive-click="removeRemote(r.id)">
                     <template #trigger>
                       <NButton size="tiny" type="error" secondary>{{ t('common.delete') }}</NButton>
@@ -653,6 +732,14 @@ onMounted(async () => {
           <div class="about">
             <div class="about-logo">ComfyPilot</div>
             <div class="about-line">v{{ APP_VERSION }} · MIT License</div>
+            <NSpace align="center" style="margin: 6px 0">
+              <NButton size="tiny" secondary :loading="checkingAppUpdate" @click="checkAppUpdate">
+                {{ t('settings.checkUpdate') }}
+              </NButton>
+              <span v-if="appUpdate && appUpdate.checkedAt" class="meta">{{
+                appUpdateText(appUpdate)
+              }}</span>
+            </NSpace>
             <div class="about-line">TypeScript · Vue 3 · Electron · Naive UI</div>
             <div class="about-line">{{ t('settings.aboutStorage') }}</div>
             <NDivider style="margin: 12px 0" />

@@ -2,6 +2,8 @@
  * Boot-log load report parsing (0.1.10) — behaviour over realistic log lines.
  */
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'fs'
+import { join } from 'path'
 import {
   parseNodeLoadReport,
   packLoadStatusOf,
@@ -113,5 +115,60 @@ describe('parseNodeLoadReport (0.1.10)', () => {
     expect(packFolderOf('C:\\x\\y\\Pack\\')).toBe('Pack')
     expect(packFolderOf('/a/b/Pack.disabled')).toBe('Pack')
     expect(packFolderOf('')).toBe('')
+  })
+
+  // ---------- 0.1.11: ComfyUI 0.39 routes these lines through the logging
+  // formatter, which ALWAYS prefixes `[LEVEL] ` (with ANSI codes). The old
+  // line-anchored regex parsed zero rows and the UI showed "0 ok / 0 failed".
+  it('parses ComfyUI 0.39+ lines carrying the [INFO] level prefix (0.1.11)', () => {
+    const report = parseNodeLoadReport([
+      log('[INFO] Import times for custom nodes:', 200),
+      log('[INFO]    0.3 seconds: C:\\ComfyUI\\custom_nodes\\Good'),
+      log('\x1b[92m[INFO]\x1b[0m    9.1 seconds (IMPORT FAILED): C:\\ComfyUI\\custom_nodes\\Bad'),
+      log(
+        '[INFO] Cannot import C:\\ComfyUI\\custom_nodes\\Bad module for custom nodes: No module named "cv2"'
+      )
+    ])
+    expect(report?.available).toBe(true)
+    expect(report!.observedAt).toBe(200)
+    expect(report!.entries).toHaveLength(2)
+    expect(report!.entries[0]).toMatchObject({ folder: 'Good', ok: true })
+    const bad = report!.entries.find((e) => e.folder === 'Bad')!
+    expect(bad.ok).toBe(false)
+    expect(bad.error).toContain('cv2')
+  })
+
+  it('still parses legacy bare lines and prefixed prestartup blocks (0.1.11)', () => {
+    const report = parseNodeLoadReport([
+      log('[INFO] Prestartup times for custom nodes:'),
+      log('[ERROR]    0.1 seconds (PRESTARTUP FAILED): /x/custom_nodes/PreBad'),
+      log('Import times for custom nodes:'),
+      log('    0.2 seconds: /x/custom_nodes/LegacyGood')
+    ])
+    expect(report!.entries.map((e) => e.folder).sort()).toEqual(['LegacyGood', 'PreBad'])
+    expect(report!.entries.find((e) => e.folder === 'PreBad')!.prestartup).toBe(true)
+    expect(packLoadStatusOf('Good', report)).toBe('unknown')
+  })
+
+  it('parses the real fixture log files (0.39 prefixed + legacy bare)', () => {
+    const fx = (name: string): Array<{ message: string; ts: number }> =>
+      readFileSync(join(__dirname, '..', 'fixtures', name), 'utf-8')
+        .split('\n')
+        .filter(Boolean)
+        .map((message, i) => ({ message, ts: i }))
+
+    const modern = parseNodeLoadReport(fx('comfy-039-import-times.log'))
+    expect(modern?.available).toBe(true)
+    expect(modern!.entries).toHaveLength(2)
+    const broken = modern!.entries.find((e) => e.folder === 'BrokenPack')!
+    expect(broken.ok).toBe(false)
+    expect(broken.error).toContain('cv2')
+
+    const legacy = parseNodeLoadReport(fx('comfy-legacy-import-times.log'))
+    expect(legacy!.entries).toHaveLength(2)
+    expect(legacy!.entries.find((e) => e.folder === 'ComfyUI-KJNodes')!.ok).toBe(true)
+
+    const prestartup = parseNodeLoadReport(fx('comfy-039-prestartup.log'))
+    expect(prestartup!.entries.map((e) => e.folder).sort()).toEqual(['GoodPack', 'PreBad'])
   })
 })

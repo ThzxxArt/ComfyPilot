@@ -17,6 +17,10 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# Fixture logs are TEST INPUTS (assertion data), not runtime logs —
+# they must be committed or the parser tests fail on a clean clone.
+!tests/fixtures/*.log
+
 # Editor
 .vscode/*
 !.vscode/extensions.json

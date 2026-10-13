@@ -146,6 +146,20 @@ function safeInstanceId(instanceId?: string): string | undefined {
   return sanitizeId(raw)
 }
 
+/**
+ * Instance target id or `remote:<id>` (0.1.11). sanitizeId would rewrite the
+ * `:` separator, so the remote prefix is stripped, sanitized, and re-attached.
+ */
+function safeInstanceTarget(instanceId?: string): string | undefined {
+  if (instanceId == null || instanceId === '') return undefined
+  const raw = String(instanceId)
+  if (raw.startsWith('remote:')) {
+    const id = safeInstanceId(raw.slice('remote:'.length))
+    return id ? `remote:${id}` : undefined
+  }
+  return safeInstanceId(raw)
+}
+
 const READ_DATA_EXTS = new Set([
   '.json',
   '.png',
@@ -358,6 +372,14 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       const path = await instanceService.copyDiagnostics(sanitizeId(id))
       clipboard.writeText(path)
       return path
+    })
+  )
+  ipcMain.handle(
+    'instance.exportLogs',
+    wrap(async (id: string) => {
+      const result = await instanceService.exportLogs(sanitizeId(id))
+      shell.showItemInFolder(result.path)
+      return result
     })
   )
   ipcMain.handle(
@@ -703,13 +725,25 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   )
   ipcMain.handle(
     'node.updateAll',
-    wrap((instanceId?: string) => nodePackService.updateAll(safeInstanceId(instanceId)))
+    wrap((instanceId?: string, opts?: import('@shared/types').NodeUpdateAllOptions) =>
+      nodePackService.updateAll(safeInstanceId(instanceId), opts)
+    )
   )
 
   // workflows
   ipcMain.handle(
     'workflow.list',
-    wrap((opts?: { includeMissing?: boolean }) => workflowService.list(opts))
+    wrap(async (opts?: { includeMissing?: boolean }) => {
+      const list = workflowService.list(opts)
+      // Attach a transient content fingerprint so the renderer can widen the
+      // workflow→outputs filter across duplicate copies (0.1.11).
+      const { fingerprintOfWorkflowFile } = await import('../services/workflowFingerprint')
+      return list.map((w) => ({
+        ...w,
+        contentHash:
+          !w.missing && w.path ? fingerprintOfWorkflowFile(w.path) || undefined : undefined
+      }))
+    })
   )
   ipcMain.handle(
     'workflow.import',
@@ -842,11 +876,20 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     'workflow.queue',
     wrap(async (opts: { workflowPath: string; instanceId: string; seed?: number }) => {
       if (!isSafeReadPath(opts?.workflowPath)) throw new Error('Blocked unsafe workflow path')
-      // Queueing needs a live backend — never auto-start one.
-      await requireRunningInstance(opts.instanceId)
+      const target = safeInstanceTarget(String(opts.instanceId || ''))
+      if (!target) throw new Error('Invalid instance id')
+      // Queueing needs a live backend — local instance or reachable remote.
+      if (target.startsWith('remote:')) {
+        const status = await remoteService.test(target.slice('remote:'.length))
+        if (!status.online) {
+          throw new Error(`Remote instance is offline: ${status.error || target}`)
+        }
+      } else {
+        await requireRunningInstance(target)
+      }
       return workflowService.queue({
         workflowPath: opts.workflowPath,
-        instanceId: safeInstanceId(opts.instanceId) || opts.instanceId,
+        instanceId: target,
         seed: opts.seed
       })
     })
@@ -857,6 +900,10 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       if (!isSafeReadPath(path)) throw new Error('Blocked unsafe image path')
       return workflowService.parsePngMeta(path)
     })
+  )
+  ipcMain.handle(
+    'workflow.compare',
+    wrap((idA: string, idB: string) => workflowService.compare(sanitizeId(idA), sanitizeId(idB)))
   )
 
   // monitor
@@ -1066,7 +1113,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
         }
         return batchService.create({
           ...input,
-          instanceId: safeInstanceId(input.instanceId) || input.instanceId
+          instanceId: safeInstanceTarget(input.instanceId) || input.instanceId
         })
       }
     )
@@ -1076,8 +1123,17 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     wrap(async (id: string) => {
       const safeId = sanitizeId(id)
       const job = batchService.list().find((j) => j.id === safeId)
-      // Batch submission needs a live backend — never auto-start one.
-      await requireRunningInstance(job?.instanceId)
+      // The target must be a live backend — local instance or a reachable
+      // remote (0.1.11); never auto-start anything.
+      const targetId = String(job?.instanceId || '')
+      if (targetId.startsWith('remote:')) {
+        const status = await remoteService.test(targetId.slice('remote:'.length))
+        if (!status.online) {
+          throw new Error(`Remote instance is offline: ${status.error || targetId}`)
+        }
+      } else {
+        await requireRunningInstance(targetId)
+      }
       try {
         const result = await batchService.start(safeId)
         // Surface terminal state as a global notification (task done / failed).
@@ -1150,6 +1206,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
         favorite?: boolean
         batchJobId?: string
         workflowId?: string
+        workflowIds?: string[]
         sort?: 'createdAt' | 'size' | 'name'
         order?: 'asc' | 'desc'
         createdFrom?: number
@@ -1298,6 +1355,32 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle(
     'remote.listStatus',
     wrap(() => remoteService.listStatus())
+  )
+  ipcMain.handle(
+    'remote.freeMemory',
+    wrap(async (id: string) => {
+      const remote = remoteService.list().find((r) => r.id === sanitizeId(id))
+      if (!remote) throw new Error('Remote not found')
+      const { ComfyApiClient } = await import('../services/comfyApi')
+      const ok = await new ComfyApiClient(remote.baseUrl, {
+        headers: remote.apiKey ? { Authorization: `Bearer ${remote.apiKey}` } : undefined
+      }).freeMemory()
+      return ok ? { ok: true } : { ok: false, error: 'Instance did not accept /free' }
+    })
+  )
+  ipcMain.handle(
+    'app.checkUpdate',
+    wrap(async () => {
+      const { checkAppUpdate } = await import('../services/appUpdate')
+      return checkAppUpdate()
+    })
+  )
+  ipcMain.handle(
+    'app.updateStatus',
+    wrap(async () => {
+      const { getLastAppUpdateStatus } = await import('../services/appUpdate')
+      return getLastAppUpdateStatus()
+    })
   )
 
   // market
