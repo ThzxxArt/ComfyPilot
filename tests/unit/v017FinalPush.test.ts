@@ -126,8 +126,6 @@ describe('app store structure', () => {
       'activeInstanceId',
       'instanceSwitchTick',
       'system',
-      'wsEvents',
-      'lastWsProgress',
       'doctorReport',
       'notifications',
       'notificationSeq',

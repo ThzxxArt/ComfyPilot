@@ -50,19 +50,6 @@ export class ComfyApiClient {
     }
   }
 
-  async objectInfo(): Promise<Record<string, unknown> | null> {
-    try {
-      const res = await fetch(
-        this.url('/object_info'),
-        this.authInit({ signal: AbortSignal.timeout(5000) })
-      )
-      if (!res.ok) return null
-      return (await res.json()) as Record<string, unknown>
-    } catch {
-      return null
-    }
-  }
-
   async queuePrompt(
     prompt: Record<string, unknown>,
     clientId: string,

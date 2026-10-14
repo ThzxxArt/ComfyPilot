@@ -49,7 +49,8 @@ const {
   updatingInstanceId,
   viewedNodeInstanceId,
   cancelNodeOp,
-  cancelNodeBatch
+  cancelNodeBatch,
+  hydrateNodeOp
 } = useComfyUpdate()
 
 // Mode is DERIVED: a live/retained batch always renders as batch, even after
@@ -64,6 +65,15 @@ const visible = computed({
   // Closing is a pure hide — state is preserved for reopening.
   set: (v: boolean) => emit('update:show', v)
 })
+
+// 0.1.12: a reopen after a renderer reload restores the authoritative node-op
+// snapshot from main; the terminal falls back to the per-step logs it carries.
+watch(
+  () => props.show,
+  (v) => {
+    if (v && !ownProgress.value) void hydrateNodeOp(viewedNodeInstanceId.value || undefined)
+  }
+)
 
 const running = computed(() => {
   if (mode.value === 'batch') return nodeBatchActive.value && nodeBatch.value != null
@@ -119,6 +129,16 @@ const percent = computed(() => {
 })
 
 const steps = computed<UpdateStep[]>(() => ownProgress.value?.steps || [])
+/** Terminal lines: the live stream when present; otherwise the per-step logs
+ *  a hydrated snapshot carries (state restored after a renderer reload). */
+const terminalLines = computed(() => {
+  if (nodeOpLogs.value.length) return nodeOpLogs.value
+  const acc: Array<{ packName?: string; line: string; ts: number }> = []
+  for (const s of ownProgress.value?.steps || []) {
+    for (const line of s.log || []) acc.push({ packName: s.title, line, ts: 0 })
+  }
+  return acc.slice(-400)
+})
 const currentLabel = computed(() => {
   if (mode.value === 'batch') {
     const b = nodeBatch.value
@@ -189,7 +209,7 @@ watch(
 
 const copyState = ref('')
 async function copyLogs(): Promise<void> {
-  const text = nodeOpLogs.value
+  const text = terminalLines.value
     .map((l) => (l.packName ? `[${l.packName}] ${l.line}` : l.line))
     .join('\n')
   try {
@@ -303,14 +323,14 @@ function stepTitle(s: UpdateStep): string {
       <NSpace align="center" size="small">
         <NText depth="3" style="font-size: 12px">{{ t('nodes.autoScroll') }}</NText>
         <NSwitch v-model:value="autoscroll" size="small" />
-        <NButton size="tiny" secondary :disabled="!nodeOpLogs.length" @click="copyLogs">
+        <NButton size="tiny" secondary :disabled="!terminalLines.length" @click="copyLogs">
           {{ copyState || t('nodes.copyLogs') }}
         </NButton>
       </NSpace>
     </div>
     <div ref="logBox" class="op-log mono">
-      <div v-if="!nodeOpLogs.length" class="op-log-empty">{{ t('nodes.noLogs') }}</div>
-      <div v-for="(l, i) in nodeOpLogs" :key="i" class="op-log-line">
+      <div v-if="!terminalLines.length" class="op-log-empty">{{ t('nodes.noLogs') }}</div>
+      <div v-for="(l, i) in terminalLines" :key="i" class="op-log-line">
         <span v-if="l.packName" class="op-log-pack">[{{ l.packName }}]</span>
         <span>{{ l.line }}</span>
       </div>
@@ -319,7 +339,7 @@ function stepTitle(s: UpdateStep): string {
     <div v-if="ownProgress?.backupPath" class="upd-backup mono">
       {{ t('instance.preserveNote') }} · {{ ownProgress.backupPath }}
     </div>
-    <div v-if="ownProgress?.error && !nodeOpLogs.length" class="upd-error">
+    <div v-if="ownProgress?.error && !terminalLines.length" class="upd-error">
       {{ ownProgress.error }}
     </div>
 

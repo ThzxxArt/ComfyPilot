@@ -16,6 +16,8 @@ import { promisify } from 'util'
 import { EventEmitter } from 'events'
 import type {
   NodeCheckProgressEvent,
+  NodeDepsAudit,
+  NodeDepsAuditPack,
   NodeLoadReport,
   NodeNameConflict,
   NodeOpLogEvent,
@@ -26,6 +28,7 @@ import type {
   NodeUpdateAllOptions,
   NodeUpdateBatchEvent,
   NodeUpdateCheckResult,
+  PipOpResult,
   RegistryNodePack,
   UpdateProgress,
   UpdateStep,
@@ -33,6 +36,12 @@ import type {
 } from '@shared/types'
 import { parseNodeLoadReport } from '@shared/nodeLoadReport'
 import { compareVersions, isUpdateAvailable } from '@shared/version'
+import {
+  parsePipRequirement,
+  versionSatisfies,
+  normalizePipName,
+  type PipRequirement
+} from '@shared/pipVersion'
 import {
   deleteNodePack,
   listNodePacks,
@@ -52,6 +61,7 @@ import { sanitizeId, isPathInside, normalizePathEverySegment } from './security'
 import { assertSafeGitUrl, applyGithubMirror, assertSafeBranch } from './installer'
 import { instanceService, resolveInstancePythonPath, resolveRuntimesPythonSync } from './instance'
 import { findInRuntimes } from './bootstrap'
+import { isPipOpActive } from './pipOps'
 
 const execFileAsync = promisify(execFile)
 
@@ -96,6 +106,27 @@ export function parseRequirementNames(text: string): string[] {
     if (m) names.push(m[1].toLowerCase())
   }
   return [...new Set(names)]
+}
+
+/** Parse `uv pip list --format json` / `python -m pip list --format=json`. */
+function parsePipListJson(text: string): Map<string, string> | null {
+  try {
+    const raw = JSON.parse(String(text || '').trim() || '[]') as Array<{
+      name?: unknown
+      version?: unknown
+    }>
+    if (!Array.isArray(raw)) return null
+    const map = new Map<string, string>()
+    for (const item of raw) {
+      if (!item || typeof item !== 'object') continue
+      const name = typeof item.name === 'string' ? normalizePipName(item.name) : ''
+      const version = typeof item.version === 'string' ? item.version : ''
+      if (name) map.set(name, version)
+    }
+    return map
+  } catch {
+    return null
+  }
 }
 
 /** Best-effort git HEAD sha for a pack directory. */
@@ -1111,6 +1142,14 @@ export class NodePackService extends EventEmitter {
     if (!internal?.reuseStream && (this.opBatches.has(guardKey) || this.opAborts.has(guardKey))) {
       throw codedError('OP_BUSY', 'Another operation is already running for this instance')
     }
+    // Cross-guard (0.1.12): a dependency install (diagnosis card / audit) owns
+    // the same venv — never overlap node-pack ops with it.
+    if (!internal?.reuseStream && isPipOpActive(guardKey)) {
+      throw codedError(
+        'OP_BUSY',
+        'A dependency install is running for this instance — wait for it to finish'
+      )
+    }
     this.emitInstallProgress({
       phase: 'start',
       packName: opts.id,
@@ -1832,7 +1871,20 @@ export class NodePackService extends EventEmitter {
   ): Promise<string[]> {
     const removed: string[] = []
     const vpy = resolveInstancePython(instanceId)
-    if (!vpy || !names.length) return removed
+    if (!vpy || !names.length || signal?.aborted) return removed
+    // pip may be missing in uv-created venvs — seed it first (0.1.12 WP4).
+    // Previously every uninstall silently removed nothing on such venvs.
+    // A failed seed throws PIP_UNAVAILABLE so the caller reports honestly.
+    try {
+      const { ensurePip, throwingExec } = await import('./env')
+      await ensurePip(vpy, (c, a, o) => throwingExec(c, a, o))
+    } catch (e) {
+      if (isAbortError(e)) throw e
+      throw codedError(
+        'PIP_UNAVAILABLE',
+        `pip is not available in ${vpy} — dependencies were NOT removed (use Doctor "Fix pip" first)`
+      )
+    }
     // Remove in modest batches so a giant requirements list cannot blow argv.
     const BATCH = 20
     for (let i = 0; i < names.length; i += BATCH) {
@@ -1882,6 +1934,12 @@ export class NodePackService extends EventEmitter {
     const guardKey = instanceId || 'default'
     if (this.opBatches.has(guardKey) || this.opAborts.has(guardKey)) {
       throw codedError('OP_BUSY', 'Another operation is already running for this instance')
+    }
+    if (isPipOpActive(guardKey)) {
+      throw codedError(
+        'OP_BUSY',
+        'A dependency install is running for this instance — wait for it to finish'
+      )
     }
     // Own the busy slot (and an abort controller) for the whole uninstall —
     // pip cleanup can take minutes and must block concurrent ops.
@@ -1935,14 +1993,27 @@ export class NodePackService extends EventEmitter {
               status: 'running',
               message: `Removing ${deps.length} pip package(s)…`
             })
-            const removed = await this.removePipDeps(deps, instanceId, uninstallSignal)
+            let removed: string[] = []
+            let pipMissing = false
+            try {
+              removed = await this.removePipDeps(deps, instanceId, uninstallSignal)
+            } catch (e) {
+              if (isAbortError(e)) throw e
+              if ((e as { code?: string }).code === 'PIP_UNAVAILABLE') {
+                pipMissing = true
+              } else {
+                throw e
+              }
+            }
             this.emitOpProgress({
               instanceId: instanceId || 'default',
               step: 'requirements',
               status: removed.length ? 'done' : 'skipped',
-              message: removed.length
-                ? `Removed pip packages: ${removed.join(', ')}`
-                : 'No matching pip packages were installed'
+              message: pipMissing
+                ? 'pip is unavailable — dependencies were NOT removed (use Doctor "Fix pip")'
+                : removed.length
+                  ? `Removed pip packages: ${removed.join(', ')}`
+                  : 'No matching pip packages were installed'
             })
           }
         }
@@ -2344,6 +2415,12 @@ export class NodePackService extends EventEmitter {
     if (this.opBatches.has(key) || this.opAborts.has(key)) {
       throw codedError('OP_BUSY', 'Another operation is already running for this instance')
     }
+    if (isPipOpActive(key)) {
+      throw codedError(
+        'OP_BUSY',
+        'A dependency install is running for this instance — wait for it to finish'
+      )
+    }
     const batchId = randomUUID()
     // Reserve the batch slot BEFORE the (slow) check pass: without this, a
     // single op started during checkUpdates would arm its controller and get
@@ -2493,6 +2570,12 @@ export class NodePackService extends EventEmitter {
     // its batch context. updateAll passes {fromBatch:true} for its own calls.
     if (!internal?.fromBatch && (this.opBatches.has(guardKey) || this.opAborts.has(guardKey))) {
       throw codedError('OP_BUSY', 'Another operation is already running for this instance')
+    }
+    if (!internal?.fromBatch && isPipOpActive(guardKey)) {
+      throw codedError(
+        'OP_BUSY',
+        'A dependency install is running for this instance — wait for it to finish'
+      )
     }
     this.emitInstallProgress({
       phase: 'start',
@@ -2896,6 +2979,118 @@ export class NodePackService extends EventEmitter {
     } catch {
       return null
     }
+  }
+
+  /**
+   * Dependency audit (0.1.12 WP5): every enabled pack's requirements.txt vs
+   * the instance environment's installed package list.
+   * - Names always checked; version specifiers via PEP 440-lite rules.
+   * - Installed list: `uv pip list` first (works without pip), then
+   *   `python -m pip list`. When neither works → ok:false + pipAvailable:false.
+   * - Honest scope: only DECLARED requirements (optional deps like
+   *   sageattention are not in requirements.txt — the runtime diagnosis card
+   *   covers those after the fact).
+   */
+  async depsAudit(instanceId?: string): Promise<NodeDepsAudit> {
+    const packs = this.list(instanceId)
+    const targets: Array<{ pack: NodePackRecord; reqs: PipRequirement[] }> = []
+    for (const pack of packs) {
+      if (pack.status === 'disabled') continue
+      const reqFile = pack.path ? join(pack.path, 'requirements.txt') : ''
+      if (!reqFile || !existsSync(reqFile)) continue
+      try {
+        const reqs = readFileSync(reqFile, 'utf-8')
+          .split(/\r?\n/)
+          .map((l) => parsePipRequirement(l))
+          .filter((r): r is PipRequirement => Boolean(r))
+        if (reqs.length) targets.push({ pack, reqs })
+      } catch {
+        /* unreadable requirements — skip this pack */
+      }
+    }
+    if (!targets.length) {
+      return { ok: true, pipAvailable: true, checkedPacks: 0, packs: [] }
+    }
+
+    const vpy = resolveInstancePython(instanceId)
+    let installed: Map<string, string> | null = null
+    try {
+      const { throwingExec } = await import('./env')
+      const { bootstrapService } = await import('./bootstrap')
+      const bootstrap = await bootstrapService.ensure({ kinds: ['uv'], downloadIfMissing: false })
+      const uvComp = bootstrap.components.find((c) => c.kind === 'uv' && c.installed)
+      if (uvComp?.path) {
+        try {
+          const out = await throwingExec(
+            uvComp.path,
+            ['pip', 'list', '--python', vpy, '--format', 'json'],
+            { timeout: 60000 }
+          )
+          installed = parsePipListJson(out)
+        } catch {
+          /* older uv without --format json — fall through to pip */
+        }
+      }
+      if (!installed) {
+        const out = await throwingExec(vpy, ['-m', 'pip', 'list', '--format=json'], {
+          timeout: 60000
+        })
+        installed = parsePipListJson(out)
+      }
+    } catch {
+      installed = null
+    }
+    if (!installed) {
+      return {
+        ok: false,
+        pipAvailable: false,
+        checkedPacks: targets.length,
+        packs: [],
+        error: 'No package manager available (pip missing and uv unavailable)'
+      }
+    }
+
+    const auditPacks: NodeDepsAuditPack[] = []
+    for (const { pack, reqs } of targets) {
+      const missing: string[] = []
+      const mismatched: NodeDepsAuditPack['mismatched'] = []
+      for (const r of reqs) {
+        const have = installed.get(r.name)
+        if (!have) {
+          missing.push(r.specifier ? `${r.name}${r.specifier}` : r.name)
+          continue
+        }
+        if (r.specifier && !versionSatisfies(have, r.specifier)) {
+          mismatched.push({ name: r.name, required: r.specifier, installed: have })
+        }
+      }
+      if (missing.length || mismatched.length) {
+        auditPacks.push({
+          id: pack.id,
+          name: pack.name,
+          declared: reqs.map((r) => r.raw),
+          missing,
+          mismatched
+        })
+      }
+    }
+    return { ok: true, pipAvailable: true, checkedPacks: targets.length, packs: auditPacks }
+  }
+
+  /**
+   * (Re)install one pack's requirements into the instance environment
+   * (0.1.12 WP5 action) — delegates to the pip-op service so the same busy
+   * guard, streaming log and cancellation semantics apply.
+   */
+  async installDeps(idOrName: string, instanceId?: string): Promise<PipOpResult> {
+    const pack = this.list(instanceId).find((p) => p.id === idOrName || p.name === idOrName)
+    if (!pack?.path) throw codedError('PACK_NOT_FOUND', `Node pack not found: ${idOrName}`)
+    const reqFile = join(pack.path, 'requirements.txt')
+    if (!existsSync(reqFile)) {
+      throw codedError('NO_REQUIREMENTS', 'This pack has no requirements.txt')
+    }
+    const { pipOpsService } = await import('./pipOps')
+    return pipOpsService.installRequirementsFor(instanceId, reqFile, pack.name)
   }
 
   conflicts(instanceId?: string): NodeNameConflict[] {

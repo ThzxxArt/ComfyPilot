@@ -4,10 +4,7 @@
  * NOT produce a false "版本不一致" against the server's `0.39.0`.
  */
 import { describe, it, expect } from 'vitest'
-import {
-  isSemanticVersion,
-  versionMismatch
-} from '../../src/renderer/src/utils/versionDisplay'
+import { isSemanticVersion, versionMismatch } from '../../src/renderer/src/utils/versionDisplay'
 
 describe('versionDisplay (0.1.11.1)', () => {
   it('isSemanticVersion accepts dotted versions and rejects stamps', () => {

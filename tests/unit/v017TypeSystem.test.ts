@@ -46,8 +46,13 @@ describe('IPC events used in renderer', () => {
     expect(appSrc).toContain('onMonitorTick')
   })
 
-  it('bindLive subscribes to monitorWs', () => {
-    expect(appSrc).toContain('IPC_EVENTS.monitorWs')
+  it('monitor WS events are consumed by the views that use them (0.1.12)', () => {
+    // The store no longer buffers a dead wsEvents array; MonitorView and the
+    // exec-diagnostics composable subscribe directly.
+    const monitorSrc = readSrc('src/renderer/src/views/monitor/MonitorView.vue')
+    expect(monitorSrc).toContain('IPC_EVENTS.monitorWs')
+    const diagSrc = readSrc('src/renderer/src/composables/useExecDiagnostics.ts')
+    expect(diagSrc).toContain('IPC_EVENTS.execError')
   })
 
   it('bindLive subscribes to notification', () => {

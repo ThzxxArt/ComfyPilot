@@ -240,6 +240,36 @@ async function start(id: string): Promise<void> {
     message.warning(needInstanceHint.value)
     return
   }
+  // 0.1.12: preflight every item workflow against /object_info. Missing node
+  // types are WARNED (never blocked); remote / unavailable skips silently.
+  if (job && !target.startsWith('remote:')) {
+    try {
+      const pre = await ipc('batch.preflight', {
+        workflowPaths: job.items.map((it) => it.workflowPath),
+        instanceId: target
+      })
+      if (pre.available && pre.missingTypes.length) {
+        const confirmed = await new Promise<boolean>((resolve) => {
+          dialog.warning({
+            title: t('nodePreflight.title'),
+            content: t('nodePreflight.missingBody', {
+              n: pre.missingTypes.length,
+              list: pre.missingTypes.slice(0, 8).join(', ')
+            }),
+            positiveText: t('nodePreflight.startAnyway'),
+            negativeText: t('common.cancel'),
+            onPositiveClick: () => resolve(true),
+            onNegativeClick: () => resolve(false),
+            onClose: () => resolve(false),
+            onMaskClick: () => resolve(false)
+          })
+        })
+        if (!confirmed) return
+      }
+    } catch {
+      /* preflight is advisory — never blocks on its own failure */
+    }
+  }
   startingId.value = id
   try {
     // start() submits every prompt, then waits until outputs settle.

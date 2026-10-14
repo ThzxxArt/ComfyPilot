@@ -24,17 +24,20 @@ type TrayStrings = {
   tip: (r: number, t: number) => string
 }
 
-/** System notification for a failed tray action (0.1.11 — failures used to
- *  be silently swallowed with no user feedback). */
-function notifyTrayFailure(s: TrayStrings, err: unknown): void {
+/** System notification (best-effort). Shared by tray failures and the
+ *  execution-failure notifier (0.1.12). */
+export function showSystemNotification(title: string, body: string): void {
   try {
-    new Notification({
-      title: s.actionFailed,
-      body: err instanceof Error ? err.message : String(err)
-    }).show()
+    new Notification({ title, body: String(body || '').slice(0, 300) }).show()
   } catch {
     /* notifications are best-effort */
   }
+}
+
+/** System notification for a failed tray action (0.1.11 — failures used to
+ *  be silently swallowed with no user feedback). */
+function notifyTrayFailure(s: TrayStrings, err: unknown): void {
+  showSystemNotification(s.actionFailed, err instanceof Error ? err.message : String(err))
 }
 
 const TRAY_STRINGS: Record<'zh-CN' | 'en-US', TrayStrings> = {

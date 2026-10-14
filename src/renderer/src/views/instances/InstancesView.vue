@@ -504,8 +504,7 @@ async function probeEnv(info: ComfyInstanceInfo): Promise<void> {
 }
 
 // ---------- ComfyUI update / repair (0.1.4) ----------
-const { startUpdate, checkComfyUpdate, repairEnv, updating, repairing, progress } =
-  useComfyUpdate()
+const { startUpdate, checkComfyUpdate, repairEnv, updating, repairing, progress } = useComfyUpdate()
 const showUpdateModal = ref(false)
 const updateModalTitle = ref('')
 const updateInfos = ref<Record<string, ComfyUpdateInfo>>({})

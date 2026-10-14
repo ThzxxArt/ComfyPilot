@@ -34,7 +34,9 @@ vi.mock('../../src/main/services/instance', () => ({
 }))
 
 vi.mock('../../src/main/services/proxy', () => ({
-  proxyFetch: async () => new Response('', { status: h.state.proxyOk ? 200 : 500 })
+  proxyFetch: async () => new Response('', { status: h.state.proxyOk ? 200 : 500 }),
+  // env.ts (loaded by the ensure-pip fix) uses proxyEnv when spawning pip.
+  proxyEnv: () => ({})
 }))
 
 vi.mock('child_process', () => {
@@ -83,7 +85,12 @@ function defaultExec(cmd: string, args: string[]): { stdout: string } | Error {
   if (args[0] === '-c' && String(args[1]).includes('torch')) {
     return { stdout: '2.9.0+cu130 13.0 True' }
   }
-  if (args[0] === '-m' && args[1] === 'pip') return { stdout: '[]' }
+  if (args[0] === '-m' && args[1] === 'pip') {
+    // 0.1.12: the doctor probes `pip --version` separately from `pip list`.
+    if (args[2] === '--version')
+      return { stdout: 'pip 24.0 from C:/venv/Lib/site-packages/pip (python 3.13)' }
+    return { stdout: '[]' }
+  }
   return { stdout: '' }
 }
 
@@ -128,6 +135,7 @@ describe('DoctorService (0.1.10 behaviour)', () => {
     )
     expect(byId.get('install-path')?.severity).toBe('pass')
     expect(byId.get('python')?.severity).toBe('pass')
+    expect(byId.get('pip')?.severity).toBe('pass')
     expect(byId.get('torch')?.severity).toBe('pass')
     expect(byId.get('models-dir')?.severity).toBe('pass')
     expect(byId.get('custom-nodes')?.severity).toBe('pass')
@@ -255,5 +263,58 @@ describe('DoctorService (0.1.10 behaviour)', () => {
     const svc = await freshDoctor()
     expect((await svc.fix('inst-1', 'nope')).ok).toBe(false)
     expect((await svc.fix('missing', 'create-models-dir')).ok).toBe(false)
+  })
+
+  it('run() flags a missing pip as fail with the ensure-pip fix (0.1.12)', async () => {
+    seedMinimalInstall('no-pip')
+    h.state.execHandler = (cmd, args) => {
+      if (args[0] === '-m' && args[1] === 'pip') {
+        return new Error('No module named pip')
+      }
+      return defaultExec(cmd, args)
+    }
+    const svc = await freshDoctor()
+    const report = await svc.run('inst-1')
+    const pip = report.checks.find((c: any) => c.id === 'pip')!
+    expect(pip.severity).toBe('fail')
+    expect(pip.fixable).toBe(true)
+    expect(pip.fixId).toBe('ensure-pip')
+  })
+
+  it('fix ensure-pip seeds pip via ensurepip and verifies afterwards (0.1.12)', async () => {
+    seedMinimalInstall('fix-pip')
+    let ensured = false
+    h.state.execHandler = (cmd, args) => {
+      if (args[0] === '-m' && args[1] === 'pip' && args[2] === '--version') {
+        // pip missing until ensurepip ran.
+        return ensured
+          ? { stdout: 'pip 24.0 from x (python 3.13)' }
+          : new Error('No module named pip')
+      }
+      if (args[0] === '-m' && args[1] === 'ensurepip') {
+        ensured = true
+        return { stdout: 'Successfully installed pip' }
+      }
+      return defaultExec(cmd, args)
+    }
+    const svc = await freshDoctor()
+    const r = await svc.fix('inst-1', 'ensure-pip')
+    expect(r.ok).toBe(true)
+    expect(ensured).toBe(true)
+    expect(r.message).toContain('pip is now available')
+  })
+
+  it('fix ensure-pip reports failure honestly when ensurepip cannot help (0.1.12)', async () => {
+    seedMinimalInstall('fix-pip-fail')
+    h.state.execHandler = (cmd, args) => {
+      if (args[0] === '-m' && (args[1] === 'pip' || args[1] === 'ensurepip')) {
+        return new Error('No module named pip')
+      }
+      return defaultExec(cmd, args)
+    }
+    const svc = await freshDoctor()
+    const r = await svc.fix('inst-1', 'ensure-pip')
+    expect(r.ok).toBe(false)
+    expect(r.message).toContain('pip is not available')
   })
 })

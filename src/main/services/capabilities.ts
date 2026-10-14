@@ -19,6 +19,18 @@ export { versionAtLeast }
 
 const PROBE_TIMEOUT_MS = 2500
 const CACHE_TTL_MS = 30_000
+/** /object_info is a large payload — give it room, cache it longer. */
+const OBJECT_INFO_TIMEOUT_MS = 20_000
+const OBJECT_INFO_TTL_MS = 180_000
+
+/**
+ * `custom_nodes.ComfyUI-KJNodes` / `custom_nodes.ComfyUI-KJNodes.nodes.x`
+ * (ComfyUI server.py injects RELATIVE_PYTHON_MODULE) → `ComfyUI-KJNodes`.
+ */
+export function packageFolderFromPythonModule(mod: string): string | undefined {
+  const m = String(mod || '').match(/(?:^|\.)custom_nodes[./]([^.]+)/)
+  return m ? m[1] : undefined
+}
 
 /**
  * Version confirmed to accept `workflow_metadata` (verified in ComfyUI 0.39.0
@@ -106,6 +118,15 @@ export function parseFeatures(features: Record<string, unknown> | null): Record<
 export class CapabilityService {
   private cache = new Map<string, { at: number; caps: InstanceCapabilities }>()
   /**
+   * /object_info node map (0.1.12 WP6): node_type → owning custom-node folder,
+   * plus the full type set for workflow preflight. Large payload (~MBs), so a
+   * longer TTL; invalidated on instance stop/remove like everything else.
+   */
+  private objectInfoCache = new Map<
+    string,
+    { at: number; types: Set<string>; moduleByType: Map<string, string> }
+  >()
+  /**
    * Last version observed while the instance was RUNNING (0.1.11.1).
    * Deliberately has NO TTL: a running instance's reported version is a stable
    * fact, and the UI must not flip between the install stamp (a git commit
@@ -132,6 +153,7 @@ export class CapabilityService {
     if (!instanceId) {
       this.cache.clear()
       this.versionCache.clear()
+      this.objectInfoCache.clear()
       return
     }
     const configs = loadInstanceConfigs()
@@ -140,7 +162,47 @@ export class CapabilityService {
       const url = instanceBaseUrl(cfg)
       this.cache.delete(url)
       this.versionCache.delete(url)
+      this.objectInfoCache.delete(url)
     }
+  }
+
+  /**
+   * Fetch (cache-aware) the instance's node map: all registered class types
+   * plus `python_module` attribution. Returns null when /object_info is not
+   * reachable — callers must treat null as "preflight unavailable", never as
+   * "no nodes registered".
+   */
+  async nodeTypeMap(
+    instanceId: string
+  ): Promise<{ types: Set<string>; moduleByType: Map<string, string> } | null> {
+    const cfg = loadInstanceConfigs().find((c) => c.id === instanceId)
+    if (!cfg) return null
+    const baseUrl = instanceBaseUrl(cfg)
+    const hit = this.objectInfoCache.get(baseUrl)
+    if (hit && Date.now() - hit.at < OBJECT_INFO_TTL_MS) return hit
+    const data = await fetchJson(`${baseUrl}/object_info`, OBJECT_INFO_TIMEOUT_MS)
+    if (!data) return null
+    const types = new Set<string>()
+    const moduleByType = new Map<string, string>()
+    for (const [type, def] of Object.entries(data)) {
+      types.add(type)
+      const mod = (def as { python_module?: unknown } | null)?.python_module
+      if (typeof mod === 'string' && mod) {
+        const folder = packageFolderFromPythonModule(mod)
+        if (folder) moduleByType.set(type, folder)
+      }
+    }
+    const map = { at: Date.now(), types, moduleByType }
+    this.objectInfoCache.set(baseUrl, map)
+    return map
+  }
+
+  /** Sync attribution peek from the (possibly warm) object_info cache. */
+  pythonModuleForTypeCached(instanceId: string, nodeType: string): string | undefined {
+    const cfg = loadInstanceConfigs().find((c) => c.id === instanceId)
+    if (!cfg) return undefined
+    const hit = this.objectInfoCache.get(instanceBaseUrl(cfg))
+    return hit?.moduleByType.get(nodeType)
   }
 
   /**

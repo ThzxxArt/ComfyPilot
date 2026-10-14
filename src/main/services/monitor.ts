@@ -256,10 +256,6 @@ export class MonitorService extends EventEmitter {
     }
   }
 
-  getLastSnapshot(): SystemSnapshot | null {
-    return this.last
-  }
-
   async queueSnapshot(baseUrl?: string): Promise<QueueSnapshot> {
     const empty: QueueSnapshot = { running: [], pending: [], doneCount: 0, history: [] }
     if (!baseUrl) return empty
@@ -481,7 +477,28 @@ export class MonitorService extends EventEmitter {
       value: d.value as number | undefined,
       max: d.max as number | undefined,
       promptId: d.prompt_id ? String(d.prompt_id) : undefined,
-      text: d.text ? String(d.text) : undefined
+      text: d.text ? String(d.text) : undefined,
+      /** Main-process routing only (failure diagnosis maps URL → instance). */
+      baseUrl: this.wsBaseUrl || undefined
+    }
+    // 0.1.12: execution_error carries the full failure payload (exception_type/
+    // exception_message/traceback/node_type/node_id — broadcast=False to the
+    // submitting client). Previously only the id fields survived the mapping,
+    // so a failed run showed up as an unexplained red row.
+    if (msg.type === 'execution_error' || msg.type === 'execution_interrupted') {
+      if (d.node_id != null) evt.nodeId = String(d.node_id)
+      if (d.prompt_id != null) evt.promptId = String(d.prompt_id)
+      if (d.node_type != null) evt.nodeType = String(d.node_type)
+      if (msg.type === 'execution_error') {
+        if (d.exception_type != null) evt.errorType = String(d.exception_type)
+        if (d.exception_message != null) evt.errorMessage = String(d.exception_message)
+        if (Array.isArray(d.traceback)) {
+          evt.errorTraceback = (d.traceback as unknown[])
+            .map(String)
+            .slice(-80)
+            .map((s) => s.slice(0, 500))
+        }
+      }
     }
     if (msg.type === 'progress_state' && d.nodes && typeof d.nodes === 'object') {
       const nodes: Record<string, ExecNodeProgress> = {}
@@ -547,10 +564,6 @@ export class MonitorService extends EventEmitter {
       }
       this.ws = null
     }
-  }
-
-  isWsConnected(): boolean {
-    return this.ws?.readyState === WebSocket.OPEN
   }
 }
 

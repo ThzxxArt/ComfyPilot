@@ -351,6 +351,18 @@ export default {
     logExport: 'Export logs',
     logExported: 'Log exported: {path}',
     logEmptyHint: 'Start an instance and logs will stream here.',
+    logSearchPlaceholder: 'Search logs…',
+    logFilterAll: 'All levels',
+    logFilterError: 'Errors only',
+    logFilterWarn: 'Warnings only',
+    envProbe: 'Probe environment',
+    pipMissing: 'pip missing',
+    fixPip: 'Fix pip',
+    fixPipDone: 'pip repaired',
+    pipInstall: 'Install Python package',
+    pipInstallHint:
+      'Installs into this instance virtual environment (uv first / pip fallback, mirrors applied). Package names and version constraints only — URLs are not allowed.',
+    pipInstallPlaceholder: 'name or name==version, e.g. sageattention',
     checkUpdate: 'Check for updates',
     updating: 'Updating…',
     updateComfy: 'Update ComfyUI',
@@ -648,6 +660,19 @@ export default {
     checkIssuesTitle: 'Health check: {name}',
     checkIssuesRunning: 'Checking…',
     checkIssuesEmpty: 'No issues found',
+    issueFix: 'Fix now',
+    depsAudit: 'Dependency audit',
+    depsAuditTip:
+      'Compare every node pack requirements.txt against the instance environment and find missing / mismatched dependencies',
+    depsAuditTitle: 'Dependency audit (requirements.txt vs installed)',
+    depsAuditUnavailable: 'Environment unavailable (pip missing and uv unavailable)',
+    depsAuditEmpty: 'All declared requirements are satisfied',
+    depsAuditSummary: 'Checked {checked} packs · {bad} with missing/mismatched deps',
+    depsReinstall: 'Install deps',
+    depsMissing: 'Missing',
+    depsMismatch: 'Mismatch',
+    depsAuditScope:
+      'Scope: only dependencies declared in requirements.txt are audited. Optional deps (e.g. sageattention) are not declared — use the runtime failure diagnosis card on the instance detail page instead.',
     sevError: 'Error',
     sevWarning: 'Warning',
     sevInfo: 'Info',
@@ -1049,6 +1074,7 @@ export default {
     needInstanceUrl: 'Start and select an instance first',
     loading: 'Loading…',
     queueLoadFailed: 'Failed to load the queue — the instance may not be ready',
+    failDetail: 'Failure details',
     previewTitle: 'Live preview',
     previewSub:
       'Live sampling preview for runs submitted through ComfyPilot (batch / workflow queue). Runs started inside the ComfyUI page do not send previews here (ComfyUI only streams them to the initiating page)',
@@ -1324,7 +1350,65 @@ export default {
     indexWarning: 'Registry index incomplete',
     backupRestored: 'Backup restored',
     restartRequired: 'Restart instance to apply',
-    postUpdateNodeCheck: 'Node compatibility after update'
+    postUpdateNodeCheck: 'Node compatibility after update',
+    execFailed: 'Execution failed',
+    execFailedMsg: '{message}',
+    pipInstalled: 'Dependencies installed',
+    pipInstalledMsg: '{names}',
+    pipFailed: 'Dependency install failed',
+    pipFailedMsg: '{message}'
+  },
+  exec: {
+    title: 'Runtime failures ({n})',
+    hint: 'Attributed to node packs and missing modules — fix in one click',
+    clear: 'Clear',
+    cleared: 'Failure records cleared',
+    missingTag: 'missing {name}',
+    fixRecipe: 'Fix via recipe: {name}',
+    fixPip: 'Install {name}',
+    openPack: 'Open node pack',
+    copyReport: 'Copy report',
+    reportCopied: 'Failure report copied',
+    detailTitle: 'Execution failure',
+    typeLabel: 'Exception',
+    msgLabel: 'Message',
+    nodeLabel: 'Node',
+    packLabel: 'Node pack',
+    missingLabel: 'Missing module',
+    promptLabel: 'Prompt',
+    timeLabel: 'Time',
+    openLogs: 'Open instance logs'
+  },
+  deps: {
+    pipOpTitle: 'Dependency install',
+    pipOpRunning: 'Installing…',
+    pipOpBannerHint: 'A dependency install is still running — reopen the modal to watch the log',
+    recipeSource: 'Source',
+    recipeFailedTitle: 'Recipe failed',
+    recipeFailedBody:
+      '{error}\n\nYou can fall back to installing {name} directly (note: the PyPI build may not match your torch/CUDA), or bypass / set the node to disabled in the workflow.',
+    recipeFallbackInstall: 'Install {name} directly',
+    recipe: {
+      triton: {
+        title: 'Triton (triton-windows)',
+        desc: 'Installs the prebuilt triton-windows into the instance environment. Resolves this missing module and also repairs triton-dependent nodes (PatchTritonVAE / RMBG).'
+      },
+      sageattention: {
+        title: 'SageAttention 2.2 (prebuilt wheel)',
+        desc: 'Installs triton-windows first, then the Windows prebuilt SageAttention 2.2.0 wheel matching torch 2.9+/cu130 (SHA256-verified). Windows + NVIDIA only; if the version does not match, bypass the node instead.'
+      },
+      onnx: {
+        title: 'onnx',
+        desc: 'Installs onnx into the instance environment (needed by WanVideoWrapper FantasyPortrait and similar nodes).'
+      }
+    }
+  },
+  nodePreflight: {
+    title: 'Node preflight',
+    missingBody:
+      'The instance has not registered {n} node types: {list}. Submitting now will fail at execution. Install the matching node packs on the Nodes page first — or submit anyway?',
+    queueAnyway: 'Submit anyway',
+    startAnyway: 'Start anyway'
   },
   stepMsg: {
     bootstrapRun: 'Checking runtimes…',

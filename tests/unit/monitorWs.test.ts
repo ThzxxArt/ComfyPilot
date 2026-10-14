@@ -216,4 +216,55 @@ describe('monitor WS protocol (0.1.10)', () => {
     expect(() => ws.fire('message', short)).not.toThrow()
     expect(events.filter((e) => e.type === 'preview')).toHaveLength(0)
   })
+
+  it('passes the FULL execution_error payload through (0.1.12)', async () => {
+    const { ws, events } = await connect()
+    ws.fire(
+      'message',
+      JSON.stringify({
+        type: 'execution_error',
+        data: {
+          prompt_id: 'p-48',
+          node_id: '48',
+          node_type: 'PathchSageAttentionKJ',
+          executed: ['1'],
+          exception_type: 'ModuleNotFoundError',
+          exception_message: "No module named 'sageattention'",
+          traceback: [
+            'Traceback (most recent call last):',
+            '  File "...edge.py", line 1',
+            'ModuleNotFoundError'
+          ],
+          current_inputs: {},
+          current_outputs: []
+        }
+      })
+    )
+    const evt = events.find((e) => e.type === 'execution_error')!
+    expect(evt.nodeId).toBe('48')
+    expect(evt.nodeType).toBe('PathchSageAttentionKJ')
+    expect(evt.promptId).toBe('p-48')
+    expect(evt.errorType).toBe('ModuleNotFoundError')
+    expect(evt.errorMessage).toBe("No module named 'sageattention'")
+    expect(Array.isArray(evt.errorTraceback)).toBe(true)
+    expect((evt.errorTraceback as string[]).length).toBe(3)
+    // Routing metadata for failure diagnosis (URL → instance mapping).
+    expect(evt.baseUrl).toBe('http://127.0.0.1:8188')
+  })
+
+  it('maps execution_interrupted without failure fields (0.1.12)', async () => {
+    const { ws, events } = await connect()
+    ws.fire(
+      'message',
+      JSON.stringify({
+        type: 'execution_interrupted',
+        data: { prompt_id: 'p-9', node_id: '5', node_type: 'KSampler', executed: [] }
+      })
+    )
+    const evt = events.find((e) => e.type === 'execution_interrupted')!
+    expect(evt.nodeId).toBe('5')
+    expect(evt.nodeType).toBe('KSampler')
+    expect(evt.errorType).toBeUndefined()
+    expect(evt.errorMessage).toBeUndefined()
+  })
 })

@@ -340,6 +340,18 @@ export default {
     logExport: '导出日志',
     logExported: '日志已导出：{path}',
     logEmptyHint: '启动实例后，日志会实时出现在这里。',
+    logSearchPlaceholder: '搜索日志…',
+    logFilterAll: '全部级别',
+    logFilterError: '仅错误',
+    logFilterWarn: '仅警告',
+    envProbe: '环境体检',
+    pipMissing: 'pip 缺失',
+    fixPip: '修复 pip',
+    fixPipDone: 'pip 修复完成',
+    pipInstall: '安装 Python 包',
+    pipInstallHint:
+      '安装到该实例的虚拟环境（uv 优先 / pip 兜底，自动走镜像）。仅支持包名与版本约束，不支持 URL。',
+    pipInstallPlaceholder: '包名或 name==版本，如 sageattention',
     checkUpdate: '检查更新',
     updating: '更新中…',
     updateComfy: '更新 ComfyUI',
@@ -631,6 +643,18 @@ export default {
     checkIssuesTitle: '体检结果：{name}',
     checkIssuesRunning: '正在体检…',
     checkIssuesEmpty: '未发现问题',
+    issueFix: '一键修复',
+    depsAudit: '依赖体检',
+    depsAuditTip: '对照各节点包的 requirements.txt 与实例环境已装包，找出缺失/版本不符的依赖',
+    depsAuditTitle: '依赖体检（requirements.txt vs 已装包）',
+    depsAuditUnavailable: '环境不可用（pip 缺失且 uv 不可用）',
+    depsAuditEmpty: '所有已声明依赖均已满足',
+    depsAuditSummary: '已检查 {checked} 个包，{bad} 个包存在缺失/不符',
+    depsReinstall: '补装依赖',
+    depsMissing: '缺失',
+    depsMismatch: '版本不符',
+    depsAuditScope:
+      '说明：仅对账 requirements.txt 中显式声明的依赖；可选依赖（如 sageattention）不在声明内，缺失时请在实例详情页的「运行失败诊断」中处理。',
     sevError: '错误',
     sevWarning: '警告',
     sevInfo: '提示',
@@ -1012,6 +1036,7 @@ export default {
     needInstanceUrl: '请先启动一个实例并选择它',
     loading: '加载中…',
     queueLoadFailed: '队列加载失败——实例可能未就绪',
+    failDetail: '失败详情',
     previewTitle: '生成预览',
     previewSub:
       '显示 ComfyPilot 提交的运行（批量 / 工作流队列）的实时采样预览；在 ComfyUI 页面内直接执行的运行不会发送预览（ComfyUI 协议只向发起页面发送）',
@@ -1270,7 +1295,65 @@ export default {
     indexWarning: '注册表索引不完整',
     backupRestored: '备份已恢复',
     restartRequired: '需重启实例生效',
-    postUpdateNodeCheck: '更新后节点兼容性检查'
+    postUpdateNodeCheck: '更新后节点兼容性检查',
+    execFailed: '运行失败',
+    execFailedMsg: '{message}',
+    pipInstalled: '依赖安装完成',
+    pipInstalledMsg: '{names}',
+    pipFailed: '依赖安装失败',
+    pipFailedMsg: '{message}'
+  },
+  exec: {
+    title: '运行失败诊断（{n}）',
+    hint: '定位到节点包与缺失模块，可直接安装修复',
+    clear: '清除记录',
+    cleared: '失败记录已清除',
+    missingTag: '缺模块 {name}',
+    fixRecipe: '按配方修复 {name}',
+    fixPip: '安装 {name}',
+    openPack: '查看节点包',
+    copyReport: '复制报告',
+    reportCopied: '失败报告已复制',
+    detailTitle: '运行失败详情',
+    typeLabel: '异常类型',
+    msgLabel: '错误信息',
+    nodeLabel: '节点',
+    packLabel: '所属节点包',
+    missingLabel: '缺失模块',
+    promptLabel: '任务 ID',
+    timeLabel: '时间',
+    openLogs: '打开实例日志'
+  },
+  deps: {
+    pipOpTitle: '依赖安装',
+    pipOpRunning: '安装中…',
+    pipOpBannerHint: '依赖安装仍在进行——可随时重开弹窗查看日志',
+    recipeSource: '来源',
+    recipeFailedTitle: '配方执行失败',
+    recipeFailedBody:
+      '{error}\n\n可改用「直接安装 {name}」（注意：PyPI 版本可能与你的 torch/CUDA 不匹配），或在工作流中把该节点旁路/设为 disabled。',
+    recipeFallbackInstall: '直接安装 {name}',
+    recipe: {
+      triton: {
+        title: 'Triton（triton-windows）',
+        desc: '安装 triton-windows 到实例环境（Windows 预编译版）。解此模块缺失并同时修复 PatchTritonVAE / RMBG 等依赖 triton 的节点。'
+      },
+      sageattention: {
+        title: 'SageAttention 2.2（预编译 wheel）',
+        desc: '先装 triton-windows，再安装与 torch 2.9+/cu130 匹配的 SageAttention 2.2.0 Windows 预编译 wheel（带 SHA256 校验）。仅适用于 Windows + NVIDIA GPU；版本不匹配时请改用「旁路该节点」。'
+      },
+      onnx: {
+        title: 'onnx',
+        desc: '安装 onnx 到实例环境（WanVideoWrapper 的 FantasyPortrait 等节点需要）。'
+      }
+    }
+  },
+  nodePreflight: {
+    title: '节点预检',
+    missingBody:
+      '实例未注册 {n} 个节点类型：{list}。直接提交会在执行时报错。可先到「节点」页安装对应节点包，或仍要提交？',
+    queueAnyway: '仍然提交',
+    startAnyway: '仍然开始'
   },
   stepMsg: {
     bootstrapRun: '检查/准备运行时…',

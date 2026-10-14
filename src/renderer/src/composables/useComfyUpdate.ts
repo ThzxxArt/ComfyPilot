@@ -417,6 +417,64 @@ export function useComfyUpdate() {
   ensureRepairSubscribed()
   ensureNodeSubscribed()
 
+  /**
+   * Hydration after a renderer reload / remount while an op still runs
+   * (0.1.12): main keeps the authoritative snapshot; the modal restores it
+   * instead of showing an empty shell. Order: comfy-update → repair.
+   */
+  async function hydrateActiveOp(): Promise<void> {
+    if (progressKind.value !== null && !progressFinished.value) return
+    try {
+      const upd = await ipc('instance.updateStatus')
+      if (upd && upd.status === 'running') {
+        progressKind.value = 'comfy-update'
+        progressFinished.value = false
+        progress.value = upd
+        updatingComfy.value = true
+        updatingInstanceId.value = upd.instanceId
+        return
+      }
+    } catch {
+      /* best-effort */
+    }
+    try {
+      const rep = await ipc('instance.repairStatus')
+      if (rep && rep.status === 'running') {
+        progressKind.value = 'repair'
+        progressFinished.value = false
+        progress.value = rep
+        repairing.value = true
+        updatingInstanceId.value = rep.instanceId
+      }
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  /**
+   * Node-op hydration for one instance (modal reopen after reload). Node ops
+   * are per-instance; the caller passes the instance the modal shows.
+   */
+  async function hydrateNodeOp(instanceId?: string): Promise<void> {
+    if (progressKind.value === 'node-op' && !progressFinished.value) return
+    const target = instanceId || viewedNodeInstanceId.value || ''
+    try {
+      const snap = await ipc('node.opStatus', target || undefined)
+      if (!snap || !snap.runId) return
+      if (snap.status !== 'running' && progressKind.value !== 'node-op') return
+      const iid = snap.instanceId || target || 'default'
+      const view = getOpView(iid)
+      view.progress = snap
+      if (!viewedNodeInstanceId.value || viewedNodeInstanceId.value === iid) {
+        viewedNodeInstanceId.value = iid
+        nodeOpLogs.value = view.logs
+      }
+      writeProgress('node-op', { ...snap })
+    } catch {
+      /* best-effort */
+    }
+  }
+
   async function checkComfyUpdate(instanceId: string): Promise<ComfyUpdateInfo> {
     return ipc('instance.checkComfyUpdate', instanceId)
   }
@@ -521,6 +579,8 @@ export function useComfyUpdate() {
     cancelNodeOp,
     cancelNodeBatch,
     selectNodeOpInstance,
+    hydrateActiveOp,
+    hydrateNodeOp,
     nodeOpLogSeq,
     viewedNodeInstanceId
   }

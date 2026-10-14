@@ -1646,9 +1646,7 @@ describe('0.1.11 attribution and remote targets', () => {
 
   it('walks outputs and backfills attribution from the content fingerprint', async () => {
     const { outputService } = await freshP1p2()
-    const { resetFingerprintCaches } = await import(
-      '../../src/main/services/workflowFingerprint'
-    )
+    const { resetFingerprintCaches } = await import('../../src/main/services/workflowFingerprint')
     resetFingerprintCaches()
     // A workflow record with NO prior linkage to the output below.
     const wfPath = join(ROOT, 'wf', 'fp-flow.json')

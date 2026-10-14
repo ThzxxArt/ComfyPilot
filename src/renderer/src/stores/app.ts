@@ -4,19 +4,11 @@ import type {
   AppSettings,
   ComfyInstanceInfo,
   SystemSnapshot,
-  ExecProgressEvent,
   DoctorReport,
   AppNotification,
   RemoteInstanceConfig
 } from '@shared/types'
-import {
-  ipc,
-  onInstanceStatus,
-  onMonitorTick,
-  onIpc,
-  onNotification,
-  IPC_EVENTS
-} from '@/composables/useIpc'
+import { ipc, onInstanceStatus, onMonitorTick, onNotification } from '@/composables/useIpc'
 
 export const useAppStore = defineStore('app', () => {
   const ready = ref(false)
@@ -33,8 +25,6 @@ export const useAppStore = defineStore('app', () => {
    */
   const instanceSwitchTick = ref(0)
   const system = ref<SystemSnapshot | null>(null)
-  const wsEvents = ref<ExecProgressEvent[]>([])
-  const lastWsProgress = ref<{ value: number; max: number } | null>(null)
   /** Last doctor report — survives navigation from Dashboard "one-click check" into DoctorView. */
   const doctorReport = ref<DoctorReport | null>(null)
   /** Global notification queue pushed by the main process (long-running tasks). */
@@ -186,20 +176,12 @@ export const useAppStore = defineStore('app', () => {
     const off2 = onMonitorTick((snap) => {
       system.value = snap as SystemSnapshot
     })
-    const off3 = onIpc(IPC_EVENTS.monitorWs, (...args: unknown[]) => {
-      const evt = args[0] as ExecProgressEvent
-      wsEvents.value = [...wsEvents.value.slice(-80), evt]
-      if (evt.type === 'progress' && evt.value != null) {
-        lastWsProgress.value = { value: evt.value, max: evt.max || 1 }
-      }
-    })
     const off4 = onNotification((n) => {
       pushNotification(n as AppNotification)
     })
     return () => {
       off1()
       off2()
-      off3()
       off4()
     }
   }
@@ -216,8 +198,6 @@ export const useAppStore = defineStore('app', () => {
     isRemoteActive,
     activeTargetUrl,
     system,
-    wsEvents,
-    lastWsProgress,
     doctorReport,
     notifications,
     notificationSeq,

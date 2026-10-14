@@ -19,8 +19,16 @@ const preloadJs = join(root, 'out', 'preload', 'index.js')
 const rendererHtml = join(root, 'out', 'renderer', 'index.html')
 
 function electronBin(): string {
-  const win = join(root, 'node_modules', 'electron', 'dist', 'electron.exe')
-  if (existsSync(win)) return win
+  // Platform-aware: only Windows may use electron.exe. A shared node_modules
+  // (e.g. Windows-installed tree opened from WSL) otherwise makes POSIX runs
+  // spawn a PE binary directly and die with no output.
+  if (process.platform === 'win32') {
+    const win = join(root, 'node_modules', 'electron', 'dist', 'electron.exe')
+    if (existsSync(win)) return win
+  } else {
+    const posix = join(root, 'node_modules', 'electron', 'dist', 'electron')
+    if (existsSync(posix)) return posix
+  }
   return join(
     root,
     'node_modules',
@@ -56,7 +64,9 @@ describe.skipIf(skip)('electron app smoke (real bundle)', () => {
 
     const result = await new Promise<{ code: number | null; text: string }>((resolve) => {
       // Real Electron (not ELECTRON_RUN_AS_NODE) loading the packaged entry.
-      const p = spawn(bin, [mainJs, '--e2e-smoke'], {
+      // Entry as a RELATIVE path: under WSL, Windows Electron (via interop)
+      // cannot resolve POSIX absolute paths like /mnt/d/….
+      const p = spawn(bin, ['out/main/bootstrap.cjs', '--e2e-smoke'], {
         env: {
           ...process.env,
           ELECTRON_ENABLE_LOGGING: '1',
@@ -67,9 +77,11 @@ describe.skipIf(skip)('electron app smoke (real bundle)', () => {
       child = p
       let text = ''
       let settled = false
+      let hardKill: ReturnType<typeof setTimeout> | null = null
       const done = (code: number | null): void => {
         if (settled) return
         settled = true
+        if (hardKill) clearTimeout(hardKill)
         resolve({ code, text })
       }
       p.stdout?.on('data', (d) => (text += String(d)))
@@ -78,9 +90,12 @@ describe.skipIf(skip)('electron app smoke (real bundle)', () => {
         text += `spawn-error:${e.message}`
         done(null)
       })
-      p.on('exit', (code) => done(code))
+      // 'close' (not 'exit') — stdio must be fully drained before the text is
+      // read. Listening on 'exit' raced the final stdout chunk (Linux/WSL:
+      // the renderer-mounted marker was printed yet collected as empty).
+      p.on('close', (code) => done(code))
       // Hard stop only if the app fails to quit (graceful --e2e-smoke path)
-      setTimeout(() => {
+      hardKill = setTimeout(() => {
         text += 'TIMEOUT_KILLED'
         try {
           p.kill('SIGKILL')

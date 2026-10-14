@@ -42,6 +42,8 @@ import { envService } from '../services/env'
 import { batchService, outputService, remoteService, marketService } from '../services/p1p2'
 import { installerService, listStarterModels } from '../services/installer'
 import { testProxy, syncProxyFromSettings } from '../services/proxy'
+import { execDiagnosticsService } from '../services/execDiagnostics'
+import { PIP_RECIPES } from '@shared/pipRecipes'
 
 function ok<T>(data: T): IpcResult<T> {
   // Structured-clone safety: never hand a class instance / Response / Proxy
@@ -426,6 +428,10 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     })
   )
   ipcMain.handle(
+    'instance.repairStatus',
+    wrap(() => envService.getRepairProgress())
+  )
+  ipcMain.handle(
     'instance.repairEnv',
     wrap(async (id: string, opts?: import('@shared/types').RepairEnvOptions) => {
       const probe = await envService.repairEnv({
@@ -450,6 +456,47 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle(
     'instance.runStartupSelfCheck',
     wrap((id: string) => instanceService.runStartupSelfCheck(sanitizeId(id)))
+  )
+  // ---- 0.1.12: dependency-fix actions + runtime failure diagnosis ----
+  ipcMain.handle(
+    'instance.pipInstall',
+    wrap(async (id: string, spec: string) => {
+      const { pipOpsService } = await import('../services/pipOps')
+      const result = await pipOpsService.installSpec(sanitizeId(id), String(spec || ''))
+      notifyPipResult(result)
+      return result
+    })
+  )
+  ipcMain.handle(
+    'instance.applyRecipe',
+    wrap(async (id: string, recipeId: string) => {
+      const { pipOpsService } = await import('../services/pipOps')
+      const result = await pipOpsService.installRecipe(sanitizeId(id), String(recipeId || ''))
+      notifyPipResult(result)
+      return result
+    })
+  )
+  ipcMain.handle(
+    'instance.pipCancel',
+    wrap(async (id: string) => {
+      const { pipOpsService } = await import('../services/pipOps')
+      return pipOpsService.cancel(sanitizeId(id))
+    })
+  )
+  ipcMain.handle(
+    'instance.pipStatus',
+    wrap(async (instanceId?: string) => {
+      const { pipOpsService } = await import('../services/pipOps')
+      return pipOpsService.getProgress(safeInstanceId(instanceId))
+    })
+  )
+  ipcMain.handle(
+    'instance.execFailures',
+    wrap((id: string) => execDiagnosticsService.list(sanitizeId(id)))
+  )
+  ipcMain.handle(
+    'instance.clearExecFailures',
+    wrap((id: string) => execDiagnosticsService.clear(sanitizeId(id)))
   )
 
   // models
@@ -688,6 +735,22 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     wrap((instanceId?: string) => nodePackService.loadReport(safeInstanceId(instanceId)))
   )
   ipcMain.handle(
+    'node.opStatus',
+    wrap((instanceId?: string) => nodePackService.getOpProgress(safeInstanceId(instanceId)))
+  )
+  ipcMain.handle(
+    'node.depsAudit',
+    wrap((instanceId?: string) => nodePackService.depsAudit(safeInstanceId(instanceId)))
+  )
+  ipcMain.handle(
+    'node.installDeps',
+    wrap(async (id: string, instanceId?: string) => {
+      const result = await nodePackService.installDeps(id, safeInstanceId(instanceId))
+      notifyPipResult(result)
+      return result
+    })
+  )
+  ipcMain.handle(
     'node.conflicts',
     wrap((instanceId?: string) => nodePackService.conflicts(safeInstanceId(instanceId)))
   )
@@ -905,6 +968,26 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     'workflow.compare',
     wrap((idA: string, idB: string) => workflowService.compare(sanitizeId(idA), sanitizeId(idB)))
   )
+  ipcMain.handle(
+    'workflow.preflight',
+    wrap(async (workflowPath: string, instanceId: string) => {
+      if (!isSafeReadPath(workflowPath)) throw new Error('Blocked unsafe workflow path')
+      const target = safeInstanceTarget(String(instanceId || ''))
+      if (!target) throw new Error('Invalid instance id')
+      if (target.startsWith('remote:')) {
+        // Remote object_info needs auth headers; capabilityService probes local
+        // instances only — report honestly as unavailable rather than guessing.
+        return {
+          available: false,
+          missingTypes: [],
+          nodeTypes: 0,
+          error: 'Preflight is only available for local instances'
+        }
+      }
+      const { preflightService } = await import('../services/preflight')
+      return preflightService.workflow(workflowPath, target)
+    })
+  )
 
   // monitor
   ipcMain.handle(
@@ -1011,6 +1094,10 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle(
     'env.installTorch',
     wrap((opts: { pythonPath: string; index: string }) => envService.installTorch(opts))
+  )
+  ipcMain.handle(
+    'deps.recipes',
+    wrap(() => PIP_RECIPES)
   )
 
   // installer
@@ -1192,6 +1279,31 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle(
     'batch.remove',
     wrap((id: string) => batchService.remove(sanitizeId(id)))
+  )
+  ipcMain.handle(
+    'batch.preflight',
+    wrap(async (opts: { workflowPaths: string[]; instanceId: string }) => {
+      const paths = Array.isArray(opts?.workflowPaths) ? opts.workflowPaths : []
+      for (const p of paths) {
+        if (!isSafeReadPath(p)) throw new Error(`Blocked unsafe workflow path: ${basename(p)}`)
+      }
+      const target = safeInstanceTarget(String(opts?.instanceId || ''))
+      if (!target || target.startsWith('remote:')) {
+        return {
+          available: false,
+          missingTypes: [],
+          perWorkflow: paths.map((p) => ({
+            workflowPath: p,
+            name: basename(p),
+            missingTypes: [],
+            error: 'Preflight is only available for local instances'
+          })),
+          error: 'Preflight is only available for local instances'
+        }
+      }
+      const { preflightService } = await import('../services/preflight')
+      return preflightService.batch(paths, target)
+    })
   )
 
   // output
@@ -1573,4 +1685,47 @@ export function broadcastNotification(n: {
   params?: Record<string, string | number>
 }): void {
   broadcast(IPC_EVENTS.notification, n)
+}
+
+/** Terminal toasts for pip-op results (0.1.12) — ops outlive their originating view. */
+function notifyPipResult(result: {
+  ok: boolean
+  cancelled?: boolean
+  requested: string[]
+  installed: string[]
+  warning?: string
+  error?: string
+}): void {
+  if (result.cancelled) return
+  if (result.ok) {
+    const names = (result.installed.length ? result.installed : result.requested).join(', ')
+    broadcastNotification({
+      type: 'success',
+      title: 'Packages installed',
+      titleKey: 'notify.pipInstalled',
+      message: names,
+      messageKey: 'notify.pipInstalledMsg',
+      params: { names },
+      duration: 6000
+    })
+    if (result.warning) {
+      broadcastNotification({
+        type: 'warning',
+        title: 'Package verification note',
+        message: result.warning,
+        duration: 8000
+      })
+    }
+  } else {
+    const message = (result.error || 'unknown error').slice(0, 220)
+    broadcastNotification({
+      type: 'error',
+      title: 'Package install failed',
+      titleKey: 'notify.pipFailed',
+      message,
+      messageKey: 'notify.pipFailedMsg',
+      params: { message },
+      duration: 10000
+    })
+  }
 }

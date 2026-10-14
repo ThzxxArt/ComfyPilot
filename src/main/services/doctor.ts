@@ -70,7 +70,7 @@ export class DoctorService extends EventEmitter {
     const emitProgress = (done: number, total: number, title: string): void => {
       this.emit('progress', { done, total, title, ts: Date.now() })
     }
-    emitProgress(0, 13, 'Starting health check…')
+    emitProgress(0, 14, 'Starting health check…')
 
     // 1. install path
     const installPath = config?.path || ''
@@ -113,8 +113,26 @@ export class DoctorService extends EventEmitter {
       fixable: false
     })
 
+    // 2b. pip availability (0.1.12 WP4) — uv-created venvs ship without pip
+    // ("No module named pip"), which silently breaks manual installs, the
+    // dependency audit and the fix features. Probed, never guessed.
+    const pipOut = await safeExec(python, ['-m', 'pip', '--version'])
+    const pipMatch = pipOut.match(/\bpip\s+([0-9][^\s]*)/i)
+    checks.push({
+      id: 'pip',
+      group: 'Environment',
+      title: 'pip availability',
+      severity: pipMatch ? 'pass' : 'fail',
+      detail: pipMatch ? `pip ${pipMatch[1]}` : pipOut.slice(0, 160) || 'python -m pip failed',
+      suggestion: pipMatch
+        ? undefined
+        : 'In this environment "python -m pip" fails (uv venvs ship without pip). One-click fix seeds pip via ensurepip.',
+      fixable: !pipMatch,
+      fixId: pipMatch ? undefined : 'ensure-pip'
+    })
+
     // 3. Torch / CUDA
-    emitProgress(checks.length, 13, 'Probing torch / CUDA…')
+    emitProgress(checks.length, 14, 'Probing torch / CUDA…')
     const torchOut = await safeExec(
       python,
       [
@@ -330,7 +348,7 @@ export class DoctorService extends EventEmitter {
     }
 
     // 10. Manager / Registry connectivity
-    emitProgress(checks.length, 13, 'Checking network…')
+    emitProgress(checks.length, 14, 'Checking network…')
     let registryOk = false
     try {
       const { proxyFetch } = await import('./proxy')
@@ -407,6 +425,17 @@ export class DoctorService extends EventEmitter {
     if (!installPath) return { ok: false, message: 'No instance path' }
 
     switch (fixId) {
+      case 'ensure-pip': {
+        // 0.1.12 WP4 — seed pip into the instance interpreter via ensurepip.
+        const python = resolveInstancePythonPath(config)
+        try {
+          const { ensurePip, throwingExec } = await import('./env')
+          await ensurePip(python, (c, a, o) => throwingExec(c, a, o))
+          return { ok: true, message: `pip is now available in ${python}` }
+        } catch (e) {
+          return { ok: false, message: e instanceof Error ? e.message : String(e) }
+        }
+      }
       case 'create-models-dir': {
         const dir = join(installPath, 'models')
         mkdirSync(dir, { recursive: true })

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
   ExtensionPuzzleOutline,
@@ -40,11 +40,14 @@ import {
   describeNodeError,
   hasDepsSkippedIssue
 } from '@/composables/useComfyUpdate'
+import { usePipOps } from '@/composables/usePipOps'
 import NodeOpProgressModal from '@/components/NodeOpProgressModal.vue'
 import { useAppStore } from '@/stores/app'
 import { packLoadStatusOf, packLoadFailureOf, type PackLoadStatus } from '@shared/nodeLoadReport'
 import type {
   NodeCheckStatus,
+  NodeDepsAudit,
+  NodeDepsAuditPack,
   NodeLoadReport,
   NodeNameConflict,
   NodePackIssue,
@@ -56,8 +59,28 @@ import type {
 const { t } = useI18n()
 const store = useAppStore()
 const router = useRouter()
+const route = useRoute()
 const message = useMessage()
 const dialog = useDialog()
+const {
+  startPackDeps,
+  activeInstances: pipActiveInstances,
+  modalVisible: pipModalVisible,
+  viewedInstanceId: pipViewedInstanceId,
+  openFor: openPipFor,
+  refreshStatus: refreshPipStatus
+} = usePipOps()
+
+/** Dependency installs (0.1.12) — banner + reopen entry on this page too. */
+const pipBannerVisible = computed(
+  () =>
+    Boolean(store.activeInstanceId) &&
+    pipActiveInstances.value.includes(store.activeInstanceId || '') &&
+    (!pipModalVisible.value || pipViewedInstanceId.value !== store.activeInstanceId)
+)
+function openPipProgress(): void {
+  if (store.activeInstanceId) void openPipFor(store.activeInstanceId)
+}
 const {
   nodeUpdatingPack,
   nodeInstallingPack,
@@ -291,6 +314,8 @@ async function refresh(): Promise<void> {
     } catch {
       loadReport.value = null
     }
+    // Restore dependency-install banner/modal state (0.1.12).
+    if (instId) void refreshPipStatus(instId)
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   } finally {
@@ -562,6 +587,61 @@ function issueSeverityLabel(sev: NodePackIssue['severity']): string {
       : t('nodes.sevInfo')
 }
 
+// ---------- 0.1.12: issue fixes (fixId outlet) + dependency audit ----------
+const fixingIssue = ref(false)
+
+/** Execute a fixable issue's fixId (e.g. TORCH_PIN → unpin-torch). */
+async function runIssueFix(issue: NodePackIssue): Promise<void> {
+  if (!issue.fixable || !issue.fixId) return
+  fixingIssue.value = true
+  try {
+    const r = await ipc('doctor.fix', store.activeInstanceId || '', issue.fixId)
+    if (r.ok) {
+      message.success(r.message)
+      showIssues.value = false
+      await refresh()
+    } else {
+      message.error(r.message)
+    }
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    fixingIssue.value = false
+  }
+}
+
+const showDepsAudit = ref(false)
+const depsAuditLoading = ref(false)
+const depsAudit = ref<NodeDepsAudit | null>(null)
+
+async function runDepsAudit(): Promise<void> {
+  showDepsAudit.value = true
+  depsAuditLoading.value = true
+  depsAudit.value = null
+  try {
+    depsAudit.value = await ipc('node.depsAudit', store.activeInstanceId || undefined)
+  } catch (err) {
+    showDepsAudit.value = false
+    message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    depsAuditLoading.value = false
+  }
+}
+
+/** Reinstall one pack's requirements via the pip-op modal. */
+async function fixPackDeps(p: NodeDepsAuditPack): Promise<void> {
+  await startPackDeps(store.activeInstanceId || '', p.id)
+}
+
+/** ?focus=<folder> from the failure-diagnosis card pre-filters the list. */
+function applyFocus(): void {
+  const f = String(route.query.focus || '').trim()
+  if (f) {
+    installedQuery.value = f
+    tab.value = 'installed'
+  }
+}
+
 async function createSnapshot(): Promise<void> {
   try {
     const s = await ipc('node.createSnapshot', undefined, store.activeInstanceId || undefined)
@@ -639,6 +719,7 @@ async function removeSnapshot(id: string): Promise<void> {
 }
 
 onMounted(() => {
+  applyFocus()
   selectNodeOpInstance(store.activeInstanceId || '')
   void refresh()
 })
@@ -656,6 +737,12 @@ watch(
     nodeCheck.value = null
     void refresh()
   }
+)
+
+// Deep links (e.g. from the failure-diagnosis card) may arrive while mounted.
+watch(
+  () => route.query.focus,
+  () => applyFocus()
 )
 </script>
 
@@ -690,6 +777,19 @@ watch(
             </NButton>
           </template>
           {{ $t('nodes.selfCheckTip') }}
+        </NTooltip>
+        <NTooltip trigger="hover">
+          <template #trigger>
+            <NButton
+              secondary
+              :loading="depsAuditLoading"
+              :disabled="!store.activeInstance"
+              @click="runDepsAudit"
+            >
+              {{ $t('nodes.depsAudit') }}
+            </NButton>
+          </template>
+          {{ $t('nodes.depsAuditTip') }}
         </NTooltip>
         <NPopconfirm @positive-click="updateAllPacks">
           <template #trigger>
@@ -726,7 +826,11 @@ watch(
     </div>
 
     <NTabs v-model:value="tab" type="line">
-      <NTabPane name="installed" key="installed" :tab="$t('nodes.tabInstalled', { n: packs.length })">
+      <NTabPane
+        key="installed"
+        name="installed"
+        :tab="$t('nodes.tabInstalled', { n: packs.length })"
+      >
         <NSpace style="margin-bottom: 12px" justify="space-between">
           <NInput
             v-model:value="installedQuery"
@@ -765,6 +869,13 @@ watch(
             {{ nodeInstallingPack ? nodeInstallMessage : nodeUpdateMessage }}
           </span>
           <NButton size="tiny" secondary @click="reopenOpModal">
+            {{ $t('nodes.viewProgress') }}
+          </NButton>
+        </div>
+        <div v-if="pipBannerVisible" class="updating-banner">
+          <NTag size="small" type="info" round>{{ $t('deps.pipOpRunning') }}</NTag>
+          <span class="meta">{{ $t('deps.pipOpBannerHint') }}</span>
+          <NButton size="tiny" secondary @click="openPipProgress">
             {{ $t('nodes.viewProgress') }}
           </NButton>
         </div>
@@ -1033,7 +1144,11 @@ watch(
         </NSpin>
       </NTabPane>
 
-      <NTabPane name="conflicts" key="conflicts" :tab="$t('nodes.tabConflicts', { n: conflicts.length })">
+      <NTabPane
+        key="conflicts"
+        name="conflicts"
+        :tab="$t('nodes.tabConflicts', { n: conflicts.length })"
+      >
         <NSpin :show="loading">
           <div v-if="conflicts.length" class="card">
             <div v-for="c in conflicts" :key="c.nodeName" class="conflict-row">
@@ -1047,7 +1162,11 @@ watch(
         </NSpin>
       </NTabPane>
 
-      <NTabPane name="snapshots" key="snapshots" :tab="$t('nodes.tabSnapshots', { n: snapshots.length })">
+      <NTabPane
+        key="snapshots"
+        name="snapshots"
+        :tab="$t('nodes.tabSnapshots', { n: snapshots.length })"
+      >
         <NSpin :show="loading">
           <div v-if="snapshots.length" class="card">
             <div v-for="s in snapshots" :key="s.id" class="snap-row">
@@ -1125,6 +1244,16 @@ watch(
               </div>
               <div v-if="issue.suggestion" class="issue-fix">{{ issue.suggestion }}</div>
             </div>
+            <NButton
+              v-if="issue.fixable && issue.fixId"
+              size="tiny"
+              type="primary"
+              secondary
+              :loading="fixingIssue"
+              @click="runIssueFix(issue)"
+            >
+              {{ $t('nodes.issueFix') }}
+            </NButton>
           </div>
         </div>
         <NEmpty v-else-if="!issuesLoading" :description="$t('nodes.checkIssuesEmpty')" />
@@ -1132,6 +1261,67 @@ watch(
       <template #footer>
         <NSpace justify="end">
           <NButton @click="showIssues = false">{{ $t('common.close') }}</NButton>
+        </NSpace>
+      </template>
+    </NModal>
+
+    <!-- 0.1.12: dependency audit (requirements.txt vs venv pip list) -->
+    <NModal
+      v-model:show="showDepsAudit"
+      preset="card"
+      :title="$t('nodes.depsAuditTitle')"
+      style="width: 640px; border-radius: 20px"
+    >
+      <NSpin :show="depsAuditLoading">
+        <template v-if="depsAudit">
+          <div v-if="!depsAudit.ok" class="deps-error">
+            <NTag size="small" type="error" round>{{ $t('nodes.depsAuditUnavailable') }}</NTag>
+            <div class="issue-msg" style="margin-top: 6px">{{ depsAudit.error || '' }}</div>
+          </div>
+          <div v-else-if="!depsAudit.packs.length" class="deps-empty">
+            <NEmpty :description="$t('nodes.depsAuditEmpty')" />
+          </div>
+          <div v-else class="deps-list">
+            <div class="deps-summary meta">
+              {{
+                $t('nodes.depsAuditSummary', {
+                  checked: depsAudit.checkedPacks,
+                  bad: depsAudit.packs.length
+                })
+              }}
+            </div>
+            <div v-for="p in depsAudit.packs" :key="p.id" class="deps-pack">
+              <div class="deps-pack-head">
+                <span class="deps-pack-name mono" :title="p.name">{{ p.name }}</span>
+                <NButton size="tiny" type="primary" secondary @click="fixPackDeps(p)">
+                  {{ $t('nodes.depsReinstall') }}
+                </NButton>
+              </div>
+              <div v-if="p.missing.length" class="deps-line">
+                <NTag size="tiny" round type="error">{{ $t('nodes.depsMissing') }}</NTag>
+                <span class="mono deps-items">{{ p.missing.join(', ') }}</span>
+              </div>
+              <div v-if="p.mismatched.length" class="deps-line">
+                <NTag size="tiny" round type="warning">{{ $t('nodes.depsMismatch') }}</NTag>
+                <span class="mono deps-items">
+                  {{
+                    p.mismatched
+                      .map((m) => `${m.name}${m.required} (installed ${m.installed})`)
+                      .join(', ')
+                  }}
+                </span>
+              </div>
+            </div>
+            <div class="deps-scope hint">{{ $t('nodes.depsAuditScope') }}</div>
+          </div>
+        </template>
+      </NSpin>
+      <template #footer>
+        <NSpace justify="end">
+          <NButton secondary :loading="depsAuditLoading" @click="runDepsAudit">
+            {{ $t('common.refresh') }}
+          </NButton>
+          <NButton @click="showDepsAudit = false">{{ $t('common.close') }}</NButton>
         </NSpace>
       </template>
     </NModal>
@@ -1144,6 +1334,65 @@ watch(
 .cards {
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   grid-auto-rows: 1fr;
+}
+
+/* 0.1.12: dependency-audit modal */
+.deps-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.deps-summary {
+  margin-bottom: 2px;
+}
+
+.deps-pack {
+  border: 1px solid $color-border;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: $color-bg-soft;
+}
+
+.deps-pack-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.deps-pack-name {
+  font-weight: 600;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.deps-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.deps-items {
+  font-size: 12px;
+  color: $color-text-secondary;
+  word-break: break-all;
+}
+
+.deps-scope {
+  margin-top: 4px;
+}
+
+.deps-error {
+  padding: 8px 2px;
+}
+
+.deps-empty {
+  padding: 12px 0;
 }
 .pack {
   padding: 18px;

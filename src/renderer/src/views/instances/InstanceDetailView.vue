@@ -18,6 +18,7 @@ import {
 import {
   NButton,
   NIcon,
+  NInput,
   NTag,
   NSpace,
   NSpin,
@@ -32,13 +33,16 @@ import {
   NTooltip,
   NTabs,
   NTabPane,
-  useMessage
+  useMessage,
+  useDialog
 } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 import { ipc, onInstanceStatus, onIpc, IPC_EVENTS } from '@/composables/useIpc'
 import { useLaunch } from '@/composables/useLaunch'
 import { useComfyUpdate } from '@/composables/useComfyUpdate'
 import { useAutoFollow } from '@/composables/useAutoFollow'
+import { useExecDiagnostics } from '@/composables/useExecDiagnostics'
+import { usePipOps } from '@/composables/usePipOps'
 import ComfyUpdateProgressModal from '@/components/ComfyUpdateProgressModal.vue'
 import { useI18n } from 'vue-i18n'
 import type {
@@ -46,6 +50,8 @@ import type {
   ComfyLogLine,
   ComfyUpdateInfo,
   EnvCreateRequest,
+  EnvProbe,
+  ExecFailure,
   InstanceCapabilities,
   LaunchCommandPreview,
   LaunchProfile
@@ -53,11 +59,14 @@ import type {
 import LaunchProfileEditor from '@/components/LaunchProfileEditor.vue'
 import { LAUNCH_ARG_ERROR_KEYS, launchArgWarningKey } from '@shared/launchArgs'
 import { versionMismatch } from '@/utils/versionDisplay'
+import { formatExecErrorReport } from '@shared/execError'
+import { recipeForModule, recipeSupportsPlatform, type PipRecipe } from '@shared/pipRecipes'
 
 const route = useRoute()
 const router = useRouter()
 const store = useAppStore()
 const message = useMessage()
+const dialog = useDialog()
 const { t } = useI18n()
 const { launch, stop, restart, busy } = useLaunch()
 const loading = ref(true)
@@ -237,6 +246,191 @@ async function copyLogs(): Promise<void> {
   }
 }
 
+// ---------- 0.1.12: log search / level filter + runtime failure diagnosis ----
+const logQuery = ref('')
+const logLevelFilter = ref<'all' | 'error' | 'warn'>('all')
+const logLevelOptions = computed(() => [
+  { label: t('instance.logFilterAll'), value: 'all' },
+  { label: t('instance.logFilterError'), value: 'error' },
+  { label: t('instance.logFilterWarn'), value: 'warn' }
+])
+const visibleLogs = computed(() => {
+  const q = logQuery.value.trim().toLowerCase()
+  return logs.value.filter((l) => {
+    if (logLevelFilter.value !== 'all' && l.level !== logLevelFilter.value) return false
+    if (
+      q &&
+      !String(l.message || '')
+        .toLowerCase()
+        .includes(q)
+    )
+      return false
+    return true
+  })
+})
+
+const {
+  failures: execFailures,
+  load: loadExecFailures,
+  clear: clearExecFailures
+} = useExecDiagnostics()
+const {
+  startInstall,
+  startRecipe,
+  activeInstances: pipActiveInstances,
+  modalVisible: pipModalVisible,
+  viewedInstanceId: pipViewedInstanceId,
+  openFor: openPipFor,
+  refreshStatus: refreshPipStatus
+} = usePipOps()
+
+/** A pip op is running for THIS instance (banner + reopen entry, 0.1.12). */
+const pipOpRunning = computed(() => pipActiveInstances.value.includes(id.value))
+const pipOpBanner = computed(
+  () => pipOpRunning.value && (!pipModalVisible.value || pipViewedInstanceId.value !== id.value)
+)
+function openPipProgress(): void {
+  if (id.value) void openPipFor(id.value)
+}
+
+/** Platform-compatible recipe for a failure's missing module (if any). */
+function recipeFor(f: ExecFailure): PipRecipe | undefined {
+  if (!f.missingModule) return undefined
+  const r = recipeForModule(f.missingModule)
+  return r && recipeSupportsPlatform(r) ? r : undefined
+}
+
+async function fixByPip(f: ExecFailure): Promise<void> {
+  if (!f.missingModule) return
+  const r = await startInstall(f.instanceId, f.missingModule)
+  // Re-probe after a successful install so the env card shows the new state
+  // (0.1.12: the probe result was stale until a manual refresh).
+  if (r.ok && envProbeResult.value) void probeEnvNow()
+}
+
+async function fixByRecipe(f: ExecFailure): Promise<void> {
+  const r = recipeFor(f)
+  if (!r) return
+  // Show WHAT the recipe will run (title + honest description incl. the
+  // version-match caveat and the upstream source) before executing it.
+  dialog.info({
+    title: t(r.titleKey),
+    content: `${t(r.descKey)}\n\n${t('deps.recipeSource')}: ${r.sourceUrl}`,
+    positiveText: t('common.confirm'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: () => {
+      void (async () => {
+        const result = await startRecipe(f.instanceId, r.id)
+        if (result.ok) {
+          if (envProbeResult.value) void probeEnvNow()
+          return
+        }
+        if (result.cancelled) return
+        // Failed recipe → disclose the fallback explicitly (plain pip install
+        // may hit an incompatible PyPI build — say so, and offer bypass too).
+        const module = f.missingModule || ''
+        dialog.warning({
+          title: t('deps.recipeFailedTitle'),
+          content: t('deps.recipeFailedBody', {
+            error: (result.error || '').slice(0, 200),
+            name: module
+          }),
+          positiveText: t('deps.recipeFallbackInstall', { name: module }),
+          negativeText: t('common.close'),
+          onPositiveClick: () => {
+            void (async () => {
+              const retry = await startInstall(f.instanceId, module)
+              if (retry.ok && envProbeResult.value) void probeEnvNow()
+            })()
+          }
+        })
+      })()
+    }
+  })
+}
+
+function goPack(f: ExecFailure): void {
+  void router.push({ path: '/nodes', query: { focus: f.packFolder || '' } })
+}
+
+async function copyFailureReport(f: ExecFailure): Promise<void> {
+  try {
+    await ipc('shell.writeClipboard', formatExecErrorReport(f))
+    message.success(t('exec.reportCopied'))
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function clearFailures(): Promise<void> {
+  if (!instance.value) return
+  await clearExecFailures(instance.value.id)
+  message.success(t('exec.cleared'))
+}
+
+// ---------- 0.1.12: one-click env probe + pip repair (detail page) ----------
+const envProbeResult = ref<EnvProbe | null>(null)
+const probingEnv = ref(false)
+const fixingPip = ref(false)
+
+async function probeEnvNow(): Promise<void> {
+  if (!instance.value) return
+  probingEnv.value = true
+  try {
+    envProbeResult.value = await ipc('instance.probeEnv', instance.value.id)
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    probingEnv.value = false
+  }
+}
+
+async function fixPipNow(): Promise<void> {
+  if (!instance.value) return
+  fixingPip.value = true
+  try {
+    const r = await ipc('doctor.fix', instance.value.id, 'ensure-pip')
+    if (r.ok) {
+      message.success(t('instance.fixPipDone'))
+      await probeEnvNow()
+    } else {
+      message.error(r.message)
+    }
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    fixingPip.value = false
+  }
+}
+
+// ---------- 0.1.12: manual "install a Python package" entry (WP3) ----------
+const showPipInstallModal = ref(false)
+const pipSpecInput = ref('')
+const pipInstalling = ref(false)
+
+function openPipInstallModal(): void {
+  pipSpecInput.value = ''
+  showPipInstallModal.value = true
+}
+
+async function runPipInstall(): Promise<void> {
+  const inst = instance.value
+  const spec = pipSpecInput.value.trim()
+  if (!inst || !spec || pipInstalling.value) return
+  pipInstalling.value = true
+  try {
+    const r = await startInstall(inst.id, spec)
+    if (r.ok) {
+      showPipInstallModal.value = false
+      if (envProbeResult.value) void probeEnvNow()
+    } else if (!r.cancelled && r.error) {
+      message.error(r.error)
+    }
+  } finally {
+    pipInstalling.value = false
+  }
+}
+
 /** Export the full log to a file (0.1.11) — the main process writes + reveals. */
 const exportingLogs = ref(false)
 async function exportLogs(): Promise<void> {
@@ -285,6 +479,10 @@ async function refresh(): Promise<void> {
     if (seq !== refreshSeq || forId !== id.value) return
     logs.value = logsResult
     requestLogScroll()
+    // 0.1.12: recorded runtime failures (WS + log-parsed), newest first.
+    void loadExecFailures(forId)
+    // Restore the pip-op banner/modal state after reloads / view switches.
+    void refreshPipStatus(forId)
     // Online capabilities (0.1.10): only meaningful while running; failures are
     // silent (the panel simply shows dashes).
     if (instance.value?.status === 'running') {
@@ -602,6 +800,10 @@ watch(
     updateModalTitle.value = ''
     checkingUpdate.value = false
     repairing.value = false
+    execFailures.value = []
+    logQuery.value = ''
+    logLevelFilter.value = 'all'
+    envProbeResult.value = null
     tab.value = initialTab()
     void refresh()
   }
@@ -690,6 +892,14 @@ watch(
           $t('nodes.viewProgress')
         }}</NButton>
       </div>
+      <!-- Dependency installs (0.1.12) — same reopen contract as node ops. -->
+      <div v-if="pipOpBanner" class="update-running-banner card">
+        <NTag size="small" type="info" round>{{ $t('deps.pipOpRunning') }}</NTag>
+        <span class="meta update-running-msg">{{ $t('deps.pipOpBannerHint') }}</span>
+        <NButton size="tiny" secondary @click="openPipProgress">{{
+          $t('nodes.viewProgress')
+        }}</NButton>
+      </div>
       <NSpin :show="loading" content-class="page-body-spin-fill">
         <div v-if="notFound" class="card not-found">
           <div class="not-found-title">{{ $t('instance.notFoundTitle') }}</div>
@@ -700,7 +910,7 @@ watch(
           </NButton>
         </div>
         <NTabs v-else v-model:value="tab" type="line" class="detail-tabs">
-          <NTabPane name="basic" key="basic" :tab="$t('instance.tabBasic')">
+          <NTabPane key="basic" name="basic" :tab="$t('instance.tabBasic')">
             <section class="card panel">
               <NDescriptions bordered size="small" :column="2" label-placement="left" class="desc">
                 <NDescriptionsItem :label="$t('common.status')" :span="2">
@@ -863,7 +1073,54 @@ watch(
                     </template>
                     {{ $t('nodes.selfCheckTip') }}
                   </NTooltip>
+                  <NButton
+                    secondary
+                    :loading="probingEnv"
+                    :disabled="!instance"
+                    @click="probeEnvNow"
+                  >
+                    {{ $t('instance.envProbe') }}
+                  </NButton>
+                  <NButton secondary :disabled="!instance" @click="openPipInstallModal">
+                    {{ $t('instance.pipInstall') }}
+                  </NButton>
                 </NSpace>
+              </div>
+
+              <div v-if="envProbeResult" class="update-result env-probe-result">
+                <div class="update-result-line">
+                  <span>{{ envProbeResult.pythonVersion || '—' }}</span>
+                  <span>
+                    pip:
+                    {{
+                      envProbeResult.pip?.present
+                        ? envProbeResult.pip.version || 'ok'
+                        : $t('instance.pipMissing')
+                    }}
+                  </span>
+                  <span>torch: {{ envProbeResult.torchVersion || '—' }}</span>
+                  <span v-if="envProbeResult.cudaVersion"
+                    >cuda: {{ envProbeResult.cudaVersion }}</span
+                  >
+                </div>
+                <NSpace
+                  v-if="envProbeResult.pip && !envProbeResult.pip.present"
+                  align="center"
+                  :size="8"
+                >
+                  <NTag size="small" type="error" round>{{ $t('instance.pipMissing') }}</NTag>
+                  <NButton size="tiny" type="primary" :loading="fixingPip" @click="fixPipNow">
+                    {{ $t('instance.fixPip') }}
+                  </NButton>
+                </NSpace>
+                <div
+                  v-for="(e, i) in envProbeResult.errors"
+                  :key="i"
+                  class="update-error"
+                  style="margin-top: 4px"
+                >
+                  {{ e }}
+                </div>
               </div>
 
               <div v-if="updateInfo" class="update-result">
@@ -918,7 +1175,7 @@ watch(
             </section>
           </NTabPane>
 
-          <NTabPane name="profile" key="profile" :tab="$t('instance.tabProfile')">
+          <NTabPane key="profile" name="profile" :tab="$t('instance.tabProfile')">
             <section class="card panel">
               <!-- Flat editor (0.1.11): no nested same-name collapse. -->
               <LaunchProfileEditor
@@ -944,16 +1201,24 @@ watch(
             </section>
           </NTabPane>
 
-          <NTabPane
-            name="logs"
-            key="logs"
-            :tab="$t('instance.tabLogs')"
-            display-directive="show"
-          >
+          <NTabPane key="logs" name="logs" :tab="$t('instance.tabLogs')" display-directive="show">
             <section class="card panel logs">
               <div class="panel-head log-head">
                 <div class="panel-title">{{ $t('instance.liveLogs') }}</div>
                 <NSpace :size="10" align="center">
+                  <NInput
+                    v-model:value="logQuery"
+                    size="tiny"
+                    clearable
+                    :placeholder="$t('instance.logSearchPlaceholder')"
+                    class="log-search"
+                  />
+                  <NSelect
+                    v-model:value="logLevelFilter"
+                    size="tiny"
+                    :options="logLevelOptions"
+                    class="log-level-select"
+                  />
                   <NSpace :size="6" align="center">
                     <NSwitch v-model:value="logFollow" size="small" />
                     <span class="log-follow-label">{{ $t('instance.logAutoFollow') }}</span>
@@ -979,12 +1244,66 @@ watch(
                   </NButton>
                 </NSpace>
               </div>
+              <!-- 0.1.12: runtime failure diagnosis — what failed, which pack,
+                   what module is missing, and the one-click fixes. -->
+              <div v-if="execFailures.length" class="exec-card">
+                <div class="exec-card-head">
+                  <NTag size="small" type="error" round>
+                    {{ $t('exec.title', { n: execFailures.length }) }}
+                  </NTag>
+                  <span class="exec-hint">{{ $t('exec.hint') }}</span>
+                  <NButton size="tiny" secondary @click="clearFailures">
+                    {{ $t('exec.clear') }}
+                  </NButton>
+                </div>
+                <div v-for="f in execFailures" :key="f.id" class="exec-row">
+                  <div class="exec-main">
+                    <span class="exec-time mono">{{ new Date(f.at).toLocaleTimeString() }}</span>
+                    <span class="exec-type mono">{{ f.errorType }}</span>
+                    <span class="exec-msg" :title="f.message">{{ f.message }}</span>
+                  </div>
+                  <div class="exec-tags">
+                    <NTag v-if="f.nodeType" size="tiny" round>{{ f.nodeType }}</NTag>
+                    <NTag v-if="f.packFolder" size="tiny" round type="warning">
+                      {{ f.packFolder }}
+                    </NTag>
+                    <NTag v-if="f.missingModule" size="tiny" round type="info">
+                      {{ $t('exec.missingTag', { name: f.missingModule }) }}
+                    </NTag>
+                  </div>
+                  <NSpace :size="6" class="exec-actions">
+                    <NButton
+                      v-if="recipeFor(f)"
+                      size="tiny"
+                      type="primary"
+                      secondary
+                      @click="fixByRecipe(f)"
+                    >
+                      {{ $t('exec.fixRecipe', { name: f.missingModule }) }}
+                    </NButton>
+                    <NButton v-if="f.missingModule" size="tiny" secondary @click="fixByPip(f)">
+                      {{ $t('exec.fixPip', { name: f.missingModule }) }}
+                    </NButton>
+                    <NButton v-if="f.packFolder" size="tiny" secondary @click="goPack(f)">
+                      {{ $t('exec.openPack') }}
+                    </NButton>
+                    <NButton size="tiny" secondary @click="copyFailureReport(f)">
+                      {{ $t('exec.copyReport') }}
+                    </NButton>
+                  </NSpace>
+                </div>
+              </div>
               <div class="term-wrap">
                 <div ref="logBox" class="term" @scroll.passive="onLogScroll">
-                  <div v-if="!logs.length" class="term-empty">
+                  <div v-if="!visibleLogs.length" class="term-empty">
                     {{ $t('instance.logEmptyHint') }}
                   </div>
-                  <div v-for="(line, idx) in logs" :key="idx" class="term-line" :class="line.level">
+                  <div
+                    v-for="(line, idx) in visibleLogs"
+                    :key="idx"
+                    class="term-line"
+                    :class="line.level"
+                  >
                     <span class="term-time">{{ new Date(line.ts).toLocaleTimeString() }}</span>
                     <span class="term-msg">{{ line.message }}</span>
                   </div>
@@ -1002,6 +1321,37 @@ watch(
 
     <!-- ComfyUI update progress -->
     <ComfyUpdateProgressModal v-model:show="showUpdateModal" :title="updateModalTitle" />
+
+    <!-- 0.1.12: manual Python-package install into the instance venv -->
+    <NModal
+      v-model:show="showPipInstallModal"
+      preset="card"
+      :title="$t('instance.pipInstall')"
+      style="width: 520px; border-radius: 20px"
+    >
+      <div class="confirm-body">
+        <div>{{ $t('instance.pipInstallHint') }}</div>
+      </div>
+      <NInput
+        v-model:value="pipSpecInput"
+        :placeholder="$t('instance.pipInstallPlaceholder')"
+        style="margin-top: 10px"
+        @keyup.enter="runPipInstall"
+      />
+      <template #footer>
+        <NSpace justify="end">
+          <NButton @click="showPipInstallModal = false">{{ $t('common.cancel') }}</NButton>
+          <NButton
+            type="primary"
+            :disabled="!pipSpecInput.trim()"
+            :loading="pipInstalling"
+            @click="runPipInstall"
+          >
+            {{ $t('common.confirm') }}
+          </NButton>
+        </NSpace>
+      </template>
+    </NModal>
 
     <!-- env.installTorch channel picker -->
     <NModal
@@ -1062,6 +1412,95 @@ watch(
   display: flex;
   flex-direction: column;
   height: 100%;
+}
+
+.log-search {
+  width: 170px;
+}
+
+.log-level-select {
+  width: 112px;
+}
+
+/* ---------- Runtime failure diagnosis card (0.1.12) ---------- */
+.exec-card {
+  flex-shrink: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid rgba($color-danger, 0.35);
+  background: rgba($color-danger, 0.05);
+  border-radius: 12px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+
+.exec-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.exec-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: $color-text-secondary;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.exec-row {
+  padding: 6px 0;
+  border-top: 1px dashed rgba($color-text-muted, 0.25);
+
+  &:first-of-type {
+    border-top: none;
+  }
+}
+
+.exec-main {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12.5px;
+  min-width: 0;
+}
+
+.exec-time {
+  color: $color-text-muted-ink;
+  flex-shrink: 0;
+  font-size: 11.5px;
+}
+
+.exec-type {
+  color: $color-danger;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.exec-msg {
+  color: $color-text;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.exec-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.exec-actions {
+  margin-top: 6px;
+}
+
+.env-probe-result {
+  margin-top: 8px;
 }
 
 .detail-title {
@@ -1280,6 +1719,10 @@ watch(
   }
   &.error {
     color: $term-error;
+    /* Failure blocks (0.1.12): consecutive error lines read as one highlighted
+       block — banner, traceback frame lines and the exception line all carry
+       the error level after the level-regex fix. */
+    background: rgba($color-danger, 0.08);
   }
   &.debug {
     color: $term-dim;

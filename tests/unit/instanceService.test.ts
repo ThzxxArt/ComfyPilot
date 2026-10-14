@@ -291,8 +291,7 @@ import {
   quoteCommandLineArg,
   escapeForBat,
   escapeForSh,
-  resolveRuntimesPythonSync,
-  hashId
+  resolveRuntimesPythonSync
 } from '../../src/main/services/instance'
 
 // ---------------------------------------------------------------------------
@@ -498,19 +497,6 @@ describe('resolveRuntimesPythonSync', () => {
   it('returns null when bootstrap throws', () => {
     h.state.findInRuntimesThrow = new Error('runtimes exploded')
     expect(resolveRuntimesPythonSync()).toBeNull()
-  })
-})
-
-describe('hashId', () => {
-  it('is a stable 12-char hex digest', () => {
-    const a = hashId('comfy://a')
-    const b = hashId('comfy://a')
-    expect(a).toBe(b)
-    expect(a).toMatch(/^[0-9a-f]{12}$/)
-  })
-
-  it('differs for different inputs', () => {
-    expect(hashId('one')).not.toBe(hashId('two'))
   })
 })
 
@@ -1134,6 +1120,10 @@ describe('probeEnv()', () => {
         }
       }
       if (args[0] === '-m') {
+        // pip --version (0.1.12 pip probe) vs pip list --format=json
+        if (args[1] === 'pip' && args[2] === '--version') {
+          return { stdout: 'pip 24.0 from C:/py/Lib/site-packages/pip (python 3.12)' }
+        }
         return {
           stdout: JSON.stringify([
             { name: 'torch', version: '2.3.0' },
@@ -1151,8 +1141,30 @@ describe('probeEnv()', () => {
     expect(probe.cudaVersion).toBe('12.1')
     expect(probe.mpsAvailable).toBe(true)
     expect(probe.npuAvailable).toBe(false)
+    expect(probe.pip).toEqual({ present: true, version: '24.0' })
     expect(probe.packages.length).toBeGreaterThanOrEqual(2)
     expect(probe.errors).toEqual([])
+  })
+
+  it('reports missing pip as an environment error (0.1.12)', async () => {
+    register(cfg({ id: 'env', venvPath: '', pythonPath: 'C:/py/python.exe' }))
+    h.state.execHandler = (_cmd, args) => {
+      if (args[0] === '--version') return { stdout: 'Python 3.12.1' }
+      if (args[0] === '-c') {
+        return { stdout: JSON.stringify({ torch: '2.3.0', cuda: null, mps: false, npu: false }) }
+      }
+      if (args[0] === '-m' && args[1] === 'pip' && args[2] === '--version') {
+        throw new Error('No module named pip')
+      }
+      if (args[0] === '-m') {
+        throw new Error('No module named pip')
+      }
+      return { stdout: '' }
+    }
+    const probe = await svc.probeEnv('env')
+    expect(probe.ok).toBe(false)
+    expect(probe.pip).toEqual({ present: false })
+    expect(probe.errors.some((e) => e.includes('pip is not available'))).toBe(true)
   })
 
   it('reports partial failure but still returns', async () => {

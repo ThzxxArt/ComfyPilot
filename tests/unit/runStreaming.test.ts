@@ -78,12 +78,7 @@ describe('runStreaming line buffering (0.1.11)', () => {
   it('flushes a trailing unterminated line on close', async () => {
     const { runStreaming } = await importEnv()
     const lines: string[] = []
-    const p = runStreaming(
-      'pip',
-      ['list'],
-      { onLine: (l) => lines.push(l) },
-      async () => ''
-    )
+    const p = runStreaming('pip', ['list'], { onLine: (l) => lines.push(l) }, async () => '')
     const child = h.spawned[0]
     child.stdout.emit('data', Buffer.from('no trailing newline'))
     child.handlers['close']?.[0]?.(0)
@@ -94,12 +89,7 @@ describe('runStreaming line buffering (0.1.11)', () => {
   it('folds stderr into the resolved text on success (exit-0 ERROR case)', async () => {
     const { runStreaming } = await importEnv()
     const lines: string[] = []
-    const p = runStreaming(
-      'pip',
-      ['install'],
-      { onLine: (l) => lines.push(l) },
-      async () => ''
-    )
+    const p = runStreaming('pip', ['install'], { onLine: (l) => lines.push(l) }, async () => '')
     const child = h.spawned[0]
     child.stdout.emit('data', Buffer.from('ok\n'))
     child.stderr.emit('data', Buffer.from('ERROR: dependency conflict\n'))
@@ -110,12 +100,7 @@ describe('runStreaming line buffering (0.1.11)', () => {
 
   it('rejects with stderr text on a non-zero exit', async () => {
     const { runStreaming } = await importEnv()
-    const p = runStreaming(
-      'git',
-      ['pull'],
-      { onLine: () => undefined },
-      async () => ''
-    )
+    const p = runStreaming('git', ['pull'], { onLine: () => undefined }, async () => '')
     const child = h.spawned[0]
     child.stderr.emit('data', Buffer.from('fatal: no upstream\n'))
     child.handlers['close']?.[0]?.(1)

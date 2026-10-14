@@ -351,12 +351,39 @@ async function doQueue(): Promise<void> {
     message.warning(needInstanceHint.value)
     return
   }
+  const wf = queueTarget.value
+  const instId = queueInstanceId.value
+  // 0.1.12: preflight against the running instance's /object_info. Missing
+  // node types are WARNED, never blocked (the user may know better); an
+  // unavailable object_info skips the dialog entirely.
+  try {
+    const pre = await ipc('workflow.preflight', wf.path, instId)
+    if (pre.available && pre.missingTypes.length) {
+      const confirmed = await new Promise<boolean>((resolve) => {
+        dialog.warning({
+          title: t('nodePreflight.title'),
+          content: t('nodePreflight.missingBody', {
+            n: pre.missingTypes.length,
+            list: pre.missingTypes.slice(0, 8).join(', ')
+          }),
+          positiveText: t('nodePreflight.queueAnyway'),
+          negativeText: t('common.cancel'),
+          onPositiveClick: () => resolve(true),
+          onNegativeClick: () => resolve(false),
+          onClose: () => resolve(false),
+          onMaskClick: () => resolve(false)
+        })
+      })
+      if (!confirmed) return
+    }
+  } catch {
+    /* preflight is advisory — never blocks on its own failure */
+  }
   queuing.value = true
   try {
-    const wf = queueTarget.value
     const promptId = await ipc('workflow.queue', {
       workflowPath: wf.path,
-      instanceId: queueInstanceId.value,
+      instanceId: instId,
       seed: seed.value ?? undefined
     })
     closeQueue()

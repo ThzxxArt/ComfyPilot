@@ -9,6 +9,7 @@ import {
   NSpace,
   NProgress,
   NEmpty,
+  NModal,
   NTag,
   NTabs,
   NTabPane,
@@ -19,11 +20,14 @@ import StatCard from '@/components/StatCard.vue'
 import ListSkeleton from '@/components/ListSkeleton.vue'
 import { useAppStore } from '@/stores/app'
 import { ipc, onIpc, onMonitorTick, IPC_EVENTS } from '@/composables/useIpc'
+import { useExecDiagnostics } from '@/composables/useExecDiagnostics'
 import { clampPercent, formatBytes, formatPercent } from '@/utils/format'
 import { buildQueueSections } from '@/utils/queueView'
+import { formatExecErrorReport } from '@shared/execError'
 import { COLORS } from '@/styles/tokens'
 import type {
   ComfyJobSummary,
+  ExecFailure,
   ExecNodeProgress,
   ExecProgressEvent,
   QueueSnapshot,
@@ -143,6 +147,45 @@ function jobStatusLabel(status: string): string {
   return te(key) ? t(key) : status
 }
 
+// ---------- 0.1.12: recorded execution failures (detail + jump) ----------
+const { failures: execFailures, load: loadExecFailures } = useExecDiagnostics()
+const showFailureDetail = ref(false)
+const selectedFailure = ref<ExecFailure | null>(null)
+
+function failureFor(promptId?: string): ExecFailure | undefined {
+  if (!promptId) return undefined
+  return execFailures.value.find((f) => f.promptId === promptId)
+}
+
+async function refreshFailures(): Promise<void> {
+  // Failures are recorded for LOCAL instances only (remote runs never reach
+  // our diagnosis pipeline — honest boundary).
+  if (store.isRemoteActive) return
+  const instId = store.activeInstanceId
+  if (!instId) return
+  await loadExecFailures(instId)
+}
+
+function openFailure(f: ExecFailure | undefined): void {
+  if (!f) return
+  selectedFailure.value = f
+  showFailureDetail.value = true
+}
+
+async function copyFailureReportM(f: ExecFailure): Promise<void> {
+  try {
+    await ipc('shell.writeClipboard', formatExecErrorReport(f))
+    message.success(t('exec.reportCopied'))
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+function goInstanceLogs(f: ExecFailure): void {
+  showFailureDetail.value = false
+  void router.push({ path: `/instances/${f.instanceId}`, hash: '#logs' })
+}
+
 function jobChip(status: string): string {
   const s = String(status || '').toLowerCase()
   if (s === 'completed' || s === 'success' || s === 'done') return 'chip-success'
@@ -212,6 +255,7 @@ onMounted(async () => {
   await refreshQueue()
   void refreshHistory()
   void refreshJobs()
+  void refreshFailures()
   queueTimer = setInterval(() => {
     void refreshQueue()
     void refreshJobs()
@@ -225,6 +269,7 @@ watch(
     void refreshQueue()
     void refreshHistory()
     void refreshJobs()
+    void refreshFailures()
   }
 )
 
@@ -387,7 +432,7 @@ onUnmounted(() => {
             }
           "
         >
-          <NTabPane name="queue" key="queue" :tab="$t('monitor.tabQueue')">
+          <NTabPane key="queue" name="queue" :tab="$t('monitor.tabQueue')">
             <div class="panel-title">{{ $t('monitor.queueTitle') }}</div>
             <ListSkeleton v-if="!queue && !jobs && !queueError && targetReady" :rows="3" />
             <div v-else-if="!queueSections.length" class="queue-empty">
@@ -425,14 +470,30 @@ onUnmounted(() => {
                     }}
                   </span>
                   <span class="mono history-prompt">{{ it.id }}</span>
+                  <span
+                    v-if="failureFor(it.id)"
+                    class="queue-fail-msg"
+                    :title="failureFor(it.id)?.message"
+                  >
+                    {{ failureFor(it.id)?.errorType }}: {{ failureFor(it.id)?.message }}
+                  </span>
                   <span v-if="it.at" class="meta history-time">
                     {{ new Date(it.at).toLocaleTimeString() }}
                   </span>
+                  <NButton
+                    v-if="failureFor(it.id)"
+                    size="tiny"
+                    type="error"
+                    secondary
+                    @click="openFailure(failureFor(it.id))"
+                  >
+                    {{ $t('monitor.failDetail') }}
+                  </NButton>
                 </div>
               </template>
             </div>
           </NTabPane>
-          <NTabPane name="history" key="history" :tab="$t('monitor.tabHistory')">
+          <NTabPane key="history" name="history" :tab="$t('monitor.tabHistory')">
             <div class="panel-head">
               <div class="panel-title">{{ $t('monitor.historyTitle') }}</div>
               <NSpace :size="8" align="center">
@@ -464,7 +525,23 @@ onUnmounted(() => {
                     {{ historyStatusLabel(h.status) }}
                   </NTag>
                   <span class="mono history-prompt">{{ h.promptId }}</span>
+                  <span
+                    v-if="failureFor(h.promptId)"
+                    class="queue-fail-msg"
+                    :title="failureFor(h.promptId)?.message"
+                  >
+                    {{ failureFor(h.promptId)?.errorType }}: {{ failureFor(h.promptId)?.message }}
+                  </span>
                   <span class="meta history-time">{{ formatHistoryTime(h.completedAt) }}</span>
+                  <NButton
+                    v-if="failureFor(h.promptId)"
+                    size="tiny"
+                    type="error"
+                    secondary
+                    @click="openFailure(failureFor(h.promptId))"
+                  >
+                    {{ $t('monitor.failDetail') }}
+                  </NButton>
                 </div>
               </div>
             </NScrollbar>
@@ -472,6 +549,61 @@ onUnmounted(() => {
         </NTabs>
       </section>
     </div>
+
+    <!-- 0.1.12: failure detail (recorded from WS payloads / log parsing) -->
+    <NModal
+      v-model:show="showFailureDetail"
+      preset="card"
+      :title="$t('exec.detailTitle')"
+      style="width: 640px; border-radius: 20px"
+    >
+      <div v-if="selectedFailure" class="detail-grid">
+        <div class="detail-kv">
+          <b>{{ $t('exec.typeLabel') }}</b
+          ><span class="mono">{{ selectedFailure.errorType }}</span>
+        </div>
+        <div class="detail-kv">
+          <b>{{ $t('exec.msgLabel') }}</b
+          ><span>{{ selectedFailure.message }}</span>
+        </div>
+        <div v-if="selectedFailure.nodeType" class="detail-kv">
+          <b>{{ $t('exec.nodeLabel') }}</b>
+          <span class="mono">
+            {{ selectedFailure.nodeType
+            }}<template v-if="selectedFailure.nodeId"> · {{ selectedFailure.nodeId }}</template>
+          </span>
+        </div>
+        <div v-if="selectedFailure.packFolder" class="detail-kv">
+          <b>{{ $t('exec.packLabel') }}</b>
+          <span class="mono">{{ selectedFailure.packFolder }}</span>
+        </div>
+        <div v-if="selectedFailure.missingModule" class="detail-kv">
+          <b>{{ $t('exec.missingLabel') }}</b>
+          <span class="mono">{{ selectedFailure.missingModule }}</span>
+        </div>
+        <div v-if="selectedFailure.promptId" class="detail-kv">
+          <b>{{ $t('exec.promptLabel') }}</b>
+          <span class="mono">{{ selectedFailure.promptId }}</span>
+        </div>
+        <div class="detail-kv">
+          <b>{{ $t('exec.timeLabel') }}</b>
+          <span>{{ new Date(selectedFailure.at).toLocaleString() }}</span>
+        </div>
+      </div>
+      <div v-if="selectedFailure?.traceback?.length" class="detail-tb mono">
+        {{ selectedFailure.traceback.join('\n') }}
+      </div>
+      <template #footer>
+        <NSpace justify="end">
+          <NButton secondary @click="selectedFailure && copyFailureReportM(selectedFailure)">
+            {{ $t('exec.copyReport') }}
+          </NButton>
+          <NButton type="primary" @click="selectedFailure && goInstanceLogs(selectedFailure)">
+            {{ $t('exec.openLogs') }}
+          </NButton>
+        </NSpace>
+      </template>
+    </NModal>
   </div>
 </template>
 
@@ -679,5 +811,56 @@ onUnmounted(() => {
 
 .history-time {
   flex-shrink: 0;
+}
+
+/* 0.1.12: failure row + detail modal */
+.queue-fail-msg {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: $color-danger;
+}
+
+.detail-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.detail-kv {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 10px;
+  font-size: 13px;
+  align-items: baseline;
+
+  b {
+    color: $color-text-secondary;
+    font-weight: 600;
+    font-size: 12.5px;
+  }
+
+  span {
+    min-width: 0;
+    word-break: break-all;
+  }
+}
+
+.detail-tb {
+  margin-top: 12px;
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid $color-border;
+  border-radius: 12px;
+  background: $term-bg;
+  color: $term-text;
+  font-size: 11.5px;
+  line-height: 1.6;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 </style>

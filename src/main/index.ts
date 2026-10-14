@@ -2,12 +2,13 @@ import { app, BrowserWindow, shell, protocol, net, nativeImage, dialog } from 'e
 import { join, resolve, dirname, relative, isAbsolute } from 'path'
 import { pathToFileURL, fileURLToPath } from 'url'
 import { existsSync, mkdirSync, appendFileSync } from 'fs'
-import { registerIpcHandlers, broadcast } from './ipc/handlers'
+import { registerIpcHandlers, broadcast, broadcastNotification } from './ipc/handlers'
 import { instanceService } from './services/instance'
 import { modelService } from './services/model'
 import { monitorService } from './services/monitor'
 import { batchService } from './services/p1p2'
 import { installerService } from './services/installer'
+import { execDiagnosticsService } from './services/execDiagnostics'
 import { syncProxyFromSettings } from './services/proxy'
 import { createTray, destroyTray, refreshTray, hasTray } from './services/tray'
 import { setLaunchOnBoot } from './services/desktop'
@@ -473,10 +474,61 @@ app.whenReady().then(async () => {
     broadcast(IPC_EVENTS.instanceStatus, info)
     void refreshTray()
   })
-  instanceService.on('log', (id, line) => broadcast(IPC_EVENTS.instanceLog, { id, line }))
+  instanceService.on('log', (id, line) => {
+    broadcast(IPC_EVENTS.instanceLog, { id, line })
+    // 0.1.12: runtime-failure watcher — a `!!! Exception during processing`
+    // banner schedules a parse of the traceback that follows (covers runs
+    // started from the ComfyUI frontend, which never reach our WS).
+    try {
+      execDiagnosticsService.noteLogLine(id, line?.message || '')
+    } catch {
+      /* diagnosis must never break log streaming */
+    }
+  })
+  // Record WS execution_error payloads for ComfyPilot-submitted runs and
+  // surface every failure as an event + one toast/notification.
+  monitorService.on('ws', (evt) => {
+    broadcast(IPC_EVENTS.monitorWs, evt)
+    if (evt?.type === 'execution_error' && evt.baseUrl) {
+      try {
+        const id = execDiagnosticsService.instanceIdForBaseUrl(evt.baseUrl)
+        if (id) execDiagnosticsService.recordWs(id, evt)
+      } catch {
+        /* diagnosis must never break the monitor stream */
+      }
+    }
+  })
+  execDiagnosticsService.on('failure', (f) => broadcast(IPC_EVENTS.execError, f))
+  execDiagnosticsService.on('notify', (f) => {
+    const summary = `${f.errorType}: ${f.message}`.slice(0, 220)
+    broadcastNotification({
+      type: 'error',
+      title: 'Execution failed',
+      titleKey: 'notify.execFailed',
+      message: summary,
+      messageKey: 'notify.execFailedMsg',
+      params: { message: summary },
+      duration: 10000
+    })
+    // System notification too (0.1.12): failures may happen while the window
+    // is hidden to tray — the OS toast keeps them visible.
+    void import('./services/tray')
+      .then(({ showSystemNotification }) => {
+        let zh = true
+        try {
+          zh = (loadSettings().locale || 'zh-CN') === 'zh-CN'
+        } catch {
+          /* default zh */
+        }
+        showSystemNotification(
+          zh ? 'ComfyPilot — 运行失败' : 'ComfyPilot — Execution failed',
+          summary
+        )
+      })
+      .catch(() => undefined)
+  })
   modelService.on('progress', (p) => broadcast(IPC_EVENTS.modelScanProgress, p))
   modelService.on('download', (t) => broadcast(IPC_EVENTS.downloadProgress, t))
-  monitorService.on('ws', (evt) => broadcast(IPC_EVENTS.monitorWs, evt))
   batchService.on('progress', (job) => broadcast(IPC_EVENTS.batchProgress, job))
   installerService.on('progress', (p) => broadcast(IPC_EVENTS.installProgress, p))
   // Resume interrupted model downloads so Range continues where we left off.
@@ -523,6 +575,13 @@ app.whenReady().then(async () => {
   import('./services/env')
     .then(({ envService }) => {
       envService.on('progress', (p) => broadcast(IPC_EVENTS.repairProgress, p))
+    })
+    .catch(() => undefined)
+  // 0.1.12: pip-op stream (install missing packages / recipes / pack deps).
+  import('./services/pipOps')
+    .then(({ pipOpsService }) => {
+      pipOpsService.on('progress', (p) => broadcast(IPC_EVENTS.pipOpProgress, p))
+      pipOpsService.on('log', (p) => broadcast(IPC_EVENTS.pipOpLog, p))
     })
     .catch(() => undefined)
   import('./services/doctor')

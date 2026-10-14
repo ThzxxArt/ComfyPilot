@@ -46,6 +46,24 @@ type ExecLike = (
   opts?: { cwd?: string; timeout?: number }
 ) => Promise<string>
 
+/**
+ * Exec that THROWS on failure (0.1.12). `safeExec` above deliberately swallows
+ * errors into a string — passing it to `ensurePip` made the pip probe resolve
+ * even when `python -m pip` was missing entirely (a latent 0.1.4–0.1.11 bug:
+ * ensurepip never ran in the repair/updater fallback paths). Probe-dependent
+ * helpers must get an exec with real rejection semantics.
+ */
+export const throwingExec: ExecLike = async (cmd, args, opts) => {
+  const { stdout, stderr } = await execFileAsync(cmd, args, {
+    cwd: opts?.cwd,
+    timeout: opts?.timeout,
+    windowsHide: true,
+    maxBuffer: 20 * 1024 * 1024,
+    env: proxyEnv(loadSettings().proxy)
+  })
+  return `${stdout || ''}${stderr || ''}`.trim()
+}
+
 /** Optional streaming hook so long pip/uv runs can surface output lines live. */
 type LineSink = (line: string) => void
 
@@ -174,8 +192,12 @@ export async function runStreaming(
 export async function ensurePip(pythonPath: string, exec: ExecLike): Promise<void> {
   const probe = async (): Promise<boolean> => {
     try {
-      await exec(pythonPath, ['-m', 'pip', '--version'], { timeout: 15000 })
-      return true
+      const out = await exec(pythonPath, ['-m', 'pip', '--version'], { timeout: 15000 })
+      // Only a RESOLVED run can still be a lie when the caller handed us a
+      // swallow-everything exec wrapper — never trust resolution alone.
+      return !/No module named\s+['"]?pip|pip is not available|not recognized/i.test(
+        String(out || '')
+      )
     } catch (e) {
       // A cancellation must surface as AbortError, not as "pip unavailable".
       if (e instanceof Error && e.name === 'AbortError') throw e
@@ -384,9 +406,23 @@ export class EnvService extends EventEmitter {
       errors.push('torch probe failed: ' + torchOut.slice(0, 120))
     }
 
-    const pipOut = await safeExec(pythonPath, ['-m', 'pip', 'list', '--format=json'])
+    // pip availability (0.1.12 WP4) — probed and REPORTED, never silently
+    // swallowed. `python -m pip` failing ("No module named pip") previously
+    // hid behind the empty package list and disabled every manual fix path.
+    let pip: { present: boolean; version?: string } = { present: false }
+    const pipVersionOut = await safeExec(pythonPath, ['-m', 'pip', '--version'])
+    const pipMatch = pipVersionOut.match(/\bpip\s+([0-9][^\s]*)/i)
+    if (pipMatch) {
+      pip = { present: true, version: pipMatch[1] }
+    } else {
+      errors.push(
+        'pip is not available in this interpreter — use Doctor "Fix pip" (ensurepip) or Repair environment'
+      )
+    }
+
+    const pipListOut = await safeExec(pythonPath, ['-m', 'pip', 'list', '--format=json'])
     try {
-      const list = JSON.parse(pipOut.trim().split('\n').pop() || '[]') as Array<{
+      const list = JSON.parse(pipListOut.trim().split('\n').pop() || '[]') as Array<{
         name: string
         version: string
       }>
@@ -405,6 +441,7 @@ export class EnvService extends EventEmitter {
       mpsAvailable,
       npuAvailable,
       packages,
+      pip,
       ok: errors.length === 0,
       errors
     }
@@ -435,6 +472,13 @@ export class EnvService extends EventEmitter {
       : join(venvPath, 'bin', 'python')
     if (!existsSync(python)) {
       throw new Error(`venv creation failed — no interpreter at ${python}`)
+    }
+    // Backstop (0.1.12): uv `--seed` can fail on custom indexes / offline
+    // mirrors and leave a pip-less venv — seed via ensurepip when that happens.
+    try {
+      await ensurePip(python, (c, a, o) => throwingExec(c, a, o))
+    } catch {
+      /* uv-only installs still work; probe() reports pip: missing */
     }
 
     if (req.torchIndex) {
@@ -589,9 +633,25 @@ export class EnvService extends EventEmitter {
         if (!existsSync(pythonInVenv)) {
           throw new Error(`venv creation failed — no interpreter at ${pythonInVenv}`)
         }
-        this.emitRepair(id, 'venv', 'done', venvPath)
       } else {
-        this.emitRepair(id, 'venv', 'skipped', 'venv already present')
+        this.emitRepair(id, 'venv', 'running', 'venv already present — checking pip…')
+      }
+      // WP4 (0.1.12): pip must work for the pip fallback paths, the user's own
+      // manual installs and the dependency-fix features. uv-only environments
+      // previously stayed pip-less forever — ensurepip seeds it now. Failure is
+      // logged, not fatal: uv-based installs remain usable and probe() reports
+      // the honest `pip: missing` state.
+      try {
+        await ensurePip(pythonInVenv, (c, a, o) => throwingExec(c, a, o))
+        this.emitRepair(id, 'venv', 'done', venvPath)
+      } catch (e) {
+        this.repairLog(`pip is still missing: ${e instanceof Error ? e.message : String(e)}`)
+        this.emitRepair(
+          id,
+          'venv',
+          'done',
+          `${venvPath} — pip missing (uv-only installs still available)`
+        )
       }
 
       // Optional torch
@@ -635,7 +695,7 @@ export class EnvService extends EventEmitter {
               async (c, a, o) => safeExec(c, a, o?.cwd, o?.timeout)
             )
           } else {
-            await ensurePip(pythonInVenv, async (c, a, o) => safeExec(c, a, o?.cwd, o?.timeout))
+            await ensurePip(pythonInVenv, (c, a, o) => throwingExec(c, a, o))
             await runStreaming(
               pythonInVenv,
               [

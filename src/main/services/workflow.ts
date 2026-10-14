@@ -967,6 +967,38 @@ export class WorkflowService {
     }
   }
 
+  /**
+   * Parse a workflow file (JSON or PNG-embedded) into an API prompt WITHOUT
+   * submitting anything — the preflight path (0.1.12 WP6) uses this to compare
+   * node class types against the instance's /object_info.
+   */
+  async buildApiPrompt(workflowPath: string): Promise<Record<string, unknown>> {
+    let rawJson: unknown = null
+    const ext = extname(workflowPath).toLowerCase()
+    if (ext === '.png') {
+      const meta = readPngTextMetaFromFile(workflowPath)
+      if (meta.prompt) {
+        try {
+          rawJson = JSON.parse(String(meta.prompt))
+        } catch {
+          rawJson = null
+        }
+      }
+      if (!rawJson && meta.workflow) {
+        try {
+          rawJson = JSON.parse(String(meta.workflow))
+        } catch {
+          rawJson = null
+        }
+      }
+    } else {
+      rawJson = parseWorkflowJson(readFileSync(workflowPath, 'utf-8'))
+    }
+    if (!rawJson) throw new Error('Cannot parse workflow prompt')
+    const { toApiPrompt } = await import('./workflowConvert')
+    return toApiPrompt(rawJson)
+  }
+
   async queue(opts: {
     workflowPath: string
     instanceId: string
@@ -987,9 +1019,7 @@ export class WorkflowService {
         ? '127.0.0.1'
         : inst.listen
       : ''
-    const url = remote
-      ? remote.baseUrl.replace(/\/+$/, '')
-      : `http://${host}:${inst!.port}`
+    const url = remote ? remote.baseUrl.replace(/\/+$/, '') : `http://${host}:${inst!.port}`
 
     let rawJson: unknown = null
     const ext = extname(opts.workflowPath).toLowerCase()

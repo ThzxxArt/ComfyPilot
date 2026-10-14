@@ -147,8 +147,8 @@ describe('ComfyApiClient jobs API (0.1.10)', () => {
     await client.history(3)
     await client.deleteQueueItems(['p1'])
     await client.interrupt('p1')
-    const authed = calls.filter((c) =>
-      (c.init?.headers as Record<string, string> | undefined)?.Authorization
+    const authed = calls.filter(
+      (c) => (c.init?.headers as Record<string, string> | undefined)?.Authorization
     )
     // jobsList + history + queue-delete + interrupt all carried the header.
     expect(authed.length).toBeGreaterThanOrEqual(4)

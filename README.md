@@ -1,7 +1,7 @@
 # ComfyPilot
 
 > **ComfyUI 全能管理器** — 本机 ComfyUI 生产线的控制塔  
-> TypeScript · Vue 3 · Electron · Naive UI · MIT · v0.1.11
+> TypeScript · Vue 3 · Electron · Naive UI · MIT · v0.1.12
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-4f6ef7)](./LICENSE)
 
@@ -35,15 +35,15 @@ ComfyPilot **不替代** ComfyUI 节点工作台，而是管理它的整套生�
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **总览 Dashboard**   | 空态三步引导、启动器大卡（一键启动并打开 Frontend）、启动中阶段与日志、实例 / 模型 / 节点 / CPU·内存·显存一屏掌握                                                              |
 | **一键装机 Install** | **无需预装 Python / Git**：自动下载便携运行时、zip 获取 ComfyUI、按 GPU 推荐 torch、镜像测速、细粒度进度、完成后一键启动 + 推荐基础模型                                        |
-| **实例 Instances**   | 发现候选、启动并打开、就绪探测、端口冲突自愈、**启动参数调优面板（9 组结构化参数 + 冲突校验 + 实时预览 + 按显存推荐）**、**在线版本/能力探测（/system_stats + /features）**、启动命令预览与导出脚本、热编辑、置顶/搜索、批量启停、环境探测、诊断包（含 system-stats/features）、**检查/更新 ComfyUI 本体（备份-回滚）**、**启动自检（--quick-test-for-ci）**、**一键修复环境** |
+| **实例 Instances**   | 发现候选、启动并打开、就绪探测、端口冲突自愈、**启动参数调优面板（9 组结构化参数 + 冲突校验 + 实时预览 + 按显存推荐）**、**在线版本/能力探测（/system_stats + /features）**、启动命令预览与导出脚本、热编辑、置顶/搜索、批量启停、环境探测（**含 pip 状态与一键补 pip**）、诊断包（含 system-stats/features）、**检查/更新 ComfyUI 本体（备份-回滚）**、**启动自检（--quick-test-for-ci）**、**一键修复环境**、**运行失败诊断（结构化错误卡：节点/包/缺模块/一键安装）** |
 | **模型库 Models**    | 多根扫描、safetensors 元数据、SHA256 去重、断点下载与校验、推荐模型包一键下载、移动/软链/改名、存储分析、真缩略图、**与运行中实例在线对账（可见性差异解释 + 一键加入扫描根）** |
-| **节点 Node Packs**  | Registry / Manager / Git 安装、依赖真实安装、启用禁用、锁定、冲突检测、冒烟导入、快照对齐、**全量检查更新（每包显式状态）**、**一键/批量顺序更新（批量实时进度、第 N/M、终端日志、可停止剩余）**、失败回滚上报、**启动加载报告（IMPORT FAILED 包可见 + 原因 + 启动自检）** |
+| **节点 Node Packs**  | Registry / Manager / Git 安装、依赖真实安装、启用禁用、锁定、冲突检测、冒烟导入、快照对齐、**全量检查更新（每包显式状态）**、**一键/批量顺序更新（批量实时进度、第 N/M、终端日志、可停止剩余）**、失败回滚上报、**启动加载报告（IMPORT FAILED 包可见 + 原因 + 启动自检）**、**依赖体检（requirements.txt vs 已装包对账 + 单包补装）**、issue 一键修复出口（如 torch 固定版本解除） |
 | **市场 Market**      | Comfy Registry 精选浏览与一键安装                                                                                                                                              |
 | **工作流 Workflows** | **真·工作流库**：JSON / PNG 元数据解析（PNG 抽出 .json）、导入拷贝入库、来源徽章、标签/收藏/改名/删除、ZIP 导出、同步到实例、Frontend 打开、按实例排队                         |
 | **批跑 Batch**       | 从工作流库**多选**多工作流 × 次数；种子策略（随机/递增/固定）+ 尺寸/steps/cfg 矩阵；入队后跟踪真实出图；取消可撤队；产物关联批次                                               |
 | **产物 Output**      | output 目录索引、真缩略图、**视频首帧卡片 + 灯箱内嵌播放（mp4/webm；mkv/mov 优雅降级系统播放器）**、时间/大小/名称排序 + 分页、收藏、多选导出 PNG 参数还原、**还原为工作流真正入库**、批次/工作流回溯                                                       |
 | **监控 Monitor**     | CPU / 内存 / 磁盘 / GPU（显存真实采样）、队列、WebSocket 实时进度、**实时采样预览（两代预览帧解码）**、**节点级进度（progress_state）**、**作业列表（/api/jobs）**、**远程实例只读监控** |
-| **诊断 Doctor**      | 一键体检（Python / torch·CUDA / 端口 / 节点 / 路径 / 磁盘 / 网络）+ 可修复项                                                                                                   |
+| **诊断 Doctor**      | 一键体检（Python / **pip 可用性** / torch·CUDA / 端口 / 节点 / 路径 / 磁盘 / 网络）+ 可修复项（含 **ensurepip 一键补 pip**）                                                                                                   |
 | **备份 Backup**      | 配置 / 实例 / 节点清单 / 模型清单快照，原子恢复                                                                                                                                |
 | **远程 Remote**      | 局域网 / 云端 ComfyUI 实例注册、连通测试、在线状态                                                                                                                             |
 | **内嵌 Frontend**    | WebContentsView 内嵌官方 ComfyUI 前端，可关并改用系统浏览器                                                                                                                    |
@@ -132,7 +132,7 @@ node node_modules/electron/install.js
 npm run dev          # 开发模式
 npm run typecheck    # vue-tsc + tsc
 npm run typecheck:test # 测试源码 tsc（CI 门禁）
-npm run test         # 单元 + 集成（2269 tests）
+npm run test         # 单元 + 集成（2370 tests）
 npm run test:coverage
 npm run lint         # ESLint（含 --fix）
 npm run lint:check   # ESLint 只检查（CI 门禁）
@@ -261,7 +261,7 @@ Python 版本、Torch / CUDA、`extra_model_paths.yaml`、端口、磁盘、Regi
 
 ```text
 ComfyPilot/
-├── package.json                 # v0.1.11 · MIT · ThzxxArt
+├── package.json                 # v0.1.12 · MIT · ThzxxArt
 ├── electron.vite.config.ts
 ├── electron-builder.yml         # Win NSIS / macOS DMG / Linux AppImage·deb + GitHub publish
 ├── vitest.config.ts             # 覆盖率门禁（0.1.8 按实测定档，见文件内说明）
@@ -291,7 +291,7 @@ ComfyPilot/
 │           ├── styles/tokens.ts # JS 侧设计 token
 │           └── views/           # dashboard/instances/install/models/…
 ├── tests/
-│   ├── unit/                    # 85 文件（+3 集成 = 88）· 2269 用例全绿 · 行为测试为主
+│   ├── unit/                    # 94 文件（+3 集成 = 97）· 2370 用例全绿 · 行为测试为主
 │   ├── integration/
 │   └── e2e/
 └── .github/workflows/ci.yml
@@ -305,7 +305,7 @@ ComfyPilot/
 npm run dev / typecheck / test / test:coverage / test:e2e / test:all
 ```
 
-**测试：** 2269 用例（88 文件）+ e2e 冒烟（含渲染挂载断言）。覆盖率门禁在 `vitest.config.ts` 内 **按实测定档（实测 − 2pp）**；测试源码纳入 tsc 门禁（`typecheck:test`）。
+**测试：** 2370 用例（97 文件）+ e2e 冒烟（含渲染挂载断言）。覆盖率门禁在 `vitest.config.ts` 内 **按实测定档（实测 − 2pp）**；测试源码纳入 tsc 门禁（`typecheck:test`）。
 
 **门禁脚本：**
 
@@ -413,6 +413,9 @@ ComfyUI 本身采用 GPL-3.0；本项目独立发布，采用 **MIT**。
 - [x] **0.1.11 事实精修**：节点「全部更新」完整性（可选重试检查失败项）+ 版本方向修复（1.0 不再谎报高于 1.2）+ git 落后提交数徽标 + 0.39 `[INFO]` 前缀加载报告修复；最大信息量卡片 + 批量启停防护；实例详情三页签 + 终端日志（自动跟随/2000 行）；调优面板平铺去嵌套；模型库类别下拉+架构筛选+类别图标；Dashboard 内存已用/总值
 - [x] **0.1.11 能力补齐**：远程实例批跑（远程历史产物语义诚实）+ 释放显存；运行中启动自检（独立端口）；工作流对比（字段差异+单侧节点类型）；GPU 多卡索引 + Windows 共享显存；应用自动更新检查可见化（设置页按钮+状态）
 - [x] 自动更新通道（GitHub Releases）：electron-builder.yml 配置 GitHub publish，NSIS 产物含 `latest.yml` + `app-update.yml`；应用内手动检查入口（Settings → 关于）
+- [x] **0.1.12 运行可诊**：运行失败结构化诊断（WS `execution_error` 全载荷 + 日志 traceback 解析双通道；节点→包归属映射 object_info `python_module`；失败卡一键安装缺失包 / 配方修复 / 复制报告 / 跳转节点包）；失败通知（系统通知 + 站内）
+- [x] **0.1.12 依赖可修**：实例 venv 通用 pip 安装通道（uv 优先 / ensurepip 兜底 / 镜像重试 / 流式日志 / 可取消）；Doctor pip 体检 + ensure-pip 一键修复；repairEnv/卸载链补 pip；节点依赖体检（requirements vs venv 对账 + 单包补装）；修复配方（triton-windows / SageAttention wheel / onnx，SHA256 钉验）
+- [x] **0.1.12 预检与收口**：工作流/批跑提交前 object_info 节点预检（缺节点警告不阻断）；日志搜索与级别过滤；进度弹窗刷新后状态恢复（comfy-update/repair/node-op/pip 四路快照）；0.1.12 全量死代码清理（wsEvents、objectInfo、getLastSnapshot、isWsConnected、hashId）
 - [x] 工作流版本对照与打包分享：0.1.11 工作流对比视图（`workflow.compare`）；打包分享（ZIP 导出，0.1.5 已含）
 - [x] 更细的 GPU 多卡 / 共享显存展示：0.1.11 多卡 `GPU n` 索引徽标 + Windows 共享显存（Shared Usage/Limit 计数器）
 

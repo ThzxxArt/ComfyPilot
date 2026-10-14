@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events'
-import { createHash, randomUUID } from 'crypto'
+import { randomUUID } from 'crypto'
 import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'child_process'
 import { promisify } from 'util'
 import {
@@ -762,6 +762,25 @@ export class InstanceService extends EventEmitter {
       /* optional */
     }
 
+    // pip availability (0.1.12 WP4) — probed and REPORTED. Previously the
+    // "No module named pip" failure vanished into the catch above, so the env
+    // card said OK while every manual pip path was dead.
+    let pip: { present: boolean; version?: string } = { present: false }
+    try {
+      const { stdout } = await execFileAsync(pythonPath, ['-m', 'pip', '--version'], {
+        timeout: 15000
+      })
+      const m = stdout.trim().match(/\bpip\s+([0-9][^\s]*)/i)
+      if (m) pip = { present: true, version: m[1] }
+    } catch {
+      /* probed below */
+    }
+    if (!pip.present) {
+      errors.push(
+        'pip is not available in this environment — use Doctor "Fix pip" (ensurepip) or Repair environment'
+      )
+    }
+
     return {
       pythonPath,
       pythonVersion,
@@ -771,6 +790,7 @@ export class InstanceService extends EventEmitter {
       mpsAvailable,
       npuAvailable,
       packages,
+      pip,
       ok: errors.length === 0 && Boolean(pythonVersion),
       errors
     }
@@ -939,7 +959,15 @@ export class InstanceService extends EventEmitter {
     const dir = join(userDataDir(), 'exports')
     mkdirSync(dir, { recursive: true })
     const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-    const file = join(dir, `${id}-${stamp}.log`)
+    // Human-readable instance name first (0.1.12 — `id-timestamp` files were
+    // indistinguishable); unicode letters/numbers kept, separators collapsed.
+    const cfg = loadInstanceConfigs().find((c) => c.id === id)
+    const base =
+      String(cfg?.name || id)
+        .replace(/[^\p{L}\p{N}._-]+/gu, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 60) || id
+    const file = join(dir, `${base}-${stamp}.log`)
     writeFileSync(
       file,
       lines
@@ -1342,7 +1370,10 @@ export class InstanceService extends EventEmitter {
           .split(/\r?\n/)
           .filter(Boolean)
           .forEach((line) => {
-            const level = /error|traceback/i.test(line)
+            // "Exception"/"!!!" added in 0.1.12: ComfyUI's execution failure
+            // banner (`!!! Exception during processing !!!`) contains neither
+            // "error" nor "traceback" and used to render as plain white info.
+            const level = /error|traceback|exception|!!!/i.test(line)
               ? 'error'
               : /warn/i.test(line)
                 ? 'warn'
@@ -1357,7 +1388,7 @@ export class InstanceService extends EventEmitter {
           .split(/\r?\n/)
           .filter(Boolean)
           .forEach((line) =>
-            this.pushLog(rt, /error|traceback/i.test(line) ? 'error' : 'warn', line)
+            this.pushLog(rt, /error|traceback|exception|!!!/i.test(line) ? 'error' : 'warn', line)
           )
       })
       child.on('error', (err) => {
@@ -1586,9 +1617,5 @@ export class InstanceService extends EventEmitter {
 }
 
 export const instanceService = new InstanceService()
-
-export function hashId(input: string): string {
-  return createHash('sha1').update(input).digest('hex').slice(0, 12)
-}
 
 export { dirname, rmSync }

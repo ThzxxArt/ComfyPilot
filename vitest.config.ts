@@ -49,9 +49,17 @@ export default defineConfig({
         'src/main/services/capabilities.ts',
         'src/main/services/workflowFingerprint.ts',
         'src/main/services/appUpdate.ts',
+        'src/main/services/pipOps.ts',
+        'src/main/services/execDiagnostics.ts',
+        'src/main/services/preflight.ts',
+        'src/main/services/env.ts',
         'src/shared/constants.ts',
         'src/shared/launchArgs.ts',
-        'src/shared/nodeLoadReport.ts'
+        'src/shared/nodeLoadReport.ts',
+        'src/shared/execError.ts',
+        'src/shared/pipVersion.ts',
+        'src/shared/pipRecipes.ts',
+        'src/shared/preflight.ts'
       ],
       thresholds: {
         // ── 实测定档：高覆盖模块（0.1.10 全量实测 − 2pp）──
@@ -106,6 +114,25 @@ export default defineConfig({
           functions: 98,
           branches: 73
         },
+        // ── 0.1.12 新增/触及模块（首轮实测 − 2pp）──
+        'src/main/services/pipOps.ts': { statements: 90, lines: 90, functions: 94, branches: 70 },
+        'src/main/services/execDiagnostics.ts': {
+          statements: 91,
+          lines: 91,
+          functions: 98,
+          branches: 73
+        },
+        'src/main/services/preflight.ts': {
+          statements: 98,
+          lines: 98,
+          functions: 98,
+          branches: 79
+        },
+        'src/main/services/env.ts': { statements: 50, lines: 50, functions: 82, branches: 73 },
+        'src/shared/execError.ts': { statements: 96, lines: 96, functions: 98, branches: 71 },
+        'src/shared/pipVersion.ts': { statements: 90, lines: 90, functions: 98, branches: 73 },
+        'src/shared/pipRecipes.ts': { statements: 98, lines: 98, functions: 98, branches: 78 },
+        'src/shared/preflight.ts': { statements: 98, lines: 98, functions: 98, branches: 98 },
         // ── 全局下限（0.1.10 全量实测 − 2pp）──
         statements: 88,
         lines: 88,

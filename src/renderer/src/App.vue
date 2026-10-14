@@ -35,10 +35,12 @@ import {
 import { useAppStore } from '@/stores/app'
 import { ipc } from '@/composables/useIpc'
 import { useLaunch } from '@/composables/useLaunch'
+import { usePipOps } from '@/composables/usePipOps'
 import { createDiscreteApi } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { APP_VERSION } from '@shared/constants'
 import { COLORS } from '@/styles/tokens'
+import PipOpModal from '@/components/PipOpModal.vue'
 
 // App.vue sits outside NMessageProvider — use a discrete message API.
 const discreteMessage = createDiscreteApi(['message']).message
@@ -50,6 +52,15 @@ const store = useAppStore()
 const collapsed = ref(false)
 const { t, locale } = useI18n()
 const { launch, stop, busy } = useLaunch()
+// 0.1.12: restore pip-op state after a renderer reload so the banner/modal
+// stop being invisible while main is still installing.
+const { refreshStatus: refreshPipStatus } = usePipOps()
+watch(
+  () => store.activeInstanceId,
+  (nid) => {
+    if (nid) void refreshPipStatus(nid)
+  }
+)
 
 // Sidebar width used by embed.resize — keep in sync with $nav-width / collapsed state
 const SIDEBAR_W = 240
@@ -309,6 +320,7 @@ onMounted(async () => {
   notifyEmbedLayout()
   window.addEventListener('keydown', onKeydown)
   window.addEventListener('comfypilot:layout-request', onLayoutRequest)
+  if (store.activeInstanceId) void refreshPipStatus(store.activeInstanceId)
 })
 
 onUnmounted(() => {
@@ -560,6 +572,8 @@ async function toggleInstanceRun(): Promise<void> {
             </main>
           </section>
         </div>
+        <!-- Global pip-op modal (0.1.12): missing-package fix / recipes / pack deps -->
+        <PipOpModal />
       </NDialogProvider>
     </NMessageProvider>
   </NConfigProvider>

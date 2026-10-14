@@ -113,10 +113,12 @@ describe('0.1.9 node-op modal contracts', () => {
 
   it('e2e smoke boots the packaged bootstrap entry (not out/main/index.js)', () => {
     const src = read('tests/e2e/app-smoke.e2e.ts')
-    // The constant must point at bootstrap.cjs AND the spawn must use it —
-    // pointing the constant at it while spawning index.js was an empty check.
+    // The constant must point at bootstrap.cjs AND the spawn must use the
+    // bootstrap entry (relative form — 0.1.12: POSIX absolute paths break
+    // Windows Electron under WSL interop) — pointing the constant at it while
+    // spawning index.js was an empty check.
     expect(src).toContain("'bootstrap.cjs'")
-    expect(src).toContain('[mainJs,')
+    expect(src).toContain("'out/main/bootstrap.cjs'")
     expect(src).not.toMatch(/spawn\(\s*bin,\s*\[[^\]]*'index\.js'/)
   })
 

@@ -1,4 +1,5 @@
 /** Shared domain types between main / preload / renderer — full PLAN coverage */
+import type { PipRecipe } from './pipRecipes'
 
 // ---------- App ----------
 export type AppLocale = 'zh-CN' | 'en-US'
@@ -612,6 +613,84 @@ export interface ExecProgressEvent {
   nodes?: Record<string, ExecNodeProgress>
   /** execution_cached payload. */
   cachedNodes?: string[]
+  // ---------- execution_error payload pass-through (0.1.12) ----------
+  /** Class type of the failing node (ComfyUI `node_type`). */
+  nodeType?: string
+  /** exception_type from the WS payload, e.g. ModuleNotFoundError. */
+  errorType?: string
+  /** exception_message from the WS payload. */
+  errorMessage?: string
+  /** Bounded traceback tail from the WS payload. */
+  errorTraceback?: string[]
+  /** Main-process routing only: which base URL produced this event. */
+  baseUrl?: string
+}
+
+// ---------- Execution failure diagnosis (0.1.12) ----------
+/** One recorded runtime failure — WS payload (ComfyPilot submissions) or log-parsed. */
+export interface ExecFailure {
+  id: string
+  instanceId: string
+  source: 'ws' | 'log'
+  at: number
+  promptId?: string
+  nodeId?: string
+  nodeType?: string
+  errorType: string
+  message: string
+  missingModule?: string
+  /** custom_nodes folder the failing file belongs to (pack attribution). */
+  packFolder?: string
+  traceback?: string[]
+}
+
+/** Result of a pip/recipe install op (0.1.12). */
+export interface PipOpResult {
+  ok: boolean
+  instanceId: string
+  /** Requested specs / recipe id (for the result summary). */
+  requested: string[]
+  /** Package names verified installed afterwards (pip show). */
+  installed: string[]
+  cancelled?: boolean
+  error?: string
+  /** Non-fatal caveat (e.g. installed but not listed by pip show). */
+  warning?: string
+}
+
+/** Per-pack dependency audit entry (0.1.12). */
+export interface NodeDepsAuditPack {
+  id: string
+  name: string
+  declared: string[]
+  missing: string[]
+  mismatched: Array<{ name: string; required: string; installed: string }>
+}
+
+/** Node-pack dependency audit result (requirements.txt vs venv pip list). */
+export interface NodeDepsAudit {
+  ok: boolean
+  pipAvailable: boolean
+  checkedPacks: number
+  packs: NodeDepsAuditPack[]
+  error?: string
+}
+
+/** Workflow preflight against /object_info (0.1.12, WP6). */
+export interface WorkflowPreflight {
+  /** False when object_info could not be fetched (offline/old server). */
+  available: boolean
+  missingTypes: string[]
+  nodeTypes: number
+  error?: string
+}
+
+/** Batch preflight across multiple workflow files. */
+export interface BatchPreflight {
+  available: boolean
+  missingTypes: string[]
+  perWorkflow: Array<{ workflowPath: string; name: string; missingTypes: string[]; error?: string }>
+  error?: string
 }
 
 export interface OutputAsset {
@@ -688,6 +767,11 @@ export interface EnvProbe {
   mpsAvailable?: boolean
   npuAvailable?: boolean
   packages: Array<{ name: string; version: string }>
+  /**
+   * pip availability inside this interpreter (0.1.12). Probed, not guessed —
+   * `present:false` means `python -m pip` fails ("No module named pip").
+   */
+  pip?: { present: boolean; version?: string }
   ok: boolean
   errors: string[]
 }
@@ -1158,11 +1242,25 @@ export type IpcChannelMap = {
   'instance.updateStatus': { args: []; result: UpdateProgress | null }
   'instance.cancelUpdate': { args: []; result: boolean }
   'instance.repairEnv': { args: [string, RepairEnvOptions?]; result: EnvProbe }
+  /** Current repair-op snapshot (modal hydration after renderer reloads). */
+  'instance.repairStatus': { args: []; result: UpdateProgress | null }
   'instance.capabilities': { args: [string]; result: InstanceCapabilities | null }
   'instance.runStartupSelfCheck': {
     args: [string]
     result: { ok: boolean; exitCode: number | null; output: string }
   }
+  /** Install one pip spec into the instance venv (0.1.12 — diagnosis fix). */
+  'instance.pipInstall': { args: [string, string]; result: PipOpResult }
+  /** Apply a curated fix recipe (triton/sageattention/onnx) to the instance venv. */
+  'instance.applyRecipe': { args: [string, string]; result: PipOpResult }
+  /** Cancel the running pip op for an instance. */
+  'instance.pipCancel': { args: [string]; result: boolean }
+  /** Current pip-op progress snapshot (modal hydration after view remounts). */
+  'instance.pipStatus': { args: [string?]; result: UpdateProgress | null }
+  /** Recorded execution failures (WS + log-parsed), newest first. */
+  'instance.execFailures': { args: [string]; result: ExecFailure[] }
+  /** Dismiss recorded failures (log-derived ones up to now). */
+  'instance.clearExecFailures': { args: [string]; result: boolean }
 
   // models
   'model.list': { args: []; result: ModelRecord[] }
@@ -1262,6 +1360,12 @@ export type IpcChannelMap = {
   'node.checkUpdates': { args: [string?]; result: NodeUpdateCheckResult[] }
   'node.updateAll': { args: [string?, NodeUpdateAllOptions?]; result: NodeUpdateAllResult[] }
   'node.loadReport': { args: [string?]; result: NodeLoadReport | null }
+  /** requirements.txt vs venv pip list audit (0.1.12). */
+  'node.depsAudit': { args: [string?]; result: NodeDepsAudit }
+  /** (Re)install one pack's requirements into the instance venv (0.1.12). */
+  'node.installDeps': { args: [string, string?]; result: PipOpResult }
+  /** Current node-op snapshot (modal hydration after renderer reloads). */
+  'node.opStatus': { args: [string?]; result: UpdateProgress | null }
 
   // workflows
   'workflow.list': { args: [{ includeMissing?: boolean }?]; result: WorkflowRecord[] }
@@ -1305,6 +1409,8 @@ export type IpcChannelMap = {
   }
   'workflow.parsePngMeta': { args: [string]; result: Record<string, unknown> | null }
   'workflow.compare': { args: [string, string]; result: WorkflowCompareResult }
+  /** Preflight one workflow file against the instance /object_info (0.1.12). */
+  'workflow.preflight': { args: [string, string]; result: WorkflowPreflight }
 
   // monitor
   'monitor.system': { args: []; result: SystemSnapshot }
@@ -1330,6 +1436,8 @@ export type IpcChannelMap = {
   'env.createVenv': { args: [EnvCreateRequest]; result: EnvProbe }
   'env.listPythons': { args: []; result: Array<{ path: string; version: string }> }
   'env.installTorch': { args: [{ pythonPath: string; index: string }]; result: boolean }
+  /** Curated dependency-fix recipes (0.1.12, WP7). */
+  'deps.recipes': { args: []; result: PipRecipe[] }
 
   // installer
   'installer.detectGpu': { args: []; result: GpuCapability[] }
@@ -1421,6 +1529,11 @@ export type IpcChannelMap = {
   'batch.cancel': { args: [string]; result: BatchJob }
   'batch.cancelItem': { args: [string, string]; result: BatchJob }
   'batch.remove': { args: [string]; result: boolean }
+  /** Preflight all item workflows of a batch against the target /object_info. */
+  'batch.preflight': {
+    args: [{ workflowPaths: string[]; instanceId: string }]
+    result: BatchPreflight
+  }
 
   // output
   'output.list': {
@@ -1522,7 +1635,13 @@ export const IPC_EVENTS = {
   nodeCheckProgress: 'event:node-check-progress',
   repairProgress: 'event:repair-progress',
   nodeOperationProgress: 'event:node-operation-progress',
-  appUpdate: 'event:app-update'
+  appUpdate: 'event:app-update',
+  /** Recorded execution failure (0.1.12) — payload: ExecFailure. */
+  execError: 'event:exec-error',
+  /** Streaming log line for pip/recipe ops (0.1.12). */
+  pipOpLog: 'event:pip-op-log',
+  /** UpdateProgress-shaped stream for pip/recipe ops (0.1.12). */
+  pipOpProgress: 'event:pip-op-progress'
 } as const
 
 export interface AppNotification {

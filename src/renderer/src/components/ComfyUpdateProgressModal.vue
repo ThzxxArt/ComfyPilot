@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, type Component } from 'vue'
+import { computed, ref, watch, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   CheckmarkCircleOutline,
@@ -16,7 +16,16 @@ const props = defineProps<{ show: boolean; title?: string }>()
 const emit = defineEmits<{ (e: 'update:show', v: boolean): void }>()
 
 const { t } = useI18n()
-const { progress, updating, cancelling, cancelUpdate } = useComfyUpdate()
+const { progress, updating, cancelling, cancelUpdate, hydrateActiveOp } = useComfyUpdate()
+
+// 0.1.12: restore the live snapshot after a renderer reload (main process
+// keeps running; without this the modal showed an empty shell).
+watch(
+  () => props.show,
+  (v) => {
+    if (v) void hydrateActiveOp()
+  }
+)
 
 const modalTitle = computed(() => props.title || t('instance.updateComfy'))
 
