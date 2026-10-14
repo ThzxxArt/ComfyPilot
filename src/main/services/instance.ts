@@ -732,6 +732,9 @@ export class InstanceService extends EventEmitter {
     }
 
     try {
+      // NOTE (0.1.12 fix): newline-joined, NOT ';'-joined. The old join(';')
+      // produced `{;"torch"` — a permanent Python SyntaxError, silently caught
+      // and reported as "torch probe failed" since 0.1.4.
       const script = [
         'import torch, json',
         'print(json.dumps({',
@@ -740,7 +743,7 @@ export class InstanceService extends EventEmitter {
         '"mps": bool(getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()),',
         '"npu": bool(getattr(torch, "npu", None) and hasattr(torch.npu, "is_available") and torch.npu.is_available())',
         '}))'
-      ].join(';')
+      ].join('\n')
       const { stdout } = await execFileAsync(pythonPath, ['-c', script], { timeout: 15000 })
       const data = JSON.parse(stdout.trim().split('\n').pop() || '{}')
       torchVersion = data.torch

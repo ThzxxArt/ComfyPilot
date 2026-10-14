@@ -1107,9 +1107,11 @@ describe('version probe + cache', () => {
 describe('probeEnv()', () => {
   it('collects python version, torch JSON and pip list', async () => {
     register(cfg({ id: 'env', venvPath: '', pythonPath: 'C:/py/python.exe' }))
+    let torchScript = ''
     h.state.execHandler = (_cmd, args) => {
       if (args[0] === '--version') return { stdout: 'Python 3.12.1' }
       if (args[0] === '-c') {
+        torchScript = String(args[1])
         return {
           stdout: JSON.stringify({
             torch: '2.3.0',
@@ -1144,6 +1146,11 @@ describe('probeEnv()', () => {
     expect(probe.pip).toEqual({ present: true, version: '24.0' })
     expect(probe.packages.length).toBeGreaterThanOrEqual(2)
     expect(probe.errors).toEqual([])
+    // Regression (0.1.12): the torch probe script was ';'-joined, producing
+    // `{;"torch"` — a permanent Python SyntaxError (see the reported bug).
+    expect(torchScript).not.toMatch(/\{;|,;|;;|;\}/)
+    expect(torchScript.split('\n').length).toBeGreaterThan(5)
+    expect(torchScript).toContain('import torch, json')
   })
 
   it('reports missing pip as an environment error (0.1.12)', async () => {

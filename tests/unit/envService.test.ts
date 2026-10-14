@@ -128,4 +128,42 @@ describe('EnvService (0.1.10 behaviour)', () => {
     expect(list.map((p) => p.path)).toContain('portable-py')
     expect(list.every((p) => p.version.includes('Python'))).toBe(true)
   })
+
+  it('probe() runs a syntactically valid multi-line torch script (0.1.12 fix)', async () => {
+    const { envService } = await import('../../src/main/services/env')
+    h.state.handler = (_cmd, args) => {
+      if (args[0] === '--version') return { stdout: 'Python 3.12.1' }
+      if (args[0] === '-c' && String(args[1]).includes('json.dumps')) {
+        return {
+          stdout: JSON.stringify({
+            torch: '2.9.0+cu130',
+            cuda: '13.0',
+            rocm: null,
+            mps: false,
+            npu: false
+          })
+        }
+      }
+      if (args[0] === '-m' && args[1] === 'pip' && args[2] === '--version') {
+        return { stdout: 'pip 24.0 from x (python 3.12)' }
+      }
+      if (args[0] === '-m') return { stdout: '[]' }
+      return { stdout: '' }
+    }
+    const probe = await envService.probe({ pythonPath: 'python' })
+    const torchCall = h.state.calls.find(
+      (c) => c.args[0] === '-c' && String(c.args[1]).includes('json.dumps')
+    )
+    expect(torchCall).toBeTruthy()
+    const script = String(torchCall!.args[1])
+    // Regression (0.1.12): join(';') produced `{;"torch"` → Python SyntaxError
+    // forever (silently reported as 'torch probe failed'). The script must be
+    // newline-joined and free of semicolon artifacts.
+    expect(script).not.toMatch(/\{;|,;|;;|;\}/)
+    expect(script.split('\n').length).toBeGreaterThan(5)
+    expect(script).toContain('import json, torch')
+    expect(probe.torchVersion).toBe('2.9.0+cu130')
+    expect(probe.cudaVersion).toBe('13.0')
+    expect(probe.pip).toEqual({ present: true, version: '24.0' })
+  })
 })

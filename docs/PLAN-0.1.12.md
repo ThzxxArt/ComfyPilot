@@ -253,6 +253,9 @@ WP4（pip 自愈，最小独立） → WP2（日志解析） → WP3（安装通
   - **WP7「配方失败回退通用安装并明示」补齐**：配方失败弹窗明示原因 + 「直接安装 {module}」按钮 + 版本不匹配警告 + 旁路建议。
   - **WP2「日志内已解析块高亮」落实**：错误级日志行增加浅红背景（失败块在终端中整段可辨，此前仅文字变红）。
   - **pip op 取消状态精准化**：取消时进度状态为 `cancelled`（此前误标 `failed`），弹窗显示「已取消」而非错误。
+- **发布后实机复测修复（v0.1.12.1 round）**：
+  - **环境体检 torch 探测历史缺陷**（自 0.1.4 潜伏，经爸爸实机点击「环境体检」抓获）：`env.ts`/`instance.ts` 两份 torch 探测脚本用 `join(';')` 拼接 → `{;"torch"` 恒为 Python SyntaxError（症状：体检永久报 torch 探测失败）。修复为 `join('\n')`；**在真实 venv 实机执行验证**：`{"torch": "2.14.1+cu130", "cuda": "13.0", ...}`；两处防回归断言（脚本不得含 `{;`/`,;`/`;;`/`;}` 且必须换行拼接）。
+  - 事故归因：mock 测试只按参数签名返回假数据、从不校验脚本内容——本次在断言中固化"脚本形状"检查，同类拼接回归将被当场拦截。
 - **Git 对照二审补齐（渲染层 composable 测试，消除孤儿导出）**：新增 `tests/unit/pipOpsStore.test.ts` 覆盖 `usePipOps`（refreshStatus 水合、事件驱动 activeInstances、run 生命周期、openFor 重开、dispose）与 `useExecDiagnostics`（快照加载、跨实例过滤、clear、dispose）；`wheelPackageName` 补直接用例——两个 `dispose*` 导出从零引用变为测试真实使用。
 
 ## 与计划的差异（最终）
@@ -267,8 +270,8 @@ WP4（pip 自愈，最小独立） → WP2（日志解析） → WP3（安装通
 
 ## 验证（终态）
 
-- 单元 + 集成：**2370 用例 / 97 文件全绿**（0.1.12 新增 9 个测试文件：execErrorParse / pipVersion / pipRecipes / preflight（shared）/ preflightService / execDiagnostics / pipOps / depsAudit / pipOpsStore；测试增量 101 用例）。
-- 覆盖率：全局 88.95 / 83.02 / 93.53；新模块按「实测 − 2pp」立阈值（pipOps、execDiagnostics、services/preflight、env、execError、pipVersion、pipRecipes、preflight），`vitest run --coverage` 全绿。
+- 单元 + 集成：**2371 用例 / 97 文件全绿**（0.1.12 新增 9 个测试文件：execErrorParse / pipVersion / pipRecipes / preflight（shared）/ preflightService / execDiagnostics / pipOps / depsAudit / pipOpsStore；测试增量 102 用例）。
+- 覆盖率：全局 88.97 / 83.07 / 93.53；新模块按「实测 − 2pp」立阈值（pipOps、execDiagnostics、services/preflight、env、execError、pipVersion、pipRecipes、preflight），`vitest run --coverage` 全绿。
 - `typecheck`（web+node+测试源码）/ `lint:check`（**0 错 0 警**）/ i18n 键门禁（1307=1307，used 1045）/ 零硬编码中文 / `build`：全绿。
 - Electron e2e：真实入口启动 + 渲染挂载断言通过（含 WSL/Windows 双平台选择修复后的路径）。
 - 版本文号 0.1.12（package.json / lock / constants / README / 工程结构注记）。

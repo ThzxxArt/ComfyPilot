@@ -383,6 +383,7 @@ export class EnvService extends EventEmitter {
     let npuAvailable: boolean | undefined
     const packages: Array<{ name: string; version: string }> = []
 
+    // NOTE (0.1.12 fix): newline-joined, NOT ';'-joined — see instance.ts.
     const torchScript = [
       'import json, torch',
       'print(json.dumps({',
@@ -392,7 +393,7 @@ export class EnvService extends EventEmitter {
       '"mps": bool(getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()),',
       '"npu": hasattr(torch, "npu") and torch.npu.is_available()',
       '}))'
-    ].join(';')
+    ].join('\n')
     const torchOut = await safeExec(pythonPath, ['-c', torchScript])
     try {
       const data = JSON.parse(torchOut.trim().split('\n').pop() || '{}')
