@@ -434,6 +434,31 @@ export class ComfyUpdaterService extends EventEmitter {
     return config
   }
 
+  /**
+   * Latest official GitHub release tag (0.1.14) — INFORMATIONAL only. ComfyUI
+   * ships weekly tagged releases while zip installs track master; this tells
+   * the user which release the current master is ahead of. Never throws and
+   * never gates the update decision.
+   */
+  private async fetchLatestRelease(): Promise<{ tag: string; publishedAt?: string } | undefined> {
+    try {
+      const url = applyGithubMirror(
+        'https://api.github.com/repos/Comfy-Org/ComfyUI/releases/latest'
+      )
+      const { session } = await import('electron')
+      const res = await session.defaultSession.fetch(url, {
+        headers: { 'User-Agent': 'ComfyPilot/0.1', Accept: 'application/vnd.github+json' },
+        signal: AbortSignal.timeout(15000)
+      })
+      if (!res.ok) return undefined
+      const data = (await res.json()) as { tag_name?: string; published_at?: string }
+      if (!data.tag_name) return undefined
+      return { tag: data.tag_name, publishedAt: data.published_at }
+    } catch {
+      return undefined
+    }
+  }
+
   /** Compare local vs remote and tell the UI whether an update is worthwhile. */
   async check(instanceId: string): Promise<ComfyUpdateInfo> {
     const config = this.requireInstance(instanceId)
@@ -441,6 +466,9 @@ export class ComfyUpdaterService extends EventEmitter {
     const source = detectComfySource(comfyDir)
     const current = probeComfyVersion(comfyDir)
     const checkedAt = Date.now()
+    // 0.1.14: attach the latest official release (informational) to every
+    // outcome; failure just omits the field.
+    const latestRelease = await this.fetchLatestRelease()
 
     if (source === 'git') {
       try {
@@ -480,6 +508,7 @@ export class ComfyUpdaterService extends EventEmitter {
           updatable: behind > 0,
           behindCount: behind,
           latestCommit: latestCommit || undefined,
+          latestRelease,
           checkedAt
         }
       } catch (e) {
@@ -488,6 +517,7 @@ export class ComfyUpdaterService extends EventEmitter {
           current,
           source: 'git',
           updatable: false,
+          latestRelease,
           checkedAt,
           error: e instanceof Error ? e.message : String(e)
         }
@@ -498,7 +528,7 @@ export class ComfyUpdaterService extends EventEmitter {
       // Compare against GitHub master archive commit via the API (lightweight).
       try {
         const url = applyGithubMirror(
-          'https://api.github.com/repos/comfyanonymous/ComfyUI/commits/master'
+          'https://api.github.com/repos/Comfy-Org/ComfyUI/commits/master'
         )
         const { session } = await import('electron')
         const res = await session.defaultSession.fetch(url, {
@@ -526,6 +556,7 @@ export class ComfyUpdaterService extends EventEmitter {
           source: 'zip',
           updatable,
           latestCommit: latestCommit || undefined,
+          latestRelease,
           checkedAt
         }
       } catch (e) {
@@ -535,6 +566,7 @@ export class ComfyUpdaterService extends EventEmitter {
           current,
           source: 'zip',
           updatable: true,
+          latestRelease,
           checkedAt,
           error: e instanceof Error ? e.message : String(e)
         }
@@ -546,6 +578,7 @@ export class ComfyUpdaterService extends EventEmitter {
       current,
       source: 'unknown',
       updatable: false,
+      latestRelease,
       checkedAt,
       error: 'Not a recognizable ComfyUI install (missing main.py)'
     }
@@ -1141,7 +1174,7 @@ export class ComfyUpdaterService extends EventEmitter {
    */
   private async fetchAndOverlayZip(comfyDir: string): Promise<void> {
     const url = applyGithubMirror(
-      'https://github.com/comfyanonymous/ComfyUI/archive/refs/heads/master.zip'
+      'https://github.com/Comfy-Org/ComfyUI/archive/refs/heads/master.zip'
     )
     if (!isSafeExternalUrl(url)) throw new Error('Blocked ComfyUI archive URL')
     const { session } = await import('electron')

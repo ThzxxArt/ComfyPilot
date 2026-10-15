@@ -477,11 +477,15 @@ describe('model sources', () => {
 
 // ============ Output asset types ============
 describe('output asset types', () => {
-  it('all types are defined', () => {
-    const src = readSrc('src/shared/types.ts')
-    const types = ['image', 'video', 'audio', 'other']
+  it('all types are defined (0.1.14: derived from the shared media catalogue)', () => {
+    // OutputAsset.type is now `OutputType` from @shared/mediaTypes; assert the
+    // canonical definition + every member still exists there.
+    const typesSrc = readSrc('src/shared/types.ts')
+    expect(typesSrc).toContain('OutputType')
+    const mediaSrc = readSrc('src/shared/mediaTypes.ts')
+    const types = ['image', 'video', 'audio', '3d', 'other']
     for (const t of types) {
-      expect(src).toContain(`'${t}'`)
+      expect(mediaSrc).toContain(`'${t}'`)
     }
   })
 })

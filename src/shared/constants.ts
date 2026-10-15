@@ -6,7 +6,7 @@ export const APP_NAME = 'ComfyPilot'
  * Build injects __APP_VERSION__ from package.json; dev falls back to the literal.
  */
 declare const __APP_VERSION__: string | undefined
-export const APP_VERSION = (typeof __APP_VERSION__ !== 'undefined' && __APP_VERSION__) || '0.1.13'
+export const APP_VERSION = (typeof __APP_VERSION__ !== 'undefined' && __APP_VERSION__) || '0.1.14'
 
 export const DEFAULT_SETTINGS: AppSettings = {
   locale: 'zh-CN',
@@ -238,8 +238,9 @@ export const RUNTIME_SOURCES: Record<
 }
 
 /** ComfyUI source archive (zip) — default install path, no Git required. */
-export const COMFY_ZIP_URL =
-  'https://github.com/comfyanonymous/ComfyUI/archive/refs/heads/master.zip'
+// Official repository: Comfy-Org/ComfyUI (0.1.14 switched off the old
+// comfyanonymous/ URL, which only worked via GitHub redirects).
+export const COMFY_ZIP_URL = 'https://github.com/Comfy-Org/ComfyUI/archive/refs/heads/master.zip'
 
 /**
  * Starter models for the post-install guided download.

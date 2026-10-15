@@ -43,7 +43,12 @@ import {
 import { usePipOps } from '@/composables/usePipOps'
 import NodeOpProgressModal from '@/components/NodeOpProgressModal.vue'
 import { useAppStore } from '@/stores/app'
-import { packLoadStatusOf, packLoadFailureOf, type PackLoadStatus } from '@shared/nodeLoadReport'
+import {
+  packLoadStatusOf,
+  packLoadFailureOf,
+  packPolicyRefusalOf,
+  type PackLoadStatus
+} from '@shared/nodeLoadReport'
 import type {
   NodeCheckStatus,
   NodeDepsAudit,
@@ -133,10 +138,19 @@ const loadReport = ref<NodeLoadReport | null>(null)
 const selfChecking = ref(false)
 /** Filter toggle: show only packs that failed to load on the last boot. */
 const loadFailedOnly = ref(false)
+/** True when the pack was refused by ComfyUI's governance policy (0.1.14). */
+function packPolicyRefused(pack: NodePackRecord): boolean {
+  if (pack.status === 'disabled') return false
+  return Boolean(packPolicyRefusalOf(packFolder(pack), loadReport.value))
+}
+
 const loadFailedCount = computed(
   () =>
     packs.value.filter(
-      (p) => packLoad(p) === 'import-failed' || packLoad(p) === 'prestartup-failed'
+      (p) =>
+        packLoad(p) === 'import-failed' ||
+        packLoad(p) === 'prestartup-failed' ||
+        packPolicyRefused(p)
     ).length
 )
 
@@ -160,11 +174,19 @@ function packLoadError(pack: NodePackRecord): string {
   return packLoadFailureOf(packFolder(pack), loadReport.value)?.error || ''
 }
 
+/** Governance-refusal tooltip (i18n; reason distinguishes policy vs manager). */
+function packPolicyTip(pack: NodePackRecord): string {
+  const hit = packPolicyRefusalOf(packFolder(pack), loadReport.value)
+  if (!hit) return ''
+  return t(hit.reason === 'manager' ? 'nodes.policyRefusedManager' : 'nodes.policyRefusedTip')
+}
+
 const loadSummary = computed(() => {
   const entries = loadReport.value?.available ? loadReport.value.entries : null
-  if (!entries) return null
-  const fail = entries.filter((e) => !e.ok).length
-  return { ok: entries.length - fail, fail }
+  const refused = loadReport.value?.policyRefused?.length || 0
+  if (!entries && !refused) return null
+  const fail = entries ? entries.filter((e) => !e.ok).length : 0
+  return { ok: entries ? entries.length - fail : 0, fail, refused }
 })
 
 /** One-click boot self-check: ComfyUI loads every custom node then exits.
@@ -230,7 +252,10 @@ const filteredPacks = computed(() => {
   let list = packs.value
   if (loadFailedOnly.value) {
     list = list.filter(
-      (p) => packLoad(p) === 'import-failed' || packLoad(p) === 'prestartup-failed'
+      (p) =>
+        packLoad(p) === 'import-failed' ||
+        packLoad(p) === 'prestartup-failed' ||
+        packPolicyRefused(p)
     )
   }
   const q = installedQuery.value.trim().toLowerCase()
@@ -915,19 +940,27 @@ watch(
             v-if="loadSummary"
             size="small"
             round
-            :type="loadSummary.fail ? 'error' : 'success'"
+            :type="loadSummary.fail || loadSummary.refused ? 'error' : 'success'"
             :title="
-              loadSummary.fail
-                ? packs
-                    .filter(
-                      (p) => packLoad(p) === 'import-failed' || packLoad(p) === 'prestartup-failed'
+              loadSummary.fail || loadSummary.refused
+                ? [
+                    ...packs
+                      .filter(
+                        (p) =>
+                          packLoad(p) === 'import-failed' || packLoad(p) === 'prestartup-failed'
+                      )
+                      .map((p) => `${packTitle(p)}: ${packLoadError(p)}`),
+                    ...(loadReport?.policyRefused || []).map(
+                      (r) => `${r.folder}: ${t('nodes.policyRefused')}`
                     )
-                    .map((p) => `${packTitle(p)}: ${packLoadError(p)}`)
-                    .join('\n')
+                  ].join('\n')
                 : ''
             "
           >
             {{ $t('nodes.loadSummary', { ok: loadSummary.ok, fail: loadSummary.fail }) }}
+            <template v-if="loadSummary.refused">
+              · {{ $t('nodes.loadSummaryRefused', { n: loadSummary.refused }) }}
+            </template>
           </NTag>
           <span v-else class="hint">{{ $t('nodes.loadUnknownHint') }}</span>
           <NButton
@@ -1043,6 +1076,15 @@ watch(
                   :title="packLoadError(pack)"
                 >
                   {{ $t('nodes.loadPrestartupFailed') }}
+                </NTag>
+                <NTag
+                  v-if="packPolicyRefused(pack)"
+                  size="tiny"
+                  round
+                  type="warning"
+                  :title="packPolicyTip(pack)"
+                >
+                  {{ $t('nodes.policyRefused') }}
                 </NTag>
                 <NTag size="tiny" round>{{ packSourceLabel(pack) }}</NTag>
                 <NTag v-if="pack.locked" size="tiny" round type="warning">{{

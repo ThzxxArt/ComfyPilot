@@ -34,6 +34,7 @@ import {
 } from './workflow'
 import { lookupWorkflowByFingerprint } from './workflowFingerprint'
 import { assertSafeRelativeFilename } from './security'
+import { classifyOutputType } from '@shared/mediaTypes'
 
 // ---------- helpers ----------
 
@@ -707,13 +708,9 @@ export class BatchService extends EventEmitter {
         id,
         path: abs,
         fileName: basename(abs),
-        type: /\.(png|jpe?g|webp|gif)$/i.test(abs)
-          ? 'image'
-          : /\.(mp4|webm|mov)$/i.test(abs)
-            ? 'video'
-            : /\.(wav|mp3|flac)$/i.test(abs)
-              ? 'audio'
-              : 'other',
+        // 0.1.14: unified classification (adds 3d + audio + raw images; the old
+        // inline chain also silently defaulted unknown files to 'image').
+        type: classifyOutputType(basename(abs)),
         size: st.size,
         createdAt: st.mtimeMs,
         seed,
@@ -915,13 +912,10 @@ export class OutputService {
           continue
         }
         const ext = extname(name).toLowerCase()
-        const type: OutputAsset['type'] = ['.png', '.jpg', '.jpeg', '.webp', '.gif'].includes(ext)
-          ? 'image'
-          : ['.mp4', '.webm', '.mov', '.mkv'].includes(ext)
-            ? 'video'
-            : ['.wav', '.mp3', '.flac'].includes(ext)
-              ? 'audio'
-              : 'other'
+        // 0.1.14: single source of truth — 3d/audio/raw-image files are now
+        // indexed (the old inline chain dropped them as 'other'); genuinely
+        // unknown formats are still skipped to keep the index bounded.
+        const type: OutputAsset['type'] = classifyOutputType(name)
         if (type === 'other') continue
 
         // Preserve user-linked fields from an existing index row (resident O(1) map).
@@ -1126,13 +1120,9 @@ export class OutputService {
       id,
       path: abs,
       fileName: basename(abs),
-      type: /\.(png|jpe?g|webp|gif)$/i.test(abs)
-        ? 'image'
-        : /\.(mp4|webm|mov)$/i.test(abs)
-          ? 'video'
-          : /\.(wav|mp3|flac)$/i.test(abs)
-            ? 'audio'
-            : 'other',
+      // 0.1.14: unified classification (explicit registrations keep every
+      // classified type; the caller owns 'other' decisions).
+      type: classifyOutputType(basename(abs)),
       size: st.size,
       createdAt: st.mtimeMs,
       params: {},

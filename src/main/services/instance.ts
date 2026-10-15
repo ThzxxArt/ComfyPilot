@@ -1340,6 +1340,7 @@ export class InstanceService extends EventEmitter {
       '--output-directory',
       '--input-directory',
       '--temp-directory',
+      '--previews-directory',
       '--base-directory',
       '--user-directory',
       '--models-directory'

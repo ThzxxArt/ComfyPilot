@@ -4,7 +4,8 @@ import {
   formatPercent,
   formatBytes,
   formatUptime,
-  formatSpeed
+  formatSpeed,
+  formatDate
 } from '../../src/renderer/src/utils/format'
 
 describe('format helpers', () => {
@@ -50,5 +51,13 @@ describe('format helpers', () => {
   it('formatSpeed', () => {
     expect(formatSpeed(0)).toBe('—')
     expect(formatSpeed(1024 * 1024)).toBe('1.0 MB/s')
+  })
+
+  it('formatDate renders ISO dates and degrades honestly (0.1.14)', () => {
+    const expected = new Date('2026-10-13T21:29:16Z').toLocaleDateString()
+    expect(formatDate('2026-10-13T21:29:16Z')).toBe(expected)
+    expect(formatDate(undefined)).toBe('—')
+    expect(formatDate('')).toBe('—')
+    expect(formatDate('not-a-date')).toBe('—')
   })
 })

@@ -896,6 +896,15 @@ describe('spawn argv contract', () => {
     expect(logs.some((m) => m.includes('--output-directory path does not exist'))).toBe(true)
     expect(h.state.spawnCount).toBeGreaterThanOrEqual(1)
   })
+
+  it('warns for a missing --previews-directory path too (0.1.14)', async () => {
+    register(cfg({ id: 'badpreviews', extraArgs: ['--previews-directory', 'no-such-prev-xyz'] }))
+    h.state.fetchImpl = okStats
+    await svc.start('badpreviews')
+    const logs = svc.getLogs('badpreviews').map((l) => l.message)
+    expect(logs.some((m) => m.includes('--previews-directory path does not exist'))).toBe(true)
+    expect(h.state.spawnCount).toBeGreaterThanOrEqual(1)
+  })
 })
 
 // ===========================================================================

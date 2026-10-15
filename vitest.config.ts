@@ -60,6 +60,9 @@ export default defineConfig({
         'src/shared/pipVersion.ts',
         'src/shared/pipRecipes.ts',
         'src/shared/preflight.ts',
+        // ── 0.1.14: unified catalogue + assets read-only bridge ──
+        'src/shared/mediaTypes.ts',
+        'src/main/services/assetsApi.ts',
         // ── 0.1.13: renderer composables with real behaviour tests ──
         'src/renderer/src/composables/usePipOps.ts',
         'src/renderer/src/composables/useExecDiagnostics.ts'
@@ -148,6 +151,14 @@ export default defineConfig({
           lines: 91,
           functions: 98,
           branches: 66
+        },
+        // ── 0.1.14 新增模块（首轮实测 − 2pp）──
+        'src/shared/mediaTypes.ts': { statements: 98, lines: 98, functions: 98, branches: 98 },
+        'src/main/services/assetsApi.ts': {
+          statements: 98,
+          lines: 88,
+          functions: 98,
+          branches: 88
         },
         // ── 全局下限（0.1.10 全量实测 − 2pp）──
         statements: 88,

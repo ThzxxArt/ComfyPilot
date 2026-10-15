@@ -239,4 +239,39 @@ describe('OutputService list ordering', () => {
     const byJob = outputService.list({ batchJobId: 'job-9' })
     expect(byJob.items.map((a) => a.id)).toEqual(['fav-1'])
   })
+
+  it('walk indexes 3D / audio / raw-image outputs and still skips unknown formats (0.1.14)', async () => {
+    const scanRoot = join(ROOT, 'scan-mixed')
+    mkdirSync(scanRoot, { recursive: true })
+    writeFileSync(join(scanRoot, 'render.png'), 'png')
+    writeFileSync(join(scanRoot, 'mesh.glb'), 'glb')
+    writeFileSync(join(scanRoot, 'scene.ply'), 'ply')
+    writeFileSync(join(scanRoot, 'voice.mp3'), 'mp3')
+    writeFileSync(join(scanRoot, 'take.flac'), 'flac')
+    writeFileSync(join(scanRoot, 'hdr.exr'), 'exr')
+    writeFileSync(join(scanRoot, 'video.mkv'), 'mkv')
+    writeFileSync(join(scanRoot, 'notes.txt'), 'txt')
+    writeFileSync(join(scanRoot, 'no-extension'), 'none')
+
+    const { outputService } = await import('../../src/main/services/p1p2')
+    const { items } = outputService.list({ root: scanRoot })
+
+    const byName = new Map(items.map((a) => [a.fileName, a.type]))
+    expect(byName.get('render.png')).toBe('image')
+    expect(byName.get('mesh.glb')).toBe('3d')
+    expect(byName.get('scene.ply')).toBe('3d')
+    expect(byName.get('voice.mp3')).toBe('audio')
+    expect(byName.get('take.flac')).toBe('audio')
+    expect(byName.get('hdr.exr')).toBe('image')
+    expect(byName.get('video.mkv')).toBe('video')
+    // Unknown formats stay out of the index (bounded growth).
+    expect(byName.has('notes.txt')).toBe(false)
+    expect(byName.has('no-extension')).toBe(false)
+
+    // Type filter reaches the new taxonomy end-to-end.
+    const only3d = outputService.list({ root: scanRoot, type: '3d' })
+    expect(only3d.items).toHaveLength(2)
+    const onlyAudio = outputService.list({ root: scanRoot, type: 'audio' })
+    expect(onlyAudio.items).toHaveLength(2)
+  })
 })

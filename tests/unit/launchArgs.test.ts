@@ -256,6 +256,52 @@ describe('warnLaunchArgs', () => {
     expect(mod.versionAtLeast('0.38.2', mod.RECENT_FLAGS_SINCE)).toBe(false)
   })
 
+  // ---------- 0.1.14 additions ----------
+
+  it('renders storage directories (output/input/temp/previews) in canonical order', () => {
+    const args = renderLaunchProfile({
+      baseDirectory: 'D:/shared/ComfyUI',
+      modelsDirectory: 'D:/models',
+      userDirectory: 'D:/user-a',
+      outputDirectory: 'E:/out',
+      inputDirectory: 'E:/in',
+      tempDirectory: 'E:/tmp',
+      previewsDirectory: 'E:/previews'
+    })
+    expect(args).toEqual([
+      '--base-directory',
+      'D:/shared/ComfyUI',
+      '--models-directory',
+      'D:/models',
+      '--user-directory',
+      'D:/user-a',
+      '--output-directory',
+      'E:/out',
+      '--input-directory',
+      'E:/in',
+      '--temp-directory',
+      'E:/tmp',
+      '--previews-directory',
+      'E:/previews'
+    ])
+  })
+
+  it('omits empty/undefined storage directories', () => {
+    expect(
+      renderLaunchProfile({ outputDirectory: '', inputDirectory: undefined, tempDirectory: '' })
+    ).toEqual([])
+  })
+
+  it('knows --previews-directory as a recent catalog flag (0.40+ silent)', () => {
+    expect(warnLaunchArgs(['--previews-directory', 'E:/p'])).toEqual([
+      { code: 'recent-flag', flag: '--previews-directory', level: 'info' }
+    ])
+    expect(warnLaunchArgs(['--previews-directory', 'E:/p'], { version: '0.40.0' })).toEqual([])
+    expect(warnLaunchArgs(['--previews-directory', 'E:/p'], { version: '0.30.0' })).toEqual([
+      { code: 'recent-flag', flag: '--previews-directory', level: 'warning' }
+    ])
+  })
+
   it('recommends a VRAM-aware profile only when it helps', async () => {
     const { recommendLaunchProfile } = await import('../../src/shared/launchArgs')
     const GB = 1024 ** 3

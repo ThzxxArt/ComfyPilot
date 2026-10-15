@@ -118,4 +118,24 @@ describe('media URL gate', () => {
     expect(resolveMediaUrlToPath('comfy-pilot-media:thumbs/evil.exe')).toBeNull()
     void existsSync
   })
+
+  it('serves audio and refuses raw images / 3D files (0.1.14 catalogue)', async () => {
+    const { toMediaUrl, resolveMediaUrlToPath } = await import('../../src/main/services/media')
+    const { cacheDir } = await import('../../src/main/services/db')
+    const thumbs = join(cacheDir(), 'thumbs')
+    // Audio plays inline in the lightbox — the protocol must serve it.
+    const mp3 = join(thumbs, 'voice.mp3')
+    writeFileSync(mp3, 'a')
+    expect(toMediaUrl(mp3)).toBe('comfy-pilot-media:thumbs/voice.mp3')
+    expect(resolveMediaUrlToPath('comfy-pilot-media:thumbs/voice.mp3')).toBe(mp3)
+    // Raw images and 3D outputs open with the OS default app — never the protocol.
+    const exr = join(thumbs, 'render.exr')
+    writeFileSync(exr, 'x')
+    expect(toMediaUrl(exr)).toBeNull()
+    expect(resolveMediaUrlToPath('comfy-pilot-media:thumbs/render.exr')).toBeNull()
+    const glb = join(thumbs, 'mesh.glb')
+    writeFileSync(glb, 'x')
+    expect(toMediaUrl(glb)).toBeNull()
+    expect(resolveMediaUrlToPath('comfy-pilot-media:thumbs/mesh.glb')).toBeNull()
+  })
 })

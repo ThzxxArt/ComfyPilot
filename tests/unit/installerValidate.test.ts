@@ -12,9 +12,7 @@ vi.mock('systeminformation', () => ({
 describe('assertSafeGitUrl', () => {
   it('accepts https / ssh / git@ remotes', async () => {
     const { assertSafeGitUrl } = await import('../../src/main/services/installer')
-    expect(assertSafeGitUrl('https://github.com/comfyanonymous/ComfyUI.git')).toContain(
-      'github.com'
-    )
+    expect(assertSafeGitUrl('https://github.com/Comfy-Org/ComfyUI.git')).toContain('github.com')
     expect(assertSafeGitUrl('ssh://git@github.com/x/y.git')).toBeTruthy()
     expect(assertSafeGitUrl('git@github.com:x/y.git')).toBeTruthy()
   })

@@ -146,6 +146,24 @@ describe('DoctorService (0.1.10 behaviour)', () => {
     expect(report.durationMs).toBeGreaterThanOrEqual(0)
   })
 
+  it('run() checks the --disable-metadata flag (0.1.14)', async () => {
+    seedMinimalInstall('metadata-default')
+    let svc = await freshDoctor()
+    let report = await svc.run('inst-1')
+    let check = report.checks.find((c: any) => c.id === 'metadata')!
+    expect(check.severity).toBe('pass')
+    expect(check.detail).toContain('enabled')
+
+    seedMinimalInstall('metadata-disabled')
+    ;(h.state.instances[0] as { extraArgs: string[] }).extraArgs = ['--disable-metadata']
+    svc = await freshDoctor()
+    report = await svc.run('inst-1')
+    check = report.checks.find((c: any) => c.id === 'metadata')!
+    expect(check.severity).toBe('warn')
+    expect(check.detail).toContain('--disable-metadata')
+    expect(check.suggestion).toContain('attributed')
+  })
+
   it('run() reports CPU-only torch as warn with a driver suggestion', async () => {
     seedMinimalInstall('cpu-torch')
     h.state.execHandler = (cmd, args) => {

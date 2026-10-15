@@ -8,7 +8,8 @@ import {
   parseNodeLoadReport,
   packLoadStatusOf,
   packLoadFailureOf,
-  packFolderOf
+  packFolderOf,
+  packPolicyRefusalOf
 } from '@shared/nodeLoadReport'
 
 const log = (message: string, ts = 0): { message: string; ts: number } => ({ message, ts })
@@ -170,5 +171,74 @@ describe('parseNodeLoadReport (0.1.10)', () => {
 
     const prestartup = parseNodeLoadReport(fx('comfy-039-prestartup.log'))
     expect(prestartup!.entries.map((e) => e.folder).sort()).toEqual(['GoodPack', 'PreBad'])
+  })
+})
+
+describe('governance policy refusals (0.1.14)', () => {
+  it('parses both refusal texts (policy + manager), tolerating [WARNING]+ANSI', () => {
+    const report = parseNodeLoadReport([
+      log('Import times for custom nodes:'),
+      log('    0.2 seconds: C:\\ComfyUI\\custom_nodes\\GoodPack'),
+      log(
+        "\u001b[93m[WARNING]\u001b[0m Custom node pack 'SketchyPack' is not permitted by your organization's policy."
+      ),
+      log(
+        "[WARNING] Custom node pack 'comfyui-manager' is not loaded: ComfyUI-Manager cannot run under a custom-node policy, because its startup script installs packs before they are checked."
+      )
+    ])
+    expect(report).not.toBeNull()
+    expect(report!.policyRefused).toEqual([
+      { folder: 'SketchyPack', reason: 'policy' },
+      { folder: 'comfyui-manager', reason: 'manager' }
+    ])
+  })
+
+  it('returns a report with refusals even when no Import-times block exists', () => {
+    const report = parseNodeLoadReport([
+      log('Total VRAM 24564 MB'),
+      log("Custom node pack 'OnlyPack' is not permitted by your organization's policy.")
+    ])
+    expect(report).not.toBeNull()
+    expect(report!.available).toBe(true)
+    expect(report!.entries).toEqual([])
+    expect(report!.policyRefused).toEqual([{ folder: 'OnlyPack', reason: 'policy' }])
+  })
+
+  it('keeps the newest observation per folder', () => {
+    const report = parseNodeLoadReport([
+      log("Custom node pack 'Pack' is not permitted by your organization's policy."),
+      log('Import times for custom nodes:'),
+      log('    0.1 seconds: C:\\ComfyUI\\custom_nodes\\Pack'),
+      log("Custom node pack 'Pack' is not permitted by your organization's policy."),
+      log(
+        "Custom node pack 'Pack' is not loaded: ComfyUI-Manager cannot run under a custom-node policy, because its startup script installs packs before they are checked."
+      )
+    ])
+    expect(report!.policyRefused).toHaveLength(1)
+    expect(report!.policyRefused![0]).toEqual({ folder: 'Pack', reason: 'manager' })
+  })
+
+  it('omits policyRefused when no refusal lines exist (no behaviour change)', () => {
+    const report = parseNodeLoadReport([
+      log('Import times for custom nodes:'),
+      log('    0.3 seconds: C:\\ComfyUI\\custom_nodes\\Fine')
+    ])
+    expect(report!.policyRefused).toBeUndefined()
+  })
+
+  it('returns null when neither a report block nor a refusal exists', () => {
+    expect(parseNodeLoadReport([log('hello')])).toBeNull()
+  })
+
+  it('packPolicyRefusalOf finds the refusal by folder', () => {
+    const report = parseNodeLoadReport([
+      log("Custom node pack 'Blocked' is not permitted by your organization's policy.")
+    ])
+    expect(packPolicyRefusalOf('Blocked', report)).toEqual({
+      folder: 'Blocked',
+      reason: 'policy'
+    })
+    expect(packPolicyRefusalOf('Other', report)).toBeUndefined()
+    expect(packPolicyRefusalOf('Blocked', null)).toBeUndefined()
   })
 })

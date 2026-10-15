@@ -376,6 +376,11 @@ export default {
     updateAvailable: 'Update available {latest} (current {current})',
     updateNone: 'Already up to date',
     updateCheckFailed: 'Update check failed: {error}',
+    latestRelease: 'Latest official release: {tag} ({date})',
+    viewChangelog: 'View changelog',
+    assetsLabel: 'Assets system',
+    assetsEnabled: 'Enabled',
+    assetsDisabled: 'Disabled',
     confirmUpdateComfy: 'Update ComfyUI?',
     confirmUpdateComfyBody:
       'This updates the ComfyUI core and dependencies. custom_nodes, models, user, input, output and other user data are fully preserved. A running instance is stopped first. Continue?',
@@ -783,6 +788,12 @@ export default {
     opCancelled: 'Operation cancelled',
     cancelNothing: 'Nothing to cancel right now.',
     loadSummary: 'Last boot: {ok} loaded · {fail} failed',
+    loadSummaryRefused: '{n} blocked by policy',
+    policyRefused: 'Blocked by policy',
+    policyRefusedTip:
+      'ComfyUI governance refused to load this pack — the policy is defined by a signed file; contact your organization administrator, or use a ComfyUI build without governance enabled.',
+    policyRefusedManager:
+      "Restricted by policy: ComfyUI-Manager's startup script installs packs before they are checked, so governance refuses to load it.",
     loadFailed: 'Import failed',
     loadPrestartupFailed: 'Prestartup failed',
     loadUnknownHint: 'No boot log yet — start the instance once to see per-pack load status',
@@ -839,6 +850,7 @@ export default {
     typeImage: 'Image',
     typeVideo: 'Video',
     typeAudio: 'Audio',
+    type3d: '3D model',
     scan: 'Scan',
     open: 'Open',
     params: 'Params',
@@ -851,6 +863,15 @@ export default {
     openFile: 'Open file',
     videoPlaybackUnsupported:
       'This format cannot play inline (e.g. MKV/MOV) — open it with the system player',
+    audioPlaybackUnsupported:
+      'This audio format cannot play inline — open it with the system player',
+    copy: 'Copy',
+    copied: 'Copied',
+    assetsTitle: 'Instance assets (read-only)',
+    assetsLoading: 'Looking up the instance assets system…',
+    assetsWorkflow: 'Workflow',
+    assetsNote:
+      'Read-only records from the ComfyUI assets system (--enable-assets, 0.40+); hidden when the instance has it disabled.',
     openWithSystem: 'Open with system player',
     imageLoadFailed: 'Image failed to load (file may have been moved or corrupted)',
     reveal: 'Reveal in folder',
@@ -1223,14 +1244,22 @@ export default {
     fUserDirectory: 'User directory (--user-directory)',
     fModelsDirectory: 'Models directory (--models-directory)',
     fDefaultDevice: 'Default GPU index',
+    fOutputDirectory: 'Output directory (--output-directory)',
+    fInputDirectory: 'Input directory (--input-directory)',
+    fTempDirectory: 'Temp directory (--temp-directory)',
+    fPreviewsDirectory: 'Previews directory (--previews-directory)',
     baseDirPlaceholder: 'Empty = instance root',
     baseDirNote:
       'Share one ComfyUI source tree with isolated user/output dirs (multi-instance setups). Changes where the instance reads/writes — make sure the target exists.',
+    storageDirNote:
+      'Output/input/temp redirect large files (images, uploads, intermediates) to a bigger disk; the previews directory is only used by the assets system (requires a recent ComfyUI build).',
     optTritonOn: 'On (--enable-triton-backend)',
     optTritonOff: 'Off (--disable-triton-backend)',
     fAssets: 'Assets DB',
     optAssetsOn: 'On (--enable-assets)',
     optAssetsOff: 'Off (--disable-assets)',
+    assetsNote:
+      'The assets system provides previews/tags/content hashes (ComfyUI 0.40+); on by default in official Windows standalone builds, opt-in for source installs. When enabled, the instance page shows its status and asset details can look up matching records.',
     fAssetHashing: 'Enable asset hashing (--enable-asset-hashing)',
     recommend: 'Recommend for this GPU',
     changedCount: '{n} change(s)',

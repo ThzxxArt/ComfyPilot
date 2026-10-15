@@ -59,6 +59,7 @@ import type {
 import LaunchProfileEditor from '@/components/LaunchProfileEditor.vue'
 import { LAUNCH_ARG_ERROR_KEYS, launchArgWarningKey } from '@shared/launchArgs'
 import { versionMismatch } from '@/utils/versionDisplay'
+import { formatDate } from '@/utils/format'
 import { formatExecErrorReport } from '@shared/execError'
 import { recipeForModule, recipeSupportsPlatform, type PipRecipe } from '@shared/pipRecipes'
 
@@ -585,6 +586,16 @@ function sourceLabel(source: ComfyUpdateInfo['source']): string {
   return t('instance.sourceUnknown')
 }
 
+/** ISO published_at → local short date ('' when absent/unparseable). */
+function releaseDate(iso?: string): string {
+  return formatDate(iso)
+}
+
+/** Open the upstream releases page (changelog) in the system browser. */
+function openReleaseNotes(): void {
+  void ipc('shell.openExternal', 'https://github.com/Comfy-Org/ComfyUI/releases/latest')
+}
+
 async function doCheckUpdate(): Promise<void> {
   if (!instance.value) return
   checkingUpdate.value = true
@@ -1004,6 +1015,21 @@ watch(
                 <NDescriptionsItem :label="$t('instance.runtimeLabel')">{{
                   runtimeLine || '—'
                 }}</NDescriptionsItem>
+                <NDescriptionsItem :label="$t('instance.assetsLabel')">
+                  <NTag
+                    v-if="capabilities"
+                    size="tiny"
+                    round
+                    :type="capabilities.assetsApi ? 'success' : 'default'"
+                  >
+                    {{
+                      capabilities.assetsApi
+                        ? $t('instance.assetsEnabled')
+                        : $t('instance.assetsDisabled')
+                    }}
+                  </NTag>
+                  <span v-else>—</span>
+                </NDescriptionsItem>
                 <NDescriptionsItem :label="$t('instance.frontendLabel')">
                   <NTag
                     v-if="frontendPkg"
@@ -1180,6 +1206,17 @@ watch(
                       : $t('instance.updateNone')
                   }}
                 </NTag>
+                <div v-if="updateInfo.latestRelease" class="update-release-line">
+                  <span>{{
+                    $t('instance.latestRelease', {
+                      tag: updateInfo.latestRelease.tag,
+                      date: releaseDate(updateInfo.latestRelease.publishedAt)
+                    })
+                  }}</span>
+                  <NButton text size="tiny" type="primary" @click="openReleaseNotes">
+                    {{ $t('instance.viewChangelog') }}
+                  </NButton>
+                </div>
                 <div v-if="updateInfo.error" class="update-error">
                   {{ $t('instance.updateCheckFailed', { error: updateInfo.error }) }}
                 </div>

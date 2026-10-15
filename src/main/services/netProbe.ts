@@ -80,13 +80,15 @@ const GITHUB_CANDIDATES: Array<{ id: string; label: string; value: string; probe
     id: 'github-official',
     label: 'githubOfficial',
     value: '',
-    probe: 'https://github.com/comfyanonymous/ComfyUI'
+    // ComfyUI's official home is Comfy-Org/ComfyUI (0.1.14 switched off the
+    // old comfyanonymous/ URL, which only worked via GitHub redirects).
+    probe: 'https://github.com/Comfy-Org/ComfyUI'
   },
   {
     id: 'ghproxy',
     label: 'githubGhproxy',
     value: 'https://mirror.ghproxy.com',
-    probe: 'https://mirror.ghproxy.com/https://github.com/comfyanonymous/ComfyUI'
+    probe: 'https://mirror.ghproxy.com/https://github.com/Comfy-Org/ComfyUI'
   }
 ]
 

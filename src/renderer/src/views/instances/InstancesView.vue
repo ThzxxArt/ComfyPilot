@@ -54,7 +54,7 @@ import { LAUNCH_ARG_ERROR_KEYS, launchArgWarningKey } from '@shared/launchArgs'
 import ComfyUpdateProgressModal from '@/components/ComfyUpdateProgressModal.vue'
 import LaunchProfileEditor from '@/components/LaunchProfileEditor.vue'
 import { useI18n } from 'vue-i18n'
-import { formatUptime } from '@/utils/format'
+import { formatDate, formatUptime } from '@/utils/format'
 import { versionMismatch } from '@/utils/versionDisplay'
 import type {
   ComfyInstanceConfig,
@@ -533,6 +533,14 @@ function updateInfoSummary(info: ComfyUpdateInfo): string {
   if (info.latest) parts.push(`${t('nodes.hasUpdate', { version: info.latest })}`)
   if (typeof info.behindCount === 'number') {
     parts.push(t('instance.behindCount', { n: info.behindCount }))
+  }
+  if (info.latestRelease) {
+    parts.push(
+      t('instance.latestRelease', {
+        tag: info.latestRelease.tag,
+        date: formatDate(info.latestRelease.publishedAt)
+      })
+    )
   }
   parts.push(
     info.updatable

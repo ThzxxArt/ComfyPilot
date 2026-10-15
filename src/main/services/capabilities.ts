@@ -48,6 +48,8 @@ function instanceBaseUrl(config: ComfyInstanceConfig): string {
   return `http://${host}:${port}`
 }
 
+export { instanceBaseUrl }
+
 async function fetchJson(
   url: string,
   timeoutMs = PROBE_TIMEOUT_MS
@@ -220,10 +222,11 @@ export class CapabilityService {
     const cached = this.cachedForUrl(baseUrl)
     if (cached) return cached
 
-    const [stats, features, jobsProbe] = await Promise.all([
+    const [stats, features, jobsProbe, assetsProbe] = await Promise.all([
       fetchJson(`${baseUrl}/system_stats`),
       fetchJson(`${baseUrl}/features`),
-      fetchJson(`${baseUrl}/api/jobs?limit=1`)
+      fetchJson(`${baseUrl}/api/jobs?limit=1`),
+      fetchJson(`${baseUrl}/api/assets?limit=1`)
     ])
 
     const parsed = parseSystemStats(stats)
@@ -245,6 +248,10 @@ export class CapabilityService {
       features: parseFeatures(features),
       // jobsApi is PROBED, never version-guessed (0.1.10).
       jobsApi: Boolean(jobsProbe && Array.isArray(jobsProbe.jobs)),
+      // assetsApi is PROBED via a live request (0.1.14): the route answers
+      // {assets:[...]} when the assets system runs, and 503 SERVICE_DISABLED /
+      // 404 (older builds) otherwise — both fail fetchJson to null.
+      assetsApi: Boolean(assetsProbe && Array.isArray(assetsProbe.assets)),
       // workflow_metadata gate: confirmed on the development build (0.39.0).
       workflowMetadata: versionAtLeast(parsed.version, WORKFLOW_METADATA_SINCE),
       error: online ? undefined : 'Instance is not answering on ' + baseUrl,

@@ -1,5 +1,6 @@
 /** Shared domain types between main / preload / renderer — full PLAN coverage */
 import type { PipRecipe } from './pipRecipes'
+import type { OutputType } from './mediaTypes'
 
 // ---------- App ----------
 export type AppLocale = 'zh-CN' | 'en-US'
@@ -137,6 +138,15 @@ export interface LaunchProfile {
   assets?: boolean
   /** --enable-asset-hashing (content hashing for the assets DB). */
   assetHashing?: boolean
+  // ---------- 0.1.14: storage directories (output/input/temp/previews) ----------
+  /** --output-directory: relocate generated outputs. */
+  outputDirectory?: string
+  /** --input-directory: relocate uploaded inputs. */
+  inputDirectory?: string
+  /** --temp-directory: relocate the scratch area (large intermediates). */
+  tempDirectory?: string
+  /** --previews-directory: assets-system preview storage (ComfyUI 0.40+). */
+  previewsDirectory?: string
 }
 
 export interface ComfyInstanceConfig {
@@ -242,6 +252,8 @@ export interface InstanceCapabilities {
   features: Record<string, unknown>
   /** /api/jobs answered a probe request (probed, not version-guessed). */
   jobsApi: boolean
+  /** /api/assets answered a probe request (0.1.14; assets system, 0.40+). */
+  assetsApi: boolean
   /** workflow_metadata is only sent on builds known to support it (0.39.0+). */
   workflowMetadata: boolean
   error?: string
@@ -266,6 +278,12 @@ export interface NodeLoadReport {
   /** False when no "Import times" block exists in the available logs. */
   available: boolean
   entries: NodeLoadEntry[]
+  /**
+   * Packs refused by ComfyUI's signed governance policy (0.1.14). These never
+   * reach the Import-times block — `nodes.py` skips them before loading — and
+   * only leave a warning line in the boot log.
+   */
+  policyRefused?: Array<{ folder: string; reason: 'policy' | 'manager' }>
   /** When the block was observed (log line ts), for staleness hints. */
   observedAt?: number
 }
@@ -711,7 +729,8 @@ export interface OutputAsset {
   id: string
   path: string
   fileName: string
-  type: 'image' | 'video' | 'audio' | 'other'
+  /** Classified via `@shared/mediaTypes::classifyOutputType` (0.1.14: adds '3d'). */
+  type: OutputType
   size: number
   createdAt: number
   width?: number
@@ -726,6 +745,26 @@ export interface OutputAsset {
   thumbnail?: string
   /** Full-resolution safe media URL for lightbox/detail (never a bare fs path). */
   mediaUrl?: string
+}
+
+/**
+ * Read-only mirror of one ComfyUI assets-system record matching an output
+ * (0.1.14). Produced on demand by `output.assetsMatch`; never persisted.
+ */
+export interface OutputAssetMatch {
+  id: string
+  name: string
+  loaderPath?: string
+  /** Prompt id this record was created for (assets `job_id`). */
+  jobId?: string
+  /** Workflow attribution resolved through the local prompt-links sidecar. */
+  workflowId?: string
+  workflowName?: string
+  tags: string[]
+  /** Absolute URL of the server-side preview (EXR etc.), when offered. */
+  previewUrl?: string
+  size?: number
+  createdAt?: string
 }
 
 // ---------- Doctor ----------
@@ -1058,6 +1097,12 @@ export interface ComfyUpdateInfo {
   behindCount?: number
   /** Short sha of remote head (git installs only). */
   latestCommit?: string
+  /**
+   * Latest official GitHub RELEASE (0.1.14) — informational only. ComfyUI
+   * ships weekly releases (v0.40.0 …) while zip installs track master, so
+   * "master is X commits ahead of the last release" is the honest framing.
+   */
+  latestRelease?: { tag: string; publishedAt?: string }
   checkedAt: number
   error?: string
 }
@@ -1570,6 +1615,11 @@ export type IpcChannelMap = {
     ]
     result: { items: OutputAsset[]; total: number; truncated: boolean }
   }
+  /**
+   * Read-only lookup against the instance's ComfyUI assets system (0.1.14).
+   * null = assets API unavailable/failed; [] = answered, nothing matched.
+   */
+  'output.assetsMatch': { args: [string, string]; result: OutputAssetMatch[] | null }
   'output.open': { args: [string]; result: boolean }
   'output.reveal': { args: [string]; result: boolean }
   'output.favorite': { args: [string, boolean]; result: boolean }

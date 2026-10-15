@@ -182,7 +182,7 @@ function plan(overrides: Partial<InstallPlan> = {}): InstallPlan {
     useUv: false,
     pythonPath: 'python',
     torchChannel: 'cpu',
-    comfyRepo: 'https://github.com/comfyanonymous/ComfyUI.git',
+    comfyRepo: 'https://github.com/Comfy-Org/ComfyUI.git',
     comfyBranch: '',
     createDesktopShortcut: false,
     autoStart: false,

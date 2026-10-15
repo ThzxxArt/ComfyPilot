@@ -16,6 +16,25 @@ import type { NodeLoadEntry, NodeLoadReport } from './types'
 const IMPORT_HEADER = 'Import times for custom nodes:'
 const PRESTARTUP_HEADER = 'Prestartup times for custom nodes:'
 /**
+ * Optional `[LEVEL]` prefix (with ANSI SGR codes) added by ComfyUI 0.39+ —
+ * see LINE_RE below for the full story.
+ */
+// eslint-disable-next-line no-control-regex -- ANSI SGR codes are intentional here
+const LEVEL_PREFIX_RE = /^(?:\x1b\[[0-9;]*m)*\s*(?:\[[A-Z]+\](?:\x1b\[[0-9;]*m)*\s*)?/
+
+/**
+ * Governance refusals (ComfyUI 0.40+, `app/governance.py`). Refused packs are
+ * skipped BEFORE loading (`nodes.py`: `continue`), so they never appear in the
+ * Import-times block — the only trace is this warning line:
+ *
+ *   Custom node pack 'Foo' is not permitted by your organization's policy.
+ *   Custom node pack 'comfyui-manager' is not loaded: ComfyUI-Manager cannot
+ *   run under a custom-node policy, because its startup script installs packs
+ *   before they are checked.
+ */
+const POLICY_REFUSAL_RE =
+  /Custom node pack '([^']+)' (is not permitted by your organization's policy|is not loaded: ComfyUI-Manager cannot run under a custom-node policy)/
+/**
  * Entry line, tolerating the ANSI level prefix added by ComfyUI 0.39+.
  *
  * 0.39 routes these lines through `app/logger.py`'s ColoredFormatter, which
@@ -50,7 +69,26 @@ export function parseNodeLoadReport(
     if (msg.includes(IMPORT_HEADER)) importIdx = i
     if (msg.includes(PRESTARTUP_HEADER)) prestartupIdx = i
   }
-  if (importIdx < 0 && prestartupIdx < 0) return null
+
+  // Governance refusals (0.1.14): refused packs never reach the Import-times
+  // block, so scan for their warning lines independently. Newest observation
+  // wins per folder (later boots may change the verdict).
+  const policyRefused: Array<{ folder: string; reason: 'policy' | 'manager' }> = []
+  for (const line of lines) {
+    const stripped = line.message.replace(LEVEL_PREFIX_RE, '')
+    const m = stripped.match(POLICY_REFUSAL_RE)
+    if (!m) continue
+    const reason = m[2].startsWith('is not permitted') ? 'policy' : 'manager'
+    const existing = policyRefused.findIndex((p) => p.folder === m[1])
+    if (existing >= 0) policyRefused.splice(existing, 1)
+    policyRefused.push({ folder: m[1], reason })
+  }
+
+  if (importIdx < 0 && prestartupIdx < 0) {
+    // A run whose every pack was refused has no Import-times block at all —
+    // still surface the refusals instead of pretending there is no report.
+    return policyRefused.length ? { available: true, entries: [], policyRefused } : null
+  }
 
   // Failure reasons: module path → message.
   const reasons = new Map<string, string>()
@@ -98,7 +136,21 @@ export function parseNodeLoadReport(
   }
   const observedAt =
     importIdx >= 0 ? lines[importIdx].ts : prestartupIdx >= 0 ? lines[prestartupIdx].ts : undefined
-  return { available: true, entries, observedAt }
+  return {
+    available: true,
+    entries,
+    policyRefused: policyRefused.length ? policyRefused : undefined,
+    observedAt
+  }
+}
+
+/** Governance refusal for a folder, when its pack was blocked by policy. */
+export function packPolicyRefusalOf(
+  folder: string,
+  report: NodeLoadReport | null | undefined
+): { folder: string; reason: 'policy' | 'manager' } | undefined {
+  if (!report || !folder) return undefined
+  return report.policyRefused?.find((p) => p.folder === folder)
 }
 
 /** Per-pack load status derived from the boot-log report (0.1.10). */

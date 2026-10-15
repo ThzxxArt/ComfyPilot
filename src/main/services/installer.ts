@@ -64,7 +64,10 @@ const TORCH_INDEX: Record<TorchChannel, string> = {
   cpu: 'https://download.pytorch.org/whl/cpu/'
 }
 
-const COMFY_REPO = 'https://github.com/comfyanonymous/ComfyUI.git'
+// Official ComfyUI repository (moved to the Comfy-Org org; 0.1.14 switched
+// every reference off the old comfyanonymous/ URL, which only worked via
+// GitHub redirects).
+const COMFY_REPO = 'https://github.com/Comfy-Org/ComfyUI.git'
 
 function nowStep(
   id: InstallStepId,

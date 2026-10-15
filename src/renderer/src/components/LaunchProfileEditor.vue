@@ -334,7 +334,38 @@ function errorText(e: { code: string; flag?: string }): string {
           <NInputNumber v-model:value="profile.defaultDevice" :min="0" :max="31" clearable />
         </NFormItem>
       </div>
+      <div class="pe-row">
+        <NFormItem :label="t('launchArgs.fOutputDirectory')" class="pe-field">
+          <NInput
+            v-model:value="profile.outputDirectory"
+            :placeholder="t('launchArgs.baseDirPlaceholder')"
+            clearable
+          />
+        </NFormItem>
+        <NFormItem :label="t('launchArgs.fInputDirectory')" class="pe-field">
+          <NInput
+            v-model:value="profile.inputDirectory"
+            :placeholder="t('launchArgs.baseDirPlaceholder')"
+            clearable
+          />
+        </NFormItem>
+        <NFormItem :label="t('launchArgs.fTempDirectory')" class="pe-field">
+          <NInput
+            v-model:value="profile.tempDirectory"
+            :placeholder="t('launchArgs.baseDirPlaceholder')"
+            clearable
+          />
+        </NFormItem>
+        <NFormItem :label="t('launchArgs.fPreviewsDirectory')" class="pe-field">
+          <NInput
+            v-model:value="profile.previewsDirectory"
+            :placeholder="t('launchArgs.baseDirPlaceholder')"
+            clearable
+          />
+        </NFormItem>
+      </div>
       <NText depth="3" class="pe-hint">{{ t('launchArgs.baseDirNote') }}</NText>
+      <NText depth="3" class="pe-hint">{{ t('launchArgs.storageDirNote') }}</NText>
     </section>
 
     <section class="pe-section">
@@ -363,6 +394,7 @@ function errorText(e: { code: string; flag?: string }): string {
           <NSwitch v-model:value="profile.assetHashing" />
         </NFormItem>
       </div>
+      <NText depth="3" class="pe-hint">{{ t('launchArgs.assetsNote') }}</NText>
     </section>
 
     <section class="pe-section">

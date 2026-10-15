@@ -8,7 +8,7 @@ import net from 'net'
 import { EventEmitter } from 'events'
 import type { DoctorCheck, DoctorReport, DoctorSeverity } from '@shared/types'
 import { loadInstanceConfigs, loadSettings } from './db'
-import { REGISTRY_API } from '@shared/constants'
+import { LAUNCH_TEMPLATES, REGISTRY_API } from '@shared/constants'
 import { parseExtraModelPaths } from './model'
 import { resolveInstancePythonPath } from './instance'
 
@@ -383,6 +383,30 @@ export class DoctorService extends EventEmitter {
       severity: managerEnabled ? 'pass' : 'info',
       detail: managerEnabled ? '--enable-manager present' : 'Manager not forced on launch',
       suggestion: managerEnabled ? undefined : 'Enable Manager launch template if you use it.',
+      fixable: false
+    })
+
+    // 11b. ComfyUI metadata flag (0.1.14): --disable-metadata stops ComfyUI from
+    // writing PNG metadata, which breaks ComfyPilot's workflow attribution
+    // (content fingerprints) and parameter restore for NEW outputs. The flag is
+    // not a structured profile field — it can arrive via free-text args or a
+    // launch template.
+    const templateArgs =
+      LAUNCH_TEMPLATES.find((tpl) => tpl.id === config?.argTemplateId)?.args || []
+    const metadataDisabled = [...(config?.extraArgs || []), ...templateArgs].includes(
+      '--disable-metadata'
+    )
+    checks.push({
+      id: 'metadata',
+      group: 'Extensions',
+      title: 'PNG metadata (workflow attribution)',
+      severity: metadataDisabled ? 'warn' : 'pass',
+      detail: metadataDisabled
+        ? '--disable-metadata present — new outputs carry no workflow metadata'
+        : 'Metadata writing enabled',
+      suggestion: metadataDisabled
+        ? 'Outputs produced while metadata is disabled cannot be attributed to a workflow (fingerprint matching and parameter restore lose their source). Remove the flag unless privacy requires it.'
+        : undefined,
       fixable: false
     })
 

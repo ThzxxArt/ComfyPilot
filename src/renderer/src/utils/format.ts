@@ -56,3 +56,10 @@ export function formatSpeed(bps: number): string {
   if (!Number.isFinite(bps) || bps <= 0) return '—'
   return `${formatBytes(bps)}/s`
 }
+
+/** ISO timestamp → local short date ('' — for absent/unparseable input). */
+export function formatDate(iso?: string): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  return Number.isFinite(d.getTime()) ? d.toLocaleDateString() : '—'
+}

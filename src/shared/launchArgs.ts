@@ -104,6 +104,14 @@ export function renderLaunchProfile(profile?: LaunchProfile): string[] {
   if (p.baseDirectory) args.push('--base-directory', p.baseDirectory)
   if (p.modelsDirectory) args.push('--models-directory', p.modelsDirectory)
   if (p.userDirectory) args.push('--user-directory', p.userDirectory)
+  // 0.1.14: storage directories — output/input/temp (long-standing flags) and
+  // previews (assets system, 0.40+). `resolveOutputDir` in the main process
+  // reads the --output-directory value straight from argv, so structuring it
+  // here keeps every consumer in sync.
+  if (p.outputDirectory) args.push('--output-directory', p.outputDirectory)
+  if (p.inputDirectory) args.push('--input-directory', p.inputDirectory)
+  if (p.tempDirectory) args.push('--temp-directory', p.tempDirectory)
+  if (p.previewsDirectory) args.push('--previews-directory', p.previewsDirectory)
   if (typeof p.defaultDevice === 'number' && p.defaultDevice >= 0) {
     args.push('--default-device', String(Math.floor(p.defaultDevice)))
   }
@@ -238,6 +246,7 @@ const CATALOG: CatalogEntry[] = [
   { flag: '--output-directory' },
   { flag: '--temp-directory' },
   { flag: '--input-directory' },
+  { flag: '--previews-directory', recent: true },
   { flag: '--auto-launch' },
   { flag: '--disable-auto-launch' },
   { flag: '--cuda-device' },

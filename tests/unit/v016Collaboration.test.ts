@@ -132,10 +132,10 @@ describe('git-prefer install path', () => {
     expect(
       await resolveRepoUrl(
         '',
-        'https://github.com/comfyanonymous/ComfyUI/archive/refs/heads/master.zip',
+        'https://github.com/Comfy-Org/ComfyUI/archive/refs/heads/master.zip',
         'x'
       )
-    ).toBe('https://github.com/comfyanonymous/ComfyUI.git')
+    ).toBe('https://github.com/Comfy-Org/ComfyUI.git')
     expect(
       await resolveRepoUrl('', 'https://codeload.github.com/owner/repo/zip/refs/heads/main', 'x')
     ).toBe('https://codeload.github.com/owner/repo.git')

@@ -96,7 +96,9 @@ const { t } = useI18n()
 const store = useAppStore()
 const { launch } = useLaunch()
 
-const DEFAULT_REPO = 'https://github.com/comfyanonymous/ComfyUI.git'
+// Official ComfyUI repository (moved to the Comfy-Org org; 0.1.14 switched
+// off the old comfyanonymous/ URL, which only worked via GitHub redirects).
+const DEFAULT_REPO = 'https://github.com/Comfy-Org/ComfyUI.git'
 
 const plan = ref<InstallPlan>({
   installRoot: '',

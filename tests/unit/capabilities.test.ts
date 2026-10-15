@@ -203,4 +203,34 @@ describe('capabilityService (0.1.10)', () => {
     const { capabilityService } = await fresh()
     expect(await capabilityService.probe('missing-inst')).toBeNull()
   })
+
+  it('probes the assets API via a live request (0.1.14)', async () => {
+    const { capabilityService } = await fresh()
+    routes.set('/system_stats', () => json(fullStats))
+    routes.set('/features', () => json({}))
+    routes.set('/api/jobs', () => json({ jobs: [] }))
+    routes.set('/api/assets', () => json({ assets: [], total: 0, has_more: false }))
+    const caps = await capabilityService.probe('inst-a')
+    expect(caps!.assetsApi).toBe(true)
+  })
+
+  it('reports assetsApi=false on the 503 disabled-service response', async () => {
+    const { capabilityService } = await fresh()
+    routes.set('/system_stats', () => json(fullStats))
+    routes.set('/features', () => json({}))
+    routes.set('/api/jobs', () => json({ jobs: [] }))
+    routes.set('/api/assets', () => json({ error: 'SERVICE_DISABLED' }, 503))
+    const caps = await capabilityService.probe('inst-a')
+    expect(caps!.assetsApi).toBe(false)
+  })
+
+  it('reports assetsApi=false on older builds where the route does not exist', async () => {
+    const { capabilityService } = await fresh()
+    routes.set('/system_stats', () => json(fullStats))
+    routes.set('/features', () => json({}))
+    routes.set('/api/jobs', () => json({ jobs: [] }))
+    // No /api/assets route → the mock answers 404.
+    const caps = await capabilityService.probe('inst-a')
+    expect(caps!.assetsApi).toBe(false)
+  })
 })

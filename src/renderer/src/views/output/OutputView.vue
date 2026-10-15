@@ -15,7 +15,10 @@ import {
   DownloadOutline,
   ChevronBackOutline,
   ChevronForwardOutline,
-  PlayCircleOutline
+  PlayCircleOutline,
+  CubeOutline,
+  MusicalNotesOutline,
+  DocumentOutline
 } from '@vicons/ionicons5'
 import {
   NButton,
@@ -42,7 +45,8 @@ import { useAppStore } from '@/stores/app'
 import { formatBytes } from '@/utils/format'
 import { COLORS } from '@/styles/tokens'
 import ListSkeleton from '@/components/ListSkeleton.vue'
-import type { OutputAsset, WorkflowRecord } from '@shared/types'
+import { isWebViewableImage, isRawImage } from '@shared/mediaTypes'
+import type { OutputAsset, OutputAssetMatch, WorkflowRecord } from '@shared/types'
 
 const { t } = useI18n()
 const store = useAppStore()
@@ -71,7 +75,8 @@ const typeOptions = computed(() => [
   { label: t('output.typeAll'), value: 'all' },
   { label: t('output.typeImage'), value: 'image' },
   { label: t('output.typeVideo'), value: 'video' },
-  { label: t('output.typeAudio'), value: 'audio' }
+  { label: t('output.typeAudio'), value: 'audio' },
+  { label: t('output.type3d'), value: '3d' }
 ])
 
 const sortOptions = computed(() => [
@@ -119,6 +124,7 @@ const brokenThumbs = ref<Set<string>>(new Set())
 const failedVideos = ref<Set<string>>(new Set())
 const lightboxVideoFailed = ref(false)
 const lightboxImageFailed = ref(false)
+const lightboxAudioFailed = ref(false)
 const detailVideoFailed = ref(false)
 const refreshing = ref(false)
 let reqSeq = 0
@@ -146,6 +152,20 @@ function onVideoError(a: OutputAsset): void {
   const next = new Set(failedVideos.value)
   next.add(a.id)
   failedVideos.value = next
+}
+
+/** Audio the protocol can serve — played inline in the lightbox (0.1.14). */
+function playableAudio(a: OutputAsset): boolean {
+  return a.type === 'audio' && Boolean(a.mediaUrl)
+}
+
+/** Fallback icon per type for cards without an inline preview (0.1.14). */
+function typeIconOf(a: OutputAsset): typeof ImageOutline {
+  if (a.type === 'video') return VideocamOutline
+  if (a.type === 'audio') return MusicalNotesOutline
+  if (a.type === '3d') return CubeOutline
+  if (a.type === 'other') return DocumentOutline
+  return ImageOutline
 }
 
 /** Distinguish "no data at all" from "filters matched nothing". */
@@ -279,6 +299,7 @@ async function openDetail(a: OutputAsset): Promise<void> {
   showDetail.value = true
   pngMeta.value = a.params && Object.keys(a.params).length ? a.params : null
   metaLoading.value = true
+  void loadAssetsMatch(a)
   try {
     const meta = await ipc('workflow.parsePngMeta', a.path)
     if (meta) pngMeta.value = meta
@@ -289,20 +310,61 @@ async function openDetail(a: OutputAsset): Promise<void> {
   }
 }
 
+/** Assets-system records matching the detail asset (0.1.14, read-only). */
+const assetsMatches = ref<OutputAssetMatch[] | null>(null)
+const assetsLoading = ref(false)
+
+async function loadAssetsMatch(a: OutputAsset): Promise<void> {
+  assetsMatches.value = null
+  const inst = store.activeInstance
+  if (!inst) return
+  assetsLoading.value = true
+  try {
+    assetsMatches.value = await ipc('output.assetsMatch', inst.id, a.fileName)
+  } catch {
+    assetsMatches.value = null
+  } finally {
+    assetsLoading.value = false
+  }
+}
+
+/** Copy one value to the clipboard (assets job id etc.). */
+async function copyToClipboard(text: string): Promise<void> {
+  try {
+    await ipc('shell.writeClipboard', text)
+    message.success(t('output.copied'))
+  } catch {
+    /* clipboard failure is non-fatal */
+  }
+}
+
 /** Full-resolution display URL — never a bare fs path (renderer cannot load those). */
 function lightboxUrl(a: OutputAsset): string {
   return a.mediaUrl || a.thumbnail || ''
 }
 
 function openLightbox(a: OutputAsset): void {
-  // Audio always goes to the system player — no meaningful inline preview.
+  // 0.1.14: audio plays inline when the media protocol can serve it; anything
+  // the renderer cannot present (mkv videos, raw images like EXR, 3D models)
+  // opens with the OS default application instead of showing a dead modal.
   if (a.type === 'audio') {
+    if (!playableAudio(a)) {
+      void safeOpen(a.path)
+      return
+    }
+    lightboxAsset.value = a
+    lightboxSrc.value = lightboxUrl(a)
+    lightboxAudioFailed.value = false
+    lightboxVideoFailed.value = false
+    lightboxImageFailed.value = false
+    lightbox.value = true
+    return
+  }
+  if (a.type === 'video' && (!a.mediaUrl || failedVideos.value.has(a.id))) {
     void safeOpen(a.path)
     return
   }
-  // An unsupported video (mkv in Chromium) would open an empty modal — degrade
-  // to the system player instead of showing a dead lightbox.
-  if (a.type === 'video' && (!a.mediaUrl || failedVideos.value.has(a.id))) {
+  if (a.type === '3d' || a.type === 'other' || (a.type === 'image' && isRawImage(a.fileName))) {
     void safeOpen(a.path)
     return
   }
@@ -311,6 +373,7 @@ function openLightbox(a: OutputAsset): void {
   lightboxSrc.value = lightboxUrl(a)
   lightboxVideoFailed.value = false
   lightboxImageFailed.value = false
+  lightboxAudioFailed.value = false
   lightbox.value = true
 }
 
@@ -333,6 +396,7 @@ function lightboxPrev(): void {
   // gallery into the fallback (the <img> never remounts to re-trigger @error).
   lightboxImageFailed.value = false
   lightboxVideoFailed.value = false
+  lightboxAudioFailed.value = false
 }
 
 function lightboxNext(): void {
@@ -346,6 +410,7 @@ function lightboxNext(): void {
   lightboxSrc.value = lightboxUrl(next)
   lightboxImageFailed.value = false
   lightboxVideoFailed.value = false
+  lightboxAudioFailed.value = false
 }
 
 function onLightboxKey(e: KeyboardEvent): void {
@@ -607,7 +672,7 @@ onUnmounted(() => {
               >
                 <div class="thumb" @dblclick="openLightbox(a)">
                   <img
-                    v-if="a.type === 'image' && thumbSrc(a)"
+                    v-if="a.type === 'image' && isWebViewableImage(a.fileName) && thumbSrc(a)"
                     :src="thumbSrc(a)"
                     class="thumb-img"
                     :alt="a.fileName"
@@ -622,12 +687,8 @@ onUnmounted(() => {
                     preload="metadata"
                     @error="onVideoError(a)"
                   ></video>
-                  <NIcon
-                    v-else
-                    :size="36"
-                    :component="a.type === 'video' ? VideocamOutline : ImageOutline"
-                  />
-                  <div v-if="playableVideo(a)" class="thumb-play">
+                  <NIcon v-else :size="36" :component="typeIconOf(a)" />
+                  <div v-if="playableVideo(a) || playableAudio(a)" class="thumb-play">
                     <NIcon :component="PlayCircleOutline" :size="30" color="#fff" />
                   </div>
                   <div class="thumb-check" @click.stop="toggleSelect(a.id)">
@@ -771,6 +832,29 @@ onUnmounted(() => {
           <div class="mono detail-path">{{ detail.path }}</div>
         </div>
 
+        <!-- Instance assets-system record (0.1.14, read-only enhancement) -->
+        <template v-if="assetsLoading || (assetsMatches && assetsMatches.length)">
+          <div class="params-title">{{ $t('output.assetsTitle') }}</div>
+          <div v-if="assetsLoading" class="assets-line">{{ $t('output.assetsLoading') }}</div>
+          <div v-for="m in assetsMatches || []" :key="m.id" class="assets-hit">
+            <div class="mono">ID: {{ m.id }}</div>
+            <div v-if="m.jobId" class="mono">
+              Prompt ID: {{ m.jobId }}
+              <NButton text size="tiny" type="primary" @click="copyToClipboard(m.jobId || '')">
+                {{ $t('output.copy') }}
+              </NButton>
+            </div>
+            <div v-if="m.workflowName" class="assets-line">
+              {{ $t('output.assetsWorkflow') }}: {{ m.workflowName }}
+            </div>
+            <div v-if="m.tags.length" class="assets-tags">
+              <NTag v-for="tg in m.tags" :key="tg" size="tiny" round>{{ tg }}</NTag>
+            </div>
+            <img v-if="m.previewUrl" :src="m.previewUrl" class="assets-preview" :alt="m.name" />
+          </div>
+          <NText depth="3" class="assets-note">{{ $t('output.assetsNote') }}</NText>
+        </template>
+
         <div class="params-title">{{ $t('output.pngParams') }}</div>
         <NSpin :show="metaLoading">
           <div v-if="pngMeta && metaEntries(pngMeta).length" class="params-list">
@@ -829,8 +913,21 @@ onUnmounted(() => {
           loop
           @error="lightboxVideoFailed = true"
         ></video>
+        <audio
+          v-else-if="lightboxAsset?.type === 'audio' && lightboxSrc && !lightboxAudioFailed"
+          :src="lightboxSrc"
+          class="lightbox-audio"
+          controls
+          autoplay
+          @error="lightboxAudioFailed = true"
+        ></audio>
         <img
-          v-else-if="lightboxSrc && !lightboxVideoFailed && !lightboxImageFailed"
+          v-else-if="
+            lightboxAsset?.type === 'image' &&
+            lightboxSrc &&
+            !lightboxVideoFailed &&
+            !lightboxImageFailed
+          "
           :src="lightboxSrc"
           class="lightbox-img"
           :alt="lightboxAsset?.fileName || ''"
@@ -846,6 +943,13 @@ onUnmounted(() => {
         <div v-if="lightboxVideoFailed" class="lb-fallback">
           <NIcon :size="40" :component="VideocamOutline" />
           <NText depth="3">{{ $t('output.videoPlaybackUnsupported') }}</NText>
+          <NButton secondary @click="lightboxAsset && safeOpen(lightboxAsset.path)">
+            {{ $t('output.openWithSystem') }}
+          </NButton>
+        </div>
+        <div v-if="lightboxAudioFailed" class="lb-fallback">
+          <NIcon :size="40" :component="MusicalNotesOutline" />
+          <NText depth="3">{{ $t('output.audioPlaybackUnsupported') }}</NText>
           <NButton secondary @click="lightboxAsset && safeOpen(lightboxAsset.path)">
             {{ $t('output.openWithSystem') }}
           </NButton>
@@ -1069,7 +1173,39 @@ onUnmounted(() => {
   object-fit: contain;
   justify-self: center;
 }
+.lightbox-audio {
+  width: 100%;
+  max-width: 560px;
+  justify-self: center;
+}
 .lb-nav {
   flex-shrink: 0;
+}
+.assets-line {
+  margin: 4px 0;
+  font-size: 12px;
+}
+.assets-hit {
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 10px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.assets-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.assets-preview {
+  max-width: 220px;
+  max-height: 160px;
+  object-fit: contain;
+  border-radius: 8px;
+}
+.assets-note {
+  font-size: 12px;
 }
 </style>

@@ -223,4 +223,86 @@ describe('ComfyUpdaterService shape', () => {
     expect(info.updatable).toBe(false)
     expect(info.error).toMatch(/main\.py/i)
   })
+
+  // ---------- 0.1.14: latest-release awareness ----------
+
+  function mockZipInstall(): void {
+    vi.mocked(existsSync).mockImplementation((p: unknown) => {
+      const s = String(p)
+      if (s.endsWith('.git')) return false
+      return s.endsWith('main.py')
+    })
+    vi.mocked(readFileSync).mockReturnValue('')
+  }
+
+  async function setFetch(impl: (url: string) => Response): Promise<void> {
+    const { session } = await import('electron')
+    const fetchMock = session.defaultSession.fetch as unknown as ReturnType<typeof vi.fn>
+    fetchMock.mockImplementation(async (url: string) => impl(String(url)))
+  }
+
+  it('attaches the latest release to a zip check (0.1.14)', async () => {
+    mockZipInstall()
+    await setFetch((url) => {
+      if (url.includes('/releases/latest')) {
+        return new Response(
+          JSON.stringify({ tag_name: 'v0.40.0', published_at: '2026-10-13T21:29:16Z' }),
+          { status: 200 }
+        )
+      }
+      if (url.includes('/commits/master')) {
+        return new Response(
+          JSON.stringify({
+            sha: 'abcdef1234567890',
+            commit: { committer: { date: '2026-10-15T00:00:00Z' } }
+          }),
+          { status: 200 }
+        )
+      }
+      return new Response('nf', { status: 404 })
+    })
+    const info = await comfyUpdaterService.check('inst-1')
+    expect(info.source).toBe('zip')
+    expect(info.latestRelease).toEqual({
+      tag: 'v0.40.0',
+      publishedAt: '2026-10-13T21:29:16Z'
+    })
+    // A real release tag is informational — the commit comparison still drives updatable.
+    expect(info.latestCommit).toBe('abcdef123456')
+  })
+
+  it('omits the release and keeps the commit fallback when releases API fails', async () => {
+    mockZipInstall()
+    await setFetch((url) => {
+      if (url.includes('/releases/latest')) return new Response('err', { status: 500 })
+      if (url.includes('/commits/master')) {
+        return new Response(JSON.stringify({ sha: 'abcdef1234567890' }), { status: 200 })
+      }
+      return new Response('nf', { status: 404 })
+    })
+    const info = await comfyUpdaterService.check('inst-1')
+    expect(info.latestRelease).toBeUndefined()
+    expect(info.source).toBe('zip')
+    expect(info.latestCommit).toBe('abcdef123456')
+  })
+
+  it('queries the official Comfy-Org repository (0.1.14)', async () => {
+    mockZipInstall()
+    const urls: string[] = []
+    await setFetch((url) => {
+      urls.push(url)
+      if (url.includes('/releases/latest')) {
+        return new Response(JSON.stringify({ tag_name: 'v0.40.0' }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ sha: 'abcdef1234567890' }), { status: 200 })
+    })
+    await comfyUpdaterService.check('inst-1')
+    expect(
+      urls.some((u) => u.includes('api.github.com/repos/Comfy-Org/ComfyUI/releases/latest'))
+    ).toBe(true)
+    expect(
+      urls.some((u) => u.includes('api.github.com/repos/Comfy-Org/ComfyUI/commits/master'))
+    ).toBe(true)
+    expect(urls.some((u) => u.includes('comfyanonymous'))).toBe(false)
+  })
 })

@@ -25,6 +25,7 @@ import {
 } from './db'
 import { resolveOutputDir } from './p1p2'
 import { assertSafeRelativeFilename, isSafeExternalUrl, isPathInside } from './security'
+import { isMediaServable } from '@shared/mediaTypes'
 import type { ModelRecord } from '@shared/types'
 
 /**
@@ -220,22 +221,8 @@ export const thumbnailService = new ThumbnailService()
 // output previews are served through `comfy-pilot-media:` with an explicit
 // allow-list of roots.
 
-const MEDIA_EXT = new Set([
-  '.png',
-  '.jpg',
-  '.jpeg',
-  '.webp',
-  '.gif',
-  '.svg',
-  '.bmp',
-  // Videos are served so the renderer can play them with <video>. Chromium
-  // decodes mp4(H.264/AAC) and webm natively; mkv/mov degrade gracefully via
-  // the renderer's onerror fallback (system player).
-  '.mp4',
-  '.webm',
-  '.mkv',
-  '.mov'
-])
+// 0.1.14: servability decided by the shared media catalogue (web images +
+// videos + audio; raw images and 3D files stay out — OS default app opens them).
 
 function mediaThumbsRoot(): string {
   return join(cacheDir(), 'thumbs')
@@ -265,7 +252,7 @@ function mediaOutputRoots(): string[] {
 /** Convert an absolute local media path into a safe `comfy-pilot-media:` URL. */
 export function toMediaUrl(absPath: string): string | null {
   try {
-    if (!absPath || !MEDIA_EXT.has(extname(absPath).toLowerCase())) return null
+    if (!absPath || !isMediaServable(absPath)) return null
     // Normalize first — lexical slice on a path containing `.`/`..` breaks rel.
     const resolved = resolve(absPath)
     const thumbs = mediaThumbsRoot()
@@ -294,7 +281,7 @@ export function resolveMediaUrlToPath(url: string): string | null {
     const clean = raw.replace(/^\/+/, '')
     if (clean.startsWith('thumbs/')) {
       const rel = mediaRelativePath(clean.slice('thumbs/'.length))
-      if (!rel || !MEDIA_EXT.has(extname(rel).toLowerCase())) return null
+      if (!rel || !isMediaServable(rel)) return null
       const root = mediaThumbsRoot()
       const full = join(root, rel)
       if (!existsSync(full) || !isPathInside(full, root)) return null
@@ -302,7 +289,7 @@ export function resolveMediaUrlToPath(url: string): string | null {
     }
     if (clean.startsWith('output/')) {
       const rel = mediaRelativePath(clean.slice('output/'.length))
-      if (!rel || !MEDIA_EXT.has(extname(rel).toLowerCase())) return null
+      if (!rel || !isMediaServable(rel)) return null
       for (const root of mediaOutputRoots()) {
         const full = join(root, rel)
         if (existsSync(full) && isPathInside(full, root)) return full

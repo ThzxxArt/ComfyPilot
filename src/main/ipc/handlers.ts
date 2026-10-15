@@ -1417,6 +1417,15 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     )
   )
   ipcMain.handle(
+    'output.assetsMatch',
+    wrap(async (instanceId: string, fileName: string) => {
+      // Read-only assets-system lookup (0.1.14); never throws — null means
+      // "assets API unavailable", [] means "no match".
+      const { matchAssetsByFileName } = await import('../services/assetsApi')
+      return matchAssetsByFileName(instanceId, fileName)
+    })
+  )
+  ipcMain.handle(
     'output.open',
     wrap(async (path: string) => {
       if (!isSafeOpenPath(path)) throw new Error('Blocked opening executable/script file')
