@@ -2,8 +2,8 @@
  * EnvService behaviour (0.1.10): venv creation guards, torch install result
  * parsing and interpreter listing. Real tmpdir fs; exec/electron mocked.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'fs'
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -60,12 +60,24 @@ vi.mock('child_process', () => {
 })
 
 describe('EnvService (0.1.10 behaviour)', () => {
+  // tmpfs hygiene (0.1.15): keep /tmp free of fixture residue across runs.
   beforeEach(() => {
+    if (h.state.root) rmSync(h.state.root, { recursive: true, force: true })
     h.state.root = mkdtempSync(join(tmpdir(), 'cp-env-'))
     h.state.calls = []
     h.state.handler = null
     h.state.portablePython = null
     vi.resetModules()
+  })
+
+  afterAll(() => {
+    if (h.state.root) {
+      try {
+        rmSync(h.state.root, { recursive: true, force: true })
+      } catch {
+        /* best-effort cleanup */
+      }
+    }
   })
 
   it('createVenv rejects unsafe names and builds a python venv', async () => {

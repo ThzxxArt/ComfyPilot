@@ -9,8 +9,8 @@ import {
   renameSync,
   createWriteStream
 } from 'fs'
-import { join, dirname, resolve, basename } from 'path'
-import { execFile, spawn, type ChildProcess } from 'child_process'
+import { join, dirname, resolve } from 'path'
+import { execFile, type ChildProcess } from 'child_process'
 import { randomUUID } from 'crypto'
 import si from 'systeminformation'
 import type {
@@ -24,12 +24,7 @@ import type {
   StarterModel,
   TorchChannel
 } from '@shared/types'
-import {
-  COMFY_ZIP_URL,
-  STARTER_MODELS,
-  TORCH_DISK_GB,
-  TORCH_INDEX_PRESETS
-} from '@shared/constants'
+import { COMFY_ZIP_URL, STARTER_MODELS, TORCH_DISK_GB } from '@shared/constants'
 import {
   loadInstanceConfigs,
   upsertInstanceConfig,
@@ -1289,7 +1284,3 @@ export class InstallerService extends EventEmitter {
 export const installerService = new InstallerService()
 
 export { TORCH_INDEX, COMFY_REPO, STARTER_MODELS }
-
-void spawn
-void basename
-void TORCH_INDEX_PRESETS

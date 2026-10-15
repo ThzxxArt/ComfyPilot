@@ -3,8 +3,8 @@
  * workers, disk cache reuse/TTL, skipped-page notification, search and
  * repository matching.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mkdtempSync, writeFileSync, existsSync } from 'fs'
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
+import { mkdtempSync, writeFileSync, existsSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -64,12 +64,24 @@ vi.mock('../../src/main/ipc/handlers', () => ({
 }))
 
 describe('RegistryIndexService (0.1.10 behaviour)', () => {
+  // tmpfs hygiene (0.1.15): keep /tmp free of fixture residue across runs.
   beforeEach(() => {
+    if (h.state.root) rmSync(h.state.root, { recursive: true, force: true })
     h.state.root = mkdtempSync(join(tmpdir(), 'cp-regindex-'))
     h.state.failPages.clear()
     h.state.fetchCalls = []
     h.state.networkMode = 'public'
     vi.resetModules()
+  })
+
+  afterAll(() => {
+    if (h.state.root) {
+      try {
+        rmSync(h.state.root, { recursive: true, force: true })
+      } catch {
+        /* best-effort cleanup */
+      }
+    }
   })
 
   it('builds the full catalog once, dedupes, and persists to disk', async () => {

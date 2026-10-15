@@ -94,4 +94,11 @@ describe('JSONC store (integration)', () => {
     expect(db.listModels().some((m) => m.id === 'm1')).toBe(true)
     expect(db.deleteModel('m1')).toBe(true)
   })
+
+  it('logsDir ensures the global log directory (0.1.15 settings.logsDir)', async () => {
+    const db = await import('../../src/main/services/db')
+    const dir = db.logsDir()
+    expect(dir.endsWith('logs')).toBe(true)
+    expect(existsSync(dir)).toBe(true)
+  })
 })

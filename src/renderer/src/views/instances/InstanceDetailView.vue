@@ -59,6 +59,7 @@ import type {
 import LaunchProfileEditor from '@/components/LaunchProfileEditor.vue'
 import { LAUNCH_ARG_ERROR_KEYS, launchArgWarningKey } from '@shared/launchArgs'
 import { versionMismatch } from '@/utils/versionDisplay'
+import { frontendAlignSpec, frontendPkgStatus } from '@/utils/frontendAlign'
 import { formatDate } from '@/utils/format'
 import { formatExecErrorReport } from '@shared/execError'
 import { recipeForModule, recipeSupportsPlatform, type PipRecipe } from '@shared/pipRecipes'
@@ -125,15 +126,14 @@ const runtimeLine = computed(() => {
 const frontendPkg = computed(() => {
   const caps = capabilities.value
   if (!caps) return null
-  const pkg = caps.packages.find((p) => p.name === 'comfyui-frontend-package')
-  const installed = pkg?.installed || ''
-  const required = pkg?.required || caps.requiredFrontendVersion || ''
-  if (!installed && !required) return null
-  return {
-    installed: installed || '—',
-    required: required || '—',
-    mismatch: Boolean(installed && required && installed !== required)
-  }
+  return frontendPkgStatus(caps.packages, caps.requiredFrontendVersion)
+})
+
+/** One-click align spec when the frontend package mismatches (null = no action). */
+const alignSpec = computed(() => {
+  const p = frontendPkg.value
+  if (!p || !p.mismatch) return null
+  return frontendAlignSpec(p.installed, p.required)
 })
 // ---------- 0.1.9: structured launch tuning (detail-page panel) ----------
 const profileDraft = ref<LaunchProfile>({})
@@ -434,6 +434,29 @@ async function fixPipNow(): Promise<void> {
     message.error(err instanceof Error ? err.message : String(err))
   } finally {
     fixingPip.value = false
+  }
+}
+
+// ---------- 0.1.15: one-click frontend-package alignment ----------
+const aligningFrontend = ref(false)
+
+/** Install `comfyui-frontend-package==<required>` via the shared pip-op modal. */
+async function alignFrontendPkg(): Promise<void> {
+  const inst = instance.value
+  const spec = alignSpec.value
+  if (!inst || !spec || aligningFrontend.value) return
+  aligningFrontend.value = true
+  try {
+    const r = await startInstall(inst.id, spec)
+    if (r.ok) {
+      message.success(t('instance.frontendAlignDone'))
+    } else if (!r.cancelled && r.error) {
+      message.error(r.error)
+    }
+  } catch (err) {
+    handlePipFailure(err)
+  } finally {
+    aligningFrontend.value = false
   }
 }
 
@@ -1031,27 +1054,41 @@ watch(
                   <span v-else>—</span>
                 </NDescriptionsItem>
                 <NDescriptionsItem :label="$t('instance.frontendLabel')">
-                  <NTag
-                    v-if="frontendPkg"
-                    size="tiny"
-                    round
-                    :type="frontendPkg.mismatch ? 'warning' : 'success'"
-                    :title="
-                      frontendPkg.mismatch
-                        ? $t('instance.frontendMismatch', {
-                            installed: frontendPkg.installed,
-                            required: frontendPkg.required
-                          })
-                        : $t('instance.frontendMatch', { version: frontendPkg.installed })
-                    "
-                  >
-                    {{
-                      frontendPkg.mismatch
-                        ? `${frontendPkg.installed} → ${frontendPkg.required}`
-                        : frontendPkg.installed
-                    }}
-                  </NTag>
-                  <template v-else>—</template>
+                  <NSpace align="center" :size="6">
+                    <NTag
+                      v-if="frontendPkg"
+                      size="tiny"
+                      round
+                      :type="frontendPkg.mismatch ? 'warning' : 'success'"
+                      :title="
+                        frontendPkg.mismatch
+                          ? $t('instance.frontendMismatch', {
+                              installed: frontendPkg.installed,
+                              required: frontendPkg.required
+                            })
+                          : $t('instance.frontendMatch', { version: frontendPkg.installed })
+                      "
+                    >
+                      {{
+                        frontendPkg.mismatch
+                          ? `${frontendPkg.installed} → ${frontendPkg.required}`
+                          : frontendPkg.installed
+                      }}
+                    </NTag>
+                    <!-- 0.1.15: one-click align to the required version (local venv). -->
+                    <NButton
+                      v-if="alignSpec"
+                      size="tiny"
+                      type="primary"
+                      secondary
+                      :loading="aligningFrontend"
+                      :title="$t('instance.frontendAlignTip')"
+                      @click="alignFrontendPkg"
+                    >
+                      {{ $t('instance.frontendAlign') }}
+                    </NButton>
+                    <template v-if="!frontendPkg">—</template>
+                  </NSpace>
                 </NDescriptionsItem>
                 <NDescriptionsItem label="Python">{{
                   instance?.pythonPath || $t('instance.pythonSystem')

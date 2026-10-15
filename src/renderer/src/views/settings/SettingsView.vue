@@ -125,6 +125,16 @@ async function openConfigDir(): Promise<void> {
   }
 }
 
+/** Open the global app log directory (0.1.15) — instance logs live there too. */
+async function openLogsDir(): Promise<void> {
+  try {
+    const dir = await ipc('settings.logsDir')
+    await ipc('shell.openPath', dir)
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
 async function addScanRoot(): Promise<void> {
   try {
     const dir = await ipc('shell.pickDirectory')
@@ -815,6 +825,7 @@ onUnmounted(() => {
             <div class="about-line">{{ t('settings.aboutTagline') }}</div>
             <NSpace style="margin-top: 12px">
               <NButton secondary @click="openConfigDir">{{ t('settings.openConfigDir') }}</NButton>
+              <NButton secondary @click="openLogsDir">{{ t('settings.openLogsDir') }}</NButton>
               <NButton
                 secondary
                 @click="ipc('shell.openExternal', 'https://github.com/ThzxxArt/ComfyPilot')"

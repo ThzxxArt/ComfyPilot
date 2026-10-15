@@ -67,10 +67,13 @@ export class DoctorService extends EventEmitter {
     }
     const settings = loadSettings()
     const checks: DoctorCheck[] = []
-    const emitProgress = (done: number, total: number, title: string): void => {
-      this.emit('progress', { done, total, title, ts: Date.now() })
+    // Honest progress (0.1.15): the conditional check set (disk-*, cn-count,
+    // requirements…) makes a fixed total a lie — report the checked COUNT with
+    // the current phase title; the UI renders an indeterminate bar.
+    const emitProgress = (done: number, title: string): void => {
+      this.emit('progress', { done, title, ts: Date.now() })
     }
-    emitProgress(0, 14, 'Starting health check…')
+    emitProgress(0, 'Starting health check…')
 
     // 1. install path
     const installPath = config?.path || ''
@@ -132,7 +135,7 @@ export class DoctorService extends EventEmitter {
     })
 
     // 3. Torch / CUDA
-    emitProgress(checks.length, 14, 'Probing torch / CUDA…')
+    emitProgress(checks.length, 'Probing torch / CUDA…')
     const torchOut = await safeExec(
       python,
       [
@@ -348,7 +351,7 @@ export class DoctorService extends EventEmitter {
     }
 
     // 10. Manager / Registry connectivity
-    emitProgress(checks.length, 14, 'Checking network…')
+    emitProgress(checks.length, 'Checking network…')
     let registryOk = false
     try {
       const { proxyFetch } = await import('./proxy')

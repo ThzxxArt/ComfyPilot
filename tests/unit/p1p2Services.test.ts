@@ -1215,6 +1215,35 @@ describe('p1p2 services', () => {
       const rec2 = await outputService.importToWorkflow(promptOnly)
       expect(rec2).toBeTruthy()
     })
+
+    it('batchRemove reports per-id outcomes honestly (0.1.15)', async () => {
+      const { outputService } = await freshP1p2()
+      const { listOutputAssetsAll } = await import('../../src/main/services/db')
+      const f1 = join(ROOT, 'batch-1.png')
+      const f2 = join(ROOT, 'batch-2.mp4')
+      writeFileSync(f1, 'one')
+      writeFileSync(f2, 'two')
+      outputService.indexFile(f1)
+      outputService.indexFile(f2)
+      const r1 = listOutputAssetsAll().find((a) => a.path === f1)!
+      const r2 = listOutputAssetsAll().find((a) => a.path === f2)!
+
+      // One real id + one unknown id → honest split, no all-or-nothing.
+      const res = outputService.batchRemove([r1.id, 'missing-id'], true)
+      expect(res.ok).toBe(1)
+      expect(res.failed).toEqual([{ id: 'missing-id', error: 'not found' }])
+      expect(existsSync(f1)).toBe(false)
+      expect(listOutputAssetsAll().some((a) => a.id === r1.id)).toBe(false)
+
+      // Record-only mode keeps the file on disk.
+      const res2 = outputService.batchRemove([r2.id], false)
+      expect(res2).toEqual({ ok: 1, failed: [] })
+      expect(existsSync(f2)).toBe(true)
+      expect(listOutputAssetsAll().some((a) => a.id === r2.id)).toBe(false)
+
+      // Empty input is a no-op.
+      expect(outputService.batchRemove([], true)).toEqual({ ok: 0, failed: [] })
+    })
   })
 
   // ========== RemoteService ==========

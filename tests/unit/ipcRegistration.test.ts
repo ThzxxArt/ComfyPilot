@@ -7,8 +7,8 @@
  * a channel in types.ts without a handler (or a stray handler without a type)
  * fails immediately.
  */
-import { describe, it, expect, vi } from 'vitest'
-import { mkdtempSync, readFileSync } from 'fs'
+import { describe, it, expect, vi, afterAll } from 'vitest'
+import { mkdtempSync, readFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -94,6 +94,18 @@ vi.mock('electron', () => {
 })
 
 describe('IPC registration contract (0.1.10)', () => {
+  // tmpfs hygiene (0.1.15): the mocked userData root must not outlive the run.
+  afterAll(() => {
+    const root = process.env.CP_IPC_TEST_ROOT
+    if (root) {
+      try {
+        rmSync(root, { recursive: true, force: true })
+      } catch {
+        /* best-effort cleanup */
+      }
+    }
+  })
+
   it('registered channels === channels declared in IpcChannelMap, exactly', async () => {
     process.env.CP_IPC_TEST_ROOT = mkdtempSync(join(tmpdir(), 'cp-ipc-'))
     const { registerIpcHandlers } = await import('../../src/main/ipc/handlers')

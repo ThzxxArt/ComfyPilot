@@ -1243,11 +1243,6 @@ export class ModelService extends EventEmitter {
     }
   }
 
-  /** Storage analysis: bytes per top-level folder under model roots. */
-  storageAnalysis(): StorageStats[] {
-    return this.storageStats()
-  }
-
   /**
    * Reconcile the LOCAL model index against what a RUNNING instance actually
    * sees (0.1.10). Prefers /experiment/models (folder paths + extensions);

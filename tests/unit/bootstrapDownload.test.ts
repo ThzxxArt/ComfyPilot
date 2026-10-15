@@ -3,8 +3,8 @@
  * file this module actually writes, and the HTTP 416 promote path.
  * Real temp filesystem; electron app/session mocked (network via h.fetchImpl).
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, statSync } from 'fs'
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, statSync, rmSync } from 'fs'
 import { join, basename } from 'path'
 import { tmpdir } from 'os'
 
@@ -51,10 +51,23 @@ function uvPaths(): { sizeHint: number; dest: string; part: string } {
 }
 
 describe('bootstrap resumable download (0.1.13)', () => {
+  // tmpfs hygiene (0.1.15): un-cleaned 16MB download fixtures used to
+  // accumulate under /tmp until the installer disk gate tripped.
   beforeEach(() => {
+    if (h.root) rmSync(h.root, { recursive: true, force: true })
     h.root = mkdtempSync(join(tmpdir(), 'cp-boot-dl-'))
     h.fetchImpl = null
     vi.resetModules()
+  })
+
+  afterAll(() => {
+    if (h.root) {
+      try {
+        rmSync(h.root, { recursive: true, force: true })
+      } catch {
+        /* best-effort cleanup */
+      }
+    }
   })
 
   async function freshService(): Promise<any> {

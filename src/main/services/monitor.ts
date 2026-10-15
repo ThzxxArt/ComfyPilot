@@ -310,6 +310,51 @@ export class MonitorService extends EventEmitter {
     return client.jobsList(30)
   }
 
+  // ---------- Queue / memory operations (0.1.15) ----------
+  // The three standard ComfyUI runtime operations, now first-class in the
+  // monitor: clear the pending queue, interrupt the running task, free memory.
+  // All go through ComfyApiClient so remote auth headers / URL trust checks
+  // are identical to every other monitor call. Honest results — never a
+  // fabricated success.
+
+  private opClient(baseUrl: string): ComfyApiClient {
+    assertMonitorBaseUrl(baseUrl)
+    return new ComfyApiClient(baseUrl, { headers: remoteAuthHeadersForUrl(baseUrl) })
+  }
+
+  /** Clear every PENDING queue item; the running job keeps executing. */
+  async clearQueue(baseUrl: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const ok = await this.opClient(baseUrl).clearQueue()
+      return ok ? { ok: true } : { ok: false, error: `queue clear was not accepted by ${baseUrl}` }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  }
+
+  /**
+   * Interrupt the running task. A promptId directs the interrupt to that
+   * prompt on ComfyUI 0.39+ (older builds ignore the body → global interrupt).
+   */
+  async interrupt(baseUrl: string, promptId?: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const ok = await this.opClient(baseUrl).interrupt(promptId || undefined)
+      return ok ? { ok: true } : { ok: false, error: `interrupt was not accepted by ${baseUrl}` }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  }
+
+  /** Unload models + free memory (`POST /free`). Next generation reloads them. */
+  async freeMemory(baseUrl: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const ok = await this.opClient(baseUrl).freeMemory()
+      return ok ? { ok: true } : { ok: false, error: `free request was not accepted by ${baseUrl}` }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  }
+
   connectWs(baseUrl: string): boolean {
     assertMonitorBaseUrl(baseUrl)
     // Idempotent for the same live target: repeated UI subscribes (route

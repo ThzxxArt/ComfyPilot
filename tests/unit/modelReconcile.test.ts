@@ -3,6 +3,7 @@
  * fallback, legacy folder aliases, uncovered scan roots.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { rmSync } from 'fs'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -177,15 +178,24 @@ describe('category hints (0.1.11)', () => {
         ''
       ].join('\n')
     )
-    const { parseExtraModelPathsDetailed, parseExtraModelPaths } =
-      await import('../../src/main/services/model')
-    const roots = parseExtraModelPathsDetailed(yaml, true, { modelOnly: true })
-    const loras = roots.find((r) => r.path.includes('D:/loras'))
-    expect(loras?.categoryHint).toBe('loras')
-    expect(roots.find((r) => r.path.includes('D:/ckpts'))?.categoryHint).toBe('checkpoints')
-    // modelOnly skips custom_nodes entirely.
-    expect(roots.some((r) => r.path.includes('D:/nodes'))).toBe(false)
-    // The legacy wrapper returns plain path strings (back-compat).
-    expect(parseExtraModelPaths(yaml, true, { modelOnly: true })).toContain(loras!.path)
+    try {
+      const { parseExtraModelPathsDetailed, parseExtraModelPaths } =
+        await import('../../src/main/services/model')
+      const roots = parseExtraModelPathsDetailed(yaml, true, { modelOnly: true })
+      const loras = roots.find((r) => r.path.includes('D:/loras'))
+      expect(loras?.categoryHint).toBe('loras')
+      expect(roots.find((r) => r.path.includes('D:/ckpts'))?.categoryHint).toBe('checkpoints')
+      // modelOnly skips custom_nodes entirely.
+      expect(roots.some((r) => r.path.includes('D:/nodes'))).toBe(false)
+      // The legacy wrapper returns plain path strings (back-compat).
+      expect(parseExtraModelPaths(yaml, true, { modelOnly: true })).toContain(loras!.path)
+    } finally {
+      // tmpfs hygiene (0.1.15): the fixture dir must not outlive the test.
+      try {
+        rmSync(dir, { recursive: true, force: true })
+      } catch {
+        /* best-effort cleanup */
+      }
+    }
   })
 })

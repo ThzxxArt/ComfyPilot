@@ -221,6 +221,27 @@ export class ComfyApiClient {
   }
 
   /**
+   * Clear EVERY still-pending queue item (`POST /queue {"clear": true}`).
+   * Running jobs are NOT affected (server semantics).
+   */
+  async clearQueue(): Promise<boolean> {
+    try {
+      const res = await fetch(
+        this.url('/queue'),
+        this.authInit({
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ clear: true }),
+          signal: AbortSignal.timeout(5000)
+        })
+      )
+      return res.ok
+    } catch {
+      return false
+    }
+  }
+
+  /**
    * Interrupt execution. With a promptId only that RUNNING prompt is
    * interrupted (ComfyUI 0.39+); without one the global interrupt flag is set.
    */
@@ -282,6 +303,28 @@ export class ComfyApiClient {
       return res.ok
     } catch {
       return false
+    }
+  }
+
+  /**
+   * The ComfyUI server's built-in default workflow (0.1.15).
+   * Route `GET /default_workflow` exists since v0.41 (verified absent on
+   * v0.40.0) and serves the canonical UI-format graph. Returns null when the
+   * build does not provide it (404) or the payload is not a JSON object.
+   */
+  async defaultWorkflow(): Promise<Record<string, unknown> | null> {
+    try {
+      const res = await fetch(
+        this.url('/default_workflow'),
+        this.authInit({ signal: AbortSignal.timeout(5000) })
+      )
+      if (!res.ok) return null
+      const data = (await res.json()) as unknown
+      return data && typeof data === 'object' && !Array.isArray(data)
+        ? (data as Record<string, unknown>)
+        : null
+    } catch {
+      return null
     }
   }
 

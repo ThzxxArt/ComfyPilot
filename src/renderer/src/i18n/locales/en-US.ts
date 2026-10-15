@@ -222,6 +222,7 @@ export default {
     aboutTagline:
       'A control tower, not an editor. Sidecar management for ComfyUI production assets.',
     openConfigDir: 'Open config folder',
+    openLogsDir: 'Open logs folder',
     githubRepo: 'GitHub repo',
     pipOfficial: 'Official PyPI',
     pipTsinghua: 'Tsinghua TUNA',
@@ -416,7 +417,11 @@ export default {
     frontendLabel: 'Frontend package',
     frontendMatch: 'Frontend package matches the core: {version}',
     frontendMismatch:
-      'Frontend package version mismatch: installed {installed}, required {required}'
+      'Frontend package version mismatch: installed {installed}, required {required}',
+    frontendAlign: 'Align',
+    frontendAlignTip:
+      'Installs the frontend package version ComfyUI requires (comfyui-frontend-package=={required}); restart the instance to apply',
+    frontendAlignDone: 'Frontend package updated — restart the instance to apply'
   },
   install: {
     title: 'One-click install',
@@ -554,6 +559,14 @@ export default {
     deleteConfirm: 'Also delete files on disk?',
     deleteFileToo: 'Delete file too',
     removeRecordOnly: 'Remove record only',
+    selectedCount: '{n} selected',
+    batchDelete: 'Delete selected',
+    batchDeleteConfirm: 'Will delete {n} selected model(s); this cannot be undone.',
+    batchDeletedWithFile: 'Deleted {ok} file(s) and record(s)',
+    batchDeletedRecordOnly: 'Removed {ok} record(s) (files kept)',
+    batchMove: 'Move selected',
+    batchMoved: 'Moved {ok} model(s)',
+    batchFailed: '{n} failed, first: {name} ({error})',
     downloadsTitle: 'Downloads',
     clearFinished: 'Clear finished',
     storageTotal: 'Total',
@@ -911,6 +924,12 @@ export default {
     removeRecordOnly: 'Remove record only',
     deletedWithFile: 'Record and file deleted',
     deletedRecordOnly: 'Record removed (file kept)',
+    deleteSelectedTitle: 'Delete selected assets',
+    deleteSelectedConfirm: 'Will delete {n} selected asset(s); this cannot be undone.',
+    deletedBatchWithFile: 'Deleted {ok} file(s) and record(s)',
+    deletedBatchRecordOnly: 'Removed {ok} record(s) (files kept)',
+    deleteBatchFailed: '{n} deletion(s) failed, first cause: {first}',
+    deleteSelected: 'Delete selected ({n})',
     dateFrom: 'From',
     dateTo: 'To'
   },
@@ -984,6 +1003,10 @@ export default {
     searchPlaceholder: 'Search name / tag / path',
     refresh: 'Refresh',
     import: 'Import workflow',
+    importDefault: 'Import default workflow',
+    defaultImported: 'Default workflow imported: {name}',
+    defaultUnsupported:
+      'This instance does not provide a default workflow (requires ComfyUI v0.41+)',
     missingNodes: 'Missing {n} node(s)',
     missingFile: 'File missing',
     missingCount: '{n} missing',
@@ -1072,6 +1095,19 @@ export default {
     title: 'Monitor',
     subtitle: 'System resources, GPU and ComfyUI queue in real time.',
     refreshQueue: 'Refresh queue',
+    clearQueue: 'Clear queue',
+    clearQueueTip: 'Remove every waiting task (the running one stays)',
+    clearQueueConfirm: 'Will remove {n} waiting task(s); the running job is not affected.',
+    clearQueueDone: 'Waiting queue cleared',
+    interrupt: 'Interrupt',
+    interruptConfirm:
+      'The running task will be interrupted and end as failed. On older ComfyUI builds the interrupt applies globally (it may also stop a running batch).',
+    interruptDone: 'Interrupt sent',
+    interruptIdle: 'No running task to interrupt',
+    freeMemory: 'Free memory',
+    freeMemoryConfirm:
+      'Loaded models will be unloaded to free VRAM/RAM; the next generation reloads them (first image is slower).',
+    freeMemoryDone: 'Free request sent',
     cpuUsage: 'CPU usage',
     cpuHint: 'Sampled every 2s',
     memory: 'Memory',
@@ -1171,6 +1207,7 @@ export default {
     subtitle: 'Full checkup of Python / Torch / paths / ports / Registry, with one-click fixes.',
     run: 'Run checkup',
     runComplete: 'Checkup complete: pass {pass} · warn {warn} · fail {fail}',
+    checkedCount: '{n} checked',
     pass: 'Pass',
     warn: 'Warn',
     fail: 'Fail',

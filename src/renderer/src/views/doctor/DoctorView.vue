@@ -20,7 +20,8 @@ const message = useMessage()
 const { t, te } = useI18n()
 const running = ref(false)
 const fixing = ref(false)
-const progress = ref<{ done?: number; total?: number; title?: string } | null>(null)
+/** Honest progress payload (0.1.15): checked count + phase title, no fake total. */
+const progress = ref<{ done?: number; title?: string } | null>(null)
 // Persisted in the app store so Dashboard "one-click doctor" survives the route change.
 const report = ref<DoctorReport | null>(store.doctorReport)
 
@@ -96,7 +97,7 @@ async function fix(check: DoctorCheck): Promise<void> {
 let offProgress: (() => void) | null = null
 onMounted(() => {
   offProgress = onDoctorProgress((p) => {
-    const info = p as { done?: number; total?: number; title?: string }
+    const info = p as { done?: number; title?: string }
     progress.value = info
   })
 })
@@ -120,19 +121,12 @@ onUnmounted(() => offProgress?.())
 
     <div class="page-body">
       <div v-if="running && progress" class="doctor-progress card">
-        <NProgress
-          type="line"
-          :percentage="
-            progress.total
-              ? Math.min(100, Math.round(((progress.done || 0) / progress.total) * 100))
-              : 0
-          "
-          :height="8"
-          processing
-        />
+        <!-- Indeterminate bar: the check set is conditional, so a percentage
+             would be fabricated. The honest signal is the checked COUNT. -->
+        <NProgress type="line" :percentage="100" :height="8" :show-indicator="false" processing />
         <div class="doctor-progress-meta">
           {{ progress.title || t('doctor.run') }}
-          <span v-if="progress.total"> — {{ progress.done || 0 }} / {{ progress.total }}</span>
+          <span v-if="progress.done"> — {{ t('doctor.checkedCount', { n: progress.done }) }}</span>
         </div>
       </div>
       <NSpin :show="(running || fixing) && !!report" :stroke-width="0">

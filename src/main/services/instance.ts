@@ -1621,5 +1621,3 @@ export class InstanceService extends EventEmitter {
 }
 
 export const instanceService = new InstanceService()
-
-export { dirname, rmSync }

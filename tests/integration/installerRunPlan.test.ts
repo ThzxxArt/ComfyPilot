@@ -91,6 +91,21 @@ vi.mock('systeminformation', () => ({
   default: { graphics: async () => ({ controllers: [] }) }
 }))
 
+// Disk gate isolation (0.1.15): the preflight disk check reads the REAL
+// filesystem — a nearly-full /tmp flips it to a hard-fail and every runPlan
+// case dies in preflight for an environmental reason. Pin ~40GB free.
+vi.mock('fs', async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof import('fs')
+  return {
+    ...actual,
+    statfsSync: (() => ({
+      bsize: 4096,
+      bavail: 10 * 1024 * 1024,
+      blocks: 20 * 1024 * 1024
+    })) as unknown as typeof actual.statfsSync
+  }
+})
+
 vi.mock('child_process', () => ({
   execFile: (
     cmd: string,

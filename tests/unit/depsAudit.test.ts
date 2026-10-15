@@ -2,8 +2,8 @@
  * NodePackService.depsAudit (0.1.12 WP5) — requirements.txt vs installed list.
  * Real temp filesystem; db/instance/bootstrap/proxy/child_process mocked.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'fs'
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -142,8 +142,20 @@ function seedPack(folder: string, requirements: string): void {
   writeFileSync(join(dir, 'requirements.txt'), requirements)
 }
 
+// tmpfs hygiene (0.1.15): keep /tmp free of fixture residue across runs.
+afterAll(() => {
+  if (h.root) {
+    try {
+      rmSync(h.root, { recursive: true, force: true })
+    } catch {
+      /* best-effort cleanup */
+    }
+  }
+})
+
 describe('NodePackService.depsAudit (0.1.12)', () => {
   beforeEach(() => {
+    if (h.root) rmSync(h.root, { recursive: true, force: true })
     h.root = mkdtempSync(join(tmpdir(), 'cp-deps-'))
     mkdirSync(join(h.root, 'custom_nodes'), { recursive: true })
     h.uvInstalled = true
@@ -232,6 +244,7 @@ describe('NodePackService.depsAudit (0.1.12)', () => {
 
 describe('NodePackService.installDeps (0.1.13)', () => {
   beforeEach(() => {
+    if (h.root) rmSync(h.root, { recursive: true, force: true })
     h.root = mkdtempSync(join(tmpdir(), 'cp-deps-'))
     mkdirSync(join(h.root, 'custom_nodes'), { recursive: true })
     h.uvInstalled = true

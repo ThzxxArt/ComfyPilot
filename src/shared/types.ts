@@ -1270,6 +1270,8 @@ export type IpcChannelMap = {
   'settings.set': { args: [Partial<AppSettings>]; result: AppSettings }
   'settings.launchTemplates': { args: []; result: LaunchArgTemplate[] }
   'settings.dataDir': { args: []; result: string }
+  /** Global app log directory (userData/logs) — 0.1.15, for the Settings button. */
+  'settings.logsDir': { args: []; result: string }
   'proxy.apply': { args: []; result: { enabled: boolean; url: string; bypass: string } }
   'proxy.test': {
     args: [{ url?: string }?]
@@ -1470,6 +1472,15 @@ export type IpcChannelMap = {
   'workflow.compare': { args: [string, string]; result: WorkflowCompareResult }
   /** Preflight one workflow file against the instance /object_info (0.1.12). */
   'workflow.preflight': { args: [string, string]; result: WorkflowPreflight }
+  /**
+   * Import the running LOCAL instance's built-in default workflow (0.1.15).
+   * Requires ComfyUI v0.41+ (`GET /default_workflow`), where v0.40 and older
+   * fail with code DEFAULT_WORKFLOW_UNSUPPORTED.
+   */
+  'workflow.importDefault': {
+    args: [{ instanceId: string; target?: 'instance' | 'library' }]
+    result: WorkflowRecord
+  }
 
   // monitor
   'monitor.system': { args: []; result: SystemSnapshot }
@@ -1478,6 +1489,10 @@ export type IpcChannelMap = {
   'monitor.jobs': { args: [string?]; result: ComfyJobSummary[] | null }
   'monitor.connectWs': { args: [string]; result: boolean }
   'monitor.disconnectWs': { args: []; result: boolean }
+  // Runtime operations (0.1.15) — standard ComfyUI queue/memory actions.
+  'monitor.clearQueue': { args: [string]; result: { ok: boolean; error?: string } }
+  'monitor.interrupt': { args: [string, string?]; result: { ok: boolean; error?: string } }
+  'monitor.freeMemory': { args: [string]; result: { ok: boolean; error?: string } }
 
   // doctor
   'doctor.run': { args: [string]; result: DoctorReport }
@@ -1624,6 +1639,11 @@ export type IpcChannelMap = {
   'output.reveal': { args: [string]; result: boolean }
   'output.favorite': { args: [string, boolean]; result: boolean }
   'output.delete': { args: [string, boolean]; result: boolean }
+  /** Batch delete (0.1.15) — per-id failures reported, never an all-or-nothing lie. */
+  'output.batchDelete': {
+    args: [string[], boolean]
+    result: { ok: number; failed: Array<{ id: string; error: string }> }
+  }
   'output.importToWorkflow': { args: [string, string?]; result: WorkflowRecord | null }
   'output.exportZip': { args: [string[], string?]; result: { path: string } }
 

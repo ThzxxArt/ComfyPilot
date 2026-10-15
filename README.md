@@ -1,7 +1,7 @@
 # ComfyPilot
 
 > **ComfyUI 全能管理器** — 本机 ComfyUI 生产线的控制塔  
-> TypeScript · Vue 3 · Electron · Naive UI · MIT · v0.1.14
+> TypeScript · Vue 3 · Electron · Naive UI · MIT · v0.1.15
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-4f6ef7)](./LICENSE)
 
@@ -35,14 +35,14 @@ ComfyPilot **不替代** ComfyUI 节点工作台，而是管理它的整套生�
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **总览 Dashboard**   | 空态三步引导、启动器大卡（一键启动并打开 Frontend）、启动中阶段与日志、实例 / 模型 / 节点 / CPU·内存·显存一屏掌握                                                              |
 | **一键装机 Install** | **无需预装 Python / Git**：自动下载便携运行时、zip 获取 ComfyUI、按 GPU 推荐 torch、镜像测速、细粒度进度、完成后一键启动 + 推荐基础模型                                        |
-| **实例 Instances**   | 发现候选、启动并打开、就绪探测、端口冲突自愈、**启动参数调优面板（9 组结构化参数 + 冲突校验 + 实时预览 + 按显存推荐 + 存储目录重定向 output/input/temp/previews）**、**在线版本/能力探测（/system_stats + /features + 资产系统状态）**、启动命令预览与导出脚本、热编辑、置顶/搜索、批量启停、环境探测（**含 pip 状态与一键补 pip**）、诊断包（含 system-stats/features）、**检查/更新 ComfyUI 本体（备份-回滚 + 上游最新正式版语义）**、**启动自检（--quick-test-for-ci）**、**一键修复环境**、**运行失败诊断（结构化错误卡：节点/包/缺模块/一键安装）** |
-| **模型库 Models**    | 多根扫描、safetensors 元数据、SHA256 去重、断点下载与校验、推荐模型包一键下载、移动/软链/改名、存储分析、真缩略图、**与运行中实例在线对账（可见性差异解释 + 一键加入扫描根）** |
+| **实例 Instances**   | 发现候选、启动并打开、就绪探测、端口冲突自愈、**启动参数调优面板（9 组结构化参数 + 冲突校验 + 实时预览 + 按显存推荐 + 存储目录重定向 output/input/temp/previews）**、**在线版本/能力探测（/system_stats + /features + 资产系统状态）**、启动命令预览与导出脚本、热编辑、置顶/搜索、批量启停、环境探测（**含 pip 状态与一键补 pip**）、诊断包（含 system-stats/features）、**检查/更新 ComfyUI 本体（备份-回滚 + 上游最新正式版语义）**、**启动自检（--quick-test-for-ci）**、**一键修复环境**、**运行失败诊断（结构化错误卡：节点/包/缺模块/一键安装）**、**前端包版本一键对齐（mismatch → 复装 required 版本）** |
+| **模型库 Models**    | 多根扫描、safetensors 元数据、SHA256 去重、断点下载与校验、推荐模型包一键下载、移动/软链/改名、存储分析、真缩略图、**与运行中实例在线对账（可见性差异解释 + 一键加入扫描根）**、**多选批量删除 / 批量移动（部分失败诚实报告）** |
 | **节点 Node Packs**  | Registry / Manager / Git 安装、依赖真实安装、启用禁用、锁定、冲突检测、冒烟导入、快照对齐、**全量检查更新（每包显式状态）**、**一键/批量顺序更新（批量实时进度、第 N/M、终端日志、可停止剩余）**、失败回滚上报、**启动加载报告（IMPORT FAILED 包可见 + 原因 + 启动自检 + 组织策略拒绝可见）**、**依赖体检（requirements.txt vs 已装包对账 + 单包补装）**、issue 一键修复出口（如 torch 固定版本解除） |
 | **市场 Market**      | Comfy Registry 精选浏览与一键安装                                                                                                                                              |
-| **工作流 Workflows** | **真·工作流库**：JSON / PNG 元数据解析（PNG 抽出 .json）、导入拷贝入库、来源徽章、标签/收藏/改名/删除、ZIP 导出、同步到实例、Frontend 打开、按实例排队                         |
+| **工作流 Workflows** | **真·工作流库**：JSON / PNG 元数据解析（PNG 抽出 .json）、导入拷贝入库、**一键导入引擎默认工作流（ComfyUI v0.41+，探测式）**、来源徽章、标签/收藏/改名/删除、ZIP 导出、同步到实例、Frontend 打开、按实例排队 |
 | **批跑 Batch**       | 从工作流库**多选**多工作流 × 次数；种子策略（随机/递增/固定）+ 尺寸/steps/cfg 矩阵；入队后跟踪真实出图；取消可撤队；产物关联批次                                               |
-| **产物 Output**      | output 目录索引、真缩略图、**全类型覆盖（图像 / 视频 / 音频 / 3D 模型 / EXR 原始图——索引、筛选与交互降级）**、**视频首帧卡片 + 灯箱内嵌播放（mp4/webm；mkv/mov 优雅降级系统播放器）**、**音频灯箱内嵌播放**、时间/大小/名称排序 + 分页、收藏、多选导出 PNG 参数还原、**还原为工作流真正入库**、批次/工作流回溯、**实例资产库只读增强（0.40 assets：job_id 溯源 / 标签 / EXR 预览）** |
-| **监控 Monitor**     | CPU / 内存 / 磁盘 / GPU（显存真实采样）、队列、WebSocket 实时进度、**实时采样预览（两代预览帧解码）**、**节点级进度（progress_state）**、**作业列表（/api/jobs）**、**远程实例只读监控** |
+| **产物 Output**      | output 目录索引、真缩略图、**全类型覆盖（图像 / 视频 / 音频 / 3D 模型 / EXR 原始图——索引、筛选与交互降级）**、**视频首帧卡片 + 灯箱内嵌播放（mp4/webm；mkv/mov 优雅降级系统播放器）**、**音频灯箱内嵌播放**、时间/大小/名称排序 + 分页、收藏、多选导出 + **多选批量删除（文件/仅记录双态）**、PNG 参数还原、**还原为工作流真正入库**、批次/工作流回溯、**实例资产库只读增强（0.40 assets：job_id 溯源 / 标签 / EXR 预览）** |
+| **监控 Monitor**     | CPU / 内存 / 磁盘 / GPU（显存真实采样）、队列、WebSocket 实时进度、**实时采样预览（两代预览帧解码）**、**节点级进度（progress_state）**、**作业列表（/api/jobs）**、**运行操作（清空待执行队列 / 中断当前任务 / 释放显存内存——本地与远程统一）**、**远程实例只读监控** |
 | **诊断 Doctor**      | 一键体检（Python / **pip 可用性** / torch·CUDA / 端口 / 节点 / 路径 / 磁盘 / 网络）+ 可修复项（含 **ensurepip 一键补 pip**）                                                                                                   |
 | **备份 Backup**      | 配置 / 实例 / 节点清单 / 模型清单快照，原子恢复                                                                                                                                |
 | **远程 Remote**      | 局域网 / 云端 ComfyUI 实例注册、连通测试、在线状态                                                                                                                             |
@@ -132,7 +132,7 @@ node node_modules/electron/install.js
 npm run dev          # 开发模式
 npm run typecheck    # vue-tsc + tsc
 npm run typecheck:test # 测试源码 tsc（CI 门禁）
-npm run test         # 单元 + 集成（2447 tests）
+npm run test         # 单元 + 集成（2492 tests）
 npm run test:coverage
 npm run lint         # ESLint（含 --fix）
 npm run lint:check   # ESLint 只检查（CI 门禁）
@@ -263,7 +263,7 @@ Python 版本、Torch / CUDA、`extra_model_paths.yaml`、端口、磁盘、Regi
 
 ```text
 ComfyPilot/
-├── package.json                 # v0.1.14 · MIT · ThzxxArt
+├── package.json                 # v0.1.15 · MIT · ThzxxArt
 ├── electron.vite.config.ts
 ├── electron-builder.yml         # Win NSIS / macOS DMG / Linux AppImage·deb + GitHub publish
 ├── vitest.config.ts             # 覆盖率门禁（0.1.8 按实测定档，见文件内说明）
@@ -293,7 +293,7 @@ ComfyPilot/
 │           ├── styles/tokens.ts # JS 侧设计 token
 │           └── views/           # dashboard/instances/install/models/…
 ├── tests/
-│   ├── unit/                    # 97 文件（+3 集成 = 100）· 2447 用例全绿 · 行为测试为主
+│   ├── unit/                    # 101 文件（+3 集成 = 104）· 2492 用例全绿 · 行为测试为主
 │   ├── integration/
 │   └── e2e/
 └── .github/workflows/ci.yml
@@ -307,7 +307,7 @@ ComfyPilot/
 npm run dev / typecheck / test / test:coverage / test:e2e / test:all
 ```
 
-**测试：** 2447 用例（100 文件）+ e2e 冒烟（含渲染挂载断言）。覆盖率门禁在 `vitest.config.ts` 内 **按实测定档（实测 − 2pp）**；测试源码纳入 tsc 门禁（`typecheck:test`）。
+**测试：** 2492 用例（104 文件）+ e2e 冒烟（含渲染挂载断言）。覆盖率门禁在 `vitest.config.ts` 内 **按实测定档（实测 − 2pp）**；测试源码纳入 tsc 门禁（`typecheck:test`）。测试临时目录全量自清（tmpfs 卫生）+ 磁盘门控与真实文件系统解耦（0.1.15）。
 
 **门禁脚本：**
 
@@ -371,6 +371,8 @@ ComfyUI 本身采用 GPL-3.0；本项目独立发布，采用 **MIT**。
 
 上游仓库为 **`Comfy-Org/ComfyUI`**（0.1.14 起全部引用直接指向官方组织，不依赖重定向）；检查更新会同时显示上游最新正式版（GitHub Releases）。
 
+上游 v0.41（开发中）预备事实：`cli_args.py` 相对 v0.40 已冻结（启动参数目录完整）；新增 `GET /default_workflow` 路由（工作流页「导入默认工作流」为探测式接入，旧版实例诚实提示）；官方新增 Windows ARM64 + NVIDIA 便携包、assets 系统导出 API 与视频元数据提取（均为服务端面——本项目对资产系统保持只读立场）。
+
 **注意 `--disable-metadata`**：该参数会停止 ComfyUI 写入 PNG 元数据，工作流指纹关联与产物参数还原将随之失效（医生体检会给出警告）——除非有隐私需求，不建议开启。
 
 ---
@@ -429,6 +431,9 @@ ComfyUI 本身采用 GPL-3.0；本项目独立发布，采用 **MIT**。
 - [x] **0.1.14 产物全类型**：`shared/mediaTypes.ts` 单一事实源（此前四处分类实现漂移：mkv 两处缺失、未知文件默认 image）；3D 模型 / 音频 / EXR 家族全面入索引；媒体协议扩展音频（灯箱内嵌播放）；未知格式仍不入索引防膨胀
 - [x] **0.1.14 资产贯通**：ComfyUI 0.40 assets 系统只读接入——`assetsApi` 实时探测（503 disabled / 404 旧版均诚实降级）、实例能力区状态展示、产物详情资产记录查询（promptId 溯源 + 工作流归属 + 标签 + 服务端预览）
 - [x] **0.1.14 引擎同频**：全项目仓库引用切换官方 `Comfy-Org/ComfyUI`（摆脱重定向依赖）；检查更新附「上游最新正式版」release 语义（tag + 日期 + 更新日志链接）；启动参数补 output/input/temp/previews 四个存储目录字段 + CATALOG 补 `--previews-directory`；doctor 新增 `--disable-metadata` 检测（指纹关联会失效的诚实提示）；节点加载报告可识别 ComfyUI 治理策略拒绝（governance）
+- [x] **0.1.15 运行可控**：监控页补齐 ComfyUI 三大标准运行操作——清空待执行队列 / 中断当前任务（0.39+ 定向、旧版全局的诚实语义）/ 释放显存内存；本地与远程统一入口，操作确认流 + 完成后实时回读
+- [x] **0.1.15 批量减负**：产物库多选批量删除（文件/仅记录双态 + 部分失败诚实报告）；模型库多选批量删除 / 批量移动；实例前端包版本一键对齐（mismatch 徽标 → 复用 pip-op 模态升级到 required 版本）
+- [x] **0.1.15 上游就绪**：从运行实例一键导入引擎默认工作流（ComfyUI v0.41 `GET /default_workflow` 探测式接入，v0.40 及更早诚实提示）；上游事实档案更新（cli_args 对 v0.41 已冻结 / ARM64 便携包 / assets 导出 API）；遗留死代码清零 + 测试卫生根治（tmpdir 全量自清、磁盘门控与真实文件系统解耦）
 - [x] 工作流版本对照与打包分享：0.1.11 工作流对比视图（`workflow.compare`）；打包分享（ZIP 导出，0.1.5 已含）
 - [x] 更细的 GPU 多卡 / 共享显存展示：0.1.11 多卡 `GPU n` 索引徽标 + Windows 共享显存（Shared Usage/Limit 计数器）
 

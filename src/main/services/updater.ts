@@ -1213,8 +1213,6 @@ export class ComfyUpdaterService extends EventEmitter {
       if (!existsSync(join(root, 'main.py'))) throw new Error('Staged archive missing main.py')
       const overlaid = this.overlayTree(root, comfyDir)
       this.log('fetch', `overlaid ${overlaid} entries`)
-      const sha = ''
-      void sha
     } finally {
       try {
         rmSync(tmpZip, { force: true })

@@ -607,31 +607,100 @@ export class WorkflowService {
     // Throws with a descriptive message when the shape is wrong.
     assertComfyWorkflow(graph)
 
-    // ---- land exactly one .json in the chosen folder ----
+    return this.writeGraphAsWorkflow({
+      graph,
+      name: basename(path, ext),
+      target,
+      instanceId,
+      sourcePath: path,
+      avoidSelfPath: path,
+      params: ext === '.png' ? { extractedFrom: path } : {}
+    })
+  }
+
+  /**
+   * Materialise a validated graph as exactly one .json inside the chosen
+   * workflow folder (shared by file import and the default-workflow import).
+   * Returns the persisted record; naming collisions get the stable `-N` chain.
+   */
+  private writeGraphAsWorkflow(opts: {
+    graph: Record<string, unknown>
+    /** Base file name WITHOUT extension (sanitized here). */
+    name: string
+    target: 'instance' | 'library'
+    instanceId?: string
+    /** Original source path for imports ('' / omitted for synthetic graphs). */
+    sourcePath?: string
+    /** Existing path that must NOT be treated as a collision (re-import self). */
+    avoidSelfPath?: string
+    params?: Record<string, unknown>
+  }): WorkflowRecord {
     const targetDir =
-      target === 'library' ? this.libraryRoot() : this.instanceWorkflowsDir(instanceId)
-    const origin: WorkflowOrigin = target === 'library' ? 'library' : 'instance'
+      opts.target === 'library' ? this.libraryRoot() : this.instanceWorkflowsDir(opts.instanceId)
+    const origin: WorkflowOrigin = opts.target === 'library' ? 'library' : 'instance'
     mkdirSync(targetDir, { recursive: true })
-    const safeBase = assertSafeRelativeFilename(basename(path, ext)).slice(0, 120)
+    const safeBase = assertSafeRelativeFilename(opts.name).slice(0, 120)
     let dest = join(targetDir, `${safeBase}.json`)
     let n = 1
-    while (existsSync(dest) && !resolveSame(dest, path)) {
+    while (existsSync(dest) && (!opts.avoidSelfPath || !resolveSame(dest, opts.avoidSelfPath))) {
       dest = join(targetDir, `${safeBase}-${n}.json`)
       n += 1
       if (n > 200) throw new Error('Too many name collisions in the target workflows folder')
     }
-    writeFileSync(dest, JSON.stringify(graph, null, 2), 'utf-8')
+    writeFileSync(dest, JSON.stringify(opts.graph, null, 2), 'utf-8')
 
     const rec = this.buildRecord(dest, origin, {
-      sourcePath: path,
+      sourcePath: opts.sourcePath,
       importedAt: Date.now(),
       name: safeBase,
       tags: [],
       favorite: false,
-      params: ext === '.png' ? { extractedFrom: path } : {}
+      params: opts.params || {}
     })
     upsertWorkflow(rec)
     return rec
+  }
+
+  /**
+   * Import the running ComfyUI instance's BUILT-IN default workflow (0.1.15).
+   *
+   * The `GET /default_workflow` route exists since ComfyUI v0.41 (verified
+   * absent on v0.40.0) — an instance without it fails with the coded
+   * `DEFAULT_WORKFLOW_UNSUPPORTED` error so the UI can explain honestly. The
+   * graph passes the same `assertComfyWorkflow` gate as every other import.
+   */
+  async importDefaultFromInstance(
+    instanceId: string,
+    target: 'instance' | 'library' = 'instance'
+  ): Promise<WorkflowRecord> {
+    const inst = loadInstanceConfigs().find((c) => c.id === instanceId)
+    if (!inst) throw new Error(`Instance not found: ${instanceId}`)
+    const client = new ComfyApiClient(this.baseUrlOfConfig(inst))
+    const graph = await client.defaultWorkflow()
+    if (!graph) {
+      const e = new Error(
+        'This instance does not provide a default workflow (requires a newer ComfyUI build)'
+      ) as Error & { code?: string }
+      e.code = 'DEFAULT_WORKFLOW_UNSUPPORTED'
+      throw e
+    }
+    assertComfyWorkflow(graph)
+    return this.writeGraphAsWorkflow({
+      graph,
+      name: 'default-workflow',
+      target,
+      instanceId,
+      params: { defaultWorkflow: true }
+    })
+  }
+
+  /** Same host normalization as queue() and the other instance consumers. */
+  private baseUrlOfConfig(inst: ComfyInstanceConfig): string {
+    const host =
+      inst.listen === '0.0.0.0' || inst.listen === '::' || inst.listen === '[::]'
+        ? '127.0.0.1'
+        : inst.listen
+    return `http://${host}:${inst.port}`
   }
 
   async importMany(

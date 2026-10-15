@@ -45,6 +45,7 @@ import { useAppStore } from '@/stores/app'
 import { formatBytes } from '@/utils/format'
 import { COLORS } from '@/styles/tokens'
 import ListSkeleton from '@/components/ListSkeleton.vue'
+import { viewersCloseAfterRemoval } from '@/utils/batchOps'
 import { isWebViewableImage, isRawImage } from '@shared/mediaTypes'
 import type { OutputAsset, OutputAssetMatch, WorkflowRecord } from '@shared/types'
 
@@ -474,6 +475,57 @@ function confirmDeleteAsset(a: OutputAsset): void {
   })
 }
 
+// ---------- 0.1.15: batch delete for selected assets ----------
+/** Three explicit outcomes: delete files too / records only / dismiss=cancel. */
+function confirmDeleteSelected(): void {
+  const ids = [...selected.value]
+  if (!ids.length) return
+  dialog.warning({
+    title: t('output.deleteSelectedTitle'),
+    content: t('output.deleteSelectedConfirm', { n: ids.length }),
+    positiveText: t('output.deleteFileToo'),
+    negativeText: t('output.removeRecordOnly'),
+    onPositiveClick: () => void doBatchDelete(ids, true),
+    onNegativeClick: () => void doBatchDelete(ids, false)
+  })
+}
+
+async function doBatchDelete(ids: string[], deleteFile: boolean): Promise<void> {
+  try {
+    const r = await ipc('output.batchDelete', ids, deleteFile)
+    // An open detail / lightbox pointing at a deleted asset must close
+    // (pure predicate — unit-tested in batchOps.test.ts).
+    const close = viewersCloseAfterRemoval(ids, detail.value?.id, lightboxAsset.value?.id)
+    if (close.closeDetail) {
+      showDetail.value = false
+      detail.value = null
+    }
+    if (close.closeLightbox) {
+      lightbox.value = false
+      lightboxAsset.value = null
+      lightboxSrc.value = ''
+    }
+    for (const id of ids) selected.value.delete(id)
+    const base = deleteFile
+      ? t('output.deletedBatchWithFile', { ok: r.ok })
+      : t('output.deletedBatchRecordOnly', { ok: r.ok })
+    if (r.failed.length) {
+      message.warning(
+        `${base} — ${t('output.deleteBatchFailed', {
+          n: r.failed.length,
+          first: r.failed[0].error
+        })}`,
+        { duration: 8000 }
+      )
+    } else {
+      message.success(base)
+    }
+    await refresh()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
 async function exportSelected(): Promise<void> {
   const paths = assets.value.filter((a) => selected.value.has(a.id)).map((a) => a.path)
   if (!paths.length) {
@@ -655,6 +707,15 @@ onUnmounted(() => {
         <NButton size="small" secondary :disabled="!selected.size" @click="exportSelected">
           <template #icon><NIcon :component="ShareSocialOutline" /></template>
           {{ $t('output.exportZip') }}
+        </NButton>
+        <NButton
+          size="small"
+          type="error"
+          secondary
+          :disabled="!selected.size"
+          @click="confirmDeleteSelected"
+        >
+          {{ $t('output.deleteSelected', { n: selected.size }) }}
         </NButton>
       </NSpace>
     </NSpace>

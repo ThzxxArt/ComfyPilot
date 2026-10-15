@@ -33,7 +33,7 @@ import {
   recordPromptWorkflowLink
 } from './workflow'
 import { lookupWorkflowByFingerprint } from './workflowFingerprint'
-import { assertSafeRelativeFilename } from './security'
+import { assertSafeRelativeFilename, sanitizeId } from './security'
 import { classifyOutputType } from '@shared/mediaTypes'
 
 // ---------- helpers ----------
@@ -1073,6 +1073,32 @@ export class OutputService {
       unlinkSync(rec.path)
     }
     return deleteOutputAsset(id)
+  }
+
+  /**
+   * Batch delete (0.1.15): delete every selected asset, collecting per-id
+   * failures instead of aborting the whole set. The UI reports the exact
+   * ok/failed split — never a fabricated all-success.
+   */
+  batchRemove(
+    ids: string[],
+    deleteFile: boolean
+  ): { ok: number; failed: Array<{ id: string; error: string }> } {
+    const failed: Array<{ id: string; error: string }> = []
+    let ok = 0
+    for (const raw of ids) {
+      const id = sanitizeId(raw)
+      try {
+        if (!id || !this.remove(id, Boolean(deleteFile))) {
+          failed.push({ id: String(raw), error: 'not found' })
+          continue
+        }
+        ok += 1
+      } catch (e) {
+        failed.push({ id: String(raw), error: e instanceof Error ? e.message : String(e) })
+      }
+    }
+    return { ok, failed }
   }
 
   /** Multi-file share bundle. */

@@ -2,8 +2,8 @@
  * BackupService behaviour (0.1.10): create/restore/delete with real files on
  * a tmpdir and an in-memory db layer.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'fs'
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from 'fs'
 import { join, basename } from 'path'
 import { tmpdir } from 'os'
 
@@ -57,7 +57,10 @@ async function freshBackup(): Promise<any> {
 }
 
 describe('BackupService (0.1.10 behaviour)', () => {
+  // tmpfs hygiene (0.1.15): residue from un-cleaned tmpdirs accumulated to
+  // hundreds of MB and once tripped the installer disk gate on a full /tmp.
   beforeEach(() => {
+    if (h.state.root) rmSync(h.state.root, { recursive: true, force: true })
     h.state.root = mkdtempSync(join(tmpdir(), 'cp-backup-'))
     h.state.backups = []
     h.state.savedSettings = null
@@ -68,6 +71,16 @@ describe('BackupService (0.1.10 behaviour)', () => {
     h.state.nodes = []
     h.state.snaps = []
     h.state.remotes = []
+  })
+
+  afterAll(() => {
+    if (h.state.root) {
+      try {
+        rmSync(h.state.root, { recursive: true, force: true })
+      } catch {
+        /* best-effort cleanup */
+      }
+    }
   })
 
   it('create() snapshots metadata, copies workflow files and counts missing ones', async () => {

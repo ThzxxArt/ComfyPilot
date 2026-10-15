@@ -28,6 +28,7 @@ import { useAppStore } from '@/stores/app'
 import { ipc, onDownloadProgress, onModelScanProgress } from '@/composables/useIpc'
 import { formatBytes } from '@/utils/format'
 import { categoryVisual } from '@/utils/categoryIcons'
+import { runBatchOps, type BatchOpOutcome } from '@/utils/batchOps'
 import ListSkeleton from '@/components/ListSkeleton.vue'
 import { MODEL_CATEGORY_LABELS, STARTER_MODELS } from '@shared/constants'
 import type {
@@ -322,6 +323,76 @@ function openDetail(row: ModelRecord): void {
   showDetail.value = true
 }
 
+// ---------- 0.1.15: multi-select batch management ----------
+const checkedRowKeys = ref<Array<string | number>>([])
+const selectedModels = computed(() =>
+  models.value.filter((m) => checkedRowKeys.value.includes(m.id))
+)
+
+/** Shared honest report for a batch outcome (ok n / failed m with first cause). */
+function reportBatchOutcome(outcome: BatchOpOutcome, successText: string): void {
+  if (outcome.failed.length) {
+    const first = outcome.failed[0]
+    message.warning(
+      `${successText} — ${t('models.batchFailed', {
+        n: outcome.failed.length,
+        name: first.label,
+        error: first.error
+      })}`,
+      { duration: 8000 }
+    )
+  } else {
+    message.success(successText)
+  }
+}
+
+function confirmBatchDelete(): void {
+  const n = selectedModels.value.length
+  if (!n) return
+  dialog.warning({
+    title: t('models.batchDelete'),
+    content: t('models.batchDeleteConfirm', { n }),
+    positiveText: t('models.deleteFileToo'),
+    negativeText: t('models.removeRecordOnly'),
+    onPositiveClick: () => void doBatchDelete(true),
+    onNegativeClick: () => void doBatchDelete(false)
+  })
+}
+
+async function doBatchDelete(deleteFile: boolean): Promise<void> {
+  // Snapshot plain items BEFORE any await so mid-flight refreshes cannot
+  // change what the user selected.
+  const items = selectedModels.value.map((m) => ({ id: m.id, label: m.name }))
+  const outcome = await runBatchOps(items, async (it) => {
+    await ipc('model.delete', it.id, deleteFile)
+  })
+  checkedRowKeys.value = []
+  await refresh()
+  reportBatchOutcome(
+    outcome,
+    deleteFile
+      ? t('models.batchDeletedWithFile', { ok: outcome.ok })
+      : t('models.batchDeletedRecordOnly', { ok: outcome.ok })
+  )
+}
+
+async function batchMove(): Promise<void> {
+  const items = selectedModels.value.map((m) => ({ id: m.id, label: m.name }))
+  if (!items.length) return
+  try {
+    const dir = await ipc('shell.pickDirectory')
+    if (!dir) return
+    const outcome = await runBatchOps(items, async (it) => {
+      await ipc('model.move', it.id, dir)
+    })
+    checkedRowKeys.value = []
+    await refresh()
+    reportBatchOutcome(outcome, t('models.batchMoved', { ok: outcome.ok }))
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
 async function saveTags(): Promise<void> {
   if (!detailTarget.value) return
   try {
@@ -384,6 +455,7 @@ async function parseExtraPaths(): Promise<void> {
 }
 
 const columns = computed<DataTableColumns<ModelRecord>>(() => [
+  { type: 'selection' },
   {
     title: t('models.colName'),
     key: 'name',
@@ -790,33 +862,46 @@ onUnmounted(() => {
       </div>
 
       <div class="card table-card">
-        <!-- Quick category chips replace the 25-tab segment strip (0.1.11). -->
-        <NSpace class="cat-chips" align="center">
-          <NTag
-            size="small"
-            round
-            checkable
-            :checked="tab === 'all'"
-            @update:checked="() => (tab = 'all')"
-          >
-            {{ $t('models.tabAll') }}
-          </NTag>
-          <NTag
-            v-for="c in quickCategories"
-            :key="c.value"
-            size="small"
-            round
-            checkable
-            :checked="tab === c.value"
-            @update:checked="(v: boolean) => (tab = v ? c.value : 'all')"
-          >
-            {{ c.label }} · {{ c.count }}
-          </NTag>
-        </NSpace>
+        <div class="cat-chips-row">
+          <!-- Quick category chips replace the 25-tab segment strip (0.1.11). -->
+          <NSpace align="center" :size="6" class="cat-chips">
+            <NTag
+              size="small"
+              round
+              checkable
+              :checked="tab === 'all'"
+              @update:checked="() => (tab = 'all')"
+            >
+              {{ $t('models.tabAll') }}
+            </NTag>
+            <NTag
+              v-for="c in quickCategories"
+              :key="c.value"
+              size="small"
+              round
+              checkable
+              :checked="tab === c.value"
+              @update:checked="(v: boolean) => (tab = v ? c.value : 'all')"
+            >
+              {{ c.label }} · {{ c.count }}
+            </NTag>
+          </NSpace>
+          <!-- Multi-select batch actions (0.1.15) — appear only with a selection. -->
+          <NSpace v-if="checkedRowKeys.length" align="center" :size="8" class="cat-batch">
+            <span class="meta">{{ $t('models.selectedCount', { n: checkedRowKeys.length }) }}</span>
+            <NButton size="small" secondary type="error" @click="confirmBatchDelete">
+              {{ $t('models.batchDelete') }}
+            </NButton>
+            <NButton size="small" secondary @click="batchMove">
+              {{ $t('models.batchMove') }}
+            </NButton>
+          </NSpace>
+        </div>
         <NSpin :show="loading && filtered.length > 0">
           <ListSkeleton v-if="loading && !filtered.length" :rows="6" />
           <NDataTable
             v-else-if="filtered.length"
+            v-model:checked-row-keys="checkedRowKeys"
             :columns="columns"
             :data="filtered"
             :row-key="(row) => row.id"
@@ -1141,8 +1226,21 @@ onUnmounted(() => {
   padding: 4px 8px 12px;
   margin-bottom: 14px;
 }
-.cat-chips {
+.cat-chips-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
   padding: 10px 8px 6px;
+}
+
+.cat-chips {
+  flex-wrap: wrap;
+}
+
+.cat-batch {
+  flex-shrink: 0;
 }
 .tabs {
   padding: 4px 8px 0;

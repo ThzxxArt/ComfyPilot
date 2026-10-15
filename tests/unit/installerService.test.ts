@@ -39,6 +39,22 @@ vi.mock('systeminformation', () => ({
   default: { graphics: () => h.graphicsImpl() }
 }))
 
+// Disk gate isolation (0.1.15): preflight/suggestInstallRoot read the REAL
+// filesystem via statfsSync — on a nearly-full tmpfs the disk check flips to
+// a hard-fail and reds this suite for a purely environmental reason. Pin a
+// comfortable ~40GB free; the disk branch logic is what these tests assert.
+vi.mock('fs', async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof import('fs')
+  return {
+    ...actual,
+    statfsSync: (() => ({
+      bsize: 4096,
+      bavail: 10 * 1024 * 1024,
+      blocks: 20 * 1024 * 1024
+    })) as unknown as typeof actual.statfsSync
+  }
+})
+
 vi.mock('child_process', () => ({
   execFile: (
     cmd: string,

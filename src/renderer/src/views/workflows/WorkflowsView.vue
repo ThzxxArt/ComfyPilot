@@ -208,6 +208,34 @@ async function importFile(): Promise<void> {
   }
 }
 
+// ---------- 0.1.15: import the running instance's built-in default workflow ----------
+const importingDefault = ref(false)
+
+async function importDefaultWorkflow(): Promise<void> {
+  const instId = store.activeInstanceId
+  if (!instId) {
+    message.warning(needInstanceHint.value)
+    return
+  }
+  if (importingDefault.value) return
+  importingDefault.value = true
+  try {
+    const rec = await ipc('workflow.importDefault', { instanceId: instId, target: 'instance' })
+    message.success(t('workflows.defaultImported', { name: rec.name }))
+    await refresh()
+  } catch (err) {
+    // v0.40 and older servers have no /default_workflow route — explain
+    // honestly instead of showing the raw English fallback.
+    if ((err as { code?: string })?.code === 'DEFAULT_WORKFLOW_UNSUPPORTED') {
+      message.warning(t('workflows.defaultUnsupported'))
+    } else {
+      message.error(err instanceof Error ? err.message : String(err))
+    }
+  } finally {
+    importingDefault.value = false
+  }
+}
+
 async function toggleFavorite(row: WorkflowRecord): Promise<void> {
   try {
     await ipc('workflow.favorite', row.id, !row.favorite)
@@ -497,6 +525,21 @@ onMounted(async () => {
           >{{ $t('workflows.refresh') }}
         </NButton>
         <NButton secondary @click="openCompare()">{{ $t('workflows.compare') }}</NButton>
+        <NTooltip trigger="hover" :disabled="instanceRunning">
+          <template #trigger>
+            <span class="btn-wrap">
+              <NButton
+                secondary
+                :disabled="!instanceRunning || importingDefault"
+                :loading="importingDefault"
+                @click="importDefaultWorkflow"
+              >
+                {{ $t('workflows.importDefault') }}
+              </NButton>
+            </span>
+          </template>
+          {{ needInstanceHint }}
+        </NTooltip>
         <NButton type="primary" @click="importFile">{{ $t('workflows.import') }}</NButton>
       </NSpace>
     </div>

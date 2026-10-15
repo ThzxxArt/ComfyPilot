@@ -146,6 +146,22 @@ describe('DoctorService (0.1.10 behaviour)', () => {
     expect(report.durationMs).toBeGreaterThanOrEqual(0)
   })
 
+  it('emits honest progress events — checked count, no fabricated total (0.1.15)', async () => {
+    seedMinimalInstall('progress')
+    const svc = await freshDoctor()
+    const events: Array<Record<string, unknown>> = []
+    svc.on('progress', (p: Record<string, unknown>) => events.push(p))
+    await svc.run('inst-1')
+    expect(events.length).toBeGreaterThanOrEqual(3)
+    // The conditional check set makes a percentage a lie — never claim one.
+    expect(events.every((e) => !('total' in e))).toBe(true)
+    expect(events.every((e) => typeof e.title === 'string' && e.title)).toBe(true)
+    const dones = events.map((e) => Number(e.done) || 0)
+    for (let i = 1; i < dones.length; i++) {
+      expect(dones[i]).toBeGreaterThanOrEqual(dones[i - 1])
+    }
+  })
+
   it('run() checks the --disable-metadata flag (0.1.14)', async () => {
     seedMinimalInstall('metadata-default')
     let svc = await freshDoctor()

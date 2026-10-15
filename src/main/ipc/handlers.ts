@@ -22,13 +22,7 @@ import {
   isLocalhostUrl,
   resolveInsideAnyRoot
 } from '../services/security'
-import {
-  loadSettings,
-  saveSettings,
-  loadInstanceConfigs,
-  upsertInstanceConfig,
-  deleteInstanceConfig
-} from '../services/db'
+import { loadSettings, saveSettings, loadInstanceConfigs } from '../services/db'
 import { LAUNCH_TEMPLATES } from '@shared/constants'
 import { instanceService } from '../services/instance'
 import { modelService } from '../services/model'
@@ -290,6 +284,13 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     wrap(async () => {
       const { userDataDir } = await import('../services/db')
       return userDataDir()
+    })
+  )
+  ipcMain.handle(
+    'settings.logsDir',
+    wrap(async () => {
+      const { logsDir } = await import('../services/db')
+      return logsDir()
     })
   )
   ipcMain.handle(
@@ -1026,6 +1027,22 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       return preflightService.workflow(workflowPath, target)
     })
   )
+  ipcMain.handle(
+    'workflow.importDefault',
+    wrap(async (opts: { instanceId: string; target?: 'instance' | 'library' }) => {
+      const raw = String(opts?.instanceId || '')
+      if (!raw) throw new Error('No instance selected')
+      const target = safeInstanceTarget(raw)
+      if (!target || target.startsWith('remote:')) {
+        // Local-only: remote auth surface for graph fetches stays out of scope,
+        // matching every other instance-targeted workflow import.
+        throw new Error('Default workflow import is only available for local instances')
+      }
+      // The default workflow lives on the RUNNING server — never auto-start.
+      await requireRunningInstance(target)
+      return workflowService.importDefaultFromInstance(target, opts?.target || 'instance')
+    })
+  )
 
   // monitor
   ipcMain.handle(
@@ -1065,6 +1082,29 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     wrap(() => {
       monitorService.disconnectWs()
       return true
+    })
+  )
+  // Runtime operations (0.1.15): same trusted-URL gate as every monitor call;
+  // the service re-validates (assertMonitorBaseUrl) and attaches remote auth.
+  ipcMain.handle(
+    'monitor.clearQueue',
+    wrap((baseUrl: string) => {
+      if (!isTrustedComfyUrl(baseUrl)) throw new Error('Blocked untrusted monitor URL')
+      return monitorService.clearQueue(baseUrl)
+    })
+  )
+  ipcMain.handle(
+    'monitor.interrupt',
+    wrap((baseUrl: string, promptId?: string) => {
+      if (!isTrustedComfyUrl(baseUrl)) throw new Error('Blocked untrusted monitor URL')
+      return monitorService.interrupt(baseUrl, promptId ? String(promptId) : undefined)
+    })
+  )
+  ipcMain.handle(
+    'monitor.freeMemory',
+    wrap((baseUrl: string) => {
+      if (!isTrustedComfyUrl(baseUrl)) throw new Error('Blocked untrusted monitor URL')
+      return monitorService.freeMemory(baseUrl)
     })
   )
 
@@ -1455,6 +1495,13 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     )
   )
   ipcMain.handle(
+    'output.batchDelete',
+    wrap((ids: string[], deleteFile: boolean) => {
+      if (!Array.isArray(ids) || !ids.length) throw new Error('No files selected')
+      return outputService.batchRemove(ids.map(String), Boolean(deleteFile))
+    })
+  )
+  ipcMain.handle(
     'output.importToWorkflow',
     wrap(async (path: string, instanceId?: string): Promise<WorkflowRecord | null> => {
       if (!isSafeReadPath(path)) throw new Error('Blocked unsafe image path')
@@ -1691,10 +1738,6 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       return true
     })
   )
-
-  // keep unused imports referenced for type completeness
-  void upsertInstanceConfig
-  void deleteInstanceConfig
 }
 
 export function broadcast(channel: string, payload: unknown): void {

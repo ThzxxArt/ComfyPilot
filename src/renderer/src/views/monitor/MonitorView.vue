@@ -14,6 +14,8 @@ import {
   NTabs,
   NTabPane,
   NScrollbar,
+  NTooltip,
+  useDialog,
   useMessage
 } from 'naive-ui'
 import StatCard from '@/components/StatCard.vue'
@@ -23,6 +25,7 @@ import { ipc, onIpc, onMonitorTick, IPC_EVENTS } from '@/composables/useIpc'
 import { useExecDiagnostics } from '@/composables/useExecDiagnostics'
 import { clampPercent, formatBytes, formatPercent } from '@/utils/format'
 import { buildQueueSections } from '@/utils/queueView'
+import { runMonitorOp } from '@/utils/monitorOps'
 import { formatExecErrorReport } from '@shared/execError'
 import { COLORS } from '@/styles/tokens'
 import type {
@@ -37,6 +40,7 @@ import type {
 const store = useAppStore()
 const { t, te } = useI18n()
 const message = useMessage()
+const dialog = useDialog()
 const router = useRouter()
 const queue = ref<QueueSnapshot | null>(null)
 const queueError = ref(false)
@@ -127,6 +131,80 @@ async function refreshQueue(): Promise<void> {
     queue.value = null
     queueError.value = true
   }
+}
+
+// ---------- 0.1.15: runtime operations (clear queue / interrupt / free) ----------
+const opBusy = ref<'clearQueue' | 'interrupt' | 'freeMemory' | null>(null)
+const pendingCount = computed(() => queue.value?.pending.length || 0)
+/** Directed-interrupt target: the first running prompt (0.39+ scopes to it). */
+const runningPromptId = computed(() => queue.value?.running[0]?.promptId || '')
+const canInterrupt = computed(() => (queue.value?.running.length || 0) > 0)
+const opBlocked = computed(() => !targetUrl.value || !targetReady.value || opBusy.value !== null)
+
+async function runOp(
+  kind: 'clearQueue' | 'interrupt' | 'freeMemory',
+  run: () => Promise<{ ok: boolean; error?: string }>,
+  successKey: string
+): Promise<void> {
+  opBusy.value = kind
+  await runMonitorOp({
+    run,
+    refresh: async () => {
+      await refreshQueue()
+      void refreshJobs()
+    },
+    onSuccess: () => message.success(t(successKey)),
+    onError: (err) => message.error(err)
+  })
+  opBusy.value = null
+}
+
+function confirmClearQueue(): void {
+  const url = targetUrl.value
+  if (!url) return
+  dialog.warning({
+    title: t('monitor.clearQueue'),
+    content: t('monitor.clearQueueConfirm', { n: pendingCount.value }),
+    positiveText: t('common.confirm'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: () => {
+      void runOp('clearQueue', () => ipc('monitor.clearQueue', url), 'monitor.clearQueueDone')
+    }
+  })
+}
+
+function confirmInterrupt(): void {
+  const url = targetUrl.value
+  if (!url) return
+  dialog.warning({
+    title: t('monitor.interrupt'),
+    content: t('monitor.interruptConfirm'),
+    positiveText: t('common.confirm'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: () => {
+      void runOp(
+        'interrupt',
+        // Empty promptId → the server falls back to a global interrupt (honest
+        // degradation documented in the confirm text).
+        () => ipc('monitor.interrupt', url, runningPromptId.value || undefined),
+        'monitor.interruptDone'
+      )
+    }
+  })
+}
+
+function confirmFreeMemory(): void {
+  const url = targetUrl.value
+  if (!url) return
+  dialog.warning({
+    title: t('monitor.freeMemory'),
+    content: t('monitor.freeMemoryConfirm'),
+    positiveText: t('common.confirm'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: () => {
+      void runOp('freeMemory', () => ipc('monitor.freeMemory', url), 'monitor.freeMemoryDone')
+    }
+  })
 }
 
 /** Job list (0.39+); unsupported endpoints yield null and the section hides. */
@@ -304,6 +382,47 @@ onUnmounted(() => {
         <p class="page-subtitle">{{ $t('monitor.subtitle') }}</p>
       </div>
       <NSpace>
+        <!-- Runtime operations (0.1.15) — the standard ComfyUI controls. -->
+        <NButton
+          secondary
+          :disabled="opBlocked || !pendingCount"
+          :loading="opBusy === 'clearQueue'"
+          :title="$t('monitor.clearQueueTip')"
+          @click="confirmClearQueue"
+        >
+          {{ $t('monitor.clearQueue') }}
+        </NButton>
+        <!-- Tooltip only explains the one non-obvious disabled state: target
+             ready, no operation in flight, but nothing running to interrupt.
+             Offline / busy states are already expressed by the page and the
+             button's own loading state. -->
+        <NTooltip
+          trigger="hover"
+          :disabled="!targetReady || !targetUrl || canInterrupt || opBusy !== null"
+        >
+          <template #trigger>
+            <span class="btn-wrap">
+              <NButton
+                secondary
+                :disabled="opBlocked || !canInterrupt"
+                :loading="opBusy === 'interrupt'"
+                @click="confirmInterrupt"
+              >
+                {{ $t('monitor.interrupt') }}
+              </NButton>
+            </span>
+          </template>
+          {{ $t('monitor.interruptIdle') }}
+        </NTooltip>
+        <NButton
+          secondary
+          :disabled="opBlocked"
+          :loading="opBusy === 'freeMemory'"
+          :title="$t('monitor.freeMemoryConfirm')"
+          @click="confirmFreeMemory"
+        >
+          {{ $t('monitor.freeMemory') }}
+        </NButton>
         <NButton secondary @click="refreshQueue">{{ $t('monitor.refreshQueue') }}</NButton>
       </NSpace>
     </div>
@@ -715,6 +834,10 @@ onUnmounted(() => {
   border-radius: 14px;
 }
 
+.btn-wrap {
+  display: inline-flex;
+}
+
 .preview-box {
   border-radius: 12px;
   overflow: hidden;
@@ -768,16 +891,6 @@ onUnmounted(() => {
   font-weight: 700;
   color: $color-text-secondary;
   margin: 8px 0 2px;
-}
-
-.jobs-block {
-  margin-bottom: 14px;
-  padding-bottom: 10px;
-  border-bottom: 1px dashed $color-border;
-}
-
-.jobs-block .panel-head {
-  margin-bottom: 8px;
 }
 
 .queue-empty {
