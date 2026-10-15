@@ -468,6 +468,22 @@ function scheduleRefresh(): void {
   }, 1500)
 }
 
+// Switching the active instance retargets the library at the new output dir
+// and drops the previous instance's selection/detail state — the old root
+// kept listing stale outputs and restores targeted the wrong instance
+// (0.1.13).
+watch(
+  () => store.instanceSwitchTick,
+  () => {
+    root.value = defaultOutputRoot()
+    page.value = 1
+    selected.value.clear()
+    showDetail.value = false
+    detail.value = null
+    void refresh()
+  }
+)
+
 onMounted(async () => {
   await store.bootstrap({ keepSelection: true })
   const q = route.query

@@ -17,7 +17,8 @@ import {
   NListItem,
   NPopconfirm,
   NTag,
-  NModal
+  NModal,
+  NProgress
 } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 import { ipc, onIpc, IPC_EVENTS } from '@/composables/useIpc'
@@ -302,10 +303,41 @@ function appUpdateText(s: AppUpdateStatus): string {
   if (s.status === 'available') {
     return t('settings.updateAvailable', { version: s.availableVersion || '' })
   }
+  if (s.status === 'downloading') {
+    return t('settings.updateDownloading', { percent: s.progress?.percent ?? 0 })
+  }
+  if (s.status === 'downloaded') {
+    return t('settings.updateReady', { version: s.availableVersion || '' })
+  }
   if (s.status === 'not-available') return t('settings.updateNone')
   if (s.status === 'unsupported') return t('settings.updateUnsupported')
   if (s.status === 'error') return t('settings.updateFailed', { error: s.error || '' })
   return t('settings.updateChecking')
+}
+
+/** Compact MB/duration formatting for the download progress line (0.1.13). */
+function formatUpdateBytes(n?: number): string {
+  if (!n || n <= 0) return ''
+  const mb = n / 1024 / 1024
+  return mb >= 100 ? `${Math.round(mb)} MB` : `${mb.toFixed(1)} MB`
+}
+
+const installingAppUpdate = ref(false)
+async function installAppUpdateNow(): Promise<void> {
+  installingAppUpdate.value = true
+  try {
+    const r = await ipc('app.installUpdate')
+    // Success quits into the installer — nothing else to do here.
+    if (!r.ok) message.error(t('settings.updateInstallFailed', { error: r.error || '' }))
+  } catch (err) {
+    message.error(
+      t('settings.updateInstallFailed', {
+        error: err instanceof Error ? err.message : String(err)
+      })
+    )
+  } finally {
+    installingAppUpdate.value = false
+  }
 }
 
 async function checkAppUpdate(): Promise<void> {
@@ -740,6 +772,42 @@ onUnmounted(() => {
                 appUpdateText(appUpdate)
               }}</span>
             </NSpace>
+            <!-- Live download progress (0.1.13): percent + transferred/speed. -->
+            <div v-if="appUpdate?.status === 'downloading'" class="update-dl">
+              <NProgress
+                type="line"
+                :percentage="appUpdate.progress?.percent || 0"
+                :height="8"
+                :show-indicator="false"
+              />
+              <span class="meta">
+                {{ appUpdate.progress?.percent || 0 }}%
+                <template v-if="appUpdate.progress?.total">
+                  · {{ formatUpdateBytes(appUpdate.progress?.transferred) }} /
+                  {{ formatUpdateBytes(appUpdate.progress?.total) }}</template
+                >
+                <template v-if="appUpdate.progress?.bytesPerSecond">
+                  · {{ formatUpdateBytes(appUpdate.progress?.bytesPerSecond) }}/s</template
+                >
+              </span>
+            </div>
+            <!-- Restart-and-install entry for a downloaded update (0.1.13). -->
+            <NPopconfirm
+              v-if="appUpdate?.status === 'downloaded'"
+              @positive-click="installAppUpdateNow"
+            >
+              <template #trigger>
+                <NButton
+                  size="tiny"
+                  type="primary"
+                  style="margin-top: 6px"
+                  :loading="installingAppUpdate"
+                >
+                  {{ t('settings.updateRestartInstall') }}
+                </NButton>
+              </template>
+              {{ t('settings.updateInstallConfirm') }}
+            </NPopconfirm>
             <div class="about-line">TypeScript · Vue 3 · Electron · Naive UI</div>
             <div class="about-line">{{ t('settings.aboutStorage') }}</div>
             <NDivider style="margin: 12px 0" />
@@ -874,6 +942,13 @@ onUnmounted(() => {
 }
 .remote-error {
   color: $color-danger;
+}
+.update-dl {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+  max-width: 420px;
 }
 .pass-ink {
   color: $color-success;

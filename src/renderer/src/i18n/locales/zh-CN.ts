@@ -198,6 +198,11 @@ export default {
     checkUpdate: '检查更新',
     updateChecking: '检查中…',
     updateAvailable: '发现新版本 {version}（后台下载中）',
+    updateDownloading: '正在下载更新… {percent}%',
+    updateReady: '新版本 {version} 已下载，可重启安装',
+    updateRestartInstall: '重启并安装',
+    updateInstallConfirm: '将关闭应用并运行安装程序，安装完成后会自动重新打开。继续？',
+    updateInstallFailed: '触发安装失败：{error}',
     updateNone: '已是最新版本',
     updateUnsupported: '开发版不支持自动更新检查（安装包内置）',
     updateFailed: '检查失败：{error}',
@@ -1301,7 +1306,11 @@ export default {
     pipInstalled: '依赖安装完成',
     pipInstalledMsg: '{names}',
     pipFailed: '依赖安装失败',
-    pipFailedMsg: '{message}'
+    pipFailedMsg: '{message}',
+    appUpdateAvailable: '发现新版本',
+    appUpdateAvailableMsg: '正在后台下载 v{version}（可在设置页查看进度）',
+    appUpdateDownloaded: '更新已就绪',
+    appUpdateDownloadedMsg: 'v{version} 已下载，可在设置页重启安装'
   },
   exec: {
     title: '运行失败诊断（{n}）',
@@ -1322,7 +1331,8 @@ export default {
     missingLabel: '缺失模块',
     promptLabel: '任务 ID',
     timeLabel: '时间',
-    openLogs: '打开实例日志'
+    openLogs: '打开实例日志',
+    remoteLogsHint: '远程实例的日志请在对应机器上的 ComfyUI 控制台查看'
   },
   deps: {
     pipOpTitle: '依赖安装',
@@ -1333,6 +1343,8 @@ export default {
     recipeFailedBody:
       '{error}\n\n可改用「直接安装 {name}」（注意：PyPI 版本可能与你的 torch/CUDA 不匹配），或在工作流中把该节点旁路/设为 disabled。',
     recipeFallbackInstall: '直接安装 {name}',
+    opBusy: '该实例已有依赖安装在运行——已为你打开进度窗口，请等待完成后再试',
+    remoteUnsupported: '依赖安装仅支持本地实例（远程实例请在对应的机器上操作）',
     recipe: {
       triton: {
         title: 'Triton（triton-windows）',

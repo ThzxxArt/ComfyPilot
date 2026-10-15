@@ -421,8 +421,18 @@ async function install(item: DisplayItem): Promise<void> {
     }
     await loadCurrentPage()
   } catch (err) {
-    // Modal stays open with the failure log — except OP_BUSY (nothing ran).
-    if ((err as { code?: string })?.code === 'OP_BUSY') showOpModal.value = false
+    // Modal stays open with the failure log — except errors where NOTHING was
+    // ever started (OP_BUSY / settings gates), which would leave the previous
+    // op's stale log on screen (0.1.13).
+    const code = (err as { code?: string })?.code
+    if (
+      code === 'OP_BUSY' ||
+      code === 'SETTING_OFFLINE' ||
+      code === 'SETTING_SECURITY_STRONG' ||
+      code === 'SETTING_GIT_INSTALL'
+    ) {
+      showOpModal.value = false
+    }
     message.error(describeNodeError(t, err))
   } finally {
     installingItem.value = null
@@ -547,6 +557,10 @@ watch(
   () => {
     void loadCurrentPage()
     void refreshLocalPackKeys()
+    // Point the node-op view at the new instance in the SAME handler — the
+    // second tick watcher this used to be was a duplicate subscription on
+    // the same source (0.1.13).
+    selectNodeOpInstance(store.activeInstanceId || '')
   }
 )
 
@@ -567,10 +581,6 @@ watch(
 
 // 0.1.9: node-op modal never auto-closes — success/failure both keep the log
 // visible until the user closes it (ComfyUI-Manager terminal behaviour).
-watch(
-  () => store.instanceSwitchTick,
-  () => selectNodeOpInstance(store.activeInstanceId || '')
-)
 
 onUnmounted(() => offProgress?.())
 </script>

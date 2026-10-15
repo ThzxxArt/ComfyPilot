@@ -553,8 +553,12 @@ export class WorkflowService {
   /** Instance workflows folder — the place ComfyUI actually reads. */
   instanceWorkflowsDir(instanceId?: string): string {
     const instances = loadInstanceConfigs()
-    const inst = instances.find((i) => i.id === instanceId) || instances[0]
-    if (!inst) throw new Error('No instance configured')
+    // Explicit ids must resolve — writing into another instance's folder
+    // because the id went stale is worse than failing loudly (0.1.13).
+    const inst = instanceId ? instances.find((i) => i.id === instanceId) : instances[0]
+    if (!inst) {
+      throw new Error(instanceId ? `Instance not found: ${instanceId}` : 'No instance configured')
+    }
     return join(inst.path, 'user', 'default', 'workflows')
   }
 
@@ -816,8 +820,12 @@ export class WorkflowService {
   /** Copy a workflow into a ComfyUI instance's user/default/workflows. */
   async copyToInstance(id: string, instanceId: string): Promise<{ path: string }> {
     const instances = loadInstanceConfigs()
-    const inst = instances.find((i) => i.id === instanceId) || instances[0]
-    if (!inst) throw new Error('No instance configured')
+    // An explicit target that no longer resolves must fail — never copy the
+    // workflow into a different instance (0.1.13).
+    const inst = instances.find((i) => i.id === instanceId)
+    if (!inst) {
+      throw new Error(instanceId ? `Instance not found: ${instanceId}` : 'No instance configured')
+    }
     return this.copyToInstancePath(id, inst)
   }
 
@@ -870,8 +878,13 @@ export class WorkflowService {
     instanceId?: string
   ): Promise<{ instanceId: string; instanceName: string; url: string; copiedPath: string }> {
     const instances = loadInstanceConfigs()
+    // Explicit target must resolve before any fallback chain applies — an
+    // explicit-but-stale id must never silently open on another instance
+    // (0.1.13). Without an explicit id the chain stays: active → first.
+    const explicit = instanceId ? instances.find((i) => i.id === instanceId) : undefined
+    if (instanceId && !explicit) throw new Error(`Instance not found: ${instanceId}`)
     const inst =
-      instances.find((i) => i.id === instanceId) ||
+      explicit ||
       instances.find(
         (i) => i.id === (loadSettings() as { activeInstance?: string }).activeInstance
       ) ||
@@ -955,7 +968,9 @@ export class WorkflowService {
     missing: number
   } {
     const instances = loadInstanceConfigs()
-    const inst = instances.find((i) => i.id === instanceId) || instances[0]
+    // An explicit unresolvable id reports the neutral library root instead
+    // of another instance's folder (0.1.13).
+    const inst = instanceId ? instances.find((i) => i.id === instanceId) : instances[0]
     // root = where imports land (instance workflows dir when available)
     const root = inst ? join(inst.path, 'user', 'default', 'workflows') : this.libraryRoot()
     const all = this.list({ includeMissing: true })
@@ -1011,8 +1026,17 @@ export class WorkflowService {
       ? opts.instanceId.slice('remote:'.length)
       : ''
     const remote = remoteId ? listRemotes().find((r) => r.id === remoteId) : undefined
-    const inst = remote ? null : instances.find((i) => i.id === opts.instanceId) || instances[0]
-    if (!inst && !remote) throw new Error('No instance configured')
+    // Explicit ids must resolve — never silently queue on another instance
+    // (0.1.13).
+    const inst = remote
+      ? null
+      : instances.find((i) => i.id === opts.instanceId) ||
+        (opts.instanceId ? undefined : instances[0])
+    if (!inst && !remote) {
+      throw new Error(
+        opts.instanceId ? `Instance not found: ${opts.instanceId}` : 'No instance configured'
+      )
+    }
     // Same host normalisation as p1p2.instanceUrl — IPv6 listeners included.
     const host = inst
       ? inst.listen === '0.0.0.0' || inst.listen === '::' || inst.listen === '[::]'

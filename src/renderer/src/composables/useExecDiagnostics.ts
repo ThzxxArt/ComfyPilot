@@ -26,11 +26,17 @@ function ensureSubscribed(): void {
 export function useExecDiagnostics() {
   ensureSubscribed()
 
+  /** Monotonic request id — a stale response after switching instances must
+   *  not clobber the new instance's list (0.1.13). */
+  let loadSeq = 0
+
   async function load(instanceId: string): Promise<void> {
     if (!instanceId) return
+    const seq = ++loadSeq
     loadedFor.value = instanceId
     try {
       const list = await ipc('instance.execFailures', instanceId)
+      if (seq !== loadSeq || loadedFor.value !== instanceId) return
       // A late live push may already be newer than the snapshot — merge, keep order.
       const live = failures.value.filter((f) => f.instanceId === instanceId)
       const seen = new Set(list.map((f) => f.id))
@@ -39,7 +45,7 @@ export function useExecDiagnostics() {
         .sort((a, b) => b.at - a.at)
         .slice(0, 20)
     } catch {
-      failures.value = []
+      if (seq === loadSeq) failures.value = []
     }
   }
 

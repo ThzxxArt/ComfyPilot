@@ -24,7 +24,13 @@ import { isValidPipSpec, parsePipRequirement, normalizePipName } from '@shared/p
 import { loadInstanceConfigs, loadSettings } from './db'
 import { resolveInstancePythonPath } from './instance'
 import { bootstrapService } from './bootstrap'
-import { installRequirements, ensurePip, throwingExec, runStreaming } from './env'
+import {
+  installRequirements,
+  ensurePip,
+  throwingExec,
+  runStreaming,
+  outputIndicatesFailure
+} from './env'
 import { proxyFetch } from './proxy'
 
 const OFFICIAL_PYPI = 'https://pypi.org/simple'
@@ -60,6 +66,8 @@ interface OpContext {
     status: 'running' | 'done' | 'skipped' | 'failed',
     message: string
   ) => void
+  /** Advance the running step's fraction (0..1) — 0.1.13 line heuristics. */
+  fraction: (id: UpdateStepId, fraction: number) => void
 }
 
 interface ActiveOp {
@@ -81,6 +89,14 @@ export function wheelPackageName(urlOrPath: string): string {
 
 export class PipOpsService extends EventEmitter {
   private ops = new Map<string, ActiveOp>()
+  /**
+   * Last finished op per instance (0.1.13). Kept until the NEXT op starts for
+   * the same instance. Without this, `instance.pipStatus` returned null the
+   * moment an op settled — the renderer's post-op resync then wiped the
+   * just-received done state and the modal fell back to a 0% empty shell
+   * ("installed but never shows completed").
+   */
+  private finished = new Map<string, { progress: UpdateProgress; finishedAt: number }>()
 
   busy(instanceId: string): boolean {
     return this.ops.has(instanceId)
@@ -88,7 +104,9 @@ export class PipOpsService extends EventEmitter {
 
   getProgress(instanceId?: string): UpdateProgress | null {
     if (!instanceId) return null
-    return this.ops.get(instanceId)?.progress || null
+    const active = this.ops.get(instanceId)
+    if (active) return active.progress
+    return this.finished.get(instanceId)?.progress || null
   }
 
   cancel(instanceId: string): boolean {
@@ -111,6 +129,9 @@ export class PipOpsService extends EventEmitter {
     }
     return this.execute(instanceId, [s], 'Installing package…', async (ctx) => {
       await ctx.resolve()
+      // No wheel download in a plain spec install — close the step honestly
+      // instead of leaving it pending forever in the modal (0.1.13).
+      ctx.step('download', 'skipped', 'No download step')
       ctx.step('requirements', 'running', `Installing ${s}…`)
       await this.pipInstallTargets(ctx, [s])
       ctx.step('requirements', 'done', `pip install ${s} finished`)
@@ -131,6 +152,11 @@ export class PipOpsService extends EventEmitter {
     const requested = recipe.steps.map((st) => st.spec || st.url || '')
     return this.execute(instanceId, requested, 'Applying fix recipe…', async (ctx) => {
       await ctx.resolve()
+      // Pip-only recipes never download a wheel — mark the step skipped so the
+      // modal shows a clean five-step flow (0.1.13).
+      if (!recipe.steps.some((st) => st.kind === 'wheel')) {
+        ctx.step('download', 'skipped', 'No download step')
+      }
       let verifiedNames: string[] = []
       for (const [i, st] of recipe.steps.entries()) {
         if (st.kind === 'pip' && st.spec) {
@@ -184,11 +210,28 @@ export class PipOpsService extends EventEmitter {
       'Installing pack dependencies…',
       async (ctx) => {
         await ctx.resolve()
+        ctx.step('download', 'skipped', 'No download step')
         ctx.step('requirements', 'running', `Installing requirements for ${label || reqFile}…`)
+        // Line-count heuristic drives the requirements fraction so the bar
+        // moves through the (usually longest) pip phase (0.1.13).
+        let pipLines = 0
         await installRequirements(ctx.python, reqFile, throwingExec, {
           uvPath: ctx.uvPath,
           pipIndex: String(settings.pipIndex || '').trim(),
-          onLine: ctx.log,
+          onLine: (line) => {
+            ctx.log(line)
+            pipLines += 1
+            let frac = Math.min(0.9, pipLines / 40)
+            if (
+              /Installing collected packages|Prepared \d+ packages|Installed \d+ package|Resolved \d+ package/i.test(
+                line
+              )
+            ) {
+              frac = 0.75
+            }
+            if (/Successfully installed|Successfully built/i.test(line)) frac = 0.95
+            ctx.fraction('requirements', frac)
+          },
           signal: ctx.signal
         })
         ctx.step('requirements', 'done', 'Dependencies installed')
@@ -215,6 +258,8 @@ export class PipOpsService extends EventEmitter {
   }
 
   private initProgress(instanceId: string, label: string): ActiveOp {
+    // A new op supersedes the previous finished snapshot for this instance.
+    this.finished.delete(instanceId)
     const runId = randomUUID()
     const steps: UpdateStep[] = (
       [
@@ -240,6 +285,32 @@ export class PipOpsService extends EventEmitter {
     return op
   }
 
+  /**
+   * Weighted completion across the five pip-op steps. A running step counts
+   * its inside-step fraction so long installs visibly move (0.1.13). Mirrors
+   * nodePack's computePercent/setStepFraction behaviour.
+   */
+  private computePercent(p: UpdateProgress): number {
+    let sum = 0
+    for (const x of p.steps) {
+      if (x.status === 'done' || x.status === 'skipped') sum += 1
+      else if (x.status === 'running') sum += Math.max(0, Math.min(1, x.progress ?? 0))
+    }
+    return Math.max(0, Math.min(100, Math.round((sum / Math.max(1, p.steps.length)) * 100)))
+  }
+
+  /** Advance the running step's fraction (0..1) and re-emit the stream. */
+  private setStepFraction(op: ActiveOp, step: UpdateStepId, fraction: number): void {
+    const s = op.progress.steps.find((x) => x.id === step)
+    if (!s || s.status !== 'running') return
+    const next = Math.max(0, Math.min(1, fraction))
+    // Never regress inside a step — pip/uv output can repeat markers.
+    if ((s.progress ?? 0) >= next) return
+    s.progress = next
+    op.progress.percent = this.computePercent(op.progress)
+    this.emit('progress', { ...op.progress, steps: op.progress.steps.map((x) => ({ ...x })) })
+  }
+
   private emitStep(
     op: ActiveOp,
     step: UpdateStepId,
@@ -257,10 +328,24 @@ export class PipOpsService extends EventEmitter {
     else if (status === 'cancelled') op.progress.status = 'cancelled'
     else if (status === 'done' && step === 'done') op.progress.status = 'done'
     else op.progress.status = 'running'
-    const doneCount = op.progress.steps.filter(
-      (x) => x.status === 'done' || x.status === 'skipped'
-    ).length
-    op.progress.percent = Math.round((doneCount / op.progress.steps.length) * 100)
+    // Surface the failure text on the progress payload so the modal error
+    // block (and the finished snapshot) always carry a real reason (0.1.13).
+    if (op.progress.status === 'failed') op.progress.error = message
+    else if (op.progress.status === 'running') op.progress.error = undefined
+    if (op.progress.status === 'done') {
+      // Terminal success closes every untouched step so the bar reaches 100%.
+      // (0.1.13 — previously preflight stayed 'running', download stayed
+      // 'pending' and a successful install ended at a bogus 60%.)
+      for (const x of op.progress.steps) {
+        if (x.status !== 'done' && x.status !== 'skipped') x.status = 'skipped'
+      }
+      op.progress.percent = 100
+    } else {
+      // Recompute while running; on failed/cancelled this keeps the bar AT
+      // its last value (computePercent counts fractions, never rolls back).
+      const next = this.computePercent(op.progress)
+      op.progress.percent = Math.max(op.progress.percent, next)
+    }
     this.emit('progress', { ...op.progress, steps: op.progress.steps.map((x) => ({ ...x })) })
   }
 
@@ -292,8 +377,12 @@ export class PipOpsService extends EventEmitter {
     // a failed guard releases it before doing any work.
     try {
       const { nodePackService } = await import('./nodePack')
+      // Activity evidence (armed controller / running batch) OR a running
+      // progress snapshot — either proves a node op is really in flight.
+      // A stale 'running' snapshot without an active controller must not lock
+      // dependency installs forever (0.1.13).
       const nodeOp = nodePackService.getOpProgress(instanceId)
-      if (nodeOp && nodeOp.status === 'running') {
+      if (nodePackService.isOpActive(instanceId) || (nodeOp && nodeOp.status === 'running')) {
         throw codedError(
           'OP_BUSY',
           'A node-pack operation is running for this instance — wait for it to finish'
@@ -322,6 +411,7 @@ export class PipOpsService extends EventEmitter {
       signal: op.abort.signal,
       log: (line) => this.emitLog(op, instanceId, line),
       step: (id, status, message) => this.emitStep(op, id, status, message),
+      fraction: (id, fraction) => this.setStepFraction(op, id, fraction),
       resolve: async () => {
         if (resolved) return
         const cfg = loadInstanceConfigs().find((c) => c.id === instanceId)
@@ -338,6 +428,14 @@ export class PipOpsService extends EventEmitter {
           uvPath = undefined
         }
         this.emitLog(op, instanceId, uvPath ? `uv: ${uvPath}` : 'uv not available — pip fallback')
+        // Close preflight once resolved — the old code left it 'running'
+        // forever, so the modal always showed a spinning first step (0.1.13).
+        this.emitStep(
+          op,
+          'preflight',
+          'done',
+          uvPath ? `Environment: ${pythonPath} (uv)` : `Environment: ${pythonPath} (pip)`
+        )
         resolved = true
       }
     } as OpContext & { resolve: () => Promise<void> }
@@ -362,6 +460,17 @@ export class PipOpsService extends EventEmitter {
       this.emitStep(op, 'done', 'failed', msg.slice(0, 300))
       return { ok: false, instanceId, requested, installed: [], error: msg.slice(0, 500) }
     } finally {
+      // Keep the final progress as a per-instance snapshot (deep copy so later
+      // mutations cannot leak into it). `instance.pipStatus` keeps answering
+      // with the terminal state until the next op starts — the renderer's
+      // post-op resync must never wipe a just-finished "done" into a 0% shell.
+      this.finished.set(instanceId, {
+        progress: {
+          ...op.progress,
+          steps: op.progress.steps.map((x) => ({ ...x, log: [...x.log] }))
+        },
+        finishedAt: Date.now()
+      })
       this.ops.delete(instanceId)
       activePipInstances.delete(instanceId)
     }
@@ -415,18 +524,38 @@ export class PipOpsService extends EventEmitter {
   /** uv-first install of arbitrary targets (specs or local wheel paths) with mirror retry. */
   private async pipInstallTargets(ctx: OpContext, targets: string[]): Promise<void> {
     const pipIndex = String(loadSettings().pipIndex || '').trim()
+    let pipLines = 0
     const run = (c: string, a: string[], timeout: number): Promise<string> =>
-      runStreaming(c, a, { timeout, onLine: ctx.log, signal: ctx.signal }, throwingExec).then(
-        (out) => {
-          if (
-            /ERROR:|error: failed/i.test(out) &&
-            !/Successfully installed|Requirement already satisfied|Installed \d+ package/i.test(out)
-          ) {
-            throw new Error(out.slice(0, 400))
+      runStreaming(
+        c,
+        a,
+        {
+          timeout,
+          signal: ctx.signal,
+          onLine: (line) => {
+            ctx.log(line)
+            // Line-count heuristic keeps the requirements bar moving during a
+            // long install (0.1.13 — previously it sat still until the end).
+            pipLines += 1
+            let frac = Math.min(0.9, pipLines / 40)
+            if (
+              /Installing collected packages|Prepared \d+ packages|Installed \d+ package|Resolved \d+ package/i.test(
+                line
+              )
+            ) {
+              frac = 0.75
+            }
+            if (/Successfully installed|Successfully built/i.test(line)) frac = 0.95
+            ctx.fraction('requirements', frac)
           }
-          return out
+        },
+        throwingExec
+      ).then((out) => {
+        if (outputIndicatesFailure(out)) {
+          throw new Error(out.slice(0, 400))
         }
-      )
+        return out
+      })
 
     const tryUv = async (index?: string): Promise<void> => {
       const args = ['pip', 'install', '--python', ctx.python, ...targets]

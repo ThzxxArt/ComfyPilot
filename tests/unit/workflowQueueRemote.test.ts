@@ -92,6 +92,6 @@ describe('workflowService.queue remote targets (0.1.11)', () => {
     const p = writeApiWorkflow('remote3.json')
     await expect(
       workflowService.queue({ workflowPath: p, instanceId: 'remote:zzz' })
-    ).rejects.toThrow(/No instance configured/)
+    ).rejects.toThrow(/Instance not found: remote:zzz/)
   })
 })

@@ -162,6 +162,24 @@ function safeInstanceTarget(instanceId?: string): string | undefined {
   return safeInstanceId(raw)
 }
 
+/**
+ * Package/environment channels only make sense for LOCAL instances (the venv
+ * lives on this machine). Refuse `remote:*` targets with a coded, localizable
+ * error instead of sanitizing them into a bogus id (`remote:x` → `remote_x`
+ * used to surface as an inexplicable INSTANCE_NOT_FOUND — 0.1.13).
+ */
+function requireLocalInstanceId(instanceId?: string): string | undefined {
+  const target = safeInstanceTarget(instanceId)
+  if (target && target.startsWith('remote:')) {
+    const e = new Error('Package operations are only available for local instances') as Error & {
+      code?: string
+    }
+    e.code = 'REMOTE_NOT_SUPPORTED'
+    throw e
+  }
+  return target
+}
+
 const READ_DATA_EXTS = new Set([
   '.json',
   '.png',
@@ -462,7 +480,10 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     'instance.pipInstall',
     wrap(async (id: string, spec: string) => {
       const { pipOpsService } = await import('../services/pipOps')
-      const result = await pipOpsService.installSpec(sanitizeId(id), String(spec || ''))
+      const result = await pipOpsService.installSpec(
+        requireLocalInstanceId(id) || '',
+        String(spec || '')
+      )
       notifyPipResult(result)
       return result
     })
@@ -471,7 +492,10 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     'instance.applyRecipe',
     wrap(async (id: string, recipeId: string) => {
       const { pipOpsService } = await import('../services/pipOps')
-      const result = await pipOpsService.installRecipe(sanitizeId(id), String(recipeId || ''))
+      const result = await pipOpsService.installRecipe(
+        requireLocalInstanceId(id) || '',
+        String(recipeId || '')
+      )
       notifyPipResult(result)
       return result
     })
@@ -479,24 +503,31 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle(
     'instance.pipCancel',
     wrap(async (id: string) => {
+      const target = requireLocalInstanceId(id)
+      // Nothing to cancel for an absent/remote target — answer honestly.
+      if (!target) return false
       const { pipOpsService } = await import('../services/pipOps')
-      return pipOpsService.cancel(sanitizeId(id))
+      return pipOpsService.cancel(target)
     })
   )
   ipcMain.handle(
     'instance.pipStatus',
     wrap(async (instanceId?: string) => {
+      // A pure status QUERY — unresolvable/remote targets answer "no op"
+      // instead of throwing (0.1.13).
+      const target = safeInstanceTarget(instanceId)
+      if (!target || target.startsWith('remote:')) return null
       const { pipOpsService } = await import('../services/pipOps')
-      return pipOpsService.getProgress(safeInstanceId(instanceId))
+      return pipOpsService.getProgress(target)
     })
   )
   ipcMain.handle(
     'instance.execFailures',
-    wrap((id: string) => execDiagnosticsService.list(sanitizeId(id)))
+    wrap((id: string) => execDiagnosticsService.list(safeInstanceTarget(id) || ''))
   )
   ipcMain.handle(
     'instance.clearExecFailures',
-    wrap((id: string) => execDiagnosticsService.clear(sanitizeId(id)))
+    wrap((id: string) => execDiagnosticsService.clear(safeInstanceTarget(id) || ''))
   )
 
   // models
@@ -740,12 +771,14 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   )
   ipcMain.handle(
     'node.depsAudit',
-    wrap((instanceId?: string) => nodePackService.depsAudit(safeInstanceId(instanceId)))
+    wrap((instanceId?: string) => nodePackService.depsAudit(requireLocalInstanceId(instanceId)))
   )
   ipcMain.handle(
     'node.installDeps',
     wrap(async (id: string, instanceId?: string) => {
-      const result = await nodePackService.installDeps(id, safeInstanceId(instanceId))
+      // Requirements installs mutate THIS machine's venv — remote targets are
+      // refused with a coded error (see requireLocalInstanceId, 0.1.13).
+      const result = await nodePackService.installDeps(id, requireLocalInstanceId(instanceId))
       notifyPipResult(result)
       return result
     })
@@ -866,9 +899,14 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   )
   ipcMain.handle(
     'workflow.copyToInstance',
-    wrap((id: string, instanceId: string) =>
-      workflowService.copyToInstance(sanitizeId(id), safeInstanceId(instanceId) || instanceId)
-    )
+    wrap((id: string, instanceId: string) => {
+      // Local instances only — a remote target gets the coded refusal, and
+      // an empty/unresolvable id must never resolve to another instance
+      // (0.1.13).
+      const target = requireLocalInstanceId(instanceId)
+      if (!target) throw new Error('No instance configured')
+      return workflowService.copyToInstance(sanitizeId(id), target)
+    })
   )
   /**
    * ComfyUI must already be up. ComfyPilot NEVER starts an instance on its
@@ -933,7 +971,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   )
   ipcMain.handle(
     'workflow.libraryInfo',
-    wrap((instanceId?: string) => workflowService.libraryInfo(safeInstanceId(instanceId)))
+    wrap((instanceId?: string) => workflowService.libraryInfo(safeInstanceTarget(instanceId)))
   )
   ipcMain.handle(
     'workflow.queue',
@@ -1492,6 +1530,13 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     wrap(async () => {
       const { getLastAppUpdateStatus } = await import('../services/appUpdate')
       return getLastAppUpdateStatus()
+    })
+  )
+  ipcMain.handle(
+    'app.installUpdate',
+    wrap(async () => {
+      const { installAppUpdate } = await import('../services/appUpdate')
+      return installAppUpdate()
     })
   )
 

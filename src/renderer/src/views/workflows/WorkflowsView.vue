@@ -285,7 +285,14 @@ async function exportZip(row: WorkflowRecord): Promise<void> {
 
 async function copyToInstance(row: WorkflowRecord): Promise<void> {
   try {
-    const res = await ipc('workflow.copyToInstance', row.id, store.activeInstanceId || '')
+    // An explicit, resolvable instance id — an empty string would silently
+    // fall back to the main process's default instance (0.1.13).
+    const inst = store.activeInstance
+    if (!inst) {
+      message.warning(needInstanceHint.value)
+      return
+    }
+    const res = await ipc('workflow.copyToInstance', row.id, inst.id)
     message.success(t('workflows.copiedToInstance', { path: res.path }))
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
@@ -419,14 +426,16 @@ async function safeRevealPath(path: string): Promise<void> {
 async function sendToBatch(row: WorkflowRecord): Promise<void> {
   // batch.create does NOT need a running instance —only batch.start does.
   // Relax the gate to just require an instance to exist.
-  if (!store.instances.length) {
+  const inst = store.activeInstance
+  if (!inst) {
     message.warning(t('workflows.needInstanceForImport'))
     return
   }
   try {
     const job = await ipc('batch.create', {
       name: t('batch.defaultName') + ' ·' + row.name,
-      instanceId: store.activeInstanceId || '',
+      // Record the REAL id — never an empty string that resolves elsewhere.
+      instanceId: inst.id,
       items: [{ workflowId: row.id, workflowName: row.name, workflowPath: row.path, count: 1 }],
       notes: '',
       params: { seedMode: 'random' }

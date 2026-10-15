@@ -660,7 +660,9 @@ describe('p1p2 services', () => {
       writeFileSync(p, uiGraph())
       const job = batchService.create({
         name: 'noinst',
-        instanceId: 'missing',
+        // No recorded target at all — the only case where the generic
+        // "no instance" reason applies (an explicit id reports not-found).
+        instanceId: '',
         items: [{ workflowPath: p, count: 1 }]
       })
       await expect(batchService.start(job.id)).rejects.toThrow('No instance')
@@ -669,7 +671,7 @@ describe('p1p2 services', () => {
       expect(after.notes).toContain('No instance configured')
     })
 
-    it('falls back to instances[0] when instanceId does not match', async () => {
+    it('refuses to fall back to instances[0] when the recorded id no longer resolves (0.1.13)', async () => {
       const { batchService } = await freshP1p2()
       await seedInstance({ id: 'other', listen: '127.0.0.1', port: 8199 })
       const p = join(ROOT, 'wf', 'fallback.json')
@@ -679,16 +681,13 @@ describe('p1p2 services', () => {
         instanceId: 'does-not-exist',
         items: [{ workflowPath: p, count: 1 }]
       })
-      const calls = stubFetch((url) => {
-        if (url.includes('/prompt')) return jsonResponse({ prompt_id: 'pid-fb' })
-        if (url.includes('/history')) {
-          return jsonResponse({ 'pid-fb': { status: { status_str: 'success' }, outputs: {} } })
-        }
-        return jsonResponse({})
-      })
-      const result = await batchService.start(job.id)
-      expect(result.status).toBe('done')
-      expect(calls.find((c) => c.url.includes('/prompt'))!.url).toContain(':8199')
+      stubFetch(() => jsonResponse({}))
+      // Silently queueing on instances[0] ran the batch on the WRONG
+      // instance — the job must fail with the real reason instead.
+      await expect(batchService.start(job.id)).rejects.toThrow('Instance not found: does-not-exist')
+      const after = batchService.list().find((j) => j.id === job.id)!
+      expect(after.status).toBe('error')
+      expect(after.notes).toContain('Instance not found: does-not-exist')
     })
 
     it('cancel during queuePrompt finishes as cancelled and dequeues', async () => {

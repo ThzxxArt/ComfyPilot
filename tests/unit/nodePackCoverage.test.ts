@@ -900,6 +900,33 @@ describe('op progress surface', () => {
     expect(nodePackService.getOpProgress()?.instanceId).toBe('inst-1')
   })
 
+  it('getOpProgress() without an id follows the LAST-UPDATE time, not runId order (0.1.13)', async () => {
+    priv.emitOpProgress({
+      instanceId: 'old-inst',
+      step: 'download',
+      status: 'running',
+      message: 'a'
+    })
+    await new Promise((r) => setTimeout(r, 5))
+    priv.emitOpProgress({
+      instanceId: 'new-inst',
+      step: 'download',
+      status: 'running',
+      message: 'b'
+    })
+    expect(nodePackService.getOpProgress()?.instanceId).toBe('new-inst')
+    // Updating the older stream makes IT the latest — the old UUID string
+    // comparison picked a pseudo-random winner.
+    await new Promise((r) => setTimeout(r, 5))
+    priv.emitOpProgress({
+      instanceId: 'old-inst',
+      step: 'clone',
+      status: 'running',
+      message: 'c'
+    })
+    expect(nodePackService.getOpProgress()?.instanceId).toBe('old-inst')
+  })
+
   it('emitOpProgress pushes logLine and truncates beyond 400 entries', () => {
     for (let i = 0; i < 410; i++) {
       priv.emitOpProgress({

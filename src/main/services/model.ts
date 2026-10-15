@@ -1262,7 +1262,9 @@ export class ModelService extends EventEmitter {
       return {
         ok: false,
         source: 'none',
-        error: 'No instance configured',
+        // An explicit id that does not resolve gets the accurate reason
+        // instead of the generic "no instance configured" (0.1.13).
+        error: instanceId ? `Instance not found: ${instanceId}` : 'No instance configured',
         folders: [],
         uncoveredRoots: []
       }

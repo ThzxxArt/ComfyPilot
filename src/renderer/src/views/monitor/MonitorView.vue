@@ -158,10 +158,14 @@ function failureFor(promptId?: string): ExecFailure | undefined {
 }
 
 async function refreshFailures(): Promise<void> {
-  // Failures are recorded for LOCAL instances only (remote runs never reach
-  // our diagnosis pipeline — honest boundary).
-  if (store.isRemoteActive) return
-  const instId = store.activeInstanceId
+  // 0.1.13: remote targets now record their WS execution failures under a
+  // `remote:<id>` key — load them like local ones (switching targets also
+  // replaces the list instead of leaving the previous target's rows).
+  const instId = store.isRemoteActive
+    ? store.activeRemote
+      ? `remote:${store.activeRemote.id}`
+      : ''
+    : store.activeInstanceId
   if (!instId) return
   await loadExecFailures(instId)
 }
@@ -183,6 +187,12 @@ async function copyFailureReportM(f: ExecFailure): Promise<void> {
 
 function goInstanceLogs(f: ExecFailure): void {
   showFailureDetail.value = false
+  if (f.instanceId.startsWith('remote:')) {
+    // Remote instances have no local detail page — explain instead of
+    // navigating into a guaranteed not-found view (0.1.13).
+    message.info(t('exec.remoteLogsHint'))
+    return
+  }
   void router.push({ path: `/instances/${f.instanceId}`, hash: '#logs' })
 }
 
@@ -266,6 +276,12 @@ onMounted(async () => {
 watch(
   () => store.instanceSwitchTick,
   () => {
+    // 0.1.13: drop the previous target's live WS state — the old preview /
+    // node progress belonged to another instance (or the remote) and showing
+    // it against the new target is misleading.
+    nodeProgress.value = {}
+    currentNodeId.value = ''
+    lastPreview.value = ''
     void refreshQueue()
     void refreshHistory()
     void refreshJobs()

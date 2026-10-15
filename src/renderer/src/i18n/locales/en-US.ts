@@ -206,6 +206,12 @@ export default {
     checkUpdate: 'Check for updates',
     updateChecking: 'Checking…',
     updateAvailable: 'New version {version} available (downloading in background)',
+    updateDownloading: 'Downloading update… {percent}%',
+    updateReady: 'Update {version} downloaded — ready to install',
+    updateRestartInstall: 'Restart & install',
+    updateInstallConfirm:
+      'The app will close and run the installer, then reopen automatically. Continue?',
+    updateInstallFailed: 'Failed to start the installer: {error}',
     updateNone: 'Up to date',
     updateUnsupported: 'Auto-update checks run in packaged builds only',
     updateFailed: 'Check failed: {error}',
@@ -1356,7 +1362,11 @@ export default {
     pipInstalled: 'Dependencies installed',
     pipInstalledMsg: '{names}',
     pipFailed: 'Dependency install failed',
-    pipFailedMsg: '{message}'
+    pipFailedMsg: '{message}',
+    appUpdateAvailable: 'Update available',
+    appUpdateAvailableMsg: 'Downloading v{version} in the background (progress in Settings)',
+    appUpdateDownloaded: 'Update ready',
+    appUpdateDownloadedMsg: 'v{version} downloaded — restart from Settings to install'
   },
   exec: {
     title: 'Runtime failures ({n})',
@@ -1377,7 +1387,8 @@ export default {
     missingLabel: 'Missing module',
     promptLabel: 'Prompt',
     timeLabel: 'Time',
-    openLogs: 'Open instance logs'
+    openLogs: 'Open instance logs',
+    remoteLogsHint: 'For a remote instance, check the console on its host machine'
   },
   deps: {
     pipOpTitle: 'Dependency install',
@@ -1388,6 +1399,10 @@ export default {
     recipeFailedBody:
       '{error}\n\nYou can fall back to installing {name} directly (note: the PyPI build may not match your torch/CUDA), or bypass / set the node to disabled in the workflow.',
     recipeFallbackInstall: 'Install {name} directly',
+    opBusy:
+      'A dependency install is already running for this instance — opened its progress window; wait for it to finish and try again',
+    remoteUnsupported:
+      'Dependency installs are only available for local instances (run it on the host of the remote instance)',
     recipe: {
       triton: {
         title: 'Triton (triton-windows)',

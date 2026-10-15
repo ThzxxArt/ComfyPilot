@@ -1,7 +1,7 @@
 # ComfyPilot
 
 > **ComfyUI 全能管理器** — 本机 ComfyUI 生产线的控制塔  
-> TypeScript · Vue 3 · Electron · Naive UI · MIT · v0.1.12
+> TypeScript · Vue 3 · Electron · Naive UI · MIT · v0.1.13
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-4f6ef7)](./LICENSE)
 
@@ -132,7 +132,7 @@ node node_modules/electron/install.js
 npm run dev          # 开发模式
 npm run typecheck    # vue-tsc + tsc
 npm run typecheck:test # 测试源码 tsc（CI 门禁）
-npm run test         # 单元 + 集成（2371 tests）
+npm run test         # 单元 + 集成（2401 tests）
 npm run test:coverage
 npm run lint         # ESLint（含 --fix）
 npm run lint:check   # ESLint 只检查（CI 门禁）
@@ -261,7 +261,7 @@ Python 版本、Torch / CUDA、`extra_model_paths.yaml`、端口、磁盘、Regi
 
 ```text
 ComfyPilot/
-├── package.json                 # v0.1.12 · MIT · ThzxxArt
+├── package.json                 # v0.1.13 · MIT · ThzxxArt
 ├── electron.vite.config.ts
 ├── electron-builder.yml         # Win NSIS / macOS DMG / Linux AppImage·deb + GitHub publish
 ├── vitest.config.ts             # 覆盖率门禁（0.1.8 按实测定档，见文件内说明）
@@ -291,7 +291,7 @@ ComfyPilot/
 │           ├── styles/tokens.ts # JS 侧设计 token
 │           └── views/           # dashboard/instances/install/models/…
 ├── tests/
-│   ├── unit/                    # 94 文件（+3 集成 = 97）· 2371 用例全绿 · 行为测试为主
+│   ├── unit/                    # 95 文件（+3 集成 = 98）· 2401 用例全绿 · 行为测试为主
 │   ├── integration/
 │   └── e2e/
 └── .github/workflows/ci.yml
@@ -305,7 +305,7 @@ ComfyPilot/
 npm run dev / typecheck / test / test:coverage / test:e2e / test:all
 ```
 
-**测试：** 2371 用例（97 文件）+ e2e 冒烟（含渲染挂载断言）。覆盖率门禁在 `vitest.config.ts` 内 **按实测定档（实测 − 2pp）**；测试源码纳入 tsc 门禁（`typecheck:test`）。
+**测试：** 2401 用例（98 文件）+ e2e 冒烟（含渲染挂载断言）。覆盖率门禁在 `vitest.config.ts` 内 **按实测定档（实测 − 2pp）**；测试源码纳入 tsc 门禁（`typecheck:test`）。
 
 **门禁脚本：**
 
@@ -416,6 +416,10 @@ ComfyUI 本身采用 GPL-3.0；本项目独立发布，采用 **MIT**。
 - [x] **0.1.12 运行可诊**：运行失败结构化诊断（WS `execution_error` 全载荷 + 日志 traceback 解析双通道；节点→包归属映射 object_info `python_module`；失败卡一键安装缺失包 / 配方修复 / 复制报告 / 跳转节点包）；失败通知（系统通知 + 站内）
 - [x] **0.1.12 依赖可修**：实例 venv 通用 pip 安装通道（uv 优先 / ensurepip 兜底 / 镜像重试 / 流式日志 / 可取消）；Doctor pip 体检 + ensure-pip 一键修复；repairEnv/卸载链补 pip；节点依赖体检（requirements vs venv 对账 + 单包补装）；修复配方（triton-windows / SageAttention wheel / onnx，SHA256 钉验）
 - [x] **0.1.12 预检与收口**：工作流/批跑提交前 object_info 节点预检（缺节点警告不阻断）；日志搜索与级别过滤；进度弹窗刷新后状态恢复（comfy-update/repair/node-op/pip 四路快照）；0.1.12 全量死代码清理（wsEvents、objectInfo、getLastSnapshot、isWsConnected、hashId）
+- [x] **0.1.13 进度可信**：pip 安装进度弹框状态机根治（preflight/download 步骤终态化、成功后进度条 100%、长安装分数推进不再长时间 0%）；完成态快照（`instance.pipStatus` 完成后仍返回最终结果——「装完弹框变 0% 空壳」从根消失）；连续操作守卫（运行中再点击不再重置弹框，OP_BUSY 本地化提示并自动打开进行中进度）
+- [x] **0.1.13 安装可达**：节点页依赖体检补装全链路（uv `Installed N packages` 成功输出不再被误判失败；node/pip 互斥判定加活跃性证据防误锁；补装完成自动刷新审计；remote 实例显式拒绝本地装包并本地化提示）
+- [x] **0.1.13 遗留清零**：全量阅读审计 17 项历史缺陷全部修复（显式实例 id 未命中不再静默回退到首实例；bootstrap 断点续传读写同文件且 416 完成校验；updater torch 安装 uv 优先；远程实例执行失败纳入诊断；跨实例状态泄漏清理——Monitor/Output/Models/Batch/Workflows/Market 全视图；execError 双源去重 + lastNotify 上限；node-op 最新流按更新时间排序；main 进程 notify i18n key 纳入 CI 校验）
+- [x] **0.1.13 更新通畅**：应用自更新链路根治（0.1.11 遗留的两套脱节实现合一）——下载进度实时可见（百分比/已传/速度）、启动检查延迟触发 + 失败自动重试 + 应用内通知（发现新版本 / 下载完成）、下载就绪后一键「重启并安装」；asar 内 `electron-updater` 与 `app-update.yml` 完整性经打包验证
 - [x] 工作流版本对照与打包分享：0.1.11 工作流对比视图（`workflow.compare`）；打包分享（ZIP 导出，0.1.5 已含）
 - [x] 更细的 GPU 多卡 / 共享显存展示：0.1.11 多卡 `GPU n` 索引徽标 + Windows 共享显存（Shared Usage/Limit 计数器）
 

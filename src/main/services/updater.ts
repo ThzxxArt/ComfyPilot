@@ -841,8 +841,42 @@ export class ComfyUpdaterService extends EventEmitter {
           const index = resolveTorchIndex(opts.torchChannel)
           const official = officialTorchIndex(opts.torchChannel)
           const installTorchWith = async (idx: string): Promise<void> => {
-            // uv-created venvs have no pip — seed it before the pip fallback.
+            // uv first (0.1.13): uv-created venvs need no seeded pip at all,
+            // matching the installer/env rule. Falls back to ensurepip +
+            // `python -m pip` exactly as before.
             const { ensurePip } = await import('./env')
+            const { bootstrapService } = await import('./bootstrap')
+            let uvPath: string | undefined
+            try {
+              const boot = await bootstrapService.ensure({
+                kinds: ['uv'],
+                downloadIfMissing: false
+              })
+              uvPath = boot.components.find((c) => c.kind === 'uv' && c.installed)?.path
+            } catch {
+              uvPath = undefined
+            }
+            if (uvPath) {
+              await this.run(
+                uvPath,
+                [
+                  'pip',
+                  'install',
+                  '--python',
+                  vpy3,
+                  '--upgrade',
+                  'torch',
+                  'torchvision',
+                  'torchaudio',
+                  '--index-url',
+                  idx
+                ],
+                {
+                  timeout: EXEC_OPTS.timeout
+                }
+              )
+              return
+            }
             await ensurePip(vpy3, (c, a, o) => this.run(c, a, o))
             await this.run(
               vpy3,

@@ -628,9 +628,35 @@ async function runDepsAudit(): Promise<void> {
   }
 }
 
-/** Reinstall one pack's requirements via the pip-op modal. */
+/** Reinstall one pack's requirements via the pip-op modal (0.1.13: fully
+ *  error-handled — the old fire-and-forget call left OP_BUSY rejections
+ *  invisible and the modal stuck as an empty 0% shell). */
 async function fixPackDeps(p: NodeDepsAuditPack): Promise<void> {
-  await startPackDeps(store.activeInstanceId || '', p.id)
+  try {
+    const r = await startPackDeps(store.activeInstanceId || '', p.id)
+    if (r.ok) {
+      // Refresh the audit so the just-installed pack leaves the missing list
+      // immediately instead of still showing its removed entries.
+      await runDepsAudit()
+      if (r.warning) message.warning(r.warning)
+      return
+    }
+    if (r.cancelled) return
+    if (r.error) message.error(r.error)
+  } catch (err) {
+    const code = (err as { code?: string })?.code
+    if (code === 'OP_BUSY') {
+      // A dependency install is already running — open its live progress.
+      if (store.activeInstanceId) void openPipFor(store.activeInstanceId)
+      message.warning(t('deps.opBusy'))
+      return
+    }
+    if (code === 'REMOTE_NOT_SUPPORTED') {
+      message.warning(t('deps.remoteUnsupported'))
+      return
+    }
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 /** ?focus=<folder> from the failure-diagnosis card pre-filters the list. */

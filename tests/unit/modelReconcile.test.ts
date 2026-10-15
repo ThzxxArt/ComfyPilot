@@ -140,11 +140,11 @@ describe('ModelService.reconcile (0.1.10)', () => {
     expect(result.error).toBeTruthy()
   })
 
-  it('returns ok:false with no instance configured', async () => {
+  it('returns ok:false with the accurate reason for an unresolvable id (0.1.13)', async () => {
     const { modelService } = await import('../../src/main/services/model')
     const result = await modelService.reconcile('missing-inst')
     expect(result.ok).toBe(false)
-    expect(result.error).toBe('No instance configured')
+    expect(result.error).toBe('Instance not found: missing-inst')
   })
 })
 

@@ -307,8 +307,14 @@ async function start(id: string): Promise<void> {
         onPositiveClick: () => {
           void (async () => {
             try {
-              const inst = store.activeInstance
-              if (!inst) return
+              // Start the JOB's instance — the header selection may point at
+              // a different one (0.1.13: the old fallback could boot the
+              // wrong instance).
+              const inst = store.instances.find((i) => i.id === job?.instanceId)
+              if (!inst) {
+                message.warning(needInstanceHint.value)
+                return
+              }
               await launch(inst, { open: 'none' })
             } catch (e) {
               message.error(e instanceof Error ? e.message : String(e))
@@ -374,6 +380,8 @@ function seedModeLabel(mode?: string): string {
 
 let offBatch: (() => void) | null = null
 
+let highlightTimer: number | ReturnType<typeof setTimeout> | null = null
+
 /** Scroll a job card into view + highlight it briefly. */
 function highlightJob(id: string): void {
   highlightId.value = id
@@ -382,8 +390,11 @@ function highlightJob(id: string): void {
     const el = document.querySelector(`[data-job-id="${id}"]`)
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
   })
-  // Clear the highlight after a few seconds.
-  window.setTimeout(() => {
+  // Clear the highlight after a few seconds; the timer is tracked so an
+  // unmount mid-window cannot leave a dangling callback (0.1.13).
+  if (highlightTimer) clearTimeout(highlightTimer)
+  highlightTimer = window.setTimeout(() => {
+    highlightTimer = null
     if (highlightId.value === id) highlightId.value = ''
   }, 4000)
 }
@@ -414,7 +425,13 @@ onMounted(async () => {
   offBatch = onIpc(IPC_EVENTS.batchProgress, () => void refreshJobs())
 })
 
-onUnmounted(() => offBatch?.())
+onUnmounted(() => {
+  offBatch?.()
+  if (highlightTimer) {
+    clearTimeout(highlightTimer)
+    highlightTimer = null
+  }
+})
 </script>
 
 <template>

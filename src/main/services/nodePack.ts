@@ -581,7 +581,7 @@ export class NodePackService extends EventEmitter {
    * Per-instance progress streams. A single shared object made concurrent
    * installs/updates on different instances overwrite each other's steps.
    */
-  private opProgressMap = new Map<string, UpdateProgress>()
+  private opProgressMap = new Map<string, UpdateProgress & { updatedAt?: number }>()
 
   /** Relative weights of the fixed node-op steps — percent advances mid-step. */
   private static readonly STEP_WEIGHTS: ReadonlyArray<[UpdateStepId, number]> = [
@@ -620,6 +620,18 @@ export class NodePackService extends EventEmitter {
 
   private endOpAbort(instanceId?: string): void {
     this.opAborts.delete(instanceId || 'default')
+  }
+
+  /**
+   * True when an install/update/uninstall/batch is REALLY in flight for the
+   * instance (armed abort controller or reserved batch slot). This is the
+   * authoritative busy signal for cross-service guards — a leftover progress
+   * snapshot whose status says 'running' but has no active controller must
+   * never lock dependency installs forever (0.1.13).
+   */
+  isOpActive(instanceId?: string): boolean {
+    const key = instanceId || 'default'
+    return this.opAborts.has(key) || this.opBatches.has(key)
   }
 
   /** Cancel the in-flight install/update for an instance. True when something was aborted. */
@@ -699,6 +711,7 @@ export class NodePackService extends EventEmitter {
     p.percent = 0
     p.error = undefined
     p.packName = packName
+    p.updatedAt = Date.now()
   }
 
   /**
@@ -777,6 +790,7 @@ export class NodePackService extends EventEmitter {
     // clone after updateInner pre-skipped it for reuseStream, or the zip
     // fallback after a skipped download — must never make the bar jump back.
     p.percent = Math.max(prevPercent, p.percent)
+    p.updatedAt = Date.now()
     this.attachBatchContext(key, p)
     this.emit('op-progress', this.progressSnapshot(p))
   }
@@ -803,6 +817,7 @@ export class NodePackService extends EventEmitter {
     if ((s.progress ?? 0) >= next) return
     s.progress = next
     p.percent = this.computePercent(p)
+    p.updatedAt = Date.now()
     this.attachBatchContext(key, p)
     this.emit('op-progress', this.progressSnapshot(p))
   }
@@ -823,15 +838,23 @@ export class NodePackService extends EventEmitter {
       instanceId: key,
       ts: Date.now()
     } satisfies NodeOpLogEvent)
+    p.updatedAt = Date.now()
     this.emit('op-progress', this.progressSnapshot(p))
   }
 
   getOpProgress(instanceId?: string): UpdateProgress | null {
     if (instanceId) return this.opProgressMap.get(instanceId) || null
-    // Latest active stream (for status polling without an id).
-    let latest: UpdateProgress | null = null
+    // Latest stream by LAST-UPDATE time (for status polling without an id).
+    // runId is a UUID — string-comparing it picked a pseudo-random "latest"
+    // (0.1.13).
+    let latest: (UpdateProgress & { updatedAt?: number }) | null = null
+    let at = 0
     for (const p of this.opProgressMap.values()) {
-      if (!latest || p.runId > latest.runId) latest = p
+      const ts = p.updatedAt ?? 0
+      if (!latest || ts >= at) {
+        latest = p
+        at = ts
+      }
     }
     return latest
   }

@@ -229,7 +229,19 @@ const dynamicDomains = {
     'indexWarning',
     'backupRestored',
     'restartRequired',
-    'postUpdateNodeCheck'
+    'postUpdateNodeCheck',
+    // 0.1.13: complete the list so every notify key (incl. exec/pip/update)
+    // is covered by BOTH spot-checks (main-key scan + this domain list).
+    'execFailed',
+    'execFailedMsg',
+    'pipInstalled',
+    'pipInstalledMsg',
+    'pipFailed',
+    'pipFailedMsg',
+    'appUpdateAvailable',
+    'appUpdateAvailableMsg',
+    'appUpdateDownloaded',
+    'appUpdateDownloadedMsg'
   ],
   // Must match ModelsView CATEGORY_KEYS (ComfyUI folder_paths registry)
   'models.cat.*': [
@@ -279,3 +291,31 @@ for (const [pattern, leafs] of Object.entries(dynamicDomains)) {
 }
 if (!dynBad) console.log('ALL DYNAMIC DOMAINS PRESENT')
 else process.exitCode = 1
+
+// ── 0.1.13: main-process notify keys ──
+// broadcastNotification({ titleKey, messageKey }) values are t()'d
+// DYNAMICALLY in the renderer — literals supplied by src/main are invisible
+// to the renderer `t('x')` scan above. Collect every literal and require
+// both locales to carry it.
+const mainKeys = new Set()
+function walkMain(dir) {
+  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, ent.name)
+    if (ent.isDirectory()) walkMain(p)
+    else if (p.endsWith('.ts')) {
+      const src = fs.readFileSync(p, 'utf8')
+      for (const m of src.matchAll(/(?:titleKey|messageKey):\s*'([a-zA-Z0-9_.]+)'/g)) {
+        mainKeys.add(m[1])
+      }
+    }
+  }
+}
+walkMain(path.join(__dirname, '../src/main'))
+const missingMain = [...mainKeys].filter((k) => !has(k))
+console.log('main notify keys', mainKeys.size)
+if (missingMain.length) {
+  console.log('MISSING MAIN-PROCESS KEYS:', missingMain.join(', '))
+  process.exitCode = 1
+} else {
+  console.log('ALL MAIN-PROCESS KEYS PRESENT')
+}

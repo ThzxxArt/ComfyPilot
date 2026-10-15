@@ -33,37 +33,47 @@ const h = vi.hoisted(() => ({
   reqCalls: [] as string[],
   uvInstalled: true,
   settings: { pipIndex: '' },
-  nodeOpStatus: null as null | string
+  nodeOpStatus: null as null | string,
+  nodeActive: false
 }))
 
 vi.mock('../../src/main/services/nodePack', () => ({
   nodePackService: {
     getOpProgress: () =>
       h.nodeOpStatus ? { status: h.nodeOpStatus, runId: 'r1', instanceId: 'i1' } : null,
+    // Independent activity evidence (armed controller / batch): drives the
+    // OP_BUSY lock even when no progress snapshot exists (0.1.13).
+    isOpActive: () => h.nodeActive,
     installDeps: vi.fn()
   }
 }))
 
-vi.mock('../../src/main/services/env', () => ({
-  runStreaming: vi.fn(async (cmd: string, args: string[], opts: any) => {
-    h.execCalls.push({ cmd, args })
-    if (h.runImpl) return await h.runImpl(cmd, args, opts)
-    return 'Successfully installed pkg'
-  }),
-  throwingExec: vi.fn(async (cmd: string, args: string[]) => {
-    h.execCalls.push({ cmd, args })
-    if (h.showImpl) {
-      const r = h.showImpl(cmd, args)
-      if (r instanceof Error) throw r
-      return r
-    }
-    return 'Name: pkg\nVersion: 1.0'
-  }),
-  ensurePip: vi.fn(async () => undefined),
-  installRequirements: vi.fn(async (_py: string, reqFile: string) => {
-    h.reqCalls.push(reqFile)
-  })
-}))
+vi.mock('../../src/main/services/env', async (importOriginal) => {
+  // Keep the REAL outputIndicatesFailure — the happy-path assertions must
+  // exercise the actual success/failure classification (0.1.13).
+  const actual = await importOriginal<typeof import('../../src/main/services/env')>()
+  return {
+    outputIndicatesFailure: actual.outputIndicatesFailure,
+    runStreaming: vi.fn(async (cmd: string, args: string[], opts: any) => {
+      h.execCalls.push({ cmd, args })
+      if (h.runImpl) return await h.runImpl(cmd, args, opts)
+      return 'Successfully installed pkg'
+    }),
+    throwingExec: vi.fn(async (cmd: string, args: string[]) => {
+      h.execCalls.push({ cmd, args })
+      if (h.showImpl) {
+        const r = h.showImpl(cmd, args)
+        if (r instanceof Error) throw r
+        return r
+      }
+      return 'Name: pkg\nVersion: 1.0'
+    }),
+    ensurePip: vi.fn(async () => undefined),
+    installRequirements: vi.fn(async (_py: string, reqFile: string) => {
+      h.reqCalls.push(reqFile)
+    })
+  }
+})
 
 vi.mock('../../src/main/services/bootstrap', () => ({
   bootstrapService: {
@@ -102,6 +112,7 @@ describe('PipOpsService (0.1.12)', () => {
     h.uvInstalled = true
     h.settings.pipIndex = ''
     h.nodeOpStatus = null
+    h.nodeActive = false
   })
 
   async function fresh(): Promise<any> {
@@ -202,6 +213,118 @@ describe('PipOpsService (0.1.12)', () => {
     expect(svc.cancel('i1')).toBe(false)
   })
 
+  it('walks preflight→requirements→verify→done at 100% with unused steps closed (0.1.13)', async () => {
+    const svc = await fresh()
+    const events: any[] = []
+    svc.on('progress', (p: any) => events.push(p))
+    const r = await svc.installSpec('i1', 'onnx')
+    expect(r.ok).toBe(true)
+    const last = events[events.length - 1]
+    expect(last.status).toBe('done')
+    expect(last.percent).toBe(100)
+    const byId = Object.fromEntries(last.steps.map((s: any) => [s.id, s.status]))
+    expect(byId.preflight).toBe('done')
+    // A spec install has no wheel download — the step must be closed, not
+    // left pending forever (the old 60% + spinning-step bug).
+    expect(byId.download).toBe('skipped')
+    expect(byId.requirements).toBe('done')
+    expect(byId.verify).toBe('done')
+    expect(byId.done).toBe('done')
+  })
+
+  it('keeps the finished progress snapshot for status hydration (0.1.13)', async () => {
+    const svc = await fresh()
+    await svc.installSpec('i1', 'onnx')
+    // The op has settled — busy is false, but the snapshot still answers.
+    expect(svc.busy('i1')).toBe(false)
+    const snap = svc.getProgress('i1')
+    expect(snap?.status).toBe('done')
+    expect(snap?.percent).toBe(100)
+    // A new op supersedes the snapshot when it starts.
+    let release: (() => void) | null = null
+    h.runImpl = () =>
+      new Promise<string>((resolve) => {
+        release = () => resolve('Successfully installed pkg')
+      })
+    const p = svc.installSpec('i1', 'pkg2')
+    await vi.waitFor(() => expect(svc.busy('i1')).toBe(true))
+    expect(svc.getProgress('i1')?.runId).not.toBe(snap?.runId)
+    await vi.waitFor(() => expect(typeof release).toBe('function'))
+    ;(release as unknown as () => void)()
+    await p
+  })
+
+  it('advances the bar during the requirements phase (line heuristic, 0.1.13)', async () => {
+    const svc = await fresh()
+    const events: any[] = []
+    svc.on('progress', (p: any) => events.push(p))
+    h.runImpl = async (_cmd, _args, opts) => {
+      for (let i = 0; i < 10; i++) opts?.onLine?.(`Collecting dep-${i}`)
+      opts?.onLine?.('Installing collected packages: a, b')
+      return 'Successfully installed a b'
+    }
+    await svc.installSpec('i1', 'a')
+    // preflight done + download skipped settle the bar at 40%; the running
+    // requirements fraction must push intermediate frames above it.
+    const mid = events.filter((e) => e.status === 'running' && e.percent > 40)
+    expect(mid.length).toBeGreaterThan(0)
+  })
+
+  it('records a failed status + error on the snapshot (0.1.13)', async () => {
+    const svc = await fresh()
+    h.runImpl = () => {
+      throw new Error('boom: no matching distribution')
+    }
+    const r = await svc.installSpec('i1', 'pkg')
+    expect(r.ok).toBe(false)
+    const snap = svc.getProgress('i1')
+    expect(snap?.status).toBe('failed')
+    expect(String(snap?.error)).toContain('boom')
+    const byId = Object.fromEntries((snap?.steps || []).map((s: any) => [s.id, s.status]))
+    expect(byId.preflight).toBe('done')
+    expect(byId.download).toBe('skipped')
+  })
+
+  it('marks cancellation on the snapshot (0.1.13)', async () => {
+    h.runImpl = (_cmd, _args, opts) =>
+      new Promise<string>((_resolve, reject) => {
+        const fail = (): void => {
+          const e = new Error('aborted')
+          e.name = 'AbortError'
+          reject(e)
+        }
+        if (opts.signal?.aborted) {
+          fail()
+          return
+        }
+        opts.signal?.addEventListener('abort', fail)
+      })
+    const svc = await fresh()
+    const p = svc.installSpec('i1', 'onnx')
+    await vi.waitFor(() => expect(svc.busy('i1')).toBe(true))
+    expect(svc.cancel('i1')).toBe(true)
+    const r = await p
+    expect(r.cancelled).toBe(true)
+    expect(svc.getProgress('i1')?.status).toBe('cancelled')
+  })
+
+  it('installRequirementsFor finishes at 100% with download skipped (0.1.13)', async () => {
+    const svc = await fresh()
+    const r = await svc.installRequirementsFor(
+      'i1',
+      'C:/comfy/custom_nodes/x/requirements.txt',
+      'x'
+    )
+    expect(r.ok).toBe(true)
+    expect(h.reqCalls).toContain('C:/comfy/custom_nodes/x/requirements.txt')
+    const snap = svc.getProgress('i1')
+    expect(snap?.status).toBe('done')
+    expect(snap?.percent).toBe(100)
+    const byId = Object.fromEntries((snap?.steps || []).map((s: any) => [s.id, s.status]))
+    expect(byId.download).toBe('skipped')
+    expect(byId.preflight).toBe('done')
+  })
+
   it('rejects while a node-pack operation is running (cross-guard, 0.1.12)', async () => {
     h.nodeOpStatus = 'running'
     const svc = await fresh()
@@ -210,6 +333,21 @@ describe('PipOpsService (0.1.12)', () => {
 
     // Once the node op settles, installs proceed again.
     h.nodeOpStatus = null
+    const r = await svc.installSpec('i1', 'onnx')
+    expect(r.ok).toBe(true)
+  })
+
+  it('rejects on INDEPENDENT activity evidence even without a progress snapshot (0.1.13)', async () => {
+    // An armed controller/batch blocks installs even if the snapshot is gone
+    // (the 0.1.13 guard's new isOpActive arm).
+    h.nodeActive = true
+    h.nodeOpStatus = null
+    const svc = await fresh()
+    await expect(svc.installSpec('i1', 'onnx')).rejects.toMatchObject({ code: 'OP_BUSY' })
+    expect(h.execCalls).toHaveLength(0)
+
+    // Activity cleared → the stale-free guard lets installs through.
+    h.nodeActive = false
     const r = await svc.installSpec('i1', 'onnx')
     expect(r.ok).toBe(true)
   })

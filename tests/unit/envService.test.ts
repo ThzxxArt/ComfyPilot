@@ -167,3 +167,54 @@ describe('EnvService (0.1.10 behaviour)', () => {
     expect(probe.pip).toEqual({ present: true, version: '24.0' })
   })
 })
+
+describe('outputIndicatesFailure (0.1.13)', () => {
+  it('classifies uv/pip output without false alarms', async () => {
+    const { outputIndicatesFailure } = await import('../../src/main/services/env')
+    // uv success shapes — the old check rejected these as failures.
+    expect(
+      outputIndicatesFailure('Resolved 3 packages in 12ms\nInstalled 3 packages in 34ms')
+    ).toBe(false)
+    expect(outputIndicatesFailure('Audited 14 packages in 8ms')).toBe(false)
+    // pip success shapes.
+    expect(outputIndicatesFailure('Successfully installed foo-1.0')).toBe(false)
+    expect(outputIndicatesFailure('Requirement already satisfied: onnx in ...')).toBe(false)
+    // Real failures (line-anchored).
+    expect(
+      outputIndicatesFailure('ERROR: Could not find a version that satisfies the requirement foo')
+    ).toBe(true)
+    expect(outputIndicatesFailure('  error: subprocess-exited-with-error')).toBe(true)
+    // "error" mentioned mid-line is NOT a failure marker.
+    expect(outputIndicatesFailure('collected some notes about an error: nothing fatal')).toBe(false)
+    expect(outputIndicatesFailure('')).toBe(false)
+  })
+
+  it('classifies REAL machine output samples (captured 2026-10-15, Windows venv)', async () => {
+    const { outputIndicatesFailure } = await import('../../src/main/services/env')
+    // `python -m pip install onnx` on an already-satisfied venv:
+    //   Requirement already satisfied: onnx in d:\...\.venv\lib\site-packages (1.23.2)
+    expect(
+      outputIndicatesFailure(
+        'Requirement already satisfied: onnx in d:\\comfypilotruntimes\\comfy-main\\.venv\\lib\\site-packages (1.23.2)\n' +
+          '[notice] A new release of pip is available: 25.2 -> 26.2.1'
+      )
+    ).toBe(false)
+    // `uv pip install --python <venv> onnx` on the same venv (uv writes to stderr):
+    //   Using Python 3.13.7 environment at: D:\ComfyPilotRuntimes\comfy-main\.venv
+    //   Audited 1 package in 55ms
+    expect(
+      outputIndicatesFailure(
+        'Using Python 3.13.7 environment at: D:\\ComfyPilotRuntimes\\comfy-main\\.venv\n' +
+          'Audited 1 package in 55ms'
+      )
+    ).toBe(false)
+    // `python -m pip install <nonexistent>` — the real failure shape:
+    //   ERROR: No matching distribution found for comfypilot-definitely-missing-pkg-xyz
+    expect(
+      outputIndicatesFailure(
+        'ERROR: Could not find a version that satisfies the requirement comfypilot-definitely-missing-pkg-xyz\n' +
+          'ERROR: No matching distribution found for comfypilot-definitely-missing-pkg-xyz'
+      )
+    ).toBe(true)
+  })
+})

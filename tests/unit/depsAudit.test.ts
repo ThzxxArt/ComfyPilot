@@ -87,6 +87,20 @@ vi.mock('../../src/main/services/installer', () => ({
   assertSafeBranch: () => undefined
 }))
 
+const pipMock = vi.hoisted(() => ({
+  installRequirementsFor: null as null | ((...args: unknown[]) => Promise<unknown>)
+}))
+
+vi.mock('../../src/main/services/pipOps', () => ({
+  pipOpsService: {
+    installRequirementsFor: (...args: unknown[]) =>
+      pipMock.installRequirementsFor
+        ? pipMock.installRequirementsFor(...args)
+        : Promise.resolve({ ok: true, instanceId: 'i1', requested: [], installed: [] })
+  },
+  isPipOpActive: () => false
+}))
+
 vi.mock('child_process', () => {
   const PROMISIFY_CUSTOM = Symbol.for('nodejs.util.promisify.custom')
   const runHandler = (cmd: string, args: string[]): { stdout: string } | Error => {
@@ -213,5 +227,62 @@ describe('NodePackService.depsAudit (0.1.12)', () => {
     const audit = await svc.depsAudit('i1')
     expect(audit.ok).toBe(true)
     expect(audit.packs).toEqual([])
+  })
+})
+
+describe('NodePackService.installDeps (0.1.13)', () => {
+  beforeEach(() => {
+    h.root = mkdtempSync(join(tmpdir(), 'cp-deps-'))
+    mkdirSync(join(h.root, 'custom_nodes'), { recursive: true })
+    h.uvInstalled = true
+    h.execHandler = () => ({ stdout: '[]' })
+    pipMock.installRequirementsFor = null
+  })
+
+  async function fresh(): Promise<any> {
+    vi.resetModules()
+    return (await import('../../src/main/services/nodePack')).nodePackService
+  }
+
+  it('delegates to the pip-op service with the pack requirements file (0.1.13)', async () => {
+    seedPack('Foo', 'onnx>=1.10\n')
+    let called: unknown[] | null = null
+    pipMock.installRequirementsFor = async (...args) => {
+      called = args
+      return { ok: true, instanceId: 'i1', requested: [], installed: [] }
+    }
+    const svc = await fresh()
+    const r = await svc.installDeps('Foo', 'i1')
+    expect(r.ok).toBe(true)
+    expect(called).toBeTruthy()
+    const args = (called || []) as unknown[]
+    const [instanceId, reqFile, label] = args
+    expect(instanceId).toBe('i1')
+    expect(String(reqFile)).toContain(join('custom_nodes', 'Foo', 'requirements.txt'))
+    expect(label).toBe('Foo')
+  })
+
+  it('rejects unknown packs and packs without requirements.txt (0.1.13)', async () => {
+    const dir = join(h.root, 'custom_nodes', 'Bar')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, '__init__.py'), '')
+    const svc = await fresh()
+    await expect(svc.installDeps('Nope', 'i1')).rejects.toMatchObject({ code: 'PACK_NOT_FOUND' })
+    await expect(svc.installDeps('Bar', 'i1')).rejects.toMatchObject({ code: 'NO_REQUIREMENTS' })
+  })
+
+  it('surfaces a failed pip-op result as-is (no swallowing, 0.1.13)', async () => {
+    seedPack('Foo', 'onnx\n')
+    pipMock.installRequirementsFor = async () => ({
+      ok: false,
+      instanceId: 'i1',
+      requested: [],
+      installed: [],
+      error: 'requirements install failed: boom'
+    })
+    const svc = await fresh()
+    const r = await svc.installDeps('Foo', 'i1')
+    expect(r.ok).toBe(false)
+    expect(String(r.error)).toContain('boom')
   })
 })

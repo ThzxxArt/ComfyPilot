@@ -300,12 +300,36 @@ function recipeFor(f: ExecFailure): PipRecipe | undefined {
   return r && recipeSupportsPlatform(r) ? r : undefined
 }
 
+/** Shared failure handler for pip install entry points (0.1.13).
+ *  OP_BUSY → surface the live progress instead of leaving a reset 0% modal. */
+function handlePipFailure(err: unknown): void {
+  const code = (err as { code?: string })?.code
+  if (code === 'OP_BUSY') {
+    void openPipProgress()
+    message.warning(t('deps.opBusy'))
+    return
+  }
+  if (code === 'REMOTE_NOT_SUPPORTED') {
+    message.warning(t('deps.remoteUnsupported'))
+    return
+  }
+  message.error(err instanceof Error ? err.message : String(err))
+}
+
 async function fixByPip(f: ExecFailure): Promise<void> {
   if (!f.missingModule) return
-  const r = await startInstall(f.instanceId, f.missingModule)
-  // Re-probe after a successful install so the env card shows the new state
-  // (0.1.12: the probe result was stale until a manual refresh).
-  if (r.ok && envProbeResult.value) void probeEnvNow()
+  try {
+    const r = await startInstall(f.instanceId, f.missingModule)
+    // Re-probe after a successful install so the env card shows the new state
+    // (0.1.12: the probe result was stale until a manual refresh).
+    if (r.ok) {
+      if (envProbeResult.value) void probeEnvNow()
+    } else if (!r.cancelled && r.error) {
+      message.error(r.error)
+    }
+  } catch (err) {
+    handlePipFailure(err)
+  }
 }
 
 async function fixByRecipe(f: ExecFailure): Promise<void> {
@@ -320,30 +344,39 @@ async function fixByRecipe(f: ExecFailure): Promise<void> {
     negativeText: t('common.cancel'),
     onPositiveClick: () => {
       void (async () => {
-        const result = await startRecipe(f.instanceId, r.id)
-        if (result.ok) {
-          if (envProbeResult.value) void probeEnvNow()
-          return
-        }
-        if (result.cancelled) return
-        // Failed recipe → disclose the fallback explicitly (plain pip install
-        // may hit an incompatible PyPI build — say so, and offer bypass too).
-        const module = f.missingModule || ''
-        dialog.warning({
-          title: t('deps.recipeFailedTitle'),
-          content: t('deps.recipeFailedBody', {
-            error: (result.error || '').slice(0, 200),
-            name: module
-          }),
-          positiveText: t('deps.recipeFallbackInstall', { name: module }),
-          negativeText: t('common.close'),
-          onPositiveClick: () => {
-            void (async () => {
-              const retry = await startInstall(f.instanceId, module)
-              if (retry.ok && envProbeResult.value) void probeEnvNow()
-            })()
+        try {
+          const result = await startRecipe(f.instanceId, r.id)
+          if (result.ok) {
+            if (envProbeResult.value) void probeEnvNow()
+            return
           }
-        })
+          if (result.cancelled) return
+          // Failed recipe → disclose the fallback explicitly (plain pip install
+          // may hit an incompatible PyPI build — say so, and offer bypass too).
+          const module = f.missingModule || ''
+          dialog.warning({
+            title: t('deps.recipeFailedTitle'),
+            content: t('deps.recipeFailedBody', {
+              error: (result.error || '').slice(0, 200),
+              name: module
+            }),
+            positiveText: t('deps.recipeFallbackInstall', { name: module }),
+            negativeText: t('common.close'),
+            onPositiveClick: () => {
+              void (async () => {
+                try {
+                  const retry = await startInstall(f.instanceId, module)
+                  if (retry.ok && envProbeResult.value) void probeEnvNow()
+                  else if (!retry.cancelled && retry.error) message.error(retry.error)
+                } catch (err) {
+                  handlePipFailure(err)
+                }
+              })()
+            }
+          })
+        } catch (err) {
+          handlePipFailure(err)
+        }
       })()
     }
   })
@@ -426,6 +459,8 @@ async function runPipInstall(): Promise<void> {
     } else if (!r.cancelled && r.error) {
       message.error(r.error)
     }
+  } catch (err) {
+    handlePipFailure(err)
   } finally {
     pipInstalling.value = false
   }

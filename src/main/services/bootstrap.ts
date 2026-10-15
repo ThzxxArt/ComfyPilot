@@ -496,10 +496,15 @@ export class BootstrapService extends EventEmitter {
     const { session } = await import('electron')
     const headers: Record<string, string> = { 'User-Agent': 'ComfyPilot/0.1' }
 
+    // Resume from the partial file THIS function writes (`${dest}.part`).
+    // The old code read `dest`, but bytes are only ever written to `.part`
+    // before the final rename — so a retry always restarted at 0 and the
+    // orphaned `.part` was never resumed nor cleaned (0.1.13).
+    const tmp = `${dest}.part`
     let startByte = 0
-    if (existsSync(dest)) {
+    if (existsSync(tmp)) {
       try {
-        startByte = statSync(dest).size
+        startByte = statSync(tmp).size
       } catch {
         startByte = 0
       }
@@ -516,23 +521,34 @@ export class BootstrapService extends EventEmitter {
         signal
       })
       if (!res.ok && res.status !== 206) {
-        if (res.status === 416 && existsSync(dest) && statSync(dest).size > 0) {
-          // Treat as complete ONLY when size is plausible vs hint AND checksum
-          // (if pinned) matches. A half-hint is not proof of completeness.
-          const size = statSync(dest).size
+        // Range-overrun means the file we resumed from already covers the
+        // whole resource. Check the `.part` (what we actually resumed from)
+        // or a previously completed `dest`; validate size + pinned checksum
+        // before accepting it — a half file is not proof of completeness.
+        const candidate =
+          res.status === 416
+            ? existsSync(tmp) && statSync(tmp).size > 0
+              ? tmp
+              : existsSync(dest) && statSync(dest).size > 0
+                ? dest
+                : null
+            : null
+        if (candidate) {
+          const size = statSync(candidate).size
           const store = loadChecksumStore()
           const pinned = store[url]
           if (sizeHint > 0 && size < sizeHint * 0.9) {
-            rmSync(dest, { force: true })
+            rmSync(candidate, { force: true })
             throw new Error('Cached runtime archive looks truncated — re-downloading')
           }
           if (pinned) {
-            const actual = await sha256File(dest)
+            const actual = await sha256File(candidate)
             if (actual.toLowerCase() !== pinned.toLowerCase()) {
-              rmSync(dest, { force: true })
+              rmSync(candidate, { force: true })
               throw new Error('Cached runtime archive failed checksum — re-downloading')
             }
           }
+          if (candidate === tmp) renameSync(tmp, dest)
           return
         }
         throw new Error(`Runtime download failed: HTTP ${res.status} for ${url}`)
@@ -542,7 +558,8 @@ export class BootstrapService extends EventEmitter {
       const totalHeader = Number(res.headers.get('content-length') || 0)
       const totalBytes = isAppend ? startByte + totalHeader : totalHeader || sizeHint
 
-      const tmp = `${dest}.part`
+      // A 200 answer to a ranged request cannot be appended to a partial
+      // file (it starts at 0) — restart the partial cleanly.
       const fileStream = createWriteStream(tmp, { flags: isAppend ? 'a' : 'w' })
       const reader = res.body?.getReader()
       if (!reader) throw new Error('Runtime download: empty body')

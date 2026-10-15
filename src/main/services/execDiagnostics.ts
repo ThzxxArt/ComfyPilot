@@ -63,17 +63,28 @@ export class ExecDiagnosticsService extends EventEmitter {
   /** Record an execution_error from the monitor WS (ComfyPilot submissions). */
   recordWs(instanceId: string, evt: ExecProgressEvent): ExecFailure | null {
     if (evt.type !== 'execution_error') return null
+    const errorType = evt.errorType || 'ExecutionError'
+    const message = evt.errorMessage || 'Execution failed'
+    // The console-log rescan may have already recorded this very failure
+    // (frontend-started runs parse first) — double-recording produced two
+    // rows AND two push events for one error (0.1.13). Mirror rescanLogs'
+    // dedupe window in this direction too.
+    const now = Date.now()
+    const dupLog = (this.logFailures.get(instanceId) || []).some(
+      (f) => Math.abs(now - f.at) < 10_000 && f.errorType === errorType && f.message === message
+    )
+    if (dupLog) return null
     const missing = String(evt.errorMessage || '').match(/No module named\s+['"]([^'"]+)['"]/i)
     const failure: ExecFailure = {
       id: randomUUID(),
       instanceId,
       source: 'ws',
-      at: Date.now(),
+      at: now,
       promptId: evt.promptId,
       nodeId: evt.nodeId,
       nodeType: evt.nodeType,
-      errorType: evt.errorType || 'ExecutionError',
-      message: evt.errorMessage || 'Execution failed',
+      errorType,
+      message,
       missingModule: missing ? missing[1] : undefined,
       traceback: evt.errorTraceback
     }
@@ -192,13 +203,24 @@ export class ExecDiagnosticsService extends EventEmitter {
     map.set(instanceId, arr.slice(-MAX_FAILURES))
   }
 
+  /** Bound the notify-dedupe map — a long session with many distinct
+   *  failure keys must not grow it without limit (0.1.13). */
+  private static readonly MAX_NOTIFY_KEYS = 200
+
   private emitFailure(f: ExecFailure): void {
     this.emit('failure', f)
     const key = `${f.errorType}|${f.message}`
     const prev = this.lastNotify.get(f.instanceId)
     const now = Date.now()
     if (prev && prev.key === key && now - prev.at < NOTIFY_DEDUPE_MS) return
+    // Refresh insertion order so the oldest key is always the eviction head.
+    this.lastNotify.delete(f.instanceId)
     this.lastNotify.set(f.instanceId, { key, at: now })
+    while (this.lastNotify.size > ExecDiagnosticsService.MAX_NOTIFY_KEYS) {
+      const oldest = this.lastNotify.keys().next().value
+      if (oldest === undefined) break
+      this.lastNotify.delete(oldest)
+    }
     this.emit('notify', f)
   }
 }

@@ -6,7 +6,7 @@ export const APP_NAME = 'ComfyPilot'
  * Build injects __APP_VERSION__ from package.json; dev falls back to the literal.
  */
 declare const __APP_VERSION__: string | undefined
-export const APP_VERSION = (typeof __APP_VERSION__ !== 'undefined' && __APP_VERSION__) || '0.1.12'
+export const APP_VERSION = (typeof __APP_VERSION__ !== 'undefined' && __APP_VERSION__) || '0.1.13'
 
 export const DEFAULT_SETTINGS: AppSettings = {
   locale: 'zh-CN',

@@ -463,6 +463,9 @@ async function togglePin(item: ComfyInstanceInfo): Promise<void> {
 async function removeInstance(info: ComfyInstanceInfo): Promise<void> {
   try {
     await ipc('instance.remove', info.id)
+    // Drop cached probe results with the instance — they were keyed by id
+    // and lingered forever (0.1.13).
+    delete envProbes.value[info.id]
     await store.refreshInstances()
     message.success(t('instance.removedToast'))
   } catch (err) {

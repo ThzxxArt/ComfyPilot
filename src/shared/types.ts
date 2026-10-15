@@ -7,10 +7,24 @@ export type AppLocale = 'zh-CN' | 'en-US'
 /** Manual app self-update check (0.1.11 — makes the auto-update channel visible). */
 export interface AppUpdateStatus {
   /** unsupported = dev build / updater unavailable. */
-  status: 'unsupported' | 'checking' | 'available' | 'not-available' | 'error'
+  status:
+    | 'unsupported'
+    | 'checking'
+    | 'available'
+    | 'downloading'
+    | 'downloaded'
+    | 'not-available'
+    | 'error'
   currentVersion: string
   /** Version offered by the update server, when available. */
   availableVersion?: string
+  /** Live download progress (present while `downloading`, 0.1.13). */
+  progress?: {
+    percent: number
+    bytesPerSecond?: number
+    transferred?: number
+    total?: number
+  }
   error?: string
   checkedAt: number
 }
@@ -1575,6 +1589,8 @@ export type IpcChannelMap = {
   'app.checkUpdate': { args: []; result: AppUpdateStatus }
   /** Last known self-update status (seeds the Settings view, 0.1.11). */
   'app.updateStatus': { args: []; result: AppUpdateStatus }
+  /** Quit-and-install a DOWNLOADED update (0.1.13). */
+  'app.installUpdate': { args: []; result: { ok: boolean; error?: string } }
 
   // market
   'market.list': {

@@ -396,37 +396,11 @@ app.whenReady().then(async () => {
       } catch (e) {
         crashLog('launchOnBoot sync: ' + String(e))
       }
-      if (settings.enableAutoCheckUpdates) {
-        const updater = await import('electron-updater')
-        const autoUpdater =
-          updater.autoUpdater ||
-          (updater as { default?: { autoUpdater?: unknown } }).default?.autoUpdater
-        if (
-          autoUpdater &&
-          typeof (autoUpdater as { checkForUpdatesAndNotify?: unknown })
-            .checkForUpdatesAndNotify === 'function'
-        ) {
-          try {
-            const au = autoUpdater as {
-              checkForUpdatesAndNotify: () => unknown
-              on?: (ev: string, cb: (...a: unknown[]) => void) => void
-            }
-            au.on?.('error', (e) => crashLog('updater error event: ' + String(e)))
-            const maybe = au.checkForUpdatesAndNotify()
-            if (maybe && typeof (maybe as Promise<unknown>).catch === 'function') {
-              ;(maybe as Promise<unknown>).catch((e) => crashLog('updater check: ' + String(e)))
-            }
-          } catch (e) {
-            crashLog('updater check threw: ' + String(e))
-          }
-        } else {
-          crashLog('updater api missing')
-        }
-      } else {
-        crashLog('updater disabled by settings')
-      }
+      // NOTE (0.1.13): the self-update wiring moved to the END of whenReady —
+      // it must run AFTER setAppUpdateBroadcast is registered, or the startup
+      // check's first status broadcast would be dropped. See below.
     } catch (err) {
-      crashLog('updater skipped: ' + String(err))
+      crashLog('launchOnBoot skipped: ' + String(err))
     }
   } else {
     // Dev: still honour the login-item preference so the feature is testable
@@ -490,12 +464,35 @@ app.whenReady().then(async () => {
   monitorService.on('ws', (evt) => {
     broadcast(IPC_EVENTS.monitorWs, evt)
     if (evt?.type === 'execution_error' && evt.baseUrl) {
-      try {
-        const id = execDiagnosticsService.instanceIdForBaseUrl(evt.baseUrl)
-        if (id) execDiagnosticsService.recordWs(id, evt)
-      } catch {
-        /* diagnosis must never break the monitor stream */
-      }
+      void (async () => {
+        try {
+          let id = execDiagnosticsService.instanceIdForBaseUrl(evt.baseUrl)
+          if (!id) {
+            // Remote instances (0.1.13): record their execution failures too,
+            // under a `remote:<id>` key the monitor page can load.
+            const { remoteService } = await import('./services/p1p2')
+            let origin: string | null = null
+            try {
+              origin = new URL(evt.baseUrl as string).origin
+            } catch {
+              origin = null
+            }
+            if (origin) {
+              const hit = remoteService.list().find((r) => {
+                try {
+                  return new URL(r.baseUrl).origin === origin
+                } catch {
+                  return false
+                }
+              })
+              if (hit) id = `remote:${hit.id}`
+            }
+          }
+          if (id) execDiagnosticsService.recordWs(id, evt)
+        } catch {
+          /* diagnosis must never break the monitor stream */
+        }
+      })()
     }
   })
   execDiagnosticsService.on('failure', (f) => broadcast(IPC_EVENTS.execError, f))
@@ -612,10 +609,25 @@ app.whenReady().then(async () => {
       })
     })
     .catch(() => undefined)
-  // Manual self-update checks stream their state to the renderer (0.1.11).
+  // Self-update stream (0.1.11 manual checks, unified in 0.1.13): every
+  // autoUpdater event (available / download-progress / downloaded / error)
+  // reaches the renderer, and the startup check runs here — AFTER the
+  // broadcast is registered, so its first status is never dropped.
   void import('./services/appUpdate')
-    .then(({ setAppUpdateBroadcast }) => {
+    .then(({ setAppUpdateBroadcast, setAppUpdateNotify, initAppUpdate }) => {
       setAppUpdateBroadcast((status) => broadcast(IPC_EVENTS.appUpdate, status))
+      // In-app toast + OS notification for found/downloaded updates — the
+      // missing user-visible hint of the old background check.
+      setAppUpdateNotify((notice) => broadcastNotification(notice))
+      let autoCheck = true
+      try {
+        autoCheck = loadSettings().enableAutoCheckUpdates !== false
+      } catch {
+        /* default on */
+      }
+      void initAppUpdate({ enableAutoCheckUpdates: autoCheck }).catch((e) =>
+        crashLog('updater init: ' + String(e))
+      )
     })
     .catch(() => undefined)
 

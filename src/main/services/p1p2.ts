@@ -283,15 +283,24 @@ export class BatchService extends EventEmitter {
       ? job.instanceId.slice('remote:'.length)
       : ''
     const remote = remoteId ? listRemotes().find((r) => r.id === remoteId) : undefined
-    const inst = remote ? null : instances.find((i) => i.id === job.instanceId) || instances[0]
+    // A recorded id that no longer resolves must FAIL the job — silently
+    // falling back to instances[0] ran the batch on the wrong instance
+    // (0.1.13).
+    const inst = remote
+      ? null
+      : instances.find((i) => i.id === job.instanceId) ||
+        (job.instanceId ? undefined : instances[0])
     if (!inst && !remote) {
+      const reason = job.instanceId
+        ? `Instance not found: ${job.instanceId}`
+        : 'No instance configured'
       job.status = 'error'
       job.finishedAt = Date.now()
-      job.notes = [job.notes, 'No instance configured'].filter(Boolean).join('; ')
-      job.errorSummary = 'No instance configured'
+      job.notes = [job.notes, reason].filter(Boolean).join('; ')
+      job.errorSummary = reason
       upsertBatchJob(job)
       this.emit('progress', job)
-      throw new Error('No instance')
+      throw new Error(reason)
     }
     const url = remote ? remote.baseUrl.replace(/\/+$/, '') : instanceUrl(inst!)
     // Remote outputs cannot be verified on this machine — `produced` counts
@@ -514,7 +523,11 @@ export class BatchService extends EventEmitter {
         : null
     }
     const instances = loadInstanceConfigs()
-    const inst = instances.find((i) => i.id === job.instanceId) || instances[0]
+    // Same no-silent-fallback rule as run(): an unresolvable recorded id
+    // yields null (the caller reports it) instead of hitting another
+    // instance (0.1.13).
+    const inst =
+      instances.find((i) => i.id === job.instanceId) || (job.instanceId ? undefined : instances[0])
     return inst ? new ComfyApiClient(instanceUrl(inst)) : null
   }
 

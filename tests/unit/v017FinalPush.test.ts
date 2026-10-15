@@ -108,10 +108,16 @@ describe('main/index.ts structure', () => {
     expect(src).toContain('autoStart')
   })
 
-  it('has electron-updater integration', () => {
-    const src = readSrc('src/main/index.ts')
-    expect(src).toContain('electron-updater')
-    expect(src).toContain('checkForUpdatesAndNotify')
+  it('has electron-updater integration (0.1.13: unified in services/appUpdate)', () => {
+    // The raw autoUpdater access moved into the service — index.ts must wire
+    // it via initAppUpdate and the service must own electron-updater.
+    const indexSrc = readSrc('src/main/index.ts')
+    expect(indexSrc).toContain('initAppUpdate')
+    expect(indexSrc).toContain('setAppUpdateBroadcast')
+    const svcSrc = readSrc('src/main/services/appUpdate.ts')
+    expect(svcSrc).toContain('electron-updater')
+    expect(svcSrc).toContain('checkForUpdates')
+    expect(svcSrc).toContain('quitAndInstall')
   })
 })
 

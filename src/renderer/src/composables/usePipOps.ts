@@ -9,7 +9,7 @@
  */
 import { ref } from 'vue'
 import type { PipOpResult, UpdateProgress } from '@shared/types'
-import { ipc, onIpc, IPC_EVENTS } from '@/composables/useIpc'
+import { ipc, onIpc, IPC_EVENTS, ComfyPilotIpcError } from '@/composables/useIpc'
 
 interface PipOpView {
   progress?: UpdateProgress
@@ -95,7 +95,19 @@ export function usePipOps() {
     try {
       const snap = await ipc('instance.pipStatus', instanceId)
       const v = getView(instanceId)
-      v.progress = snap || undefined
+      // Main now returns the FINISHED snapshot after an op settles (0.1.13).
+      // Defensively keep a locally-received terminal state if main answers
+      // "no op at all" — wiping it turned the modal into a 0% empty shell
+      // right after a successful install.
+      if (snap) {
+        v.progress = snap
+      } else {
+        const local = v.progress
+        const localTerminal =
+          local &&
+          (local.status === 'done' || local.status === 'failed' || local.status === 'cancelled')
+        if (!localTerminal) v.progress = undefined
+      }
       const active = Boolean(snap && snap.status === 'running')
       setActiveInstance(instanceId, active)
       if (!viewedInstanceId.value || viewedInstanceId.value === instanceId) {
@@ -111,8 +123,37 @@ export function usePipOps() {
     }
   }
 
-  /** Start a fresh op stream for the given instance, then run `fn`. */
+  /**
+   * Start a fresh op stream for the given instance, then run `fn`.
+   *
+   * Guard (0.1.13): a SECOND click while an op already runs must never reset
+   * the modal to an empty 0% shell — probe main first, surface the running op
+   * and fail with a coded OP_BUSY so the caller can point the user at the
+   * live progress instead ("installed two things, the second one stuck at
+   * 0%" was exactly this reset race).
+   */
   async function run(instanceId: string, fn: () => Promise<PipOpResult>): Promise<PipOpResult> {
+    try {
+      const snap = await ipc('instance.pipStatus', instanceId)
+      if (snap && snap.instanceId === instanceId && snap.status === 'running') {
+        const v = getView(instanceId)
+        v.progress = snap
+        viewedInstanceId.value = instanceId
+        progress.value = snap
+        logs.value = v.logs
+        logSeq.value += 1
+        modalVisible.value = true
+        busy.value = true
+        setActiveInstance(instanceId, true)
+        throw new ComfyPilotIpcError(
+          'Another package operation is already running for this instance',
+          'OP_BUSY'
+        )
+      }
+    } catch (e) {
+      if (e instanceof ComfyPilotIpcError && e.code === 'OP_BUSY') throw e
+      /* status probe is best-effort — proceed with a fresh op */
+    }
     const v = getView(instanceId)
     v.logs = []
     v.progress = undefined
@@ -123,16 +164,6 @@ export function usePipOps() {
     modalVisible.value = true
     busy.value = true
     setActiveInstance(instanceId, true)
-    // Hydrate in case the first progress event raced ahead of this call.
-    try {
-      const snap = await ipc('instance.pipStatus', instanceId)
-      if (snap && snap.instanceId === instanceId) {
-        v.progress = snap
-        mirror(instanceId)
-      }
-    } catch {
-      /* status probe is best-effort */
-    }
     try {
       return await fn()
     } finally {

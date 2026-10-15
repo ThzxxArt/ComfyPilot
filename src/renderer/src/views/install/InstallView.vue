@@ -658,9 +658,10 @@ onMounted(async () => {
     const settings = await ipc('settings.get')
     pipIndex.value = settings.pipIndex || ''
     torchIndexMirror.value = settings.torchIndexMirror || ''
-    // If the user previously saved any pipIndex (including empty = official),
-    // treat that as an explicit choice and do NOT auto-overwrite it.
-    userChoseMirror.value = settings.pipIndex !== undefined && settings.pipIndex !== null
+    // An empty pipIndex means "never chosen" (DEFAULT_SETTINGS ships '') —
+    // the previous check treated the always-present field as an explicit
+    // choice, so auto-recommend never ran (0.1.13).
+    userChoseMirror.value = Boolean(String(settings.pipIndex || '').trim())
   } catch {
     /* defaults stay empty */
   }

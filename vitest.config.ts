@@ -59,7 +59,10 @@ export default defineConfig({
         'src/shared/execError.ts',
         'src/shared/pipVersion.ts',
         'src/shared/pipRecipes.ts',
-        'src/shared/preflight.ts'
+        'src/shared/preflight.ts',
+        // ── 0.1.13: renderer composables with real behaviour tests ──
+        'src/renderer/src/composables/usePipOps.ts',
+        'src/renderer/src/composables/useExecDiagnostics.ts'
       ],
       thresholds: {
         // ── 实测定档：高覆盖模块（0.1.10 全量实测 − 2pp）──
@@ -133,6 +136,19 @@ export default defineConfig({
         'src/shared/pipVersion.ts': { statements: 90, lines: 90, functions: 98, branches: 73 },
         'src/shared/pipRecipes.ts': { statements: 98, lines: 98, functions: 98, branches: 78 },
         'src/shared/preflight.ts': { statements: 98, lines: 98, functions: 98, branches: 98 },
+        // ── 0.1.13 新增纳入门禁的 renderer 组合式（首轮实测 − 2pp）──
+        'src/renderer/src/composables/usePipOps.ts': {
+          statements: 88,
+          lines: 88,
+          functions: 66,
+          branches: 76
+        },
+        'src/renderer/src/composables/useExecDiagnostics.ts': {
+          statements: 91,
+          lines: 91,
+          functions: 98,
+          branches: 66
+        },
         // ── 全局下限（0.1.10 全量实测 − 2pp）──
         statements: 88,
         lines: 88,

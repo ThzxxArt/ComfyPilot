@@ -538,15 +538,27 @@ async function scan(hash = false): Promise<void> {
   } finally {
     scanning.value = false
     scanProgress.value = ''
+    // A switch that arrived mid-scan queued a rescan — run it now against
+    // the new instance's roots.
+    if (pendingRescan.value) {
+      pendingRescan.value = false
+      void scan(false)
+    }
   }
 }
+
+/** Queued re-scan: a switch during a running scan must still rescan the
+ *  NEW instance's roots once the in-flight scan settles (0.1.13 — the old
+ *  guard silently skipped the rescan and stale roots' results stayed). */
+const pendingRescan = ref(false)
 
 // Active instance changed → drop stale list and re-scan against the new roots.
 watch(
   () => store.instanceSwitchTick,
   () => {
     void refresh()
-    if (!scanning.value) void scan(false)
+    if (scanning.value) pendingRescan.value = true
+    else void scan(false)
     extraPathsFile.value = defaultExtraPathsFile()
   }
 )

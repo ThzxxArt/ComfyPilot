@@ -68,6 +68,27 @@ export const throwingExec: ExecLike = async (cmd, args, opts) => {
 type LineSink = (line: string) => void
 
 /**
+ * True when pip/uv output PROVES a failure even though the process exited 0.
+ * Success markers win; failure markers must be LINE-anchored so a log line or
+ * a package name containing "error" never trips it (0.1.13 — the old check
+ * `/ERROR:|error: failed/` rejected uv's perfectly successful
+ * `Installed N packages` output whenever any line mentioned an error, which
+ * surfaced as a bogus "requirements install failed" on the dependency-audit
+ * install path).
+ */
+export function outputIndicatesFailure(out: string): boolean {
+  const text = String(out || '')
+  if (
+    /Successfully installed|Requirement already satisfied|Installed \d+ packages?|Audited \d+ packages?|Resolved \d+ packages?/i.test(
+      text
+    )
+  ) {
+    return false
+  }
+  return /^\s*ERROR:/m.test(text) || /^\s*error:\s/m.test(text)
+}
+
+/**
  * Run a command and stream stdout/stderr lines to `onLine`.
  * Falls back to a buffered run when spawn is unavailable.
  */
@@ -237,10 +258,9 @@ export async function installRequirements(
   const run = (c: string, a: string[], o?: { cwd?: string; timeout?: number }): Promise<string> =>
     runStreaming(c, a, { ...o, onLine, signal: opts?.signal }, exec).then((out) => {
       // pip/uv can print ERROR: and still exit 0 — treat that as failure too.
-      if (
-        /ERROR:|error: failed/i.test(out) &&
-        !/Successfully installed|Requirement already satisfied/i.test(out)
-      ) {
+      // The shared anchored check keeps uv's success output ("Installed N
+      // packages") from being misread as a failure (0.1.13).
+      if (outputIndicatesFailure(out)) {
         throw new Error(out.slice(0, 400))
       }
       return out

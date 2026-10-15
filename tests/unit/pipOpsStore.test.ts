@@ -29,6 +29,14 @@ vi.mock('@/composables/useIpc', () => ({
     pipOpProgress: 'event:pip-op-progress',
     pipOpLog: 'event:pip-op-log',
     execError: 'event:exec-error'
+  },
+  ComfyPilotIpcError: class ComfyPilotIpcError extends Error {
+    code?: string
+    constructor(message: string, code?: string) {
+      super(message)
+      this.name = 'ComfyPilotIpcError'
+      this.code = code
+    }
   }
 }))
 
@@ -159,6 +167,71 @@ describe('usePipOps (0.1.12)', () => {
     expect(h.handlers.has('event:pip-op-progress')).toBe(false)
     expect(h.handlers.has('event:pip-op-log')).toBe(false)
   })
+
+  it('keeps a locally-received terminal state when main reports no op (0.1.13)', async () => {
+    const mod = await import('@/composables/usePipOps')
+    const api = mod.usePipOps()
+
+    // Terminal event lands…
+    fire('event:pip-op-progress', progress('done'))
+    expect((api.progress.value as any)?.status).toBe('done')
+    // …then the post-op resync hits a null status (no snapshot from main).
+    h.ipcImpl = async () => null
+    expect(await api.refreshStatus('i1')).toBe(false)
+    // The modal must keep showing the completed op — not a 0% empty shell.
+    expect((api.progress.value as any)?.status).toBe('done')
+    expect(api.busy.value).toBe(false)
+  })
+
+  it('refreshStatus hydrates a finished snapshot from main (0.1.13)', async () => {
+    const mod = await import('@/composables/usePipOps')
+    const api = mod.usePipOps()
+
+    h.ipcImpl = async (channel) =>
+      channel === 'instance.pipStatus' ? progress('done', { percent: 100 }) : null
+    expect(await api.refreshStatus('i1')).toBe(false)
+    expect((api.progress.value as any)?.status).toBe('done')
+    expect((api.progress.value as any)?.percent).toBe(100)
+    expect(api.activeInstances.value).not.toContain('i1')
+    expect(api.busy.value).toBe(false)
+  })
+
+  it('run() refuses to reset the modal while an op is already running (OP_BUSY)', async () => {
+    const mod = await import('@/composables/usePipOps')
+    const api = mod.usePipOps()
+
+    fire('event:pip-op-log', { instanceId: 'i1', line: 'installing…', ts: 1 })
+    h.ipcImpl = async (channel) => {
+      if (channel === 'instance.pipStatus') return progress('running')
+      if (channel === 'instance.pipInstall') throw new Error('should not be called')
+      return null
+    }
+    await expect(api.startInstall('i1', 'onnx')).rejects.toMatchObject({ code: 'OP_BUSY' })
+    // The running stream stays on screen; logs were not wiped and no second
+    // install request reached main.
+    expect((api.progress.value as any)?.status).toBe('running')
+    expect(api.logs.value.map((l: any) => l.line)).toContain('installing…')
+    expect(api.modalVisible.value).toBe(true)
+    expect(h.ipcCalls.some((c) => c.channel === 'instance.pipInstall')).toBe(false)
+  })
+
+  it('run() proceeds past a finished snapshot and keeps the done view (0.1.13)', async () => {
+    const mod = await import('@/composables/usePipOps')
+    const api = mod.usePipOps()
+
+    h.ipcImpl = async (channel) => {
+      if (channel === 'instance.pipStatus') return progress('done', { runId: 'old' })
+      if (channel === 'instance.pipInstall')
+        return { ok: true, instanceId: 'i1', requested: ['onnx'], installed: ['onnx'] }
+      return null
+    }
+    const r = await api.startInstall('i1', 'onnx')
+    expect(r.ok).toBe(true)
+    // Terminal event + refreshStatus keep the finished view (not a 0% shell).
+    expect((api.progress.value as any)?.status).toBe('done')
+    fire('event:pip-op-progress', progress('done', { runId: 'new', percent: 100 }))
+    expect((api.progress.value as any)?.percent).toBe(100)
+  })
 })
 
 describe('useExecDiagnostics (0.1.12)', () => {
@@ -211,5 +284,30 @@ describe('useExecDiagnostics (0.1.12)', () => {
     expect(h.handlers.has('event:exec-error')).toBe(true)
     mod.disposeExecDiagnosticsSubscription()
     expect(h.handlers.has('event:exec-error')).toBe(false)
+  })
+
+  it('load() ignores a stale response after switching instances (0.1.13)', async () => {
+    const mod = await import('@/composables/useExecDiagnostics')
+    const api = mod.useExecDiagnostics()
+
+    let releaseA: ((v: unknown) => void) | null = null
+    h.ipcImpl = async (channel, id) => {
+      if (channel === 'instance.execFailures' && id === 'i1') {
+        return new Promise((res) => (releaseA = res))
+      }
+      if (channel === 'instance.execFailures' && id === 'i2') {
+        return [{ id: 'x2', instanceId: 'i2', source: 'log', at: 5, errorType: 'E', message: 'm' }]
+      }
+      return null
+    }
+    const pA = api.load('i1')
+    await api.load('i2')
+    expect(api.failures.value[0]?.id).toBe('x2')
+    // The stale i1 response arrives later — must not clobber i2's list.
+    releaseA!([
+      { id: 'x1', instanceId: 'i1', source: 'log', at: 1, errorType: 'E', message: 'stale' }
+    ])
+    await pA
+    expect(api.failures.value.map((f) => f.id)).toEqual(['x2'])
   })
 })
