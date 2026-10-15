@@ -20,9 +20,16 @@ import {
   sanitizeId,
   isSafeOpenPath,
   isLocalhostUrl,
-  resolveInsideAnyRoot
+  resolveInsideAnyRoot,
+  normalizeForCompare
 } from '../services/security'
-import { loadSettings, saveSettings, loadInstanceConfigs } from '../services/db'
+import {
+  loadSettings,
+  saveSettings,
+  loadInstanceConfigs,
+  userDataDir,
+  workflowLibraryDir
+} from '../services/db'
 import { LAUNCH_TEMPLATES } from '@shared/constants'
 import { instanceService } from '../services/instance'
 import { modelService } from '../services/model'
@@ -33,7 +40,13 @@ import { doctorService } from '../services/doctor'
 import { bootstrapService } from '../services/bootstrap'
 import { backupService } from '../services/backup'
 import { envService } from '../services/env'
-import { batchService, outputService, remoteService, marketService } from '../services/p1p2'
+import {
+  batchService,
+  outputService,
+  remoteService,
+  marketService,
+  resolveOutputDir
+} from '../services/p1p2'
 import { installerService, listStarterModels } from '../services/installer'
 import { testProxy, syncProxyFromSettings } from '../services/proxy'
 import { execDiagnosticsService } from '../services/execDiagnostics'
@@ -186,11 +199,61 @@ const READ_DATA_EXTS = new Set([
   '.txt'
 ])
 
+// Paths the user explicitly chose via the OS picker (0.1.16). A picked file is
+// trusted as-is; a picked folder becomes a readable root for the session.
+// Anything else must resolve under an app-owned root — the old implementation
+// trusted ANY existing file with a data extension, i.e. the whole disk.
+const approvedReadRoots = new Set<string>()
+
+function approveReadPath(p: string | null | undefined): void {
+  if (!p) return
+  try {
+    approvedReadRoots.add(normalizeForCompare(p))
+  } catch {
+    /* ignore */
+  }
+}
+
+/** App-owned roots the renderer may read data files from. */
+function allowedReadRoots(): string[] {
+  const roots: string[] = []
+  try {
+    roots.push(userDataDir(), workflowLibraryDir())
+  } catch {
+    /* ignore */
+  }
+  for (const c of loadInstanceConfigs()) {
+    if (!c.path) continue
+    try {
+      roots.push(c.path, resolveOutputDir(c), join(c.path, 'user', 'default', 'workflows'))
+    } catch {
+      /* malformed config — skip */
+    }
+  }
+  for (const r of loadSettings().modelScanRoots || []) roots.push(r)
+  return roots
+}
+
+function isUnderAnyRoot(target: string, roots: string[]): boolean {
+  const t = normalizeForCompare(target)
+  return roots.some((r) => {
+    if (!r) return false
+    const n = normalizeForCompare(r)
+    if (!n) return false
+    return t === n || t.startsWith(n.endsWith('/') ? n : n + '/')
+  })
+}
+
 function isSafeReadPath(path: string): boolean {
   if (!path || path.includes('\0')) return false
   const ext = extname(basename(path)).toLowerCase()
   if (!READ_DATA_EXTS.has(ext)) return false
-  return isSafeOpenPath(path) || existsSync(path)
+  // Reject executable/script extensions outright (defence in depth).
+  if (!isSafeOpenPath(path)) return false
+  // Trusted: an explicitly picked file (or a file under a picked folder).
+  if (isUnderAnyRoot(path, [...approvedReadRoots])) return true
+  // Otherwise: only files that resolve under an app-owned root.
+  return existsSync(path) && isUnderAnyRoot(path, allowedReadRoots())
 }
 
 let embedView: WebContentsView | null = null
@@ -529,6 +592,14 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle(
     'instance.clearExecFailures',
     wrap((id: string) => execDiagnosticsService.clear(safeInstanceTarget(id) || ''))
+  )
+  ipcMain.handle(
+    'instance.startupIssues',
+    wrap((id: string) => {
+      const target = safeInstanceTarget(id)
+      if (!target) throw new Error(`Instance not found: ${id}`)
+      return instanceService.analyzeStartupIssues(target)
+    })
   )
 
   // models
@@ -1595,6 +1666,20 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       return installAppUpdate()
     })
   )
+  ipcMain.handle(
+    'app.previousExit',
+    wrap(async () => {
+      const { getPreviousExitInfo } = await import('../services/session')
+      return getPreviousExitInfo()
+    })
+  )
+  ipcMain.handle(
+    'app.exportDiagnostics',
+    wrap(async () => {
+      const { exportAppDiagnostics } = await import('../services/session')
+      return { path: exportAppDiagnostics() }
+    })
+  )
 
   // market
   ipcMain.handle(
@@ -1675,7 +1760,9 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       const res = win
         ? await dialog.showOpenDialog(win, { properties: ['openDirectory'] })
         : await dialog.showOpenDialog({ properties: ['openDirectory'] })
-      return res.canceled ? null : res.filePaths[0]
+      const chosen = res.canceled ? null : res.filePaths[0]
+      approveReadPath(chosen)
+      return chosen
     })
   )
   ipcMain.handle(
@@ -1686,7 +1773,9 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       const res = win
         ? await dialog.showOpenDialog(win, options)
         : await dialog.showOpenDialog(options)
-      return res.canceled ? null : res.filePaths[0]
+      const chosen = res.canceled ? null : res.filePaths[0]
+      approveReadPath(chosen)
+      return chosen
     })
   )
   ipcMain.handle(
@@ -1700,7 +1789,9 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       const res = win
         ? await dialog.showOpenDialog(win, options)
         : await dialog.showOpenDialog(options)
-      return res.canceled ? [] : res.filePaths
+      const files = res.canceled ? [] : res.filePaths
+      for (const f of files) approveReadPath(f)
+      return files
     })
   )
   ipcMain.handle(

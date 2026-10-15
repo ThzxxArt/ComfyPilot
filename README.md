@@ -1,7 +1,7 @@
 # ComfyPilot
 
 > **ComfyUI 全能管理器** — 本机 ComfyUI 生产线的控制塔  
-> TypeScript · Vue 3 · Electron · Naive UI · MIT · v0.1.15
+> TypeScript · Vue 3 · Electron · Naive UI · MIT · v0.1.16
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-4f6ef7)](./LICENSE)
 
@@ -230,13 +230,13 @@ Python 版本、Torch / CUDA、`extra_model_paths.yaml`、端口、磁盘、Regi
 ## 数据与存储
 
 - **存储格式：JSONC**（带注释的 JSON），无原生模块、无 SQLite
-- 位置：`%APPDATA%/ComfyPilot/data/`（macOS/Linux 为对应 userData）
+- 位置：`%APPDATA%/comfy-pilot/data/`（应用 userData；macOS/Linux 为对应 userData）
 - 主要文件：`settings.jsonc`、`instances.jsonc`、`models.jsonc`、`node_packs.jsonc`、`workflows.jsonc`、`download_tasks.jsonc`、`batch_jobs.jsonc`、`backups.jsonc` 等
 - **工作流落盘**：导入进当前实例的 `user/default/workflows/`（1 份 `.json`），ComfyUI Frontend 直接可见；`data/workflows/` 仅作旧版本遗留扫描
 - 解析失败的文件改名为 `*.jsonc.bad-<时间戳>`，不覆盖用户数据
 - 运行时：`userData/runtimes/`（便携 Python / uv / MinGit + `checksums.json`）
 - 缩略图与缓存：`userData/app-cache/`（0.1.9 从 `userData/cache` 迁出——与 Chromium 浏览器缓存目录同名会被系统清理连坐）
-- 日志：`%APPDATA%/ComfyPilot/logs/boot.log`
+- 日志：`%APPDATA%/comfy-pilot/logs/boot.log`（与应用/实例日志同目录；0.1.16 起统一，Settings「打开日志目录」指向此处）
 
 ---
 
@@ -263,7 +263,7 @@ Python 版本、Torch / CUDA、`extra_model_paths.yaml`、端口、磁盘、Regi
 
 ```text
 ComfyPilot/
-├── package.json                 # v0.1.15 · MIT · ThzxxArt
+├── package.json                 # v0.1.16 · MIT · ThzxxArt
 ├── electron.vite.config.ts
 ├── electron-builder.yml         # Win NSIS / macOS DMG / Linux AppImage·deb + GitHub publish
 ├── vitest.config.ts             # 覆盖率门禁（0.1.8 按实测定档，见文件内说明）
@@ -307,7 +307,7 @@ ComfyPilot/
 npm run dev / typecheck / test / test:coverage / test:e2e / test:all
 ```
 
-**测试：** 2492 用例（104 文件）+ e2e 冒烟（含渲染挂载断言）。覆盖率门禁在 `vitest.config.ts` 内 **按实测定档（实测 − 2pp）**；测试源码纳入 tsc 门禁（`typecheck:test`）。测试临时目录全量自清（tmpfs 卫生）+ 磁盘门控与真实文件系统解耦（0.1.15）。
+**测试：** 2532 用例（112 文件）+ e2e 冒烟（含渲染挂载断言）。覆盖率门禁在 `vitest.config.ts` 内 **按实测定档（实测 − 2pp）**；测试源码纳入 tsc 门禁（`typecheck:test`）。测试临时目录全量自清（tmpfs 卫生）+ 磁盘门控与真实文件系统解耦（0.1.15）；0.1.16 新增稳定性/日志/性能模块各有独立测试与覆盖率档位。
 
 **门禁脚本：**
 
@@ -318,7 +318,7 @@ node scripts/check-hardcoded-zh.cjs # 渲染层 + constants 零中文硬编码
 
 **启动排障：**
 
-1. 查看 `%APPDATA%\ComfyPilot\logs\boot.log`
+1. 查看 `%APPDATA%\comfy-pilot\logs\boot.log`
 2. 确认 `out/main/bootstrap.cjs`、`out/preload/index.js`、`out/renderer/index.html` 存在
 3. 开发态设 `COMFYPILOT_BOOT_PROBE=1` 可加载极简页面排除渲染问题
 
@@ -434,6 +434,12 @@ ComfyUI 本身采用 GPL-3.0；本项目独立发布，采用 **MIT**。
 - [x] **0.1.15 运行可控**：监控页补齐 ComfyUI 三大标准运行操作——清空待执行队列 / 中断当前任务（0.39+ 定向、旧版全局的诚实语义）/ 释放显存内存；本地与远程统一入口，操作确认流 + 完成后实时回读
 - [x] **0.1.15 批量减负**：产物库多选批量删除（文件/仅记录双态 + 部分失败诚实报告）；模型库多选批量删除 / 批量移动；实例前端包版本一键对齐（mismatch 徽标 → 复用 pip-op 模态升级到 required 版本）
 - [x] **0.1.15 上游就绪**：从运行实例一键导入引擎默认工作流（ComfyUI v0.41 `GET /default_workflow` 探测式接入，v0.40 及更早诚实提示）；上游事实档案更新（cli_args 对 v0.41 已冻结 / ARM64 便携包 / assets 导出 API）；遗留死代码清零 + 测试卫生根治（tmpdir 全量自清、磁盘门控与真实文件系统解耦）
+- [x] **0.1.16 崩溃可证**：会话干净退出标记（`session.json`）+ 主进程 watchdog（堆/事件循环延迟采样）+ `child-process-gone` 落痕 + 未捕获异常持久化原因；下次启动若检测到上次未正常退出，弹窗提示并支持一键导出应用诊断
+- [x] **0.1.16 日志可信**：实例日志**按行内 `[LEVEL]` 标记判定级别**（根治「stderr 一律 WARN」致使 INFO/DEBUG 满屏假警告）+ ANSI 转义码剥离 + `PYTHONUNBUFFERED` 改善双流时序 + 日志文件按大小轮转 + **尾部有界读取**（不再整读整解析）+ 调试噪声默认折叠（可切换）
+- [x] **0.1.16 环境加固**：ComfyUI 子进程统一注入 `PYTHONUTF8`/`PYTHONIOENCODING`（根治中文 Windows 下 `pip` 构建 `UnicodeDecodeError: 'gbk'`，如 argos-translate）+ `NO_PROXY` 去除 `[::1]` 括号（消除第三方节点 `Invalid port ':1]'`）+ 节点启动导入失败解析与提示（缺依赖可修，插件自身 bug 如实呈现）
+- [x] **0.1.16 性能与内存**：模型扫描由「逐文件整写」改为单次批量写（O(N²)→O(1)）；安装/下载进度写盘去抖合并（内存快照保证读写一致 + 退出 flush）；多类缓存（工作流分析/指纹/节点包元数据/输出映射/能力）统一 LRU 上限；模型表虚拟滚动、工作流列表改 computed、按实例状态 Map 淘汰
+- [x] **0.1.16 安全与收口**：`isSafeReadPath` 收敛到「用户显式选择路径 + 应用自有根」（不再放行全盘任意数据文件）；`isSafeEmbedUrl` 语义对齐（信任判定单点收敛）；preload `invoke` 增加运行时通道白名单（与事件白名单对称）
+- [x] **0.1.16 安装器崩溃根治**：定位到 electron-builder `multiUser.nsh` 的已知缺陷（全新单用户安装触发 NSIS `System.dll` 访问违规 `0xc0000005 @ +0x1581`，多版本复现），**升级 electron-builder `25.1.8 → 26.15.3`**（上游修复版模板）根治，并以 Windows 原生同配置打包验证
 - [x] 工作流版本对照与打包分享：0.1.11 工作流对比视图（`workflow.compare`）；打包分享（ZIP 导出，0.1.5 已含）
 - [x] 更细的 GPU 多卡 / 共享显存展示：0.1.11 多卡 `GPU n` 索引徽标 + Windows 共享显存（Shared Usage/Limit 计数器）
 

@@ -29,7 +29,16 @@ export function buildBypassList(p: ProxySettings): string {
     .split(/[\s,;]+/)
     .map((s) => s.trim())
     .filter(Boolean)
-  return [...new Set(['localhost', '127.0.0.1', '[::1]', '::1', ...extra])].join(';')
+  // Bare loopback forms only (0.1.16). The old list injected `[::1]` with
+  // brackets, which breaks naive `no_proxy` parsers in third-party nodes
+  // (they split on ':' and read the port as ":1]") — the observed
+  // `GoogleTranslateNode -> Invalid port ':1]'`. Chromium and Python both
+  // accept the unbracketed `::1`. Leading dots are stripped so entries match
+  // the same normalized form used by `shouldBypass`.
+  const entries = ['localhost', '127.0.0.1', '::1', ...extra].map((h) =>
+    normalizeHost(h.replace(/^\.+/, ''))
+  )
+  return [...new Set(entries)].join(';')
 }
 
 function normalizeHost(host: string): string {
@@ -61,8 +70,11 @@ export function shouldBypass(url: string, bypassList: string): boolean {
  * Build env vars for child processes (git / pip / uv / aria2).
  * Never mutates process.env.
  */
-export function proxyEnv(p: ProxySettings): NodeJS.ProcessEnv {
-  const base = { ...process.env }
+export function proxyEnv(
+  p: ProxySettings,
+  baseEnv: NodeJS.ProcessEnv = process.env
+): NodeJS.ProcessEnv {
+  const base = { ...baseEnv }
   delete base.HTTP_PROXY
   delete base.HTTPS_PROXY
   delete base.ALL_PROXY

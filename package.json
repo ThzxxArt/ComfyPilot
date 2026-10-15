@@ -1,6 +1,6 @@
 {
   "name": "comfy-pilot",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "description": "ComfyPilot - all-in-one control tower for ComfyUI instances, models, node packs, workflows, monitoring and diagnostics.",
   "main": "./out/main/bootstrap.cjs",
   "author": "ThzxxArt",
@@ -67,7 +67,7 @@
     "@vue/eslint-config-prettier": "^10.1.0",
     "@vue/eslint-config-typescript": "^14.1.4",
     "electron": "^32.2.8",
-    "electron-builder": "^25.1.8",
+    "electron-builder": "26.15.3",
     "electron-vite": "^2.3.0",
     "eslint": "^9.17.0",
     "eslint-plugin-vue": "^9.32.0",

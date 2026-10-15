@@ -16,6 +16,7 @@ import type { WorkflowRecord } from '@shared/types'
 import { toApiPrompt } from './workflowConvert'
 import { readPngTextMetaFromFile } from './workflow'
 import { listWorkflows } from './db'
+import { LruCache } from './lru'
 
 export interface WorkflowFingerprintHit {
   workflowId: string
@@ -46,7 +47,9 @@ export function fingerprintOf(graph: Record<string, unknown> | null | undefined)
   }
 }
 
-const fileHashCache = new Map<string, { size: number; mtimeMs: number; hash: string | null }>()
+const fileHashCache = new LruCache<string, { size: number; mtimeMs: number; hash: string | null }>(
+  4000
+)
 
 /** Fingerprint of a workflow file (.json graph or .png embedded graph). */
 function hashOfFile(path: string): string | null {

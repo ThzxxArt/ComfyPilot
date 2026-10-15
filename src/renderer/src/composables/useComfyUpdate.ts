@@ -151,6 +151,7 @@ function bannerFor(iid: string): {
   if (!b) {
     b = { updating: null, updateMsg: '', installing: null, installMsg: '' }
     nodeBanners.set(iid, b)
+    evictOldest(nodeBanners, iid)
   }
   return b
 }
@@ -192,11 +193,27 @@ interface NodeBatchView {
 }
 const nodeBatchViews = new Map<string, NodeBatchView>()
 
+/**
+ * Cap the per-instance maps (0.1.16). A long session that touches many
+ * instances must not grow memory without bound — each NodeOpView can hold up
+ * to 3000 log lines. Oldest (insertion-order) keys are dropped past the cap.
+ */
+const MAX_INSTANCE_VIEWS = 30
+function evictOldest<V>(map: Map<string, V>, keep: string): void {
+  if (map.size <= MAX_INSTANCE_VIEWS) return
+  for (const key of map.keys()) {
+    if (map.size <= MAX_INSTANCE_VIEWS) break
+    if (key === keep) continue
+    map.delete(key)
+  }
+}
+
 function getOpView(instanceId: string): NodeOpView {
   let view = nodeOpViews.get(instanceId)
   if (!view) {
     view = { logs: [] }
     nodeOpViews.set(instanceId, view)
+    evictOldest(nodeOpViews, instanceId)
   }
   return view
 }
@@ -362,6 +379,7 @@ function ensureNodeSubscribed(): void {
       if (!view) {
         view = { event: e, entries: [], active: false }
         nodeBatchViews.set(iid, view)
+        evictOldest(nodeBatchViews, iid)
       }
       view.event = e
       if (e.phase === 'checking' || e.phase === 'start') {
@@ -404,6 +422,7 @@ function ensureNodeSubscribed(): void {
       const p = payload as NodeCheckProgressEvent
       const iid = p?.instanceId || 'default'
       nodeCheckByInstance.set(iid, p)
+      evictOldest(nodeCheckByInstance, iid)
       // Mirror only for the viewed instance; others keep their own counter.
       if (viewedNodeInstanceId.value === iid || !viewedNodeInstanceId.value) {
         nodeCheck.value = p

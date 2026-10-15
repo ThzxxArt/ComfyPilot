@@ -13,8 +13,7 @@ import {
   renameSync,
   symlinkSync,
   mkdirSync,
-  readFileSync,
-  writeFileSync
+  readFileSync
 } from 'fs'
 import { join, extname, basename, dirname, parse } from 'path'
 import { homedir } from 'os'
@@ -30,20 +29,20 @@ import type {
   StorageStats
 } from '@shared/types'
 import {
-  findModelByPath,
   listModels,
   deleteModel as dbDeleteModel,
   loadSettings,
   loadInstanceConfigs as loadInstanceConfigsSafe,
   upsertModel,
+  upsertModels,
   updateModel,
   upsertDownloadTask,
-  listDownloadTasks,
-  stringifyJsonc,
-  userDataDir
+  replaceDownloadTasks,
+  listDownloadTasks
 } from './db'
 import { resolveInsideAnyRoot, assertSafeRelativeFilename, isSafeExternalUrl } from './security'
 import { normalizeForCompare } from './security'
+import { LruCache } from './lru'
 
 const MODEL_EXT = new Set(['.safetensors', '.ckpt', '.pt', '.pth', '.bin', '.gguf', '.onnx'])
 
@@ -280,10 +279,10 @@ function readFileSyncSafe(file: string): string {
  * (path,size,mtime) → parsed header. Model scans re-walk the same checkpoints
  * constantly; unchanged files must not re-read their JSON header.
  */
-const safetensorsMetaCache = new Map<
+const safetensorsMetaCache = new LruCache<
   string,
   { size: number; mtimeMs: number; meta: Record<string, unknown> | null }
->()
+>(4000)
 
 /** Read safetensors header (first 8 bytes LE u64 + JSON). */
 export function readSafetensorsMeta(filePath: string): Record<string, unknown> | null {
@@ -475,6 +474,12 @@ export class ModelService extends EventEmitter {
       files.push(...bucket)
     }
 
+    // Read the index ONCE and stage updates, then flush in a single
+    // read-modify-write. The old per-file `upsertModel` rewrote the entire
+    // models.jsonc once per discovered file — O(N²) on a real library (0.1.16).
+    const existingByPath = new Map(listModels().map((m) => [m.path, m]))
+    const updates: ModelRecord[] = []
+
     let scanned = 0
     for (const file of files) {
       scanned += 1
@@ -489,7 +494,7 @@ export class ModelService extends EventEmitter {
         const st = statSync(file)
         const id = createHash('sha1').update(file).digest('hex').slice(0, 16)
         const category = rootHintByFile.get(file) ?? categorize(file)
-        const existing = findModelByPath(file)
+        const existing = existingByPath.get(file)
         let hash = existing?.hashSha256
         if (opts?.hash && !hash) {
           this.emit('progress', {
@@ -552,11 +557,12 @@ export class ModelService extends EventEmitter {
           duplicateOf: existing?.duplicateOf,
           pathRoot: allRoots.find((r) => file.startsWith(r.root))?.root || dirname(file)
         }
-        upsertModel(rec)
+        updates.push(rec)
       } catch {
         /* skip unreadable */
       }
     }
+    upsertModels(updates)
 
     // mark duplicates
     if (opts?.hash !== false) {
@@ -711,12 +717,9 @@ export class ModelService extends EventEmitter {
     return removed
   }
 
-  /** Rewrite the downloads jsonc store (db.ts has no delete helper). */
+  /** Replace the persisted downloads list (debounced in db.ts, 0.1.16). */
   private persistDownloadTasks(tasks: DownloadTask[]): void {
-    const file = join(userDataDir(), 'downloads.jsonc')
-    const tmp = file + '.tmp'
-    writeFileSync(tmp, stringifyJsonc(tasks), 'utf-8')
-    renameSync(tmp, file)
+    replaceDownloadTasks(tasks)
   }
 
   /** Push a global toast for terminal download states (done / final error). */

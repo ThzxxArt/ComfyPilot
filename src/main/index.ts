@@ -12,7 +12,15 @@ import { execDiagnosticsService } from './services/execDiagnostics'
 import { syncProxyFromSettings } from './services/proxy'
 import { createTray, destroyTray, refreshTray, hasTray } from './services/tray'
 import { setLaunchOnBoot } from './services/desktop'
-import { loadSettings, loadInstanceConfigs } from './services/db'
+import {
+  loadSettings,
+  loadInstanceConfigs,
+  logsDir,
+  migrateLegacyLogs,
+  flushPendingWrites
+} from './services/db'
+import { markSessionStart, markSessionCleanExit, recordCrashDetail } from './services/session'
+import { monitorEventLoopDelay } from 'perf_hooks'
 import { IPC_EVENTS } from '@shared/types'
 import { APP_NAME } from '@shared/constants'
 import { isSafeExternalUrl, safeResolveUnder } from './services/security'
@@ -42,19 +50,16 @@ let mainWindow: BrowserWindow | null = null
 let forceQuit = false
 
 function crashLog(msg: string): void {
+  const line = `[${new Date().toISOString()}] ${msg}\n`
   try {
-    const dir = join(
-      process.env.APPDATA || join(process.env.HOME || '', 'AppData/Roaming'),
-      'ComfyPilot',
-      'logs'
-    )
-    mkdirSync(dir, { recursive: true })
-    appendFileSync(join(dir, 'boot.log'), `[${new Date().toISOString()}] ${msg}\n`)
+    // Single canonical log root (0.1.16) — <userData>/logs, the dir the
+    // Settings "open logs dir" button actually opens.
+    appendFileSync(join(logsDir(), 'boot.log'), line)
   } catch {
     try {
       const dir = join(app.getPath('userData'), 'logs')
       mkdirSync(dir, { recursive: true })
-      appendFileSync(join(dir, 'startup-crash.log'), `[${new Date().toISOString()}] ${msg}\n`)
+      appendFileSync(join(dir, 'startup-crash.log'), line)
     } catch {
       /* ignore */
     }
@@ -62,16 +67,72 @@ function crashLog(msg: string): void {
 }
 
 process.on('uncaughtException', (err) => {
-  crashLog('uncaughtException: ' + (err?.stack || err))
+  const detail = String(err?.stack || err)
+  crashLog('uncaughtException: ' + detail)
+  // Persist the reason onto the session marker so the NEXT launch can report
+  // "last run ended in an uncaught exception" even if this process dies.
+  recordCrashDetail('uncaughtException: ' + detail)
   try {
-    dialog.showErrorBox('ComfyPilot error', String(err?.stack || err))
+    broadcastNotification({
+      type: 'error',
+      title: 'ComfyPilot error',
+      titleKey: 'notify.appCrash',
+      message: detail.slice(0, 220),
+      messageKey: 'notify.appCrashMsg',
+      params: { message: detail.slice(0, 220) },
+      duration: 0
+    })
+  } catch {
+    /* notification is best-effort */
+  }
+  try {
+    dialog.showErrorBox(
+      'ComfyPilot error',
+      detail +
+        '\n\nRestart the app and export diagnostics from Settings to help investigate the crash.'
+    )
   } catch {
     /* ignore */
   }
 })
 process.on('unhandledRejection', (err) => {
-  crashLog('unhandledRejection: ' + String(err))
+  const detail = String(err)
+  crashLog('unhandledRejection: ' + detail)
+  recordCrashDetail('unhandledRejection: ' + detail)
 })
+
+/**
+ * Main-process watchdog (0.1.16): sample heap/RSS + event-loop lag so a future
+ * "it froze then vanished" leaves a breadcrumb in boot.log. Deliberately
+ * log-only — never kills or restarts the app.
+ */
+function startWatchdog(): void {
+  try {
+    const loopDelay = monitorEventLoopDelay({ resolution: 20 })
+    loopDelay.enable()
+    let lastWarn = 0
+    const timer = setInterval(() => {
+      try {
+        const mem = process.memoryUsage()
+        const lagMs = loopDelay.max / 1e6
+        loopDelay.reset()
+        const heapMb = Math.round(mem.heapUsed / 1048576)
+        const rssMb = Math.round(mem.rss / 1048576)
+        if ((heapMb > 1536 || lagMs > 5000) && Date.now() - lastWarn > 60_000) {
+          lastWarn = Date.now()
+          crashLog(`watchdog: heap=${heapMb}MB rss=${rssMb}MB eventLoopMax=${Math.round(lagMs)}ms`)
+        }
+      } catch {
+        /* sampling must never throw */
+      }
+    }, 15_000)
+    if (typeof (timer as { unref?: () => void }).unref === 'function') {
+      ;(timer as unknown as { unref: () => void }).unref()
+    }
+  } catch {
+    /* perf_hooks unavailable — watchdog is optional */
+  }
+}
 
 function resolveAppIcon(): string {
   // Prefer .ico on Windows, fallback to PNG elsewhere / in dev
@@ -304,6 +365,26 @@ crashLog('module body done, registering whenReady')
 app.whenReady().then(async () => {
   const e2e = process.env.COMFYPILOT_E2E === '1' || process.argv.includes('--e2e-smoke')
   crashLog('whenReady start')
+
+  // Log-root consolidation + session liveness + watchdog (0.1.16).
+  try {
+    migrateLegacyLogs()
+  } catch {
+    /* best effort */
+  }
+  try {
+    const prev = markSessionStart()
+    if (!prev.clean) {
+      crashLog(
+        `previous session did not exit cleanly (started=${prev.startedAt ?? '?'}${
+          prev.detail ? ' detail=' + prev.detail.slice(0, 200) : ''
+        })`
+      )
+    }
+  } catch {
+    /* best effort */
+  }
+  startWatchdog()
 
   // Window first: renderer must boot even if a service module is toxic.
   try {
@@ -651,7 +732,30 @@ app.whenReady().then(async () => {
     } catch {
       /* ignore */
     }
+    // Mark this session as a clean exit and flush debounced writes (0.1.16).
+    try {
+      markSessionCleanExit()
+    } catch {
+      /* ignore */
+    }
+    try {
+      flushPendingWrites()
+    } catch {
+      /* ignore */
+    }
   })
+})
+
+// A crashed renderer/GPU/utility child used to leave no trace. Record every
+// child-process termination so a future unexpected exit is diagnosable (0.1.16).
+app.on('child-process-gone', (_event, details) => {
+  try {
+    crashLog(
+      `CHILD PROCESS GONE type=${details.type} reason=${details.reason} exit=${details.exitCode}`
+    )
+  } catch {
+    /* ignore */
+  }
 })
 
 app.on('window-all-closed', () => {

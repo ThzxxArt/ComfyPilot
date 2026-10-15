@@ -5,6 +5,15 @@ export default {
     brandTag: 'Control Tower',
     github: 'GitHub'
   },
+  session: {
+    uncleanTitle: 'Last run did not exit cleanly',
+    uncleanMsg:
+      'ComfyPilot appears to have ended unexpectedly last time (no clean-exit marker), which can be a sign of a crash. You can export diagnostics to help investigate.',
+    export: 'Export diagnostics',
+    exported: 'Diagnostics exported: {path}',
+    dismiss: 'Dismiss',
+    details: 'Details'
+  },
   nav: {
     dashboard: 'Dashboard',
     instances: 'Instances',
@@ -266,6 +275,14 @@ export default {
     ready: 'Ready',
     starting: 'Starting',
     openLogs: 'Open logs',
+    logsShowDebug: 'Show debug logs',
+    logsHideDebug: 'Hide debug logs',
+    startupIssuesTitle: 'Node load failures ({n})',
+    startupIssuesMsg:
+      'These node packs failed to load due to missing dependencies or their own errors: {names}',
+    startupIssuesMissing: 'Missing modules: {modules}',
+    startupIssuesReview: 'Review & fix',
+    startupIssuesDismiss: 'Dismiss',
     runDoctor: 'Run doctor',
     startAll: 'Start all',
     stopAll: 'Stop all',
@@ -1432,7 +1449,9 @@ export default {
     appUpdateAvailable: 'Update available',
     appUpdateAvailableMsg: 'Downloading v{version} in the background (progress in Settings)',
     appUpdateDownloaded: 'Update ready',
-    appUpdateDownloadedMsg: 'v{version} downloaded — restart from Settings to install'
+    appUpdateDownloadedMsg: 'v{version} downloaded — restart from Settings to install',
+    appCrash: 'ComfyPilot error',
+    appCrashMsg: '{message}'
   },
   exec: {
     title: 'Runtime failures ({n})',

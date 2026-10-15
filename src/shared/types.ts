@@ -30,6 +30,42 @@ export interface AppUpdateStatus {
   checkedAt: number
 }
 
+/**
+ * Previous-session exit facts (0.1.16).
+ * Written to `<logsDir>/session.json` on start / clean exit so the next launch
+ * can tell the user "last run did not exit cleanly" and offer a diagnostics
+ * export — the app previously had no way to prove how it had ended.
+ */
+export interface PreviousExitInfo {
+  /** True when the previous session wrote a clean-exit marker. */
+  clean: boolean
+  /** Epoch ms of the previous session's start (null on first run). */
+  startedAt: number | null
+  /** Epoch ms of the clean exit (null when the session ended uncleanly). */
+  endedAt: number | null
+  /** Optional last recorded reason (e.g. an uncaught-exception summary). */
+  detail?: string
+}
+
+/** A single custom-node pack that failed to import at boot (0.1.16). */
+export interface InstanceStartupIssue {
+  /** Custom-node pack folder name, or 'unknown'. */
+  pack: string
+  /** Human-readable failure summary (verbatim from the log, trimmed). */
+  summary: string
+  /** Missing import names parsed from the log (best effort, may be empty). */
+  missingModules: string[]
+}
+
+/** Startup issues surfaced after an instance boots (0.1.16). */
+export interface InstanceStartupIssues {
+  instanceId: string
+  /** True when at least one pack failed to import. */
+  hasIssues: boolean
+  issues: InstanceStartupIssue[]
+  scannedAt: number
+}
+
 export type ProxyProtocol = 'http' | 'https' | 'socks5'
 
 export interface ProxySettings {
@@ -1322,6 +1358,8 @@ export type IpcChannelMap = {
   'instance.execFailures': { args: [string]; result: ExecFailure[] }
   /** Dismiss recorded failures (log-derived ones up to now). */
   'instance.clearExecFailures': { args: [string]; result: boolean }
+  /** Custom-node packs that failed to import (parsed from the boot log, 0.1.16). */
+  'instance.startupIssues': { args: [string]; result: InstanceStartupIssues }
 
   // models
   'model.list': { args: []; result: ModelRecord[] }
@@ -1661,6 +1699,10 @@ export type IpcChannelMap = {
   'app.updateStatus': { args: []; result: AppUpdateStatus }
   /** Quit-and-install a DOWNLOADED update (0.1.13). */
   'app.installUpdate': { args: []; result: { ok: boolean; error?: string } }
+  /** How the previous session ended (0.1.16) — powers the unclean-exit hint. */
+  'app.previousExit': { args: []; result: PreviousExitInfo }
+  /** Bundle logs + session + runtime facts into a diagnostics folder (0.1.16). */
+  'app.exportDiagnostics': { args: []; result: { path: string } }
 
   // market
   'market.list': {
@@ -1699,6 +1741,195 @@ export type IpcChannelMap = {
 }
 
 export type IpcChannel = keyof IpcChannelMap
+
+/**
+ * Runtime list of every invoke channel (0.1.16).
+ *
+ * TypeScript types are erased at runtime, so the preload cannot derive the
+ * channel whitelist from `IpcChannelMap`. This array is that runtime mirror;
+ * `tests/unit/ipcRegistration.test.ts` asserts it exactly matches the keys
+ * registered by `registerIpcHandlers`, so the list can never silently drift.
+ */
+export const IPC_CHANNELS = [
+  'app.checkUpdate',
+  'app.exportDiagnostics',
+  'app.installUpdate',
+  'app.previousExit',
+  'app.updateStatus',
+  'backup.create',
+  'backup.delete',
+  'backup.list',
+  'backup.openFolder',
+  'backup.restore',
+  'batch.cancel',
+  'batch.cancelItem',
+  'batch.create',
+  'batch.list',
+  'batch.preflight',
+  'batch.remove',
+  'batch.start',
+  'bootstrap.download',
+  'bootstrap.ensure',
+  'bootstrap.status',
+  'deps.recipes',
+  'doctor.fix',
+  'doctor.run',
+  'embed.close',
+  'embed.open',
+  'embed.resize',
+  'env.createVenv',
+  'env.installTorch',
+  'env.listPythons',
+  'env.probe',
+  'installer.cancel',
+  'installer.detectGpu',
+  'installer.installStarter',
+  'installer.preflight',
+  'installer.start',
+  'installer.starterModels',
+  'installer.status',
+  'installer.suggestInstallRoot',
+  'instance.applyRecipe',
+  'instance.cancelUpdate',
+  'instance.capabilities',
+  'instance.checkComfyUpdate',
+  'instance.checkPort',
+  'instance.clearExecFailures',
+  'instance.clearLogs',
+  'instance.copyDiagnostics',
+  'instance.discover',
+  'instance.execFailures',
+  'instance.exportDiagnostics',
+  'instance.exportLaunchScript',
+  'instance.exportLogs',
+  'instance.forceKill',
+  'instance.getLogs',
+  'instance.launch',
+  'instance.list',
+  'instance.pipCancel',
+  'instance.pipInstall',
+  'instance.pipStatus',
+  'instance.previewLaunch',
+  'instance.probeEnv',
+  'instance.remove',
+  'instance.repairEnv',
+  'instance.repairStatus',
+  'instance.restart',
+  'instance.runStartupSelfCheck',
+  'instance.save',
+  'instance.startAll',
+  'instance.startupIssues',
+  'instance.stop',
+  'instance.stopAll',
+  'instance.suggestPort',
+  'instance.updateComfy',
+  'instance.updateStatus',
+  'market.install',
+  'market.list',
+  'model.batchRename',
+  'model.cancelDownload',
+  'model.clearFinishedDownloads',
+  'model.delete',
+  'model.download',
+  'model.downloads',
+  'model.ensureThumbs',
+  'model.fetchCivitaiMeta',
+  'model.findDuplicates',
+  'model.list',
+  'model.move',
+  'model.parseExtraPaths',
+  'model.pauseDownload',
+  'model.reconcile',
+  'model.rename',
+  'model.resumeDownload',
+  'model.scan',
+  'model.storageStats',
+  'model.symlink',
+  'model.tag',
+  'monitor.clearQueue',
+  'monitor.connectWs',
+  'monitor.disconnectWs',
+  'monitor.freeMemory',
+  'monitor.history',
+  'monitor.interrupt',
+  'monitor.jobs',
+  'monitor.queue',
+  'monitor.system',
+  'net.recommendMirrors',
+  'node.cancelBatch',
+  'node.cancelOp',
+  'node.checkIssues',
+  'node.checkUpdates',
+  'node.conflicts',
+  'node.createSnapshot',
+  'node.deleteSnapshot',
+  'node.depsAudit',
+  'node.install',
+  'node.installDeps',
+  'node.list',
+  'node.loadReport',
+  'node.lock',
+  'node.managerChannel',
+  'node.opStatus',
+  'node.refresh',
+  'node.restoreSnapshot',
+  'node.smokeTest',
+  'node.snapshots',
+  'node.toggle',
+  'node.uninstall',
+  'node.uninstallDeps',
+  'node.update',
+  'node.updateAll',
+  'output.assetsMatch',
+  'output.batchDelete',
+  'output.delete',
+  'output.exportZip',
+  'output.favorite',
+  'output.importToWorkflow',
+  'output.list',
+  'output.open',
+  'output.reveal',
+  'proxy.apply',
+  'proxy.test',
+  'registry.ensureIndex',
+  'registry.indexStatus',
+  'registry.refreshIndex',
+  'remote.freeMemory',
+  'remote.list',
+  'remote.listStatus',
+  'remote.remove',
+  'remote.save',
+  'remote.test',
+  'settings.dataDir',
+  'settings.get',
+  'settings.launchTemplates',
+  'settings.logsDir',
+  'settings.set',
+  'shell.openExternal',
+  'shell.openPath',
+  'shell.pickDirectory',
+  'shell.pickFile',
+  'shell.pickFiles',
+  'shell.reveal',
+  'shell.writeClipboard',
+  'workflow.compare',
+  'workflow.copyToInstance',
+  'workflow.delete',
+  'workflow.exportZip',
+  'workflow.favorite',
+  'workflow.import',
+  'workflow.importDefault',
+  'workflow.importMany',
+  'workflow.libraryInfo',
+  'workflow.list',
+  'workflow.openInFrontend',
+  'workflow.parsePngMeta',
+  'workflow.preflight',
+  'workflow.queue',
+  'workflow.rename',
+  'workflow.reveal',
+  'workflow.tag'
+] as const
 
 export const IPC_EVENTS = {
   instanceStatus: 'event:instance-status',

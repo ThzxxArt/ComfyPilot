@@ -3,10 +3,7 @@
  * behind the output batch delete and model batch delete / move.
  */
 import { describe, expect, it, vi } from 'vitest'
-import {
-  runBatchOps,
-  viewersCloseAfterRemoval
-} from '../../src/renderer/src/utils/batchOps'
+import { runBatchOps, viewersCloseAfterRemoval } from '../../src/renderer/src/utils/batchOps'
 
 describe('runBatchOps (0.1.15)', () => {
   it('counts successes and keeps processing after a failure', async () => {

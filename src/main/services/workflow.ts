@@ -36,6 +36,7 @@ import {
 } from './db'
 import { ComfyApiClient } from './comfyApi'
 import { assertSafeRelativeFilename, isPathInside } from './security'
+import { LruCache } from './lru'
 
 // ---------- PNG metadata ----------
 
@@ -377,7 +378,10 @@ function recordIdFor(path: string): string {
  * (path,size,mtime) → analysis cache. list() rescans every file on each call;
  * unchanged files must not re-parse JSON / re-read PNG metadata.
  */
-const analyzeCache = new Map<string, { size: number; mtimeMs: number; analyzed: ParsedWorkflow }>()
+const analyzeCache = new LruCache<
+  string,
+  { size: number; mtimeMs: number; analyzed: ParsedWorkflow }
+>(4000)
 
 function analyzeCached(
   full: string,

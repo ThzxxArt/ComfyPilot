@@ -2117,3 +2117,31 @@ describe('exportLogs (0.1.11)', () => {
     expect(content).toMatch(/\[.*\] INFO hello export line/)
   })
 })
+
+describe('instance log pipeline (0.1.16)', () => {
+  it('classifies by in-line level, strips ANSI, and keeps arrival order across streams', async () => {
+    register(cfg({ id: 'logs' }))
+    h.state.fetchImpl = failFetch // stays 'starting'; we only care about log ingestion
+    await svc.start('logs')
+    const child = childOf(svc, 'logs')
+    // Interleave the two streams in a known order.
+    child.stdout.emit('data', Buffer.from('plain stdout line\n'))
+    child.stderr.emit('data', Buffer.from('\u001b[32m[INFO]\u001b[0m stderr info line\n'))
+    child.stdout.emit('data', Buffer.from('!!! Exception during processing !!!\n'))
+
+    const lines = svc
+      .getLogs('logs')
+      .filter((l) => /plain stdout line|stderr info line|Exception during/.test(l.message))
+
+    // Arrival order preserved (merged memory+file, no sorting games).
+    expect(lines.map((l) => l.message)).toEqual([
+      'plain stdout line',
+      '[INFO] stderr info line',
+      '!!! Exception during processing !!!'
+    ])
+    expect(lines[0].level).toBe('info')
+    // Python logging writes INFO to STDERR — it must NOT be painted as a warning.
+    expect(lines[1].level).toBe('info')
+    expect(lines[2].level).toBe('error')
+  })
+})

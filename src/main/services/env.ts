@@ -12,7 +12,7 @@ import type {
   UpdateStepId
 } from '@shared/types'
 import { loadSettings } from './db'
-import { proxyEnv } from './proxy'
+import { comfyChildEnv } from './childEnv'
 
 const execFileAsync = promisify(execFile)
 
@@ -30,7 +30,7 @@ async function safeExec(
       timeout: timeoutMs,
       windowsHide: true,
       maxBuffer: 20 * 1024 * 1024,
-      env: proxyEnv(loadSettings().proxy)
+      env: comfyChildEnv(loadSettings())
     })
     return stdout.trim()
   } catch (err) {
@@ -59,7 +59,7 @@ export const throwingExec: ExecLike = async (cmd, args, opts) => {
     timeout: opts?.timeout,
     windowsHide: true,
     maxBuffer: 20 * 1024 * 1024,
-    env: proxyEnv(loadSettings().proxy)
+    env: comfyChildEnv(loadSettings())
   })
   return `${stdout || ''}${stderr || ''}`.trim()
 }
@@ -111,7 +111,7 @@ export async function runStreaming(
     const child = spawn(cmd, args, {
       cwd: opts.cwd,
       windowsHide: true,
-      env: proxyEnv(loadSettings().proxy)
+      env: comfyChildEnv(loadSettings())
     })
     let timer: ReturnType<typeof setTimeout> | null = null
     const onAbort = (): void => {

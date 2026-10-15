@@ -42,8 +42,10 @@ import { APP_VERSION } from '@shared/constants'
 import { COLORS } from '@/styles/tokens'
 import PipOpModal from '@/components/PipOpModal.vue'
 
-// App.vue sits outside NMessageProvider — use a discrete message API.
-const discreteMessage = createDiscreteApi(['message']).message
+// App.vue sits outside NMessageProvider — use discrete message/dialog APIs.
+const discreteApi = createDiscreteApi(['message', 'dialog'])
+const discreteMessage = discreteApi.message
+const discreteDialog = discreteApi.dialog
 import type { ComfyInstanceInfo } from '@shared/types'
 
 const router = useRouter()
@@ -313,6 +315,36 @@ watch(
   }
 )
 
+/**
+ * 0.1.16: if the previous session did not write a clean-exit marker, the app
+ * likely ended unexpectedly. Surface it and offer a diagnostics export — this
+ * is the only reliable way to prove a "silent crash" actually happened.
+ */
+async function checkPreviousExit(): Promise<void> {
+  try {
+    const info = await ipc('app.previousExit')
+    if (info.clean) return
+    discreteDialog.warning({
+      title: t('session.uncleanTitle'),
+      content: t('session.uncleanMsg'),
+      positiveText: t('session.export'),
+      negativeText: t('session.dismiss'),
+      onPositiveClick: () => void exportAppDiagnostics()
+    })
+  } catch {
+    /* liveness hint must never block startup */
+  }
+}
+
+async function exportAppDiagnostics(): Promise<void> {
+  try {
+    const { path } = await ipc('app.exportDiagnostics')
+    discreteMessage.success(t('session.exported', { path }))
+  } catch (e) {
+    discreteMessage.error(e instanceof Error ? e.message : String(e))
+  }
+}
+
 onMounted(async () => {
   await store.bootstrap()
   if (store.settings?.locale) locale.value = store.settings.locale
@@ -321,6 +353,7 @@ onMounted(async () => {
   window.addEventListener('keydown', onKeydown)
   window.addEventListener('comfypilot:layout-request', onLayoutRequest)
   if (store.activeInstanceId) void refreshPipStatus(store.activeInstanceId)
+  void checkPreviousExit()
 })
 
 onUnmounted(() => {

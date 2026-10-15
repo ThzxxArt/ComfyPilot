@@ -4,8 +4,6 @@
  * can pre-select the fastest PyPI / Torch / GitHub mirror for the user.
  */
 import { session } from 'electron'
-import { proxyEnv } from './proxy'
-import { loadSettings } from './db'
 
 export interface ProbeResult {
   id: string
@@ -111,9 +109,10 @@ async function probeOnce(url: string, method: 'HEAD' | 'GET', timeoutMs: number)
     }
     return Date.now() - started
   } catch {
-    // session fetch unavailable — fall back to Node fetch
+    // session fetch unavailable — last-resort direct Node fetch. NOTE: Node's
+    // global fetch cannot honour the Electron session proxy, so this path is
+    // deliberately proxy-free; only reached when `session.fetch` itself throws.
   }
-  void proxyEnv(loadSettings().proxy)
   const res = await fetch(url, { method, signal: AbortSignal.timeout(timeoutMs) })
   void res.status
   try {

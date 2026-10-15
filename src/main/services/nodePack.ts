@@ -55,13 +55,14 @@ import {
   upsertNodePack
 } from './db'
 import { REGISTRY_API } from '@shared/constants'
-import { proxyEnv } from './proxy'
+import { comfyChildEnv } from './childEnv'
 import { runStreaming } from './env'
 import { sanitizeId, isPathInside, normalizePathEverySegment } from './security'
 import { assertSafeGitUrl, applyGithubMirror, assertSafeBranch } from './installer'
 import { instanceService, resolveInstancePythonPath, resolveRuntimesPythonSync } from './instance'
 import { findInRuntimes } from './bootstrap'
 import { isPipOpActive } from './pipOps'
+import { LruCache } from './lru'
 
 const execFileAsync = promisify(execFile)
 
@@ -421,7 +422,7 @@ function packMetaSignature(dir: string): string {
 type PackMeta = Partial<NodePackRecord> & { nodeList?: string[] }
 
 /** dir + input signature → parsed meta. */
-const packMetaCache = new Map<string, { sig: string; meta: PackMeta }>()
+const packMetaCache = new LruCache<string, { sig: string; meta: PackMeta }>(2000)
 
 function readPackMeta(dir: string): PackMeta {
   const sig = packMetaSignature(dir)
@@ -1311,7 +1312,7 @@ export class NodePackService extends EventEmitter {
         await execFileAsync(gitBin, args, {
           timeout: 120000,
           maxBuffer: 20 * 1024 * 1024,
-          env: proxyEnv(loadSettings().proxy),
+          env: comfyChildEnv(loadSettings()),
           signal: opts.signal
         })
         if (pinned) {
@@ -1328,7 +1329,7 @@ export class NodePackService extends EventEmitter {
               'origin',
               `refs/tags/${safeRef}:refs/tags/${safeRef}`
             ],
-            { timeout: 60000, env: proxyEnv(loadSettings().proxy), signal: opts.signal }
+            { timeout: 60000, env: comfyChildEnv(loadSettings()), signal: opts.signal }
           ).catch(() => undefined)
           // tags/<v> first (exact release tag), then the bare ref (branch / sha).
           // Checkout failure is NON-FATAL — fall through to default branch.
@@ -1336,7 +1337,7 @@ export class NodePackService extends EventEmitter {
           try {
             await execFileAsync(gitBin, ['-C', tmpDest, 'checkout', `tags/${safeRef}`], {
               timeout: 30000,
-              env: proxyEnv(loadSettings().proxy),
+              env: comfyChildEnv(loadSettings()),
               signal: opts.signal
             })
             checkedOut = true
@@ -1344,7 +1345,7 @@ export class NodePackService extends EventEmitter {
             try {
               await execFileAsync(gitBin, ['-C', tmpDest, 'checkout', safeRef], {
                 timeout: 30000,
-                env: proxyEnv(loadSettings().proxy),
+                env: comfyChildEnv(loadSettings()),
                 signal: opts.signal
               })
               checkedOut = true
@@ -1752,7 +1753,7 @@ export class NodePackService extends EventEmitter {
                   timeout: o?.timeout ?? 10 * 60 * 1000,
                   maxBuffer: 10 * 1024 * 1024,
                   windowsHide: true,
-                  env: proxyEnv(loadSettings().proxy)
+                  env: comfyChildEnv(loadSettings())
                 }).then((r) => r.stdout)
               },
               {
@@ -1917,7 +1918,7 @@ export class NodePackService extends EventEmitter {
           timeout: 5 * 60 * 1000,
           maxBuffer: 10 * 1024 * 1024,
           windowsHide: true,
-          env: proxyEnv(loadSettings().proxy),
+          env: comfyChildEnv(loadSettings()),
           signal
         })
         removed.push(...batch)
@@ -1931,7 +1932,7 @@ export class NodePackService extends EventEmitter {
               timeout: 60000,
               maxBuffer: 2 * 1024 * 1024,
               windowsHide: true,
-              env: proxyEnv(loadSettings().proxy),
+              env: comfyChildEnv(loadSettings()),
               signal
             })
             removed.push(n)
@@ -2258,7 +2259,7 @@ export class NodePackService extends EventEmitter {
     if (gitLike && pack.path && existsSync(join(pack.path, '.git'))) {
       try {
         const gitBin = resolveGitBinary()
-        const gitEnv = proxyEnv(loadSettings().proxy)
+        const gitEnv = comfyChildEnv(loadSettings())
         await execFileAsync(gitBin, ['-C', pack.path, 'fetch', '--quiet'], {
           timeout: 30000,
           env: gitEnv
@@ -2688,7 +2689,7 @@ export class NodePackService extends EventEmitter {
           timeout: o?.timeout,
           maxBuffer: 20 * 1024 * 1024,
           windowsHide: true,
-          env: proxyEnv(loadSettings().proxy)
+          env: comfyChildEnv(loadSettings())
         }).then((r) => r.stdout)
     )
   }
@@ -2720,7 +2721,7 @@ export class NodePackService extends EventEmitter {
       const { stdout: branchOut } = await execFileAsync(
         gitBin,
         ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'],
-        { timeout: 10000, env: proxyEnv(loadSettings().proxy), signal }
+        { timeout: 10000, env: comfyChildEnv(loadSettings()), signal }
       )
       const branch = branchOut.trim()
       if (!branch || branch === 'HEAD') throw e
@@ -2770,7 +2771,7 @@ export class NodePackService extends EventEmitter {
       try {
         const { stdout } = await execFileAsync(gitBin, ['-C', pack.path, 'rev-parse', 'HEAD'], {
           timeout: 10000,
-          env: proxyEnv(loadSettings().proxy)
+          env: comfyChildEnv(loadSettings())
         })
         oldRev = stdout.trim()
       } catch {
@@ -2797,7 +2798,7 @@ export class NodePackService extends EventEmitter {
           try {
             await execFileAsync(gitBin, ['-C', pack.path, 'reset', '--hard', oldRev], {
               timeout: 30000,
-              env: proxyEnv(loadSettings().proxy)
+              env: comfyChildEnv(loadSettings())
             })
             this.opLog?.(`git pull failed — reset --hard ${oldRev.slice(0, 12)}`, instanceId)
           } catch {

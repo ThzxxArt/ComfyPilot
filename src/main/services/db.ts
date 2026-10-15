@@ -8,6 +8,7 @@
 import { app } from 'electron'
 import { join, basename, dirname } from 'path'
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -193,6 +194,42 @@ export function logsDir(): string {
   return ensureDir(join(app.getPath('userData'), 'logs'))
 }
 
+let legacyLogsMigrated = false
+
+/**
+ * One-shot consolidation of the legacy boot log (0.1.16).
+ *
+ * `bootstrap.cjs` and the early `crashLog` helper hardcoded
+ * `%APPDATA%/ComfyPilot/logs` while the real Electron userData is
+ * `%APPDATA%/comfy-pilot` (app `name` ≠ `productName`). The "open logs dir"
+ * button therefore pointed at an empty folder and README documented the wrong
+ * path. Everything now lives under `logsDir()`; this appends the old boot log
+ * (if any) and marks it migrated. Best-effort — never blocks startup.
+ */
+export function migrateLegacyLogs(): void {
+  if (legacyLogsMigrated) return
+  legacyLogsMigrated = true
+  try {
+    const legacyDir = join(app.getPath('appData'), 'ComfyPilot', 'logs')
+    const target = logsDir()
+    const norm = (p: string): string => (process.platform === 'win32' ? p.toLowerCase() : p)
+    if (norm(legacyDir) === norm(target)) return
+    const legacyBoot = join(legacyDir, 'boot.log')
+    if (!existsSync(legacyBoot)) return
+    const targetBoot = join(target, 'boot.log')
+    const legacyText = readFileSync(legacyBoot, 'utf-8')
+    if (existsSync(targetBoot)) appendFileSync(targetBoot, legacyText)
+    else writeFileSync(targetBoot, legacyText, 'utf-8')
+    try {
+      renameSync(legacyBoot, legacyBoot + '.migrated')
+    } catch {
+      /* leave it in place if locked */
+    }
+  } catch {
+    /* best effort */
+  }
+}
+
 export function backupDir(): string {
   return ensureDir(join(userDataDir(), 'backups'))
 }
@@ -237,6 +274,59 @@ function writeJsonc(name: string, value: unknown, header?: string): void {
   const tmp = p + '.tmp'
   writeFileSync(tmp, stringifyJsonc(value, header), 'utf-8')
   renameSync(tmp, p)
+}
+
+// ---------- Debounced persistence (0.1.16) ----------
+// High-frequency writers (install-progress ticks, download-progress ticks)
+// used to rewrite their whole JSONC file synchronously on every tick —
+// hundreds of read-modify-writes per install/download. They now keep an
+// in-memory snapshot (reads stay immediately consistent) and coalesce disk
+// writes; `flushPendingWrites()` is called on quit so nothing is lost, and the
+// debounce window is bounded.
+interface PendingWrite {
+  value: unknown
+  header?: string
+}
+const pendingWrites = new Map<string, PendingWrite>()
+const fileCache = new Map<string, unknown>()
+let flushTimer: NodeJS.Timeout | null = null
+const FLUSH_MS = 400
+
+function readJsoncCached<T>(name: string, fallback: T): T {
+  if (fileCache.has(name)) return fileCache.get(name) as T
+  return readJsonc<T>(name, fallback)
+}
+
+function scheduleFileWrite(name: string, value: unknown, header?: string): void {
+  fileCache.set(name, value)
+  pendingWrites.set(name, { value, header })
+  if (flushTimer) return
+  flushTimer = setTimeout(() => {
+    flushTimer = null
+    flushPendingWrites()
+  }, FLUSH_MS)
+  // A pending flush must never keep the process alive on its own.
+  if (typeof (flushTimer as { unref?: () => void }).unref === 'function') {
+    ;(flushTimer as unknown as { unref: () => void }).unref()
+  }
+}
+
+/** Write every debounced collection to disk immediately. Safe to call anytime. */
+export function flushPendingWrites(): void {
+  if (flushTimer) {
+    clearTimeout(flushTimer)
+    flushTimer = null
+  }
+  if (!pendingWrites.size) return
+  const entries = [...pendingWrites.entries()]
+  pendingWrites.clear()
+  for (const [name, entry] of entries) {
+    try {
+      writeJsonc(name, entry.value, entry.header)
+    } catch {
+      /* persistence is best-effort */
+    }
+  }
 }
 
 /**
@@ -392,10 +482,22 @@ export function deleteInstanceConfig(id: string): boolean {
 
 // ---------- Models ----------
 export function upsertModel(m: ModelRecord): void {
+  upsertModels([m])
+}
+
+/**
+ * Batch form of `upsertModel` — one read-modify-write for a whole scan
+ * (0.1.16). A per-file `upsertModel` inside the scan loop rewrote the entire
+ * models.jsonc once per discovered model (O(N²)); this writes it once.
+ */
+export function upsertModels(items: ModelRecord[]): void {
+  if (!items.length) return
   mutateInList<ModelRecord>('models', [], (list) => {
-    const i = list.findIndex((x) => x.path === m.path || x.id === m.id)
-    if (i >= 0) list[i] = { ...list[i], ...m }
-    else list.push(m)
+    for (const m of items) {
+      const i = list.findIndex((x) => x.path === m.path || x.id === m.id)
+      if (i >= 0) list[i] = { ...list[i], ...m }
+      else list.push(m)
+    }
     return list
   })
 }
@@ -515,12 +617,22 @@ export function workflowLibraryDir(): string {
 }
 
 // ---------- Downloads ----------
+// Progress ticks fire up to every 500ms per task; debounce the whole-file write.
 export function listDownloadTasks(): DownloadTask[] {
-  return readJsonc<DownloadTask[]>('downloads', [])
+  return readJsoncCached<DownloadTask[]>('downloads', [])
 }
 
 export function upsertDownloadTask(t: DownloadTask): void {
-  upsertInList('downloads', t, (a, b) => a.id === b.id)
+  const list = listDownloadTasks().slice()
+  const i = list.findIndex((x) => x.id === t.id)
+  if (i >= 0) list[i] = t
+  else list.push(t)
+  scheduleFileWrite('downloads', list)
+}
+
+/** Replace the whole downloads list (used by prune/persist paths). */
+export function replaceDownloadTasks(tasks: DownloadTask[]): void {
+  scheduleFileWrite('downloads', tasks)
 }
 
 // ---------- Batch ----------
@@ -692,12 +804,16 @@ export function saveInstallRun(progress: {
   [k: string]: unknown
 }): void {
   try {
-    const file = readJsonc<{ runs: Array<Record<string, unknown>> }>('install-runs', { runs: [] })
-    const runs = file.runs || []
+    // Progress ticks are frequent — keep the snapshot in memory and debounce
+    // the disk write (flushPendingWrites() on quit guarantees durability).
+    const file = readJsoncCached<{ runs: Array<Record<string, unknown>> }>('install-runs', {
+      runs: []
+    })
+    const runs = (file.runs || []).slice()
     const idx = runs.findIndex((r) => r.runId === progress.runId)
     if (idx >= 0) runs[idx] = progress
     else runs.unshift(progress)
-    writeJsonc('install-runs', { runs: runs.slice(0, 20) }, INSTALL_RUNS_HEADER)
+    scheduleFileWrite('install-runs', { runs: runs.slice(0, 20) }, INSTALL_RUNS_HEADER)
   } catch {
     /* persistence is best-effort — never fail the install because of it */
   }
@@ -706,7 +822,9 @@ export function saveInstallRun(progress: {
 export function loadInstallRuns(): Array<Record<string, unknown>> {
   try {
     return (
-      readJsonc<{ runs: Array<Record<string, unknown>> }>('install-runs', { runs: [] }).runs || []
+      readJsoncCached<{ runs: Array<Record<string, unknown>> }>('install-runs', {
+        runs: []
+      }).runs || []
     )
   } catch {
     return []
@@ -721,7 +839,8 @@ export function loadLatestInstallRun(): Record<string, unknown> | null {
 
 export function clearInstallRuns(): void {
   try {
-    writeJsonc('install-runs', { runs: [] }, INSTALL_RUNS_HEADER)
+    scheduleFileWrite('install-runs', { runs: [] }, INSTALL_RUNS_HEADER)
+    flushPendingWrites()
   } catch {
     /* ignore */
   }

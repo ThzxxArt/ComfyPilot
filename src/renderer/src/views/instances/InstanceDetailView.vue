@@ -45,6 +45,8 @@ import { useExecDiagnostics } from '@/composables/useExecDiagnostics'
 import { usePipOps } from '@/composables/usePipOps'
 import ComfyUpdateProgressModal from '@/components/ComfyUpdateProgressModal.vue'
 import { useI18n } from 'vue-i18n'
+import { isNoiseLogLine } from '@shared/logLine'
+import type { InstanceStartupIssues } from '@shared/types'
 import type {
   ComfyInstanceInfo,
   ComfyLogLine,
@@ -250,6 +252,10 @@ async function copyLogs(): Promise<void> {
 // ---------- 0.1.12: log search / level filter + runtime failure diagnosis ----
 const logQuery = ref('')
 const logLevelFilter = ref<'all' | 'error' | 'warn'>('all')
+/** Hide high-volume DEBUG/noise chatter by default (0.1.16). */
+const showDebugLogs = ref(false)
+/** Custom-node packs that failed to import at boot (0.1.16). */
+const startupIssues = ref<InstanceStartupIssues | null>(null)
 const logLevelOptions = computed(() => [
   { label: t('instance.logFilterAll'), value: 'all' },
   { label: t('instance.logFilterError'), value: 'error' },
@@ -258,6 +264,7 @@ const logLevelOptions = computed(() => [
 const visibleLogs = computed(() => {
   const q = logQuery.value.trim().toLowerCase()
   return logs.value.filter((l) => {
+    if (!showDebugLogs.value && isNoiseLogLine(l.level, l.message)) return false
     if (logLevelFilter.value !== 'all' && l.level !== logLevelFilter.value) return false
     if (
       q &&
@@ -520,6 +527,21 @@ async function doStop(): Promise<void> {
 let refreshSeq = 0
 let errorNotifiedFor: string | null = null
 
+/** Parse recent boot-log import failures for the running instance (0.1.16). */
+async function checkStartupIssues(forId: string): Promise<void> {
+  try {
+    const issues = await ipc('instance.startupIssues', forId)
+    if (id.value === forId) startupIssues.value = issues.hasIssues ? issues : null
+  } catch {
+    /* diagnosis is best-effort */
+  }
+}
+
+/** Send the user to the Nodes page to run a dependency audit / repair. */
+function reviewStartupIssues(): void {
+  void router.push('/nodes')
+}
+
 async function refresh(): Promise<void> {
   const seq = ++refreshSeq
   const forId = id.value
@@ -542,6 +564,8 @@ async function refresh(): Promise<void> {
     void loadExecFailures(forId)
     // Restore the pip-op banner/modal state after reloads / view switches.
     void refreshPipStatus(forId)
+    // Custom-node import failures parsed from the boot log (0.1.16).
+    void checkStartupIssues(forId)
     // Online capabilities (0.1.10): only meaningful while running; failures are
     // silent (the panel simply shows dashes).
     if (instance.value?.status === 'running') {
@@ -1332,6 +1356,10 @@ watch(
                     <NSwitch v-model:value="logFollow" size="small" />
                     <span class="log-follow-label">{{ $t('instance.logAutoFollow') }}</span>
                   </NSpace>
+                  <NSpace :size="6" align="center">
+                    <NSwitch v-model:value="showDebugLogs" size="small" />
+                    <span class="log-follow-label">{{ $t('instance.logsShowDebug') }}</span>
+                  </NSpace>
                   <NButton size="tiny" secondary :disabled="!logs.length" @click="copyLogs">
                     {{ $t('instance.logCopy') }}
                   </NButton>
@@ -1352,6 +1380,35 @@ watch(
                     {{ $t('common.refresh') }}
                   </NButton>
                 </NSpace>
+              </div>
+              <!-- 0.1.16: custom-node packs that failed to import at boot. -->
+              <div v-if="startupIssues?.hasIssues" class="startup-issues">
+                <div class="panel-head">
+                  <NTag size="small" type="warning" round>
+                    {{ $t('instance.startupIssuesTitle', { n: startupIssues.issues.length }) }}
+                  </NTag>
+                  <NSpace :size="8" align="center">
+                    <NButton size="tiny" secondary @click="reviewStartupIssues">
+                      {{ $t('instance.startupIssuesReview') }}
+                    </NButton>
+                    <NButton size="tiny" quaternary @click="startupIssues = null">
+                      {{ $t('instance.startupIssuesDismiss') }}
+                    </NButton>
+                  </NSpace>
+                </div>
+                <div class="startup-issues-body">
+                  <div v-for="it in startupIssues.issues" :key="it.pack" class="startup-issue">
+                    <span class="startup-issue-pack">{{ it.pack }}</span>
+                    <span class="startup-issue-summary">{{ it.summary }}</span>
+                    <span v-if="it.missingModules.length" class="startup-issue-missing">
+                      {{
+                        $t('instance.startupIssuesMissing', {
+                          modules: it.missingModules.join(', ')
+                        })
+                      }}
+                    </span>
+                  </div>
+                </div>
               </div>
               <!-- 0.1.12: runtime failure diagnosis — what failed, which pack,
                    what module is missing, and the one-click fixes. -->
@@ -1532,6 +1589,42 @@ watch(
 }
 
 /* ---------- Runtime failure diagnosis card (0.1.12) ---------- */
+.startup-issues {
+  flex-shrink: 0;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid rgba($color-warning, 0.35);
+  background: rgba($color-warning, 0.06);
+  border-radius: 12px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+
+.startup-issues-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.startup-issue {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.startup-issue-pack {
+  font-weight: 600;
+}
+
+.startup-issue-summary {
+  opacity: 0.8;
+}
+
+.startup-issue-missing {
+  color: $color-danger;
+}
+
 .exec-card {
   flex-shrink: 0;
   max-height: 220px;

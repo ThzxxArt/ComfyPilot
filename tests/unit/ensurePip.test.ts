@@ -2,14 +2,31 @@
  * ensurePip / installRequirements — the "No module named pip" field bug.
  * uv-created venvs have no pip; every `python -m pip` path must survive that.
  */
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterAll } from 'vitest'
+import { mkdtempSync, rmSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
+
+// Real temp userData: a literal `C:/fake/...` path is RELATIVE on POSIX and
+// used to make db.userDataDir() mkdirSync a stray `C:/fake/userData/data`
+// directory in the repo root on every run (0.1.16 hygiene fix).
+const h = vi.hoisted(() => ({ dir: '' }))
+h.dir = mkdtempSync(join(tmpdir(), 'cp-ensurepip-'))
 
 vi.mock('electron', () => ({
-  app: { getPath: vi.fn(() => 'C:/fake/userData') },
+  app: { getPath: () => h.dir },
   session: { defaultSession: { fetch: vi.fn(), setProxy: vi.fn() } }
 }))
 
 import { ensurePip, installRequirements } from '../../src/main/services/env'
+
+afterAll(() => {
+  try {
+    rmSync(h.dir, { recursive: true, force: true })
+  } catch {
+    /* ignore */
+  }
+})
 
 function makeExec(
   script: Record<string, Error | string>

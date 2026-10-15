@@ -40,7 +40,7 @@ import {
   isSafeExternalUrl,
   normalizeForCompare
 } from './security'
-import { proxyEnv } from './proxy'
+import { comfyChildEnv } from './childEnv'
 import { bootstrapService } from './bootstrap'
 
 const EXEC_OPTS = {
@@ -275,7 +275,7 @@ export class InstallerService extends EventEmitter {
           timeout: opts?.timeout ?? EXEC_OPTS.timeout,
           windowsHide: true,
           maxBuffer: EXEC_OPTS.maxBuffer,
-          env: proxyEnv(loadSettings().proxy)
+          env: comfyChildEnv(loadSettings())
         },
         (err, stdout, stderr) => {
           this.children.delete(child)

@@ -199,12 +199,20 @@ export function isSafeExternalUrl(raw: string): boolean {
   }
 }
 
+/**
+ * Scheme gate for embeddable URLs (0.1.16).
+ *
+ * Named "isSafe…" for symmetry with `isSafeExternalUrl`, but it only asserts
+ * a web scheme — it does NOT decide trust. Callers MUST additionally require
+ * the host to be an allowed ComfyUI origin (see `handlers.ts`
+ * `isAllowedEmbedUrl`, which ANDs this with `isTrustedComfyUrl`). The scheme
+ * check is separated out so a future caller can never embed a `file:`/`data:`
+ * URL by accident.
+ */
 export function isSafeEmbedUrl(raw: string): boolean {
   try {
     const u = new URL(raw)
-    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false
-    // Prefer local ComfyUI; allow https for LAN/remote instances
-    return true
+    return u.protocol === 'http:' || u.protocol === 'https:'
   } catch {
     return false
   }

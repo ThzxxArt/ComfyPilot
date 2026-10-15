@@ -22,6 +22,7 @@ import type {
   EnvProbe,
   InstanceCapabilities,
   InstanceDiscoveryCandidate,
+  InstanceStartupIssues,
   InstanceStatus,
   LaunchCommandPreview,
   LaunchOptions,
@@ -29,6 +30,10 @@ import type {
   PortCheckResult,
   WaitReadyResult
 } from '@shared/types'
+import { classifyLogLine, stripAnsi } from '@shared/logLine'
+import { comfyChildEnv } from './childEnv'
+import { readTextTail, rotateLogIfTooLarge, MAX_LOG_READ_BYTES } from './logFile'
+import { parseStartupIssues } from './startupIssues'
 import {
   deleteInstanceConfig,
   loadInstanceConfigs,
@@ -38,7 +43,6 @@ import {
   userDataDir
 } from './db'
 import { resolveInsideAnyRoot } from './security'
-import { proxyEnv } from './proxy'
 import { findInRuntimes } from './bootstrap'
 import { COMFY_DEFAULT_PORTS, LAUNCH_TEMPLATES } from '@shared/constants'
 import { renderLaunchProfile, validateLaunchArgs, warnLaunchArgs } from '@shared/launchArgs'
@@ -215,12 +219,19 @@ export class InstanceService extends EventEmitter {
     this.appendLogFile(rt.config.id, line)
   }
 
+  private logWriteCounters = new Map<string, number>()
+
   private appendLogFile(id: string, line: ComfyLogLine): void {
     try {
       const file = join(logsDir(), `${id}.log`)
+      // Rotate periodically (cheap size check every 100 writes) so a
+      // long-running instance cannot grow its log without bound (0.1.16).
+      const count = (this.logWriteCounters.get(id) ?? 0) + 1
+      this.logWriteCounters.set(id, count)
+      if (count % 100 === 0) rotateLogIfTooLarge(file)
       writeFileSync(
         file,
-        `[${new Date(line.ts).toISOString()}] ${line.level.toUpperCase()} ${line.message}\n`,
+        `[${new Date(line.ts).toISOString()}] ${line.level.toUpperCase()} ${stripAnsi(line.message)}\n`,
         {
           flag: 'a'
         }
@@ -430,7 +441,7 @@ export class InstanceService extends EventEmitter {
             timeout: 180_000,
             maxBuffer: 20 * 1024 * 1024,
             windowsHide: true,
-            env: { ...process.env, ...proxyEnv(loadSettings().proxy) }
+            env: comfyChildEnv(loadSettings())
           },
           (err, stdout, stderr) => {
             const output = `${stdout || ''}${stderr || ''}`
@@ -651,6 +662,18 @@ export class InstanceService extends EventEmitter {
     }
     if (rt) this.emitStatus(rt)
     return Boolean(rt) || removed
+  }
+
+  /**
+   * Custom-node packs that failed to import, parsed from the instance log
+   * (0.1.16). Read-only — the UI decides whether to offer a dependency fix.
+   */
+  analyzeStartupIssues(id: string): InstanceStartupIssues {
+    const lines = this.getLogs(id, 3000)
+    return parseStartupIssues(
+      id,
+      lines.map((l) => l.message)
+    )
   }
 
   async checkPort(port: number): Promise<PortCheckResult> {
@@ -925,8 +948,14 @@ export class InstanceService extends EventEmitter {
   private readLogFile(id: string): ComfyLogLine[] {
     try {
       const file = join(logsDir(), `${id}.log`)
-      if (!existsSync(file)) return []
-      return readFileSync(file, 'utf-8')
+      const archive = `${file}.1`
+      // Bounded tail read (0.1.16): never load the whole file. Rotated history
+      // (`.log.1`) is read first so the merged view keeps recent history.
+      const text =
+        (existsSync(archive) ? readTextTail(archive, MAX_LOG_READ_BYTES) : '') +
+        readTextTail(file, MAX_LOG_READ_BYTES)
+      if (!text) return []
+      return text
         .split('\n')
         .filter(Boolean)
         .map((line) => {
@@ -1359,42 +1388,33 @@ export class InstanceService extends EventEmitter {
       const child = spawn(python, args, {
         cwd: rt.config.path,
         windowsHide: true,
-        // Honor app proxy so ComfyUI-internal network calls (API nodes) see the same
-        // proxy the rest of ComfyPilot uses. Falls back cleanly when proxy is off.
-        env: { ...process.env, ...proxyEnv(loadSettings().proxy) }
+        // UTF-8 + unbuffered + app proxy (single source: comfyChildEnv, 0.1.16).
+        env: comfyChildEnv(loadSettings())
       })
       rt.process = child
       rt.pid = child.pid
       rt.startedAt = Date.now()
 
-      child.stdout.on('data', (buf: Buffer) => {
-        if (rt.generation !== gen) return
-        buf
-          .toString('utf-8')
-          .split(/\r?\n/)
-          .filter(Boolean)
-          .forEach((line) => {
-            // "Exception"/"!!!" added in 0.1.12: ComfyUI's execution failure
-            // banner (`!!! Exception during processing !!!`) contains neither
-            // "error" nor "traceback" and used to render as plain white info.
-            const level = /error|traceback|exception|!!!/i.test(line)
-              ? 'error'
-              : /warn/i.test(line)
-                ? 'warn'
-                : 'info'
-            this.pushLog(rt, level, line)
-          })
-      })
-      child.stderr.on('data', (buf: Buffer) => {
-        if (rt.generation !== gen) return
-        buf
-          .toString('utf-8')
-          .split(/\r?\n/)
-          .filter(Boolean)
-          .forEach((line) =>
-            this.pushLog(rt, /error|traceback|exception|!!!/i.test(line) ? 'error' : 'warn', line)
-          )
-      })
+      // Level comes from the LINE'S OWN `[LEVEL]` token first (0.1.16) — Python
+      // logging writes nearly everything to stderr, so the old "stderr ⇒ warn"
+      // rule painted every INFO/DEBUG line as a warning. ANSI colour codes are
+      // stripped before storage.
+      const handleStream =
+        (stream: 'stdout' | 'stderr') =>
+        (buf: Buffer): void => {
+          if (rt.generation !== gen) return
+          buf
+            .toString('utf-8')
+            .split(/\r?\n/)
+            .forEach((raw) => {
+              if (!raw.trim()) return
+              const line = stripAnsi(raw)
+              if (!line.trim()) return
+              this.pushLog(rt, classifyLogLine(stream, raw), line)
+            })
+        }
+      child.stdout.on('data', handleStream('stdout'))
+      child.stderr.on('data', handleStream('stderr'))
       child.on('error', (err) => {
         if (rt.generation !== gen) return
         rt.lastError = err.message

@@ -69,7 +69,14 @@ export default defineConfig({
         // ── 0.1.15: renderer utils with real behaviour tests ──
         'src/renderer/src/utils/monitorOps.ts',
         'src/renderer/src/utils/batchOps.ts',
-        'src/renderer/src/utils/frontendAlign.ts'
+        'src/renderer/src/utils/frontendAlign.ts',
+        // ── 0.1.16: new stability/log modules + model library ──
+        'src/shared/logLine.ts',
+        'src/main/services/childEnv.ts',
+        'src/main/services/lru.ts',
+        'src/main/services/logFile.ts',
+        'src/main/services/session.ts',
+        'src/main/services/startupIssues.ts'
       ],
       thresholds: {
         // ── 实测定档：高覆盖模块（0.1.10 全量实测 − 2pp）──
@@ -163,7 +170,12 @@ export default defineConfig({
           functions: 98,
           branches: 83
         },
-        'src/renderer/src/utils/batchOps.ts': { statements: 98, lines: 98, functions: 98, branches: 98 },
+        'src/renderer/src/utils/batchOps.ts': {
+          statements: 98,
+          lines: 98,
+          functions: 98,
+          branches: 98
+        },
         'src/renderer/src/utils/frontendAlign.ts': {
           statements: 98,
           lines: 98,
@@ -177,6 +189,43 @@ export default defineConfig({
           lines: 88,
           functions: 98,
           branches: 88
+        },
+        // ── 0.1.16 新增模块（首轮实测 − 2pp）──
+        'src/shared/logLine.ts': {
+          statements: 94,
+          lines: 94,
+          functions: 98,
+          branches: 84
+        },
+        'src/main/services/childEnv.ts': {
+          statements: 98,
+          lines: 98,
+          functions: 98,
+          branches: 98
+        },
+        'src/main/services/lru.ts': {
+          statements: 98,
+          lines: 98,
+          functions: 98,
+          branches: 98
+        },
+        'src/main/services/logFile.ts': {
+          statements: 87,
+          lines: 87,
+          functions: 98,
+          branches: 63
+        },
+        'src/main/services/session.ts': {
+          statements: 86,
+          lines: 86,
+          functions: 98,
+          branches: 49
+        },
+        'src/main/services/startupIssues.ts': {
+          statements: 98,
+          lines: 98,
+          functions: 98,
+          branches: 68
         },
         // ── 全局下限（0.1.10 全量实测 − 2pp）──
         statements: 88,

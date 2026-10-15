@@ -35,11 +35,24 @@ function setActiveInstance(instanceId: string, active: boolean): void {
   activeInstances.value = [...set]
 }
 
+/** Cap per-instance op views so a long session can't grow memory unbounded. */
+const MAX_OP_VIEWS = 30
+
+function evictOldViews(keep: string): void {
+  if (views.size <= MAX_OP_VIEWS) return
+  for (const key of views.keys()) {
+    if (views.size <= MAX_OP_VIEWS) break
+    if (key === keep) continue
+    views.delete(key)
+  }
+}
+
 function getView(instanceId: string): PipOpView {
   let v = views.get(instanceId)
   if (!v) {
     v = { logs: [] }
     views.set(instanceId, v)
+    evictOldViews(instanceId)
   }
   return v
 }

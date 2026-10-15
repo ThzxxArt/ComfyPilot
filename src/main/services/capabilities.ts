@@ -14,6 +14,7 @@
 import type { ComfyInstanceConfig, InstanceCapabilities } from '@shared/types'
 import { versionAtLeast } from '@shared/launchArgs'
 import { loadInstanceConfigs } from './db'
+import { LruCache } from './lru'
 
 export { versionAtLeast }
 
@@ -118,16 +119,16 @@ export function parseFeatures(features: Record<string, unknown> | null): Record<
 }
 
 export class CapabilityService {
-  private cache = new Map<string, { at: number; caps: InstanceCapabilities }>()
+  private cache = new LruCache<string, { at: number; caps: InstanceCapabilities }>(200)
   /**
    * /object_info node map (0.1.12 WP6): node_type → owning custom-node folder,
    * plus the full type set for workflow preflight. Large payload (~MBs), so a
    * longer TTL; invalidated on instance stop/remove like everything else.
    */
-  private objectInfoCache = new Map<
+  private objectInfoCache = new LruCache<
     string,
     { at: number; types: Set<string>; moduleByType: Map<string, string> }
-  >()
+  >(50)
   /**
    * Last version observed while the instance was RUNNING (0.1.11.1).
    * Deliberately has NO TTL: a running instance's reported version is a stable
@@ -136,7 +137,7 @@ export class CapabilityService {
    * Cleared by invalidate() when the process stops / is removed, so a stopped
    * instance falls back to the install stamp.
    */
-  private versionCache = new Map<string, string>()
+  private versionCache = new LruCache<string, string>(200)
 
   /** Sync peek used by instance.toInfo (no probing on hot paths). */
   cachedForUrl(baseUrl: string): InstanceCapabilities | undefined {

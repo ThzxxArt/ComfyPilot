@@ -908,6 +908,7 @@ onUnmounted(() => {
             size="small"
             :bordered="false"
             max-height="480"
+            virtual-scroll
           />
           <NEmpty
             v-else

@@ -35,6 +35,7 @@ import {
 import { lookupWorkflowByFingerprint } from './workflowFingerprint'
 import { assertSafeRelativeFilename, sanitizeId } from './security'
 import { classifyOutputType } from '@shared/mediaTypes'
+import { LruCache } from './lru'
 
 // ---------- helpers ----------
 
@@ -812,7 +813,7 @@ export class OutputService {
    * Resident path→asset map used by walks: O(1) lookups instead of a per-file
    * scan of the whole index (the old `listOutputAssetsAll().find(...)`).
    */
-  private readonly prevMap = new Map<string, OutputAsset>()
+  private readonly prevMap = new LruCache<string, OutputAsset>(50_000)
 
   private refreshPrevMap(): void {
     for (const a of listOutputAssetsAll()) this.prevMap.set(a.path, a)

@@ -467,7 +467,7 @@ export class Aria2Service {
     }
     const settings = loadSettings()
     const bin = settings.aria2Path || 'aria2c'
-    const { proxyEnv } = await import('./proxy')
+    const { comfyChildEnv } = await import('./childEnv')
     const args = ['-x', '8', '-s', '8', '-d', dirname(destPath), '-o', basename(destPath)]
     // -c continue / resume partial
     if (opts?.resume !== false) args.push('-c')
@@ -485,7 +485,7 @@ export class Aria2Service {
         {
           timeout: 30 * 60 * 1000,
           maxBuffer: 20 * 1024 * 1024,
-          env: proxyEnv(settings.proxy)
+          env: comfyChildEnv(settings)
         },
         (e, stdout, stderr) => {
           const log = (stdout || '') + (stderr || '')

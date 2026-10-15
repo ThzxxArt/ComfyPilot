@@ -46,7 +46,7 @@ import type {
 } from '@shared/types'
 import { loadInstanceConfigs, loadSettings } from './db'
 import { normalizePathEverySegment, hasParentHop, isSafeExternalUrl } from './security'
-import { proxyEnv } from './proxy'
+import { comfyChildEnv } from './childEnv'
 import { resolveTorchIndex, officialTorchIndex, applyGithubMirror } from './installer'
 import { resolveGitBinary } from './nodePack'
 import { bootstrapService } from './bootstrap'
@@ -322,7 +322,7 @@ export class ComfyUpdaterService extends EventEmitter {
           timeout: opts?.timeout ?? EXEC_OPTS.timeout,
           windowsHide: true,
           maxBuffer: EXEC_OPTS.maxBuffer,
-          env: proxyEnv(loadSettings().proxy)
+          env: comfyChildEnv(loadSettings())
         },
         (err, stdout, stderr) => {
           this.children.delete(child)
@@ -414,7 +414,7 @@ export class ComfyUpdaterService extends EventEmitter {
           timeout: opts?.timeout ?? EXEC_OPTS.timeout,
           windowsHide: true,
           maxBuffer: EXEC_OPTS.maxBuffer,
-          env: proxyEnv(loadSettings().proxy)
+          env: comfyChildEnv(loadSettings())
         },
         (err, stdout, stderr) => {
           if (err) {

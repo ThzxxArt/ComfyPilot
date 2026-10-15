@@ -36,7 +36,7 @@ import type {
 } from '@shared/types'
 import { RUNTIME_SOURCES } from '@shared/constants'
 import { loadSettings } from './db'
-import { proxyEnv } from './proxy'
+import { comfyChildEnv } from './childEnv'
 import { isPathInside, normalizePathEverySegment } from './security'
 
 const execFileAsync = promisify(execFile)
@@ -156,7 +156,7 @@ async function safeVersion(
       timeout: 8000,
       windowsHide: true,
       maxBuffer: 2 * 1024 * 1024,
-      env: proxyEnv(loadSettings().proxy)
+      env: comfyChildEnv(loadSettings())
     })
     return stdout.trim().split('\n')[0] || undefined
   } catch {
@@ -171,7 +171,7 @@ async function which(cmd: string): Promise<string | null> {
     const { stdout } = await execFileAsync(probe, [cmd], {
       timeout: 5000,
       windowsHide: true,
-      env: proxyEnv(loadSettings().proxy)
+      env: comfyChildEnv(loadSettings())
     })
     const first = stdout
       .split(/\r?\n/)
@@ -611,7 +611,7 @@ export class BootstrapService extends EventEmitter {
   /** Extract zip/tar.gz into destDir (uses PowerShell on Windows, tar/unzip elsewhere). */
   private async extractArchive(archivePath: string, destDir: string): Promise<void> {
     const lower = archivePath.toLowerCase()
-    const env = proxyEnv(loadSettings().proxy)
+    const env = comfyChildEnv(loadSettings())
     if (lower.endsWith('.zip')) {
       if (process.platform === 'win32') {
         // Expand-Archive is always present on Windows 10+

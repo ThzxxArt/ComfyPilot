@@ -3,9 +3,21 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 
+function logDir() {
+  // Real Electron userData (app `name` = "comfy-pilot"), NOT the old hardcoded
+  // `%APPDATA%/ComfyPilot` — see db.migrateLegacyLogs (0.1.16).
+  try {
+    const base = require('electron').app.getPath('userData')
+    if (base) return path.join(base, 'logs')
+  } catch {
+    /* app not resolvable yet — fall through */
+  }
+  return path.join(os.homedir(), 'AppData', 'Roaming', 'comfy-pilot', 'logs')
+}
+
 function log(msg) {
   try {
-    const dir = path.join(os.homedir(), 'AppData', 'Roaming', 'ComfyPilot', 'logs')
+    const dir = logDir()
     fs.mkdirSync(dir, { recursive: true })
     fs.appendFileSync(path.join(dir, 'boot.log'), `[${new Date().toISOString()}] ${msg}\n`)
   } catch {

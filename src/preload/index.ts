@@ -1,8 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcChannel, IpcChannelMap, IpcResult } from '@shared/types'
-import { IPC_EVENTS } from '@shared/types'
+import { IPC_CHANNELS, IPC_EVENTS } from '@shared/types'
 
 const ALLOWED_EVENTS = new Set<string>(Object.values(IPC_EVENTS))
+// Runtime mirror of IpcChannelMap (types are erased at runtime). Kept in sync
+// by tests/unit/ipcRegistration.test.ts, which asserts set equality with the
+// channels main actually registers — first line of defence against a
+// compromised renderer invoking an arbitrary channel.
+const ALLOWED_CHANNELS = new Set<string>(IPC_CHANNELS)
 
 /**
  * Electron IPC uses the structured clone algorithm, which REJECTS Vue
@@ -31,6 +36,12 @@ async function invoke<C extends IpcChannel>(
   channel: C,
   ...args: IpcChannelMap[C]['args']
 ): Promise<IpcResult<IpcChannelMap[C]['result']>> {
+  if (!ALLOWED_CHANNELS.has(channel)) {
+    console.warn('[ComfyPilot] blocked invoke of unknown channel', channel)
+    return { ok: false, error: `Unknown IPC channel: ${String(channel)}` } as IpcResult<
+      IpcChannelMap[C]['result']
+    >
+  }
   const plainArgs = args.map((a) => toPlainIpcArg(a)) as IpcChannelMap[C]['args']
   return ipcRenderer.invoke(channel, ...plainArgs) as Promise<IpcResult<IpcChannelMap[C]['result']>>
 }

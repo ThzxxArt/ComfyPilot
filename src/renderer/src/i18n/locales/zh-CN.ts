@@ -5,6 +5,15 @@ export default {
     brandTag: '控制塔',
     github: 'GitHub'
   },
+  session: {
+    uncleanTitle: '上次运行未正常退出',
+    uncleanMsg:
+      'ComfyPilot 上次很可能异常结束（未写入干净退出标记），可能与应用崩溃有关。可导出诊断供排查。',
+    export: '导出诊断',
+    exported: '诊断已导出：{path}',
+    dismiss: '忽略',
+    details: '详情'
+  },
   nav: {
     dashboard: '总览',
     instances: '实例',
@@ -256,6 +265,13 @@ export default {
     ready: '已就绪',
     starting: '启动中',
     openLogs: '查看日志',
+    logsShowDebug: '显示调试日志',
+    logsHideDebug: '隐藏调试日志',
+    startupIssuesTitle: '节点加载失败（{n}）',
+    startupIssuesMsg: '以下节点包因依赖缺失或自身错误未能加载：{names}',
+    startupIssuesMissing: '缺失模块：{modules}',
+    startupIssuesReview: '去修复',
+    startupIssuesDismiss: '忽略',
     runDoctor: '运行诊断',
     startAll: '全部启动',
     stopAll: '全部停止',
@@ -1374,7 +1390,9 @@ export default {
     appUpdateAvailable: '发现新版本',
     appUpdateAvailableMsg: '正在后台下载 v{version}（可在设置页查看进度）',
     appUpdateDownloaded: '更新已就绪',
-    appUpdateDownloadedMsg: 'v{version} 已下载，可在设置页重启安装'
+    appUpdateDownloadedMsg: 'v{version} 已下载，可在设置页重启安装',
+    appCrash: 'ComfyPilot 发生错误',
+    appCrashMsg: '{message}'
   },
   exec: {
     title: '运行失败诊断（{n}）',

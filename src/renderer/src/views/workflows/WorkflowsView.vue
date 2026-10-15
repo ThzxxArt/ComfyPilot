@@ -476,7 +476,9 @@ async function sendToBatch(row: WorkflowRecord): Promise<void> {
   }
 }
 
-function filtered(): WorkflowRecord[] {
+// computed (not a function): the template reads it several times, and a plain
+// function re-filtered the full list on every re-render (0.1.16).
+const filtered = computed<WorkflowRecord[]>(() => {
   const k = keyword.value.trim().toLowerCase()
   return items.value.filter((w) => {
     if (onlyFavorites.value && !w.favorite) return false
@@ -487,7 +489,7 @@ function filtered(): WorkflowRecord[] {
       w.path.toLowerCase().includes(k)
     )
   })
-}
+})
 
 const hasFilter = computed(() => keyword.value.trim().length > 0 || onlyFavorites.value)
 
@@ -562,11 +564,11 @@ onMounted(async () => {
     </NCard>
 
     <div class="page-body">
-      <NSpin :show="loading && filtered().length > 0">
-        <ListSkeleton v-if="loading && !filtered().length" :rows="6" variant="card" />
-        <div v-else-if="filtered().length" class="grid cards">
+      <NSpin :show="loading && filtered.length > 0">
+        <ListSkeleton v-if="loading && !filtered.length" :rows="6" variant="card" />
+        <div v-else-if="filtered.length" class="grid cards">
           <article
-            v-for="wf in filtered()"
+            v-for="wf in filtered"
             :key="wf.id"
             class="card card-interactive wf"
             :class="{ missing: wf.missing }"

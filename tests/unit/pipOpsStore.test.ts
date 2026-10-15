@@ -310,4 +310,14 @@ describe('useExecDiagnostics (0.1.12)', () => {
     await pA
     expect(api.failures.value.map((f) => f.id)).toEqual(['x2'])
   })
+
+  it('caps per-instance op views so long sessions stay bounded (0.1.16)', async () => {
+    const { usePipOps } = await import('@/composables/usePipOps')
+    const ops = usePipOps()
+    for (let i = 0; i < 35; i++) {
+      fire('event:pip-op-progress', progress('running', { instanceId: `inst-${i}` }))
+    }
+    // Still functional after internal eviction.
+    expect(ops.activeInstances.value).toContain('inst-34')
+  })
 })
