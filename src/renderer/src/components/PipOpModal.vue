@@ -12,6 +12,7 @@ import { NButton, NIcon, NModal, NProgress, NSpace, NSwitch, NTag, NText } from 
 import type { InstallStepStatus, UpdateStep } from '@shared/types'
 import { updateDetailOf, updateStepTitle } from '@/composables/useComfyUpdate'
 import { usePipOps } from '@/composables/usePipOps'
+import IndeterminateBar from '@/components/IndeterminateBar.vue'
 
 /**
  * Pip-op modal (0.1.12) — install missing packages / apply fix recipes /
@@ -38,6 +39,14 @@ const done = computed(() => progress.value?.status === 'done' && !busy.value && 
 
 const percent = computed(() => Math.max(0, Math.min(100, Math.round(progress.value?.percent || 0))))
 const steps = computed<UpdateStep[]>(() => progress.value?.steps || [])
+/**
+ * 0.1.17 (WP2-4): pip has no measurable total. While the running step has no
+ * real fraction, show an indeterminate bar instead of a stalled percentage.
+ */
+const runningStep = computed(() => steps.value.find((s) => s.status === 'running') || null)
+const indeterminate = computed(
+  () => running.value && !failed.value && !cancelled.value && !runningStep.value?.progress
+)
 
 const cancelling = ref(false)
 async function onCancel(): Promise<void> {
@@ -132,7 +141,9 @@ function stepTitle(s: UpdateStep): string {
     :closable="true"
   >
     <div class="upd-head">
+      <IndeterminateBar v-if="indeterminate" :height="10" :label="runningStep?.detail || ''" />
       <NProgress
+        v-else
         type="line"
         :percentage="percent"
         :height="10"

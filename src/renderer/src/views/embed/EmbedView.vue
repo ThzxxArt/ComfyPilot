@@ -4,7 +4,8 @@ import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { NButton, NSpace, NIcon, NInput, useMessage } from 'naive-ui'
 import { OpenOutline, CloseOutline, ArrowBackOutline, RefreshOutline } from '@vicons/ionicons5'
-import { ipc } from '@/composables/useIpc'
+import { ipc, onIpc } from '@/composables/useIpc'
+import { IPC_EVENTS } from '@shared/types'
 import { useAppStore } from '@/stores/app'
 
 const { t } = useI18n()
@@ -15,6 +16,9 @@ const store = useAppStore()
 const url = ref(String(route.query.url || ''))
 const embedded = ref(false)
 const showFallback = ref(false)
+/** 0.1.17 (WP9): a failed in-pane load must be visible, not a blank rectangle. */
+const embedError = ref('')
+let offEmbedState: (() => void) | null = null
 
 // Layout metrics published by App.vue (sidebar collapse-aware)
 const sidebarWidth = ref(240)
@@ -25,7 +29,9 @@ const barEl = ref<HTMLElement | null>(null)
 const barHeight = ref(56)
 let barObserver: ResizeObserver | null = null
 
-const displayUrl = computed(() => url.value || 'http://127.0.0.1:8188')
+// 0.1.17 (WP9): default to the ACTIVE instance's URL (honours custom ports and
+// remotes) instead of a hardcoded 127.0.0.1:8188 that may belong to another one.
+const displayUrl = computed(() => url.value || store.activeTargetUrl || '')
 
 function measureBar(): void {
   const h = barEl.value?.getBoundingClientRect().height
@@ -67,6 +73,7 @@ async function embed(): Promise<void> {
     return
   }
   try {
+    embedError.value = ''
     await ipc('embed.open', { url: displayUrl.value, title: 'ComfyUI' })
     embedded.value = true
     showFallback.value = false
@@ -94,6 +101,14 @@ function onResize(): void {
 }
 
 onMounted(() => {
+  offEmbedState = onIpc(IPC_EVENTS.embedState, (payload) => {
+    const p = payload as { state?: string; errorDescription?: string }
+    if (p?.state === 'failed') {
+      embedError.value = p.errorDescription || t('embed.loadFailed')
+    } else if (p?.state === 'ready') {
+      embedError.value = ''
+    }
+  })
   window.addEventListener('resize', onResize)
   window.addEventListener('comfypilot:layout', onLayout as EventListener)
   // Pull current layout metrics if App already published them
@@ -112,6 +127,8 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  offEmbedState?.()
+  offEmbedState = null
   window.removeEventListener('resize', onResize)
   window.removeEventListener('comfypilot:layout', onLayout as EventListener)
   barObserver?.disconnect()
@@ -169,6 +186,16 @@ watch(
       </NSpace>
     </div>
 
+    <div v-if="embedded && embedError" class="embed-error card">
+      <div class="fallback-title">{{ $t('embed.loadFailed') }}</div>
+      <p class="fallback-text mono">{{ embedError }}</p>
+      <NSpace>
+        <NButton type="primary" secondary @click="embed">{{ $t('embed.reload') }}</NButton>
+        <NButton secondary @click="closeEmbed">{{ $t('embed.closeEmbed') }}</NButton>
+        <NButton secondary @click="openExternal">{{ $t('embed.openBrowser') }}</NButton>
+      </NSpace>
+    </div>
+
     <div v-if="!embedded" class="fallback card">
       <div class="fallback-title">ComfyUI Frontend</div>
       <p class="fallback-text">
@@ -184,6 +211,19 @@ watch(
 
 <style lang="scss" scoped>
 @use '@/styles/variables.scss' as *;
+
+.embed-error {
+  position: absolute;
+  left: 50%;
+  top: 40%;
+  transform: translate(-50%, -50%);
+  z-index: 5;
+  max-width: 560px;
+  padding: 18px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
 
 .embed-page {
   height: 100%;

@@ -41,12 +41,14 @@ import type {
   InstallStepByteProgress,
   InstallStepStatus,
   UpdateProgress,
+  UpdateJournal,
   UpdateStep,
   UpdateStepId
 } from '@shared/types'
 import { loadInstanceConfigs, loadSettings } from './db'
 import { normalizePathEverySegment, hasParentHop, isSafeExternalUrl } from './security'
 import { comfyChildEnv } from './childEnv'
+import { killProcessTree } from './processTree'
 import { resolveTorchIndex, officialTorchIndex, applyGithubMirror } from './installer'
 import { resolveGitBinary } from './nodePack'
 import { bootstrapService } from './bootstrap'
@@ -225,12 +227,24 @@ function stampInstallMeta(
 
 export class ComfyUpdaterService extends EventEmitter {
   private progress: UpdateProgress | null = null
-  private cancelled = false
+  /**
+   * 0.1.17 (WP4): cancellation is per-run. The old boolean stayed true forever,
+   * so every later update (and every rollback helper that consulted it) was
+   * treated as cancelled.
+   */
+  private runEpoch = 0
+  private cancelledEpoch = -1
   private running = false
   private children = new Set<ChildProcess>()
+  /** In-flight archive fetches, aborted by cancel() (0.1.17 WP4). */
+  private fetches = new Set<AbortController>()
   private runRejects = new Set<(err: Error) => void>()
   /** Resolves when the in-flight runUpdate settles (done/failed/cancelled). */
   private currentRun: Promise<void> | null = null
+
+  private get isCancelled(): boolean {
+    return this.cancelledEpoch === this.runEpoch
+  }
 
   getStatus(): UpdateProgress | null {
     return this.progress
@@ -253,53 +267,75 @@ export class ComfyUpdaterService extends EventEmitter {
   }
 
   cancel(): boolean {
-    this.cancelled = true
+    const hadActiveRun = this.running || this.progress?.status === 'running'
+    this.cancelledEpoch = this.runEpoch
+    // Terminal state first: waiting for the run to unwind could leave `running`
+    // persisted when no await is pending (0.1.17 WP4, same pattern as WP1).
+    if (this.progress && this.progress.status === 'running') {
+      this.progress.status = 'cancelled'
+      this.progress.error = 'Update cancelled'
+      const active = this.progress.steps.find((s) => s.status === 'running')
+      if (active) {
+        active.status = 'cancelled'
+        active.detail = 'Update cancelled'
+      }
+      this.emitProgress('Update cancelled')
+    }
     const kills: Array<Promise<void>> = []
     for (const child of this.children) kills.push(this.killTree(child))
-    for (const rej of this.runRejects) {
+    // An in-flight archive download is not a child process — abort it too.
+    for (const ac of this.fetches) {
       try {
-        rej(new Error('Update cancelled'))
+        ac.abort()
       } catch {
         /* ignore */
       }
     }
-    this.runRejects.clear()
-    void Promise.allSettled(kills).then(() => this.children.clear())
-    return true
-  }
-
-  private killTree(child: ChildProcess): Promise<void> {
-    return new Promise((resolveP) => {
-      if (process.platform === 'win32' && child.pid) {
-        execFile(
-          'taskkill',
-          ['/PID', String(child.pid), '/T', '/F'],
-          { windowsHide: true, timeout: 8000 },
-          () => {
-            try {
-              if (child.exitCode === null) child.kill('SIGKILL')
-            } catch {
-              /* ignore */
-            }
-            resolveP()
-          }
-        )
-        return
-      }
-      try {
-        child.kill('SIGTERM')
-      } catch {
-        /* ignore */
-      }
-      setTimeout(() => {
+    // Reject only after the process tree is gone — a cancelled update must not
+    // keep writing into the install directory.
+    void Promise.allSettled(kills).then(() => {
+      this.children.clear()
+      for (const rej of [...this.runRejects]) {
         try {
-          if (child.exitCode === null) child.kill('SIGKILL')
+          rej(new Error('Update cancelled'))
         } catch {
           /* ignore */
         }
-        resolveP()
-      }, 500)
+      }
+      this.runRejects.clear()
     })
+    return hadActiveRun || Boolean(this.progress)
+  }
+
+  /**
+   * HEAD + porcelain status, for "did WE change the tree?" decisions.
+   *
+   * 0.1.17 (review fix): read-only git probes must bypass the cancel gate.
+   * `this.run()` refuses to start after a cancel, so a cancelled git update got
+   * `null` here, `treeChanged` fell back to false, and the rollback was skipped
+   * as "not needed" — leaving a half-updated tree. `runRaw` has no gate.
+   */
+  private async snapshotGitTree(
+    comfyDir: string
+  ): Promise<{ head: string; status: string } | null> {
+    try {
+      const gitBin = resolveGitBinary()
+      const head = (
+        await this.runRaw(gitBin, ['-C', comfyDir, 'rev-parse', 'HEAD'], { timeout: 5000 })
+      ).trim()
+      const status = await this.runRaw(gitBin, ['-C', comfyDir, 'status', '--porcelain'], {
+        timeout: 10000
+      })
+      return { head, status: status.trim() }
+    } catch {
+      return null
+    }
+  }
+
+  private killTree(child: ChildProcess): Promise<void> {
+    // 0.1.17 (WP1-5): shared tree-kill. POSIX keeps the graceful
+    // SIGTERM → SIGKILL escalation this service always had.
+    return killProcessTree(child, { graceMs: 3000 })
   }
 
   private async run(
@@ -327,7 +363,7 @@ export class ComfyUpdaterService extends EventEmitter {
         (err, stdout, stderr) => {
           this.children.delete(child)
           this.runRejects.delete(onReject)
-          if (this.cancelled) {
+          if (this.isCancelled) {
             reject(new Error('Update cancelled'))
             return
           }
@@ -393,7 +429,10 @@ export class ComfyUpdaterService extends EventEmitter {
   }
 
   private assertNotCancelled(): void {
-    if (this.cancelled) throw new Error('Update cancelled')
+    // 0.1.17 (review fix): the epoch latch stays set after a cancelled run, so
+    // direct helper calls (fetchAndOverlayZip from tests/tooling) used to throw
+    // forever. Only a LIVE run is cancellable.
+    if (this.running && this.isCancelled) throw new Error('Update cancelled')
   }
 
   /**
@@ -432,6 +471,69 @@ export class ComfyUpdaterService extends EventEmitter {
     if (!config) throw new Error(`Instance not found: ${instanceId}`)
     if (!config.path || hasParentHop(config.path)) throw new Error('Invalid instance path')
     return config
+  }
+
+  // ---------- update journal (0.1.17 WP4) ----------
+
+  private journalFile(comfyDir: string): string {
+    return join(dirname(comfyDir), '.cp-update-journal.json')
+  }
+
+  private writeJournal(j: UpdateJournal): void {
+    try {
+      writeFileSync(this.journalFile(j.comfyDir), JSON.stringify(j, null, 2))
+    } catch {
+      /* journal is best-effort evidence, never a gate */
+    }
+  }
+
+  private clearJournal(comfyDir: string): void {
+    try {
+      rmSync(this.journalFile(comfyDir), { force: true })
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** An unfinished update recorded on disk (app died mid-update), if any. */
+  readJournal(instanceId: string): UpdateJournal | null {
+    let config: ComfyInstanceConfig
+    try {
+      config = this.requireInstance(instanceId)
+    } catch {
+      return null
+    }
+    const comfyDir = resolve(normalizePathEverySegment(config.path))
+    const file = this.journalFile(comfyDir)
+    if (!existsSync(file)) return null
+    try {
+      const j = JSON.parse(readFileSync(file, 'utf-8')) as UpdateJournal
+      return j && j.backupPath ? j : null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Roll back using the journal left by an interrupted update. Refuses when the
+   * backup directory is gone (nothing to restore) instead of pretending.
+   */
+  async rollbackFromJournal(instanceId: string): Promise<boolean> {
+    const j = this.readJournal(instanceId)
+    if (!j) throw new Error('No unfinished update to roll back')
+    if (!existsSync(j.backupPath)) throw new Error(`Backup is missing: ${j.backupPath}`)
+    // A live instance would fight the restore.
+    const { instanceService } = await import('./instance')
+    const info = instanceService.list().find((i) => i.id === instanceId)
+    if (info && (info.status === 'running' || info.status === 'starting')) {
+      const stopped = await instanceService.stop(instanceId)
+      if (stopped.adopted || stopped.exited === false) {
+        throw new Error('Instance is still running — stop it before rolling back')
+      }
+    }
+    const ok = await this.performRollback(j.comfyDir, j.backupPath, j.backupKind)
+    if (ok) this.clearJournal(j.comfyDir)
+    return ok
   }
 
   /**
@@ -560,12 +662,14 @@ export class ComfyUpdaterService extends EventEmitter {
           checkedAt
         }
       } catch (e) {
-        // Offline: still allow the user to force an update (re-download).
+        // 0.1.17 (WP10): offline is not "updatable". Reporting true here made
+        // the UI offer an update it could not verify; report `unknown` instead.
         return {
           instanceId,
           current,
           source: 'zip',
-          updatable: true,
+          updatable: false,
+          unknown: true,
           latestRelease,
           checkedAt,
           error: e instanceof Error ? e.message : String(e)
@@ -588,7 +692,9 @@ export class ComfyUpdaterService extends EventEmitter {
     if (this.running) throw new Error('Update already running')
     const config = this.requireInstance(instanceId)
     this.running = true
-    this.cancelled = false
+    // Fresh epoch: a previous cancel must not poison this run.
+    this.runEpoch += 1
+    this.cancelledEpoch = -1
     const runId = randomUUID()
     this.progress = {
       runId,
@@ -612,6 +718,9 @@ export class ComfyUpdaterService extends EventEmitter {
     let backupKind: 'git' | 'files' | null = null
     /** True once we actually rewrote the tree — only then is a rollback meaningful. */
     let treeModified = false
+    /** 0.1.17 (WP4-3): pre-fetch tree state + whether a zip overlay was attempted. */
+    let gitBefore: { head: string; status: string } | null = null
+    let overlayAttempted = false
     try {
       // 0. preflight
       this.setStep('preflight', 'running', 'Checking install…', undefined, 'update.msgPreflightRun')
@@ -637,7 +746,20 @@ export class ComfyUpdaterService extends EventEmitter {
         const { instanceService } = await import('./instance')
         const info = instanceService.list().find((i) => i.id === config.id)
         if (info && (info.status === 'running' || info.status === 'starting')) {
-          await instanceService.stop(config.id)
+          const stopInfo = await instanceService.stop(config.id)
+          // 0.1.17 (WP4): never overwrite files under a live external process.
+          // The old code logged "Proceeding without stop" and overlaid source
+          // while the server kept running.
+          if (stopInfo.adopted) {
+            throw new Error(
+              'Instance is an external (adopted) ComfyUI — stop it yourself before updating'
+            )
+          }
+          if (stopInfo.exited === false) {
+            throw new Error(
+              'Instance process did not exit within the grace window — refusing to modify its files'
+            )
+          }
           // wait for port to free (same pattern as instance.restart)
           const port = config.port || 8188
           for (let i = 0; i < 20; i++) {
@@ -651,9 +773,10 @@ export class ComfyUpdaterService extends EventEmitter {
         }
         this.setStep('stop', 'done', 'Instance stopped')
       } catch (e) {
-        // If stop fails because it is an adopted external process, proceed but warn.
-        this.log('stop', `Stop: ${e instanceof Error ? e.message : String(e)}`)
-        this.setStep('stop', 'done', 'Proceeding without stop')
+        const msg = e instanceof Error ? e.message : String(e)
+        this.log('stop', `Stop failed: ${msg}`)
+        this.setStep('stop', 'failed', msg)
+        throw new Error(`Cannot update while the instance is running: ${msg}`)
       }
       this.assertNotCancelled()
 
@@ -682,6 +805,10 @@ export class ComfyUpdaterService extends EventEmitter {
       } else {
         // zip: copy core tree (everything except PRESERVE_ENTRIES and backups).
         const copied = this.copyCoreTree(comfyDir, backupPath)
+        // 0.1.17 (WP4): inventory of what the backup actually contains, so a
+        // rollback can delete files the update ADDED (symmetric restore).
+        const inventory = readdirSync(comfyDir).filter((n) => !n.startsWith('.cp-'))
+        writeFileSync(join(backupPath, 'inventory.json'), JSON.stringify(inventory, null, 2))
         writeFileSync(
           join(backupPath, 'manifest.json'),
           JSON.stringify({ kind: 'files', copied, comfyDir, createdAt: Date.now() }, null, 2)
@@ -693,7 +820,21 @@ export class ComfyUpdaterService extends EventEmitter {
       this.setStep('backup', 'done', backupPath, undefined, 'update.msgBackup', {
         path: backupPath
       })
+      // Journal: proves a backup exists even if the app dies mid-update (WP4).
+      this.writeJournal({
+        instanceId: config.id,
+        comfyDir,
+        backupPath,
+        backupKind,
+        startedAt: Date.now()
+      })
       this.assertNotCancelled()
+
+      // 0.1.17 (WP4-3): record the ACTUAL tree state before touching it, so a
+      // failure can be judged by diff instead of the optimistic `treeModified`
+      // flag (a pull that rewrote files and then failed left `treeModified`
+      // false and skipped the rollback).
+      gitBefore = source2 === 'git' ? await this.snapshotGitTree(comfyDir) : null
 
       // 3. fetch
       if (source2 === 'git') {
@@ -726,6 +867,7 @@ export class ComfyUpdaterService extends EventEmitter {
         this.setStep('fetch', 'done', `HEAD ${sha}`, undefined, 'update.msgFetchGitDone', { sha })
       } else {
         this.setStep('fetch', 'running', 'Downloading archive…', undefined, 'update.msgFetchZip')
+        overlayAttempted = true
         await this.fetchAndOverlayZip(comfyDir)
         treeModified = true
         stampInstallMeta(comfyDir, {
@@ -945,11 +1087,13 @@ export class ComfyUpdaterService extends EventEmitter {
 
       // 6. verify
       this.setStep('verify', 'running', 'Running health check…', undefined, 'update.msgVerifyRun')
+      let verifyFailed = false
       try {
         const { doctorService } = await import('./doctor')
         const report = await doctorService.run(config.id)
         const fails = report.checks.filter((c) => c.severity === 'fail')
         if (fails.length) {
+          verifyFailed = true
           this.log(
             'verify',
             `doctor reported ${fails.length} failure(s): ${fails.map((f) => f.title).join(', ')}`
@@ -959,9 +1103,10 @@ export class ComfyUpdaterService extends EventEmitter {
           if (!existsSync(join(comfyDir, 'main.py'))) {
             throw new Error('main.py missing after update')
           }
+          // 0.1.17 (WP10): a failed health check is NOT a green step.
           this.setStep(
             'verify',
-            'done',
+            'failed',
             `Doctor: ${fails.length} fail / ${report.summary.warn} warn`
           )
         } else {
@@ -976,8 +1121,10 @@ export class ComfyUpdaterService extends EventEmitter {
 
       // 7. done — cleanup backup only when everything succeeded
       this.setStep('rollback', 'skipped', 'Not needed')
-      if (backupPath && backupKind === 'files') {
-        // keep git backups cheap (just a sha file); drop bulky file backups on success
+      if (backupPath && backupKind === 'files' && !verifyFailed) {
+        // 0.1.17 (review fix): a failed health check means the update is NOT
+        // proven — keep the backup so the user can still roll back. Dropping it
+        // here removed the only recovery point at exactly the wrong moment.
         try {
           rmSync(backupPath, { recursive: true, force: true })
         } catch {
@@ -993,24 +1140,40 @@ export class ComfyUpdaterService extends EventEmitter {
           this.log('done', `relaunch failed: ${e instanceof Error ? e.message : String(e)}`)
         }
       }
-      this.setStep('done', 'done', 'Update complete', undefined, 'update.msgDone')
+      const doneMessage = verifyFailed
+        ? 'Update complete — health check reported failures'
+        : 'Update complete'
+      this.setStep('done', 'done', doneMessage, undefined, 'update.msgDone')
       if (this.progress) {
         this.progress.status = 'done'
         this.progress.percent = 100
-        this.progress.message = 'Update complete'
+        this.progress.message = doneMessage
         this.progress.bytes = undefined
       }
-      this.emitProgress('Update complete')
+      this.emitProgress(doneMessage)
+      // The update finished — the journal no longer describes a live state.
+      this.clearJournal(comfyDir)
       // Post-update node compatibility check — a source update can break
       // custom_nodes. Surface a summary notification (non-blocking).
       void this.postUpdateNodeCheck(config.id).catch(() => undefined)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      const cancelled = this.cancelled || /cancelled/i.test(message)
+      const cancelled = this.isCancelled || /cancelled/i.test(message)
       const noTreeChange = err instanceof UpdateAbortedNoTreeChange
       const depsFailed = err instanceof UpdateDepsFailedAfterSourceOk
 
-      if (noTreeChange || depsFailed || !treeModified) {
+      // 0.1.17 (WP4-3): decide by the real diff. A git tree counts as changed
+      // when HEAD or the working status differs from the pre-fetch snapshot;
+      // a zip tree counts as changed once the overlay was attempted.
+      let treeChanged = treeModified
+      if (gitBefore) {
+        const after = await this.snapshotGitTree(comfyDir).catch(() => null)
+        treeChanged =
+          Boolean(after) && (after!.head !== gitBefore.head || after!.status !== gitBefore.status)
+      } else if (overlayAttempted) {
+        treeChanged = true
+      }
+      if (noTreeChange || depsFailed || !treeChanged) {
         // Nothing of ours to undo (pull failed before touching the tree), OR
         // the source update itself succeeded and only deps failed — rolling
         // the source back would throw away a good update.
@@ -1024,7 +1187,8 @@ export class ComfyUpdaterService extends EventEmitter {
           'update.msgRollbackSkip'
         )
         if (this.progress) {
-          this.progress.status = 'failed'
+          // 0.1.17 (WP4): a user cancel stays `cancelled`, not `failed`.
+          this.progress.status = cancelled ? 'cancelled' : 'failed'
           this.progress.error = cancelled
             ? 'Update cancelled'
             : depsFailed
@@ -1060,7 +1224,7 @@ export class ComfyUpdaterService extends EventEmitter {
         const rbMsg = rbErr instanceof Error ? rbErr.message : String(rbErr)
         this.log('rollback', `rollback failed: ${rbMsg}`)
         if (this.progress) {
-          this.progress.status = 'failed'
+          this.progress.status = cancelled ? 'cancelled' : 'failed'
           this.progress.error = `${cancelled ? 'Update cancelled' : message}; rollback FAILED (${rbMsg}) — backup at ${backupPath || 'n/a'}`
         }
         this.setStep('rollback', 'failed', rbMsg, undefined, 'update.msgRollbackFail', {
@@ -1077,6 +1241,8 @@ export class ComfyUpdaterService extends EventEmitter {
           undefined,
           'update.msgRollback'
         )
+        // Back on the previous tree — nothing left to recover.
+        this.clearJournal(comfyDir)
       } else {
         this.setStep(
           'rollback',
@@ -1087,7 +1253,7 @@ export class ComfyUpdaterService extends EventEmitter {
         )
       }
       if (this.progress) {
-        this.progress.status = 'failed'
+        this.progress.status = cancelled ? 'cancelled' : 'failed'
         this.progress.error = cancelled ? 'Update cancelled' : message
         this.progress.message = this.progress.error
         this.progress.bytes = undefined
@@ -1104,7 +1270,12 @@ export class ComfyUpdaterService extends EventEmitter {
     }
   }
 
-  /** Copy every non-preserved core entry from src into dest (recursive). */
+  /**
+   * Copy every non-preserved core entry from src into dest (recursive).
+   * 0.1.17 (WP4): a failed copy now aborts the update instead of being skipped.
+   * A backup missing one locked file is exactly what makes a later rollback
+   * "succeed" while leaving a half-updated tree behind.
+   */
   private copyCoreTree(src: string, dest: string): number {
     let count = 0
     for (const name of readdirSync(src)) {
@@ -1121,8 +1292,10 @@ export class ComfyUpdaterService extends EventEmitter {
           copyFileSync(from, to)
         }
         count++
-      } catch {
-        /* skip unreadable */
+      } catch (e) {
+        throw new Error(
+          `Backup failed at ${name}: ${e instanceof Error ? e.message : String(e)} — nothing was modified`
+        )
       }
     }
     return count
@@ -1141,19 +1314,39 @@ export class ComfyUpdaterService extends EventEmitter {
       return buf.byteLength
     }
     const file = createWriteStream(dest)
+    // 0.1.17 (WP4): a stream error used to surface as an unhandled 'error'
+    // event on the write stream (crash) and leave a partial file behind.
+    let writeError: Error | null = null
+    file.on('error', (e) => {
+      writeError = e
+    })
     let received = 0
     try {
       for (;;) {
         const { done, value } = await reader.read()
         if (done) break
+        this.assertNotCancelled()
         if (value) {
           const chunk = Buffer.from(value)
           await new Promise<void>((resolve, reject) => {
             file.write(chunk, (err) => (err ? reject(err) : resolve()))
           })
+          if (writeError) throw writeError
           received += chunk.byteLength
         }
       }
+    } catch (e) {
+      try {
+        file.destroy()
+      } catch {
+        /* ignore */
+      }
+      try {
+        rmSync(dest, { force: true })
+      } catch {
+        /* ignore */
+      }
+      throw e
     } finally {
       await new Promise<void>((resolve) => {
         try {
@@ -1179,19 +1372,32 @@ export class ComfyUpdaterService extends EventEmitter {
     if (!isSafeExternalUrl(url)) throw new Error('Blocked ComfyUI archive URL')
     const { session } = await import('electron')
     const tmpZip = join(dirname(comfyDir), `._comfyui_update_${Date.now()}.zip`)
-    const res = await session.defaultSession.fetch(url, {
-      headers: { 'User-Agent': 'ComfyPilot/0.1' },
-      signal: AbortSignal.timeout(10 * 60 * 1000)
-    })
-    if (!res.ok) throw new Error(`ComfyUI archive download failed: HTTP ${res.status}`)
-    const total = Number(res.headers.get('content-length') || 0)
-    const received = await this.streamBodyToFile(res, tmpZip)
-    this.setBytes({
-      receivedBytes: received,
-      totalBytes: total || received,
-      speedBps: 0,
-      label: 'ComfyUI archive'
-    })
+    const ac = new AbortController()
+    this.fetches.add(ac)
+    let res: Response
+    let received = 0
+    try {
+      res = await session.defaultSession.fetch(url, {
+        headers: { 'User-Agent': 'ComfyPilot/0.1' },
+        // Abortable: cancel() must interrupt a 500 MB download immediately.
+        signal: AbortSignal.any([ac.signal, AbortSignal.timeout(10 * 60 * 1000)])
+      })
+      if (!res.ok) throw new Error(`ComfyUI archive download failed: HTTP ${res.status}`)
+      const total = Number(res.headers.get('content-length') || 0)
+      // 0.1.17 (review fix): the controller used to leave `fetches` right after
+      // the headers arrived, so cancel() could no longer abort the body — a
+      // 500 MB download kept running to completion after the user cancelled.
+      received = await this.streamBodyToFile(res, tmpZip)
+      this.setBytes({
+        receivedBytes: received,
+        totalBytes: total || received,
+        speedBps: 0,
+        label: 'ComfyUI archive'
+      })
+    } finally {
+      this.fetches.delete(ac)
+    }
+    this.assertNotCancelled()
 
     // Extract to a staging dir first, then overlay.
     const staging = join(dirname(comfyDir), `._comfyui_staging_${Date.now()}`)
@@ -1199,6 +1405,7 @@ export class ComfyUpdaterService extends EventEmitter {
     try {
       const { safeUnzip } = await import('./zipSafe')
       await safeUnzip(tmpZip, staging)
+      this.assertNotCancelled()
       // flatten ComfyUI-master/
       let root = staging
       if (!existsSync(join(staging, 'main.py'))) {
@@ -1211,7 +1418,13 @@ export class ComfyUpdaterService extends EventEmitter {
         }
       }
       if (!existsSync(join(root, 'main.py'))) throw new Error('Staged archive missing main.py')
-      const overlaid = this.overlayTree(root, comfyDir)
+      this.assertNotCancelled()
+      const overlaid = this.overlayTree(
+        root,
+        comfyDir,
+        true,
+        () => this.running && this.isCancelled
+      )
       this.log('fetch', `overlaid ${overlaid} entries`)
     } finally {
       try {
@@ -1233,9 +1446,18 @@ export class ComfyUpdaterService extends EventEmitter {
    * (`topLevel=true`) so nested core packages like `comfy/ldm/models/` are
    * still updated — those share a name with user-data dirs but are source code.
    */
-  private overlayTree(src: string, dest: string, topLevel = true): number {
+  private overlayTree(
+    src: string,
+    dest: string,
+    topLevel = true,
+    shouldStop?: () => boolean
+  ): number {
     let count = 0
     for (const name of readdirSync(src)) {
+      // 0.1.17 (review fix): cancel during a 3000-file overlay must stop the
+      // copy, not finish it and then roll back. Only the update run passes the
+      // predicate — direct callers (tests, tooling) are not tied to a run.
+      if (shouldStop?.()) throw new Error('Update cancelled')
       if (topLevel && PRESERVE_ENTRIES.has(name)) continue
       const from = join(src, name)
       const to = join(dest, name)
@@ -1244,13 +1466,15 @@ export class ComfyUpdaterService extends EventEmitter {
         if (st.isDirectory()) {
           // Recursively overlay directory contents; create if missing.
           if (!existsSync(to)) mkdirSync(to, { recursive: true })
-          count += this.overlayTree(from, to, false)
+          count += this.overlayTree(from, to, false, shouldStop)
         } else {
           copyFileSync(from, to)
           count++
         }
-      } catch {
-        /* skip unreadable */
+      } catch (e) {
+        // 0.1.17 (WP4): a partially overlaid tree must fail loudly — the caller
+        // still has the backup and will roll back.
+        throw new Error(`Overlay failed at ${name}: ${e instanceof Error ? e.message : String(e)}`)
       }
     }
     return count
@@ -1296,8 +1520,34 @@ export class ComfyUpdaterService extends EventEmitter {
     // because they were never copied into the backup).
     const manifestFile = join(backupPath, 'manifest.json')
     if (!existsSync(manifestFile)) throw new Error('Backup manifest missing')
+    // 0.1.17 (WP4): symmetric restore — delete core files the update ADDED and
+    // the backup does not contain, otherwise "rolled back" still has new code.
+    const inventoryFile = join(backupPath, 'inventory.json')
+    if (existsSync(inventoryFile)) {
+      let inventory: string[] = []
+      try {
+        inventory = JSON.parse(readFileSync(inventoryFile, 'utf-8')) as string[]
+      } catch {
+        inventory = readdirSync(backupPath).filter(
+          (n) => n !== 'manifest.json' && n !== 'inventory.json'
+        )
+      }
+      const kept = new Set(inventory)
+      let removed = 0
+      for (const name of readdirSync(comfyDir)) {
+        if (PRESERVE_ENTRIES.has(name) || name === '.git' || name.startsWith('.cp-')) continue
+        if (kept.has(name)) continue
+        try {
+          rmSync(join(comfyDir, name), { recursive: true, force: true })
+          removed++
+        } catch (e) {
+          throw new Error(`rollback cleanup ${name}: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
+      if (removed) this.log('rollback', `removed ${removed} entries added by the update`)
+    }
     for (const name of readdirSync(backupPath)) {
-      if (name === 'manifest.json') continue
+      if (name === 'manifest.json' || name === 'inventory.json') continue
       const from = join(backupPath, name)
       const to = join(comfyDir, name)
       try {

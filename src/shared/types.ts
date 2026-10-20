@@ -216,6 +216,17 @@ export interface ComfyInstanceInfo extends ComfyInstanceConfig {
   startedAt?: number
   uptimeMs?: number
   lastError?: string
+  /**
+   * 0.1.17 (WP3): classified reason for the last unexpected exit. Absent when
+   * the process is alive or was stopped on purpose.
+   */
+  lastExit?: {
+    kind: 'oom' | 'port' | 'dependency' | 'driver' | 'cancelled' | 'unknown'
+    code: number | null
+    signal: string | null
+    hint: string
+    at: number
+  }
 }
 
 export interface InstanceDiscoveryCandidate {
@@ -354,11 +365,21 @@ export interface ModelReconcileResult {
 export interface InstanceActionResult extends ComfyInstanceInfo {
   ok: boolean
   error?: string
+  /**
+   * 0.1.17 (review fix): stopAll surfaces whether each process actually exited;
+   * `false` means it may still be running and must not be counted as stopped.
+   */
+  exited?: boolean
 }
 
 /** stop/forceKill result — `adopted` marks an external process we only signalled. */
 export interface InstanceStopResult extends ComfyInstanceInfo {
   adopted?: boolean
+  /**
+   * 0.1.17 (WP3): whether the process was observed to exit inside the grace
+   * window. `false` means it may still be running — the UI must say so.
+   */
+  exited?: boolean
 }
 
 export interface DiagnosticPackage {
@@ -497,6 +518,12 @@ export interface NodePackRecord {
   pipRequirements?: string[]
   /** Version explicitly requested at install time — wins over on-disk meta. */
   pinnedVersion?: string
+  /**
+   * Honest note when the requested version could not be applied (0.1.17).
+   * The record then keeps the on-disk `version` and does NOT set
+   * `pinnedVersion`, so the UI can show what actually landed.
+   */
+  installNote?: string
   /** Git HEAD sha recorded at install/snapshot time (git-managed packs). */
   gitRev?: string
 }
@@ -874,7 +901,18 @@ export interface EnvCreateRequest {
 }
 
 // ---------- Batch ----------
-export type BatchJobStatus = 'queued' | 'submitting' | 'running' | 'done' | 'error' | 'cancelled'
+export type BatchJobStatus =
+  | 'queued'
+  | 'submitting'
+  | 'running'
+  | 'done'
+  | 'error'
+  | 'cancelled'
+  /**
+   * 0.1.17 (WP5): persisted as submitting/running but no run is alive (app
+   * exited). Resume submits only the legs that never completed.
+   */
+  | 'interrupted'
 export type SeedMode = 'random' | 'increment' | 'fixed'
 
 /** One workflow leg inside a multi-workflow batch job. */
@@ -939,6 +977,9 @@ export interface BatchJob {
   /** Concise failure summary (first errors / timeouts) for the UI card. */
   errorSummary?: string
   params: BatchParamOverrides
+  /** 0.1.17 (WP5): identity + start time of the run that produced this state. */
+  runId?: string
+  startedAt?: number
   /** Display path of the primary workflow (items[0]). */
   workflowPath: string
 }
@@ -951,6 +992,12 @@ export interface RemoteInstanceConfig {
   apiKey?: string
   label: string
   enabled: boolean
+  /**
+   * 0.1.17 (review fix): the stored API key could not be decrypted on this
+   * machine (profile moved / keychain unavailable). The UI should ask for it
+   * again; saving an empty key keeps the ciphertext instead of erasing it.
+   */
+  apiKeyLocked?: boolean
 }
 
 export interface RemoteInstanceStatus {
@@ -1007,7 +1054,19 @@ export type InstallStepId =
   | 'starter'
   | 'done'
 
-export type InstallStepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped' | 'cancelled'
+export type InstallStepStatus =
+  | 'pending'
+  | 'running'
+  | 'done'
+  | 'failed'
+  | 'skipped'
+  | 'cancelled'
+  /**
+   * 0.1.17 (WP1): a run that was `running` when the app died is not running any
+   * more — persisted runs are relabelled on load so the UI cannot deadlock on a
+   * ghost run.
+   */
+  | 'interrupted'
 
 export interface InstallStep {
   id: InstallStepId
@@ -1129,6 +1188,11 @@ export interface ComfyUpdateInfo {
   latest?: string
   source: 'git' | 'zip' | 'unknown'
   updatable: boolean
+  /**
+   * The check could not determine freshness (offline / API error). UI must not
+   * render `updatable: false` as "up to date" in this case (0.1.17).
+   */
+  unknown?: boolean
   /** Commits behind upstream (git installs only). */
   behindCount?: number
   /** Short sha of remote head (git installs only). */
@@ -1166,7 +1230,11 @@ export interface UpdateStep {
   log: string[]
   detailKey?: string
   detailParams?: Record<string, string | number>
-  /** 0..1 progress within the step (git object %, pip line heuristics). */
+  /**
+   * 0..1 progress within the step. Only set when the tool reports a REAL
+   * fraction (git object %). pip output has no total, so its step stays
+   * indeterminate (0.1.17 WP2-4 removed the invented line-count fraction).
+   */
   progress?: number
 }
 
@@ -1197,6 +1265,18 @@ export interface ComfyUpdateOptions {
   torchChannel?: TorchChannel
   /** Open embed/browser after a successful update+optional restart. */
   open?: 'embed' | 'browser' | 'none'
+}
+
+/**
+ * On-disk record of an update that started but did not finish (0.1.17 WP4).
+ * Written next to the ComfyUI dir; deleted on success or a completed rollback.
+ */
+export interface UpdateJournal {
+  instanceId: string
+  comfyDir: string
+  backupPath: string
+  backupKind: 'git' | 'files'
+  startedAt: number
 }
 
 export interface RepairEnvOptions {
@@ -1324,6 +1404,10 @@ export type IpcChannelMap = {
   'instance.stop': { args: [string]; result: InstanceStopResult }
   'instance.restart': { args: [string, LaunchOptions?]; result: ComfyInstanceInfo }
   'instance.forceKill': { args: [string]; result: InstanceStopResult }
+  'instance.sweepStale': {
+    args: []
+    result: { entries: number; killed: string[]; unverified: string[] }
+  }
   'instance.startAll': { args: []; result: InstanceActionResult[] }
   'instance.stopAll': { args: []; result: InstanceActionResult[] }
   'instance.getLogs': { args: [string, number?]; result: ComfyLogLine[] }
@@ -1335,6 +1419,8 @@ export type IpcChannelMap = {
   'instance.copyDiagnostics': { args: [string]; result: string }
   'instance.exportLogs': { args: [string]; result: { path: string } }
   'instance.checkComfyUpdate': { args: [string]; result: ComfyUpdateInfo }
+  'instance.updateJournal': { args: [string]; result: UpdateJournal | null }
+  'instance.rollbackUpdate': { args: [string]; result: boolean }
   'instance.updateComfy': { args: [string, ComfyUpdateOptions?]; result: UpdateProgress }
   'instance.updateStatus': { args: []; result: UpdateProgress | null }
   'instance.cancelUpdate': { args: []; result: boolean }
@@ -1579,6 +1665,7 @@ export type IpcChannelMap = {
   'installer.start': { args: [InstallPlan]; result: { runId: string } }
   'installer.status': { args: []; result: InstallProgress | null }
   'installer.cancel': { args: []; result: boolean }
+  'installer.reset': { args: []; result: boolean }
   'installer.suggestInstallRoot': { args: []; result: { path: string; freeGb: number } }
   'installer.starterModels': { args: []; result: StarterModel[] }
   'installer.installStarter': { args: [{ id: string; instanceId?: string }]; result: DownloadTask }
@@ -1638,6 +1725,11 @@ export type IpcChannelMap = {
     result: BatchJob
   }
   'batch.start': { args: [string]; result: BatchJob }
+  'batch.resume': { args: [string]; result: BatchJob }
+  'batch.retryFailed': { args: [string]; result: BatchJob }
+  // 0.1.17 (WP5-7): start/resume/retry now return the accepted snapshot;
+  // `batch.wait` settles on the terminal job without polling.
+  'batch.wait': { args: [string]; result: BatchJob | null }
   'batch.cancel': { args: [string]; result: BatchJob }
   'batch.cancelItem': { args: [string, string]; result: BatchJob }
   'batch.remove': { args: [string]; result: boolean }
@@ -1668,6 +1760,9 @@ export type IpcChannelMap = {
     ]
     result: { items: OutputAsset[]; total: number; truncated: boolean }
   }
+  /** 0.1.17 (WP7): explicit disk scan; listing stays index-only. */
+  'output.scan': { args: [{ root?: string }?]; result: { scanned: number; cancelled: boolean } }
+  'output.scanCancel': { args: []; result: boolean }
   /**
    * Read-only lookup against the instance's ComfyUI assets system (0.1.14).
    * null = assets API unavailable/failed; [] = answered, nothing matched.
@@ -1680,7 +1775,7 @@ export type IpcChannelMap = {
   /** Batch delete (0.1.15) — per-id failures reported, never an all-or-nothing lie. */
   'output.batchDelete': {
     args: [string[], boolean]
-    result: { ok: number; failed: Array<{ id: string; error: string }> }
+    result: { ok: number; failed: Array<{ id: string; label: string; error: string }> }
   }
   'output.importToWorkflow': { args: [string, string?]; result: WorkflowRecord | null }
   'output.exportZip': { args: [string[], string?]; result: { path: string } }
@@ -1768,6 +1863,9 @@ export const IPC_CHANNELS = [
   'batch.preflight',
   'batch.remove',
   'batch.start',
+  'batch.resume',
+  'batch.retryFailed',
+  'batch.wait',
   'bootstrap.download',
   'bootstrap.ensure',
   'bootstrap.status',
@@ -1785,6 +1883,7 @@ export const IPC_CHANNELS = [
   'installer.detectGpu',
   'installer.installStarter',
   'installer.preflight',
+  'installer.reset',
   'installer.start',
   'installer.starterModels',
   'installer.status',
@@ -1793,6 +1892,8 @@ export const IPC_CHANNELS = [
   'instance.cancelUpdate',
   'instance.capabilities',
   'instance.checkComfyUpdate',
+  'instance.updateJournal',
+  'instance.rollbackUpdate',
   'instance.checkPort',
   'instance.clearExecFailures',
   'instance.clearLogs',
@@ -1803,6 +1904,7 @@ export const IPC_CHANNELS = [
   'instance.exportLaunchScript',
   'instance.exportLogs',
   'instance.forceKill',
+  'instance.sweepStale',
   'instance.getLogs',
   'instance.launch',
   'instance.list',
@@ -1887,6 +1989,8 @@ export const IPC_CHANNELS = [
   'output.favorite',
   'output.importToWorkflow',
   'output.list',
+  'output.scan',
+  'output.scanCancel',
   'output.open',
   'output.reveal',
   'proxy.apply',
@@ -1958,7 +2062,15 @@ export const IPC_EVENTS = {
   /** Streaming log line for pip/recipe ops (0.1.12). */
   pipOpLog: 'event:pip-op-log',
   /** UpdateProgress-shaped stream for pip/recipe ops (0.1.12). */
-  pipOpProgress: 'event:pip-op-progress'
+  pipOpProgress: 'event:pip-op-progress',
+  /**
+   * Embedded frontend lifecycle (0.1.17 WP9): `{ state: 'ready' | 'failed',
+   * url?, errorCode?, errorDescription?, validatedURL? }`. Without this the
+   * embed pane just stayed blank on a failed load.
+   */
+  embedState: 'event:embed-state',
+  /** Output scan progress (0.1.17 review fix) — {scanned,total,done,cancelled}. */
+  outputScanProgress: 'event:output-scan-progress'
 } as const
 
 export interface AppNotification {

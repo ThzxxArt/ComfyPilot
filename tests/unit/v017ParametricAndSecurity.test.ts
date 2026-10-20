@@ -311,7 +311,8 @@ describe('composables exports', () => {
     expect(src).toContain('startUpdate')
     expect(src).toContain('cancelUpdate')
     expect(src).toContain('repairEnv')
-    expect(src).toContain('clearProgress')
+    // 0.1.17 (WP10): unused `clearProgress` export removed.
+    expect(src).toContain('cancelNodeOp')
   })
 })
 

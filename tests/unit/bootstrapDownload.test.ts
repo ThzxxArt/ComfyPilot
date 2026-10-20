@@ -129,4 +129,121 @@ describe('bootstrap resumable download (0.1.13)', () => {
     expect(existsSync(dest)).toBe(false)
     expect(existsSync(part)).toBe(false)
   })
+
+  // 0.1.17 (WP1): a cancel must end ensure(), not fall through to the next kind.
+  it('ensure() propagates a cancel and never starts the next runtime', async () => {
+    const svc = await freshService()
+    const anySvc = svc as unknown as {
+      probeKind: (k: string) => Promise<{ kind: string; installed: boolean; origin: string }>
+      download: (k: string) => Promise<unknown>
+    }
+    const probed: string[] = []
+    let failDownload: ((e: Error) => void) | null = null
+    anySvc.probeKind = async (k: string) => {
+      probed.push(k)
+      return { kind: k, installed: false, origin: 'missing' }
+    }
+    anySvc.download = () =>
+      new Promise((_resolve, reject) => {
+        failDownload = reject
+      })
+
+    const pending = (svc.ensure as typeof svc.ensure)({
+      kinds: ['uv', 'python'],
+      downloadIfMissing: true
+    })
+    // Let the loop reach the download, then cancel it.
+    await new Promise((r) => setTimeout(r, 10))
+    svc.cancelAll()
+    const abortErr = new Error('aborted')
+    abortErr.name = 'AbortError'
+    // TS narrows the closure-assigned variable to null; the callback above sets it.
+    ;(failDownload as ((e: Error) => void) | null)?.(abortErr)
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    expect(probed).toEqual(['uv'])
+  })
+
+  it('cancelAll aborts the real download and stops the next kind (review fix)', async () => {
+    const svc = await freshService()
+    const anySvc = svc as unknown as {
+      probeKind: (k: string) => Promise<{ kind: string; installed: boolean; origin: string }>
+    }
+    const probed: string[] = []
+    anySvc.probeKind = async (k: string) => {
+      probed.push(k)
+      return { kind: k, installed: false, origin: 'missing' }
+    }
+    // A transport that honours the abort signal, like the real session.fetch.
+    h.fetchImpl = (_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal as AbortSignal | undefined
+        const fail = (): void => {
+          const err = new Error('aborted')
+          err.name = 'AbortError'
+          reject(err)
+        }
+        if (signal?.aborted) fail()
+        else signal?.addEventListener('abort', fail)
+      })
+
+    const pending = (svc.ensure as typeof svc.ensure)({
+      kinds: ['uv', 'python'],
+      downloadIfMissing: true
+    })
+    await new Promise((r) => setTimeout(r, 20))
+    svc.cancelAll()
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    // The next kind must never be probed after a cancel.
+    expect(probed).toEqual(['uv'])
+  })
+
+  it('a cancel that lands during the probe does not start a download', async () => {
+    const svc = await freshService()
+    const anySvc = svc as unknown as {
+      probeKind: (k: string) => Promise<{ kind: string; installed: boolean; origin: string }>
+    }
+    const probed: string[] = []
+    let fetchCalls = 0
+    anySvc.probeKind = async (k: string) => {
+      probed.push(k)
+      // Slow probe: cancelAll() lands while ensure() is still waiting here.
+      await new Promise((r) => setTimeout(r, 80))
+      return { kind: k, installed: false, origin: 'missing' }
+    }
+    h.fetchImpl = () => {
+      fetchCalls += 1
+      return Promise.reject(new Error('fetch must not start after a cancel'))
+    }
+    const pending = (svc.ensure as typeof svc.ensure)({
+      kinds: ['uv', 'python'],
+      downloadIfMissing: true
+    })
+    await new Promise((r) => setTimeout(r, 10))
+    svc.cancelAll()
+    // 0.1.17 (review fix): the epoch check after the probe must end ensure()
+    // instead of letting it start a fresh, un-aborted download that hangs.
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    expect(probed).toEqual(['uv'])
+    expect(fetchCalls).toBe(0)
+  })
+
+  it('a new ensure() after a cancel runs normally (no permanent latch)', async () => {
+    const svc = await freshService()
+    const anySvc = svc as unknown as {
+      probeKind: (k: string) => Promise<{ kind: string; installed: boolean; origin: string }>
+      download: (k: string) => Promise<unknown>
+    }
+    const probed: string[] = []
+    anySvc.probeKind = async (k: string) => {
+      probed.push(k)
+      return { kind: k, installed: false, origin: 'missing' }
+    }
+    anySvc.download = async () => undefined
+
+    svc.cancelAll()
+    await svc.ensure({ kinds: ['uv'], downloadIfMissing: true })
+    // status() probes every kind afterwards; the ensure() itself started at uv.
+    expect(probed[0]).toBe('uv')
+  })
 })

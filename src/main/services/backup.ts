@@ -28,7 +28,8 @@ import {
   stringifyJsonc,
   userDataDir
 } from './db'
-import { sanitizeId, isPathInside } from './security'
+import { sanitizeId, isPathInside, assertSafeEndpointSetting } from './security'
+import { encryptSecret } from './secretStorage'
 
 function resolveBackupDir(id: string): string {
   const safe = sanitizeId(id)
@@ -129,13 +130,21 @@ export class BackupService {
     const remotes = listRemotes()
     const snapshots = listSnapshots()
 
+    // 0.1.17 (WP8): a backup is a plain folder users copy around / upload for
+    // support. Credentials must never leave the machine in it.
+    const safeSettings: AppSettings = {
+      ...settings,
+      proxy: { ...settings.proxy, password: '' }
+    }
+    const safeRemotes = remotes.map((r) => ({ ...r, apiKey: '' }))
+
     const files: Record<string, unknown> = {
-      'settings.json': settings,
+      'settings.json': safeSettings,
       'instances.json': instances,
       'node-packs.json': nodePacks,
       'model-manifest.json': models,
       'workflows.json': workflows,
-      'remote-instances.json': remotes,
+      'remote-instances.json': safeRemotes,
       'node-snapshots.json': snapshots
     }
     for (const [name, value] of Object.entries(files)) {
@@ -191,7 +200,8 @@ export class BackupService {
       includes,
       notes:
         (opts.notes || '') +
-        (wfResult.missing ? ` (${wfResult.missing} workflow files missing)` : '')
+        (wfResult.missing ? ` (${wfResult.missing} workflow files missing)` : '') +
+        ' (credentials excluded — proxy password / remote API keys stay local)'
     }
     writeFileSync(join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2))
     insertBackup(manifest)
@@ -245,15 +255,56 @@ export class BackupService {
       }
     }
 
+    // 0.1.17 (review fix): a restored settings.json is untrusted input too — it
+    // used to bypass the endpoint validation that `settings.set` enforces, so a
+    // `file:`/credentialed mirror URL could be restored and used by installers.
+    if (settings) {
+      const endpointKeys = [
+        'githubEndpoint',
+        'hfEndpoint',
+        'civitaiEndpoint',
+        'pipIndex',
+        'torchIndexMirror'
+      ] as const
+      for (const key of endpointKeys) {
+        try {
+          assertSafeEndpointSetting(key, (settings as unknown as Record<string, unknown>)[key])
+        } catch (e) {
+          errors.push(`settings.json: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
+    }
+
     if (errors.length) {
       throw new Error(`Backup restore aborted, nothing applied — ${errors.join('; ')}`)
     }
 
     // Phase 2: apply. Lists first (so workflow records exist for file restore),
     // then entity files. Each file write is tmp+rename (atomic per file).
-    if (settings) saveSettings(settings)
+    if (settings) {
+      // 0.1.17 (WP8): the snapshot never contains credentials. Keep whatever
+      // this machine already had instead of wiping the proxy password.
+      const current = loadSettings()
+      const nextSettings: AppSettings = { ...settings }
+      if (!settings.proxy?.password && current.proxy?.password) {
+        nextSettings.proxy = { ...settings.proxy, password: current.proxy.password }
+      }
+      saveSettings(nextSettings)
+    }
     for (const [, key] of listEntries) {
-      const items = lists[key]
+      let items = lists[key]
+      if (items && key === 'remote_instances') {
+        const localKeys = new Map(listRemotes().map((r) => [r.id, r.apiKey]))
+        items = (items as Array<Record<string, unknown>>).map((r) => {
+          // 0.1.17 (review fix): the backup strips apiKey, so the merge brings
+          // back THIS machine's decrypted key — it must be re-encrypted before
+          // hitting disk, otherwise a restore silently degrades the credential
+          // to plaintext (the very thing WP8 removed).
+          const { apiKeyLocked: _ignored, ...rest } = r as Record<string, unknown>
+          const plain = String(r.apiKey || '') || localKeys.get(String(r.id)) || ''
+          return { ...rest, apiKey: plain ? encryptSecret(plain) : '' }
+        })
+      }
       if (items) replaceJsoncList(key, items)
     }
 

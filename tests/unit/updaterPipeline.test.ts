@@ -37,6 +37,8 @@ const h = vi.hoisted(() => {
     execSyncErr: null as Error | null,
     instanceList: [] as Array<Record<string, unknown>>,
     instanceStopErr: null as Error | null,
+    /** 0.1.17: override the stop() result (adopted / exited). */
+    instanceStopResult: null as null | { adopted?: boolean; exited?: boolean },
     stopCalls: [] as string[],
     launchCalls: [] as Array<{ id: string; opts: unknown }>,
     checkPortQueue: [] as boolean[],
@@ -329,7 +331,7 @@ vi.mock('../../src/main/services/instance', () => ({
     stop: vi.fn(async (id: string) => {
       h.state.stopCalls.push(id)
       if (h.state.instanceStopErr) throw h.state.instanceStopErr
-      return { id, status: 'stopped' }
+      return { id, status: 'stopped', ...(h.state.instanceStopResult || {}) }
     }),
     checkPort: vi.fn(async () => {
       const available = h.state.checkPortQueue.length ? h.state.checkPortQueue.shift()! : true
@@ -385,6 +387,8 @@ const svc = comfyUpdaterService as unknown as {
   assertNotCancelled: () => void
   requireInstance: (id: string) => unknown
   run: (cmd: string, args: string[], opts?: { cwd?: string; timeout?: number }) => Promise<string>
+  writeJournal: (journal: unknown) => void
+  clearJournal: (comfyDir: string) => void
 }
 
 const COMFY = 'C:/fake/ComfyUI'
@@ -416,6 +420,7 @@ function resetState(): void {
   h.state.execSyncOut = 'v0.0.1-1-gabc1234'
   h.state.execSyncErr = null
   h.state.instanceStopErr = null
+  h.state.instanceStopResult = null
   h.state.stopCalls = []
   h.state.launchCalls = []
   h.state.checkPortQueue = []
@@ -519,10 +524,14 @@ function waitFinished(): Promise<UpdateProgress> {
       reject(new Error('timeout waiting for update to finish'))
     }, 8000)
     const handler = (p: UpdateProgress): void => {
-      if (p.status === 'done' || p.status === 'failed') {
+      if (p.status === 'done' || p.status === 'failed' || p.status === 'cancelled') {
         clearTimeout(timer)
         comfyUpdaterService.off('progress', handler)
-        resolve({ ...p, steps: p.steps.map((s) => ({ ...s, log: [...s.log] })) })
+        // The terminal event fires before runUpdate's `finally` clears `running`;
+        // drain it so the next test never observes a "live" run (review fix).
+        setTimeout(() => {
+          resolve({ ...p, steps: p.steps.map((s) => ({ ...s, log: [...s.log] })) })
+        }, 0)
       }
     }
     comfyUpdaterService.on('progress', handler)
@@ -780,14 +789,18 @@ describe('check()', () => {
     expect(info.latest).toMatch(/2024-06-01/)
   })
 
-  it('still reports updatable when the zip API is down', async () => {
+  // 0.1.17 (WP10): offline used to report `updatable: true` (force a re-download).
+  // That made the UI claim an update exists without evidence — now it reports
+  // `unknown`, and the user can still trigger an update manually.
+  it('reports "unknown" (not updatable) when the zip API is down', async () => {
     seedZipInstall()
     h.state.sessionFetch = async () => {
       throw new Error('API offline')
     }
     const info = await comfyUpdaterService.check('inst-1')
     expect(info.source).toBe('zip')
-    expect(info.updatable).toBe(true)
+    expect(info.updatable).toBe(false)
+    expect(info.unknown).toBe(true)
     expect(info.error).toMatch(/API offline/)
   })
 
@@ -799,11 +812,12 @@ describe('check()', () => {
     expect(info.error).toMatch(/main\.py/i)
   })
 
-  it('reports non-OK GitHub API as an error but stays force-updatable', async () => {
+  it('reports non-OK GitHub API as unknown rather than as an available update', async () => {
     seedZipInstall()
     h.state.sessionFetch = async () => ({ ok: false, status: 503, json: async () => ({}) })
     const info = await comfyUpdaterService.check('inst-1')
-    expect(info.updatable).toBe(true)
+    expect(info.updatable).toBe(false)
+    expect(info.unknown).toBe(true)
     expect(info.error).toMatch(/503/)
   })
 })
@@ -916,15 +930,29 @@ describe('runUpdate pipeline', () => {
     expect(stop?.log.join('\n')).toMatch(/not running/i)
   })
 
-  it('proceeds when stop throws (adopted external process)', async () => {
+  // 0.1.17 (WP4): a stop that fails (or an adopted external process) must abort
+  // the update — overlaying source under a running server was the old bug.
+  it('aborts when the instance cannot be stopped', async () => {
     seedGitInstall({ withVenv: true, withReq: false })
     h.state.instanceList = [{ id: 'inst-1', status: 'running' }]
     h.state.instanceStopErr = new Error('not our process')
-    routeExec([{ match: '', result: () => ({ stdout: 'sha1\n' }) }])
+    const calls: string[] = []
+    routeExec([
+      {
+        match: '',
+        result: () => {
+          calls.push('exec')
+          return { stdout: 'sha1\n' }
+        }
+      }
+    ])
     const p = await runUpdate({ updateDeps: false })
-    expect(p.status).toBe('done')
+    expect(p.status).toBe('failed')
+    expect(p.error).toMatch(/cannot update while the instance is running/i)
+    // No pull/backup happened after the refusal.
+    expect(calls).toEqual([])
     const stop = p.steps.find((s) => s.id === 'stop')
-    expect(stop?.log.join('\n')).toMatch(/not our process/)
+    expect(stop?.status).toBe('failed')
   })
 
   it('records git HEAD during backup and keeps the backup dir', async () => {
@@ -1010,8 +1038,15 @@ describe('runUpdate pipeline', () => {
     // Rollback runs only when a step AFTER a successful fetch fails and the
     // failure is NOT a deps-only failure. Torch install failure is that case.
     seedGitInstall({ withVenv: true, withReq: false })
+    // 0.1.17 (WP4-3): the rollback decision now compares the real HEAD before
+    // and after the fetch, so the mock must actually change it on the pull.
+    // call 1 = pre-fetch snapshot, call 2 = backup sha, call 3+ = post-failure check.
+    let headCalls = 0
     routeExec([
-      { match: 'rev-parse HEAD', result: () => ({ stdout: 'oldsha\n' }) },
+      {
+        match: 'rev-parse HEAD',
+        result: () => ({ stdout: ++headCalls <= 2 ? 'oldsha\n' : 'newsha\n' })
+      },
       { match: 'pull', result: () => ({ stdout: '' }) },
       { match: 'rev-parse --short', result: () => ({ stdout: 'newsha\n' }) },
       {
@@ -1051,6 +1086,31 @@ describe('runUpdate pipeline', () => {
     // user dirs untouched
     const fetch = p.steps.find((s) => s.id === 'fetch')
     expect(fetch?.status).toBe('done')
+  })
+
+  it('keeps the file backup when the health check fails (review fix)', async () => {
+    seedZipInstall({ withVenv: true, withReq: false })
+    h.state.sessionFetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => '123' },
+      arrayBuffer: async () => new TextEncoder().encode('zipdata').buffer
+    })
+    h.state.unzipImpl = (_zip, dest) => {
+      const nested = join(dest, 'ComfyUI-master')
+      h.mkdirPath(nested)
+      h.writeFile(join(nested, 'main.py'), 'updated')
+    }
+    h.state.doctorResult = {
+      checks: [{ severity: 'fail', title: 'broken import' }],
+      summary: { pass: 1, warn: 0 }
+    }
+    const p = await runUpdate({ updateDeps: false })
+    expect(p.status).toBe('done')
+    expect(p.steps.find((s) => s.id === 'verify')?.status).toBe('failed')
+    // The backup is the only way back from a failed health check — it must stay.
+    expect(p.backupPath).toBeTruthy()
+    expect(dhas(p.backupPath!)).toBe(true)
   })
 
   it('skips requirements and torch when updateDeps is false', async () => {
@@ -1365,7 +1425,8 @@ describe('cancel()', () => {
     await new Promise((r) => setTimeout(r, 30))
     expect(comfyUpdaterService.cancel()).toBe(true)
     const p = await finished
-    expect(p.status).toBe('failed')
+    // 0.1.17 (WP4): a cancelled update is `cancelled`, not `failed`.
+    expect(p.status).toBe('cancelled')
     expect(p.error).toMatch(/cancelled/i)
   })
 
@@ -1712,9 +1773,14 @@ describe('progress helpers', () => {
     expect(() => svc.emitProgress('x')).not.toThrow()
   })
 
-  it('assertNotCancelled throws once cancelled', () => {
+  it('assertNotCancelled throws only for a live cancelled run', () => {
     comfyUpdaterService.cancel()
+    // Outside a run the latch is inert (direct helpers stay callable)…
+    expect(() => svc.assertNotCancelled()).not.toThrow()
+    // …but a live run must abort.
+    Object.assign(comfyUpdaterService as unknown as Record<string, unknown>, { running: true })
     expect(() => svc.assertNotCancelled()).toThrow(/cancelled/i)
+    Object.assign(comfyUpdaterService as unknown as Record<string, unknown>, { running: false })
   })
 
   it('requireInstance rejects unknown ids and hop paths', () => {
@@ -1735,20 +1801,19 @@ describe('progress helpers', () => {
 // Edge branches for coverage
 // =====================================================================
 describe('edge branches', () => {
-  it('copyCoreTree skips entries whose copy throws (real injected failure)', () => {
+  // 0.1.17 (WP4): a partial backup must fail loudly — a silent skip is what
+  // makes a later rollback "succeed" on a half-updated tree.
+  it('copyCoreTree throws when an entry cannot be copied', () => {
     h.mkdirPath(join(COMFY, 'comfy'))
     h.writeFile(join(COMFY, 'main.py'), 'm')
     h.writeFile(join(COMFY, 'bad.bin'), 'b')
     const dest = join(COMFY, '.cp-backup-ghost')
     h.mkdirPath(dest)
     h.state.failCopyOnce.add(h.fsKey(join(COMFY, 'bad.bin')))
-    expect(() => svc.copyCoreTree(COMFY, dest)).not.toThrow()
-    // The failing entry was skipped; everything else went through.
-    expect(fget(join(dest, 'main.py'))).toBe('m')
-    expect(fget(join(dest, 'bad.bin'))).toBeUndefined()
+    expect(() => svc.copyCoreTree(COMFY, dest)).toThrow(/Backup failed at bad\.bin/)
   })
 
-  it('overlayTree skips entries whose copy throws and still copies the rest', () => {
+  it('overlayTree throws on a failed copy so the caller rolls back', () => {
     const src = join(COMFY, 'st')
     const dest = join(COMFY, 'dt')
     h.mkdirPath(src)
@@ -1756,9 +1821,9 @@ describe('edge branches', () => {
     h.writeFile(join(src, 'ok.py'), 'ok')
     h.writeFile(join(src, 'bad.py'), 'bad')
     h.state.failCopyOnce.add(h.fsKey(join(src, 'bad.py')))
-    expect(() => svc.overlayTree(src, dest)).not.toThrow()
+    expect(() => svc.overlayTree(src, dest)).toThrow(/Overlay failed at bad\.py/)
+    // Whatever was copied before the failure stays; the caller must roll back.
     expect(fget(join(dest, 'ok.py'))).toBe('ok')
-    expect(fget(join(dest, 'bad.py'))).toBeUndefined()
   })
 
   it('performRollback rethrows a restore failure with the entry name', async () => {
@@ -1882,8 +1947,14 @@ describe('rollback safety branches', () => {
     // S2 guard: uncommitted LOCAL EDITS must survive a rollback attempt.
     // Untracked files must NOT block (that was the false-positive).
     seedGitInstall({ withVenv: true, withReq: false })
+    // HEAD must move on the pull (WP4-3 diff decision), while the dirty status
+    // stays identical before/after — the rollback is attempted, then refused.
+    let headCalls = 0
     routeExec([
-      { match: 'rev-parse HEAD', result: () => ({ stdout: 'oldsha\n' }) },
+      {
+        match: 'rev-parse HEAD',
+        result: () => ({ stdout: ++headCalls <= 2 ? 'oldsha\n' : 'newsha\n' })
+      },
       { match: 'pull', result: () => ({ stdout: '' }) },
       { match: 'rev-parse --short', result: () => ({ stdout: 'newsha\n' }) },
       {
@@ -2136,5 +2207,164 @@ describe('files-rollback restore error path', () => {
     } finally {
       ;(fsMod as { copyFileSync: unknown }).copyFileSync = origCopy
     }
+  })
+})
+
+// =====================================================================
+// 0.1.17 (WP4): cancel is per-run, journal survives a crash, rollback is
+// symmetric (files added by the update are removed again).
+// =====================================================================
+describe('0.1.17 WP4: cancellation, journal and symmetric rollback', () => {
+  it('cancel() writes the cancelled terminal state immediately', async () => {
+    seedGitInstall({ withVenv: true, withReq: false })
+    h.state.execHandler = (cmd, args) => {
+      if (args.includes('pull')) return { hang: true }
+      return { stdout: 'sha\n' }
+    }
+    const finished = waitFinished()
+    await comfyUpdaterService.start('inst-1', { updateDeps: false })
+    await new Promise((r) => setTimeout(r, 30))
+    comfyUpdaterService.cancel()
+    // No await had to unwind for the UI to see the truth.
+    expect(comfyUpdaterService.getStatus()?.status).toBe('cancelled')
+    await finished
+  })
+
+  it('a previous cancel does not poison the next update (per-run epoch)', async () => {
+    comfyUpdaterService.cancel()
+    seedGitInstall({ withVenv: true, withReq: false })
+    routeExec([
+      { match: 'rev-parse HEAD', result: () => ({ stdout: 'abc1234\n' }) },
+      { match: 'pull', result: () => ({ stdout: 'ok\n' }) },
+      { match: 'rev-parse --short', result: () => ({ stdout: 'abc1234\n' }) }
+    ])
+    const p = await runUpdate({ updateDeps: false })
+    expect(p.status).toBe('done')
+  })
+
+  it('clears the journal after a successful update', async () => {
+    seedGitInstall({ withVenv: true, withReq: false })
+    routeExec([
+      { match: 'rev-parse HEAD', result: () => ({ stdout: 'abc1234\n' }) },
+      { match: 'pull', result: () => ({ stdout: 'ok\n' }) },
+      { match: 'rev-parse --short', result: () => ({ stdout: 'abc1234\n' }) }
+    ])
+    const p = await runUpdate({ updateDeps: false })
+    expect(p.status).toBe('done')
+    expect(comfyUpdaterService.readJournal('inst-1')).toBeNull()
+  })
+
+  it('reads an unfinished journal and rolls back symmetrically from it', async () => {
+    // Current tree = the (half) updated one.
+    h.mkdirPath(join(COMFY, 'comfy'))
+    h.writeFile(join(COMFY, 'main.py'), 'new-main')
+    h.writeFile(join(COMFY, 'added_by_update.py'), 'new-file')
+    // Backup holds the pre-update tree (main.py only).
+    const backup = 'C:/fake/.cp-backups/123'
+    h.mkdirPath(backup)
+    h.writeFile(join(backup, 'manifest.json'), JSON.stringify({ kind: 'files' }))
+    h.writeFile(join(backup, 'inventory.json'), JSON.stringify(['comfy', 'main.py']))
+    h.writeFile(join(backup, 'main.py'), 'old-main')
+    h.mkdirPath(join(backup, 'comfy'))
+    h.writeFile(
+      'C:/fake/.cp-update-journal.json',
+      JSON.stringify({
+        instanceId: 'inst-1',
+        comfyDir: COMFY,
+        backupPath: backup,
+        backupKind: 'files',
+        startedAt: 1
+      })
+    )
+
+    const j = comfyUpdaterService.readJournal('inst-1')
+    expect(j?.backupPath).toBe(backup)
+    const ok = await comfyUpdaterService.rollbackFromJournal('inst-1')
+    expect(ok).toBe(true)
+    expect(fget(join(COMFY, 'main.py'))).toBe('old-main')
+    // Symmetric: the file added by the update is gone again.
+    expect(fget(join(COMFY, 'added_by_update.py'))).toBeUndefined()
+    // Journal removed once rolled back.
+    expect(comfyUpdaterService.readJournal('inst-1')).toBeNull()
+  })
+
+  it('refuses to roll back when the backup directory is gone', async () => {
+    h.writeFile(
+      'C:/fake/.cp-update-journal.json',
+      JSON.stringify({
+        instanceId: 'inst-1',
+        comfyDir: COMFY,
+        backupPath: 'C:/fake/.cp-backups/gone',
+        backupKind: 'files',
+        startedAt: 1
+      })
+    )
+    await expect(comfyUpdaterService.rollbackFromJournal('inst-1')).rejects.toThrow(
+      /backup is missing/i
+    )
+  })
+})
+
+describe('0.1.17 WP4: stop safety and journal edges', () => {
+  it('refuses to update an adopted external instance', async () => {
+    seedGitInstall({ withVenv: true, withReq: false })
+    h.state.instanceList = [{ id: 'inst-1', status: 'running' }]
+    h.state.instanceStopResult = { adopted: true }
+    const p = await runUpdate({ updateDeps: false })
+    expect(p.status).toBe('failed')
+    expect(p.error).toMatch(/external \(adopted\)/i)
+  })
+
+  it('refuses to update when the process did not exit', async () => {
+    seedGitInstall({ withVenv: true, withReq: false })
+    h.state.instanceList = [{ id: 'inst-1', status: 'running' }]
+    h.state.instanceStopResult = { exited: false }
+    const p = await runUpdate({ updateDeps: false })
+    expect(p.status).toBe('failed')
+    expect(p.error).toMatch(/did not exit/i)
+  })
+
+  it('ignores a malformed journal instead of throwing', async () => {
+    h.writeFile('C:/fake/.cp-update-journal.json', '{not json')
+    expect(comfyUpdaterService.readJournal('inst-1')).toBeNull()
+  })
+
+  it('rollbackFromJournal refuses while an adopted process is running', async () => {
+    const backup = 'C:/fake/.cp-backups/999'
+    h.mkdirPath(backup)
+    h.writeFile(join(backup, 'manifest.json'), JSON.stringify({ kind: 'files' }))
+    h.writeFile(
+      'C:/fake/.cp-update-journal.json',
+      JSON.stringify({
+        instanceId: 'inst-1',
+        comfyDir: COMFY,
+        backupPath: backup,
+        backupKind: 'files',
+        startedAt: 1
+      })
+    )
+    h.state.instanceList = [{ id: 'inst-1', status: 'running' }]
+    h.state.instanceStopResult = { adopted: true }
+    await expect(comfyUpdaterService.rollbackFromJournal('inst-1')).rejects.toThrow(
+      /still running/i
+    )
+  })
+})
+
+describe('update journal lifecycle (review fix)', () => {
+  it('writes a journal that can be read back, and clears only on request', () => {
+    const journal = {
+      instanceId: 'inst-1',
+      comfyDir: COMFY,
+      backupPath: 'C:/fake/.cp-backups/1',
+      backupKind: 'files' as const,
+      startedAt: 1
+    }
+    svc.writeJournal(journal)
+    expect(fhas('C:/fake/.cp-update-journal.json')).toBe(true)
+    expect(comfyUpdaterService.readJournal('inst-1')?.backupPath).toBe('C:/fake/.cp-backups/1')
+
+    svc.clearJournal(COMFY)
+    expect(comfyUpdaterService.readJournal('inst-1')).toBeNull()
   })
 })

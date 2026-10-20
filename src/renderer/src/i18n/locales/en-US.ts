@@ -1,7 +1,5 @@
 export default {
   app: {
-    name: 'ComfyPilot',
-    tagline: 'ComfyUI control tower',
     brandTag: 'Control Tower',
     github: 'GitHub'
   },
@@ -11,8 +9,7 @@ export default {
       'ComfyPilot appears to have ended unexpectedly last time (no clean-exit marker), which can be a sign of a crash. You can export diagnostics to help investigate.',
     export: 'Export diagnostics',
     exported: 'Diagnostics exported: {path}',
-    dismiss: 'Dismiss',
-    details: 'Details'
+    dismiss: 'Dismiss'
   },
   nav: {
     dashboard: 'Dashboard',
@@ -39,16 +36,11 @@ export default {
     refresh: 'Refresh',
     delete: 'Delete',
     confirm: 'Confirm',
-    search: 'Search',
-    open: 'Open',
     running: 'Running',
     stopped: 'Stopped',
     retry: 'Retry',
-    more: 'More',
     close: 'Close',
-    copy: 'Copy',
     copied: 'Copied',
-    back: 'Back',
     edit: 'Edit',
     status: 'Status',
     version: 'Version',
@@ -73,19 +65,16 @@ export default {
       step1: 'One-click install or import existing ComfyUI',
       step2: 'Launch instance and open Frontend',
       step3: 'Download a base model',
-      done: 'Done',
       goInstall: 'Install',
       goLaunch: 'Launch',
-      goModels: 'Get model',
-      startCreate: 'Start creating'
+      goModels: 'Get model'
     },
     starting: 'Starting… {s}s elapsed',
     startingLogs: 'Recent logs',
     switchInstance: 'Manage instances',
-    doctorLostFix: 'View report',
+    remoteReadonly: 'Remote instance (read-only)',
     currentInstance: 'Current instance',
     noInstance: 'No instance yet',
-    oneClickInstall: 'One-click install',
     openFrontend: 'Open Frontend',
     portLabel: 'Port {port}',
     queueStatus: 'Running {running} · Pending {pending}',
@@ -271,23 +260,17 @@ export default {
     candidates: 'Candidates',
     importSelected: 'Import selected',
     alreadyRegistered: 'Registered',
-    portBusy: 'Port in use',
-    ready: 'Ready',
-    starting: 'Starting',
-    openLogs: 'Open logs',
     logsShowDebug: 'Show debug logs',
-    logsHideDebug: 'Hide debug logs',
     startupIssuesTitle: 'Node load failures ({n})',
-    startupIssuesMsg:
-      'These node packs failed to load due to missing dependencies or their own errors: {names}',
     startupIssuesMissing: 'Missing modules: {modules}',
     startupIssuesReview: 'Review & fix',
     startupIssuesDismiss: 'Dismiss',
-    runDoctor: 'Run doctor',
     startAll: 'Start all',
     stopAll: 'Stop all',
     forceKill: 'Force kill',
     restart: 'Restart',
+    restartSame: 'Restart (same args)',
+    restartLowVram: 'Restart with lower VRAM',
     remove: 'Remove',
     probeEnv: 'Probe env',
     exportDiag: 'Export diagnostics',
@@ -303,7 +286,6 @@ export default {
     confirmStopAll: 'This stops every running instance. Unsaved queue work will be lost. Continue?',
     confirmForceKill: 'Force-kill the process? Unsaved queue work will be lost.',
     confirmRemove: 'Remove the registration only — files on disk are kept.',
-    confirmStopTitle: 'Stop instance',
     confirmStopAllTitle: 'Stop all',
     discoverEmpty: 'No ComfyUI found in common paths — please pick a directory manually',
     candidateFilled: 'Candidate filled in: {path}',
@@ -393,6 +375,7 @@ export default {
     repairEnv: 'Repair environment',
     updateAvailable: 'Update available {latest} (current {current})',
     updateNone: 'Already up to date',
+    updateUnknown: 'Unknown (check failed)',
     updateCheckFailed: 'Update check failed: {error}',
     latestRelease: 'Latest official release: {tag} ({date})',
     viewChangelog: 'View changelog',
@@ -410,6 +393,10 @@ export default {
     sourceGit: 'Git',
     sourceZip: 'ZIP',
     sourceUnknown: 'Unknown',
+    updateUnfinished: 'Previous update did not finish',
+    rollbackUpdate: 'Roll back to pre-update files',
+    rollbackDone: 'Restored the pre-update core files',
+    rollbackFailed: 'Rollback incomplete — check the instance log',
     recreateVenv: 'Rebuild venv',
     recreateVenvConfirm:
       'This deletes and recreates the virtual environment for this instance (installed dependencies are lost; reinstall torch and requirements afterwards). Continue?',
@@ -425,7 +412,6 @@ export default {
     copyDiagPathDone: 'Diagnostics package path copied to clipboard: {path}',
     copyDiagPathFailed: 'Copy diagnostics path failed: {error}',
     diagnostics: 'Diagnostics',
-    pythonLabelShort: 'Python',
     onlineBadge: 'Online',
     onlineVersionTip: 'Real version reported by the running instance (/system_stats)',
     onlineVersionMismatch: 'Install record {installed} differs from the running version {online}',
@@ -474,8 +460,15 @@ export default {
       done: 'Done',
       failed: 'Failed',
       skipped: 'Skipped',
-      cancelled: 'Cancelled'
+      cancelled: 'Cancelled',
+      interrupted: 'Interrupted'
     },
+    resetBusy: 'The installer is still winding down — try again in a moment',
+    resetRun: 'Reset install state',
+    resetDone: 'Previous install record cleared — you can start again',
+    interruptedTitle: 'Previous install was interrupted',
+    interruptedBody:
+      'The app exited mid-install. Runtimes and models already downloaded are not fetched again — just start over.',
     preflight: 'Run preflight',
     start: 'Start install',
     cancel: 'Cancel install',
@@ -490,7 +483,6 @@ export default {
     doneBody: 'Instance "{name}" registered.',
     launchNow: 'Launch & open Frontend now',
     goInstances: 'Go to instances',
-    getStarter: 'Get starter model',
     stepBootstrap: 'Bootstrap runtimes',
     stepPreflight: 'Preflight',
     stepPython: 'Locate Python',
@@ -583,12 +575,14 @@ export default {
     batchDeletedRecordOnly: 'Removed {ok} record(s) (files kept)',
     batchMove: 'Move selected',
     batchMoved: 'Moved {ok} model(s)',
-    batchFailed: '{n} failed, first: {name} ({error})',
+    batchFailedTitle: '{n} item(s) failed',
+    batchHiddenSkipped: 'skipped {n} checked row(s) hidden by the filter',
     downloadsTitle: 'Downloads',
     clearFinished: 'Clear finished',
     storageTotal: 'Total',
     empty: 'No models yet — run a scan to index your model folders.',
     renameDoneCount: 'Renamed {n} model(s)',
+    renamePartial: 'Renamed {ok}, failed {failed}',
     renameTargetCount: 'Applies to {n} filtered model(s)',
     cat: {
       checkpoints: 'Checkpoint',
@@ -632,7 +626,6 @@ export default {
     scanDone: 'Scan complete — {n} model(s)',
     dupGroupsFound: 'Found {n} duplicate group(s)',
     thumbsDone: 'Generated/reused {n} thumbnail(s)',
-    renameDone: 'Batch rename complete',
     downloadQueued: 'Download queued',
     dupTitle: 'Duplicate models',
     dupHint: 'Detected via SHA256 hashing',
@@ -686,6 +679,7 @@ export default {
   },
   nodes: {
     title: 'Node manager',
+    checking: 'Checking for updates…',
     subtitle:
       'Local scan, conflict detection, snapshot alignment. Browse and install on the Market page.',
     refresh: 'Refresh',
@@ -699,7 +693,6 @@ export default {
     smokeTest: 'Smoke test',
     checkIssues: 'Health check',
     checkIssuesTitle: 'Health check: {name}',
-    checkIssuesRunning: 'Checking…',
     checkIssuesEmpty: 'No issues found',
     issueFix: 'Fix now',
     depsAudit: 'Dependency audit',
@@ -750,7 +743,6 @@ export default {
     uninstalled: 'Uninstalled',
     uninstalling: 'Uninstalling {name}',
     checkUpdates: 'Check updates',
-    checking: 'Checking for updates…',
     update: 'Update',
     updateAll: 'Update all',
     updating: 'Updating…',
@@ -809,7 +801,6 @@ export default {
       '"{name}" ships a requirements.txt, but allow_pip_install is off in Settings, so its Python dependencies were NOT installed. The pack may not work.',
     depsNotInstalledFix:
       'Go to Settings → Security → turn on allow_pip_install, then hit "Repair env" on the Nodes page. Or run pip install -r requirements.txt manually.',
-    installWarnTitle: 'Installed, but there are things to note',
     uninstallDepsTitle: 'Uninstall options',
     uninstallDepsBody: 'Also uninstall Python dependencies of "{name}"?',
     uninstallWithDeps: 'Uninstall with dependencies',
@@ -831,7 +822,6 @@ export default {
     selfCheck: 'Startup self-check',
     selfCheckTip:
       'Runs main.py with --quick-test-for-ci --cpu to verify every custom node loads (works while the instance is running — the check uses its own port)',
-    selfCheckRunning: 'Self-checking…',
     selfCheckPassed: 'Startup self-check passed',
     selfCheckFailed: 'Startup self-check failed (exit {code})',
     selfCheckConcurrent:
@@ -864,13 +854,15 @@ export default {
     tabRegistry: 'Registry',
     tabManager: 'Manager',
     managerEmpty: 'Manager channel has no data yet',
-    managerHint: 'Node list from ComfyUI-Manager',
     managerCount: '{n} nodes total',
     managerPage: 'Page {page}/{pages}',
     installedItem: 'Installed {name}',
     downloadsShort: '{n} DL'
   },
   output: {
+    scanning: 'Scanning outputs… {n} indexed',
+    scanCancelled: 'Scan cancelled — what was scanned is still indexed',
+    selectionClearedOnPageChange: 'Selection from the previous page was cleared',
     title: 'Output library',
     subtitle:
       'Index the output folder, restore PNG parameters and seeds, linked to workflows and batches.',
@@ -945,7 +937,7 @@ export default {
     deleteSelectedConfirm: 'Will delete {n} selected asset(s); this cannot be undone.',
     deletedBatchWithFile: 'Deleted {ok} file(s) and record(s)',
     deletedBatchRecordOnly: 'Removed {ok} record(s) (files kept)',
-    deleteBatchFailed: '{n} deletion(s) failed, first cause: {first}',
+    deleteBatchFailedTitle: '{n} deletion(s) failed',
     deleteSelected: 'Delete selected ({n})',
     dateFrom: 'From',
     dateTo: 'To'
@@ -957,6 +949,10 @@ export default {
     refresh: 'Refresh',
     newJob: 'New job',
     run: 'Run',
+    resume: 'Resume (missing legs only)',
+    resumeHint:
+      'Only legs that were never submitted are filled in. Prompts already queued when the app exited cannot be recovered — they are counted as failed and flagged for "Retry failed" instead of silently disappearing.',
+    retryFailed: 'Retry failed',
     cancel: 'Cancel',
     removeJobConfirm: 'Delete this job?',
     empty: 'No batch jobs yet',
@@ -964,7 +960,6 @@ export default {
     namePlaceholder: 'Job name',
     workflowPlaceholder: 'Pick from workflow library',
     pickFromLibrary: 'Workflows (multi-select)',
-    browse: 'Browse',
     instancePlaceholder: 'Target instance',
     countPlaceholder: 'Repeats per workflow',
     notesPlaceholder: 'Notes',
@@ -1006,7 +1001,8 @@ export default {
       running: 'Rendering',
       done: 'Done',
       error: 'Error',
-      cancelled: 'Cancelled'
+      cancelled: 'Cancelled',
+      interrupted: 'Interrupted'
     },
     instanceNotRunning: 'Instance not running',
     startInstance: 'Start instance',
@@ -1027,7 +1023,6 @@ export default {
     missingNodes: 'Missing {n} node(s)',
     missingFile: 'File missing',
     missingCount: '{n} missing',
-    open: 'Open',
     openFrontend: 'Open in Frontend',
     queue: 'Queue',
     toBatch: 'Send to batch',
@@ -1041,7 +1036,6 @@ export default {
     importedToInstance: 'Imported "{name}" → {root}',
     needInstanceForImport:
       "Select an instance first — workflows are imported into that instance's workflows folder",
-    openRequested: 'Open workflow requested',
     queued: 'Queued {id}',
     queuedHint:
       'Workflow submitted to the ComfyUI queue. Outputs will appear in the library when done.',
@@ -1144,9 +1138,6 @@ export default {
     historyTitle: 'Task history',
     historyEmpty: 'No history yet',
     historyRefresh: 'Refresh history',
-    historyPromptId: 'Prompt ID',
-    historyStatus: 'Status',
-    historyCompletedAt: 'Completed at',
     historyCount: '{n} item(s)',
     historyStatusDone: 'Success',
     historyStatusError: 'Failed',
@@ -1175,6 +1166,7 @@ export default {
     }
   },
   embed: {
+    loadFailed: 'Embedded page failed to load',
     back: 'Back',
     urlPlaceholder: 'ComfyUI address, e.g. http://127.0.0.1:8188',
     load: 'Load embedded',
@@ -1199,6 +1191,8 @@ export default {
     usePort: 'Use {port} and launch',
     readyOnPort: '{name} is ready on port {port}',
     stopped: 'Stopped {name}',
+    stopIncomplete:
+      'Stop was requested, but "{name}" did not exit in time — it may still be running. Use Force kill to confirm.',
     restarted: '{name} restarted',
     forceKilled: 'Force-killed {name}'
   },
@@ -1220,6 +1214,7 @@ export default {
     notesPlaceholder: 'Notes (optional)'
   },
   doctor: {
+    reportStale: 'This report belongs to another instance — run the check again',
     title: 'Health check',
     subtitle: 'Full checkup of Python / Torch / paths / ports / Registry, with one-click fixes.',
     run: 'Run checkup',
@@ -1415,7 +1410,11 @@ export default {
     gitMissing: 'git not found — zip install works without Git',
     pythonOld: 'Python too old or unparseable: {python}',
     pythonMissing: 'Interpreter not found: {python} — portable Python available',
-    uvMissing: 'uv not found — one-click download, or switch to venv'
+    uvMissing: 'uv not found — one-click download, or switch to venv',
+    writableOk: 'Writable: {root}',
+    notWritable: 'Cannot write to {root}',
+    uncPath: 'Network (UNC) install paths are not supported — pick a local folder',
+    longPath: 'Install path is too long ({n} > 240) — Python/torch extraction will fail'
   },
   gpu: {
     nvidiaDefault: 'NVIDIA — default cu126; RTX 20+ may use cu130',
@@ -1428,6 +1427,16 @@ export default {
     failed: 'GPU detection failed — using CPU'
   },
   notify: {
+    bootstrapFailed: 'ComfyPilot could not load its data',
+    bootstrapFailedMsg: '{error}',
+    updateRolledBack: 'Update rolled back',
+    updateRolledBackMsg: 'Core files restored from the pre-update backup',
+    instanceCrash: 'ComfyUI exited unexpectedly',
+    instanceCrashMsg: '{hint}',
+    orphanKilled: 'Cleaned up a leftover ComfyUI process',
+    orphanUnverified: 'A previous ComfyUI may still be running',
+    appFreeze: 'Main process was busy',
+    appFreezeMsg: '{channel} took {ms} ms',
     nodeInstalled: 'Node pack installed',
     nodeUninstalled: 'Node pack uninstalled',
     nodeUpdated: 'Node pack updated',
@@ -1571,7 +1580,6 @@ export default {
     msgPreflightRun: 'Checking install…',
     msgPreflightDone: 'Preflight passed ({source})',
     msgStopRun: 'Stopping instance…',
-    msgStopDone: 'Instance stopped',
     msgRollback: 'Rolling back…',
     msgRollbackSkip: 'Source tree unchanged — no rollback needed',
     msgRollbackFail: 'Rollback failed — backup at {path}',

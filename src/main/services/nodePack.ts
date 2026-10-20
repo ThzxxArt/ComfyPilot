@@ -61,7 +61,7 @@ import { sanitizeId, isPathInside, normalizePathEverySegment } from './security'
 import { assertSafeGitUrl, applyGithubMirror, assertSafeBranch } from './installer'
 import { instanceService, resolveInstancePythonPath, resolveRuntimesPythonSync } from './instance'
 import { findInRuntimes } from './bootstrap'
-import { isPipOpActive } from './pipOps'
+import { isPipOpActive, pipStageFromLine } from './pipOps'
 import { LruCache } from './lru'
 
 const execFileAsync = promisify(execFile)
@@ -823,6 +823,19 @@ export class NodePackService extends EventEmitter {
     this.emit('op-progress', this.progressSnapshot(p))
   }
 
+  /** Update the running step's title (0.1.17 WP2-4 — honest pip stage text). */
+  private setStepMessage(step: UpdateStepId, message: string, instanceId?: string): void {
+    const key = instanceId || 'default'
+    const p = this.opProgressMap.get(key)
+    if (!p) return
+    const s = p.steps.find((x) => x.id === step)
+    if (!s || s.status !== 'running' || s.detail === message) return
+    s.detail = message
+    p.updatedAt = Date.now()
+    this.attachBatchContext(key, p)
+    this.emit('op-progress', this.progressSnapshot(p))
+  }
+
   private opLog(line: string, instanceId?: string): void {
     const key = instanceId || 'default'
     const p = this.opProgressMap.get(key)
@@ -1304,6 +1317,10 @@ export class NodePackService extends EventEmitter {
       // requested tag/ref inside the temp dir so a failed checkout never touches
       // `dest`. Shallow clone hides most tags, so fetch the ref explicitly.
       const pinned = (opts.version || '').trim()
+      // 0.1.17 (WP10): only claim the requested version was installed when the
+      // checkout actually landed. Checkout failure is non-fatal by design, but
+      // recording `pinnedVersion` anyway made the UI badge lie forever.
+      let pinnedApplied = false
       const args = ['clone', '--depth', '1']
       const safeBranch = assertSafeBranch(opts.branch || '')
       if (safeBranch) args.push('--branch', safeBranch)
@@ -1356,6 +1373,7 @@ export class NodePackService extends EventEmitter {
           if (!checkedOut) {
             this.opLog?.(`Continuing with default branch (wanted ${pinned})`, opts.instanceId)
           }
+          pinnedApplied = checkedOut
         }
         // Atomic-ish publish: only now do we touch `dest`. A cancellation that
         // arrived during tag fetch/checkout must not publish a ghost package.
@@ -1405,7 +1423,14 @@ export class NodePackService extends EventEmitter {
         opts.source,
         opts.registryId ?? opts.id,
         opts.instanceId,
-        { pinnedVersion: pinned || undefined, signal: opts.signal }
+        {
+          pinnedVersion: pinnedApplied ? pinned : undefined,
+          installNote:
+            pinned && !pinnedApplied
+              ? `requested ${pinned} unavailable — installed the default branch`
+              : undefined,
+          signal: opts.signal
+        }
       )
     }
 
@@ -1419,6 +1444,9 @@ export class NodePackService extends EventEmitter {
 
     // If we don't have a repo URL yet, try the /install API for it.
     let downloadUrl: string | undefined
+    // 0.1.17 (WP10): a version-specific `/install/<v>` response really is that
+    // version; a constructed `archive/refs/heads/main.zip` fallback is not.
+    let versionedArchive = false
     if (!repoUrl || !(await gitAvailable())) {
       const versionPart = opts.version ? `/${encodeURIComponent(opts.version)}` : ''
       const apiUrl = `${REGISTRY_API}/nodes/${encodeURIComponent(opts.id)}/install${versionPart}`
@@ -1436,6 +1464,7 @@ export class NodePackService extends EventEmitter {
           }
           if (data.status === 'banned') throw new Error('Node pack is banned on Registry')
           downloadUrl = data.url || data.downloadUrl
+          versionedArchive = Boolean(opts.version && downloadUrl)
           if (!repoUrl) repoUrl = (data.repository || '').trim()
         } else if (res.status !== 401 && res.status !== 403) {
           throw new Error(`Registry install failed: HTTP ${res.status}`)
@@ -1655,7 +1684,11 @@ export class NodePackService extends EventEmitter {
       opts.registryId ?? opts.id,
       opts.instanceId,
       {
-        pinnedVersion: opts.version?.trim() || undefined,
+        pinnedVersion: versionedArchive ? opts.version?.trim() || undefined : undefined,
+        installNote:
+          opts.version && !versionedArchive
+            ? `requested ${opts.version} unavailable — installed the default branch archive`
+            : undefined,
         signal: opts.signal
       }
     )
@@ -1673,10 +1706,21 @@ export class NodePackService extends EventEmitter {
     source: 'registry' | 'git' | 'manager' | 'local' = 'local',
     registryId?: string,
     instanceId?: string,
-    extra?: { pinnedVersion?: string; signal?: AbortSignal }
+    extra?: { pinnedVersion?: string; installNote?: string; signal?: AbortSignal }
   ): Promise<NodePackRecord> {
     const meta = readPackMeta(dir)
     const issues = collectIssues(dir, meta)
+    // 0.1.17 (WP10): when the requested version could not be applied, say so as
+    // a visible issue (and on the record) instead of silently reporting the
+    // requested number as if it had been installed.
+    if (extra?.installNote) {
+      issues.push({
+        code: 'version-fallback',
+        severity: 'warning',
+        message: extra.installNote,
+        fixable: false
+      })
+    }
     // Requirements recorded on the pack record so uninstall can list/offer
     // residual pip deps without re-reading the (soon deleted) directory.
     let pipRequirements: string[] = []
@@ -1741,9 +1785,8 @@ export class NodePackService extends EventEmitter {
               downloadIfMissing: false
             })
             const uvComp = bootstrap.components.find((c) => c.kind === 'uv' && c.installed)
-            // Line-count heuristic drives the requirements step fraction so the
-            // bar moves through the (usually longest) pip phase.
-            let pipLines = 0
+            // 0.1.17 (WP2-4): no invented fraction — pip output only advances
+            // the stage text; the step stays genuinely indeterminate.
             await installRequirements(
               vpy,
               reqFile,
@@ -1762,17 +1805,10 @@ export class NodePackService extends EventEmitter {
                 signal: extra?.signal,
                 onLine: (line) => {
                   this.opLog(line, instanceId || 'default')
-                  pipLines += 1
-                  let frac = Math.min(0.9, pipLines / 40)
-                  if (
-                    /Installing collected packages|Prepared \d+ packages|Installed \d+ package/i.test(
-                      line
-                    )
-                  ) {
-                    frac = 0.75
+                  const stage = pipStageFromLine(line)
+                  if (stage) {
+                    this.setStepMessage('requirements', stage, instanceId || 'default')
                   }
-                  if (/Successfully installed|Successfully built/i.test(line)) frac = 0.95
-                  this.setStepFraction('requirements', frac, instanceId || 'default')
                   this.emitInstallProgress({
                     phase: 'pip',
                     packName: meta.name || dir,
@@ -1858,6 +1894,7 @@ export class NodePackService extends EventEmitter {
       notes: prev?.notes,
       pipRequirements: pipRequirements.length ? pipRequirements : prev?.pipRequirements,
       pinnedVersion: extra?.pinnedVersion || undefined,
+      installNote: extra?.installNote || prev?.installNote,
       gitRev: gitRevOf(dir) ?? prev?.gitRev
     }
     upsertNodePack(rec)

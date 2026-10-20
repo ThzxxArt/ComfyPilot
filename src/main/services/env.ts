@@ -12,6 +12,7 @@ import type {
   UpdateStepId
 } from '@shared/types'
 import { loadSettings } from './db'
+import { killProcessTree } from './processTree'
 import { comfyChildEnv } from './childEnv'
 
 const execFileAsync = promisify(execFile)
@@ -117,11 +118,9 @@ export async function runStreaming(
     const onAbort = (): void => {
       if (!settle()) return
       if (timer) clearTimeout(timer)
-      try {
-        child.kill('SIGKILL')
-      } catch {
-        /* ignore */
-      }
+      // 0.1.17 (WP1-5): kill the whole tree — `child.kill()` alone leaves
+      // grandchildren (python subprocesses) running on Windows.
+      void killProcessTree(child)
       const err = new Error('aborted')
       err.name = 'AbortError'
       reject(err)
@@ -137,11 +136,7 @@ export async function runStreaming(
       () => {
         if (!settle()) return
         cleanup()
-        try {
-          child.kill('SIGKILL')
-        } catch {
-          /* ignore */
-        }
+        void killProcessTree(child)
         reject(new Error(`timeout after ${opts.timeout || 0}ms`))
       },
       opts.timeout || 30 * 60 * 1000

@@ -38,6 +38,7 @@ import { RUNTIME_SOURCES } from '@shared/constants'
 import { loadSettings } from './db'
 import { comfyChildEnv } from './childEnv'
 import { isPathInside, normalizePathEverySegment } from './security'
+import { assertExtractedInside, safeUnzip } from './zipSafe'
 
 const execFileAsync = promisify(execFile)
 
@@ -245,6 +246,12 @@ export class BootstrapService extends EventEmitter {
   private installing = new Map<RuntimeKind, Promise<RuntimeComponentStatus>>()
   /** Abort in-flight downloads/extracts when the parent installer cancels. */
   private aborts = new Set<AbortController>()
+  /**
+   * Bumped by cancelAll(). An in-flight ensure() compares its start value with
+   * the current one: only the run that was live at cancel time is aborted, a
+   * later ensure() (new install run) starts clean (0.1.17 WP1).
+   */
+  private cancelEpoch = 0
 
   private emitProgress(p: RuntimeDownloadProgress): void {
     this.emit('progress', p)
@@ -252,6 +259,7 @@ export class BootstrapService extends EventEmitter {
 
   /** Abort all in-flight runtime downloads (wired to installer.cancel). */
   cancelAll(): void {
+    this.cancelEpoch += 1
     for (const a of this.aborts) {
       try {
         a.abort()
@@ -260,6 +268,19 @@ export class BootstrapService extends EventEmitter {
       }
     }
     this.aborts.clear()
+  }
+
+  /**
+   * Throw before starting any further kind once the parent cancelled. Without
+   * this, `ensure` caught the abort as a per-kind failure and happily began the
+   * NEXT runtime download — the cancel looked ignored for minutes (0.1.17 WP1).
+   */
+  private throwIfAborted(signal: AbortSignal | undefined, epochAtStart: number): void {
+    if (this.cancelEpoch !== epochAtStart || signal?.aborted) {
+      const err = new Error('Runtime bootstrap aborted')
+      err.name = 'AbortError'
+      throw err
+    }
   }
 
   /** Snapshot of every runtime: system-found or downloaded. */
@@ -346,15 +367,29 @@ export class BootstrapService extends EventEmitter {
   async ensure(opts?: {
     kinds?: RuntimeKind[]
     downloadIfMissing?: boolean
+    signal?: AbortSignal
   }): Promise<BootstrapStatus> {
     const kinds = opts?.kinds || ['uv', 'python']
+    // 0.1.17 (WP1): a cancellation only ends the ensure() that was live when it
+    // happened; a later install run gets a fresh epoch and proceeds normally.
+    const epochAtStart = this.cancelEpoch
     if (opts?.downloadIfMissing !== false) {
+      this.throwIfAborted(opts?.signal, epochAtStart)
       for (const kind of kinds) {
+        this.throwIfAborted(opts?.signal, epochAtStart)
         const st = await this.probeKind(kind)
+        // A cancel can land during the probe; without this the download would
+        // start after cancelAll() and its fetch would never be aborted.
+        this.throwIfAborted(opts?.signal, epochAtStart)
         if (!st.installed) {
           try {
-            await this.download(kind)
+            await this.download(kind, epochAtStart)
           } catch (err) {
+            // A cancel is not a "this runtime failed" event — it ends the whole
+            // ensure() so the caller can report a real cancellation.
+            if ((err as Error)?.name === 'AbortError' || this.cancelEpoch !== epochAtStart) {
+              throw err
+            }
             // uv failure is fatal only if python is also missing — record and continue.
             this.emitProgress({
               kind,
@@ -367,6 +402,7 @@ export class BootstrapService extends EventEmitter {
           }
         }
       }
+      this.throwIfAborted(opts?.signal, epochAtStart)
     }
     return this.status()
   }
@@ -375,10 +411,13 @@ export class BootstrapService extends EventEmitter {
    * Download + extract a runtime into userData/runtimes/<kind>/.
    * Concurrent calls for the same kind share one promise.
    */
-  async download(kind: RuntimeKind): Promise<RuntimeComponentStatus> {
+  async download(
+    kind: RuntimeKind,
+    epochAtStart?: number
+  ): Promise<RuntimeComponentStatus> {
     const existing = this.installing.get(kind)
     if (existing) return existing
-    const p = this.downloadInner(kind).finally(() => this.installing.delete(kind))
+    const p = this.downloadInner(kind, epochAtStart).finally(() => this.installing.delete(kind))
     this.installing.set(kind, p)
     return p
   }
@@ -410,7 +449,10 @@ export class BootstrapService extends EventEmitter {
     }
   }
 
-  private async downloadInner(kind: RuntimeKind): Promise<RuntimeComponentStatus> {
+  private async downloadInner(
+    kind: RuntimeKind,
+    epochAtStart?: number
+  ): Promise<RuntimeComponentStatus> {
     const src = this.runtimeSource(kind)
     const url = this.applyGithubMirror(src.url)
     const fileName = basename(new URL(url).pathname) || `${kind}.bin`
@@ -427,7 +469,7 @@ export class BootstrapService extends EventEmitter {
       message: `Downloading ${kind}…`
     })
 
-    await this.downloadFile(url, cachePath, kind, src.sizeHint)
+    await this.downloadFile(url, cachePath, kind, src.sizeHint, epochAtStart)
 
     // Integrity: prefer official checksum, else pin-on-first-use.
     try {
@@ -490,7 +532,8 @@ export class BootstrapService extends EventEmitter {
     url: string,
     dest: string,
     kind: RuntimeKind,
-    sizeHint: number
+    sizeHint: number,
+    epochAtStart?: number
   ): Promise<void> {
     // Electron session fetch honors the app proxy (same path as model.ts downloads).
     const { session } = await import('electron')
@@ -512,6 +555,12 @@ export class BootstrapService extends EventEmitter {
     if (startByte > 0) headers.Range = `bytes=${startByte}-`
 
     const ac = new AbortController()
+    // 0.1.17 (review fix): cancelAll() may have run while we were awaiting the
+    // electron module — that epoch bump was invisible here, so the fetch started
+    // un-aborted and never settled (an install cancel could hang forever).
+    if (epochAtStart !== undefined && this.cancelEpoch !== epochAtStart) {
+      ac.abort()
+    }
     this.aborts.add(ac)
     const timeout = AbortSignal.timeout(15 * 60 * 1000)
     const signal = AbortSignal.any([ac.signal, timeout])
@@ -608,52 +657,50 @@ export class BootstrapService extends EventEmitter {
     }
   }
 
-  /** Extract zip/tar.gz into destDir (uses PowerShell on Windows, tar/unzip elsewhere). */
+  /**
+   * Extract zip/tar.gz into destDir.
+   *
+   * 0.1.17 (WP8): zip goes through the shared `safeUnzip` (entry validation,
+   * extraction, containment walk). This path used to call Expand-Archive
+   * directly, skipping every check the other three extract sites already had.
+   * Tarballs get the same post-extract walk (`tar` has no entry pre-check).
+   */
   private async extractArchive(archivePath: string, destDir: string): Promise<void> {
     const lower = archivePath.toLowerCase()
     const env = comfyChildEnv(loadSettings())
     if (lower.endsWith('.zip')) {
-      if (process.platform === 'win32') {
-        // Expand-Archive is always present on Windows 10+
-        const escaped = (s: string) => s.replace(/'/g, "''")
-        await execFileAsync(
-          'powershell.exe',
-          [
-            '-NoProfile',
-            '-NonInteractive',
-            '-Command',
-            `Expand-Archive -LiteralPath '${escaped(archivePath)}' -DestinationPath '${escaped(destDir)}' -Force`
-          ],
-          { timeout: 120000, windowsHide: true, maxBuffer: 10 * 1024 * 1024, env }
-        )
-      } else {
-        await execFileAsync('unzip', ['-o', archivePath, '-d', destDir], {
-          timeout: 120000,
-          windowsHide: true,
-          maxBuffer: 10 * 1024 * 1024,
-          env
-        })
-      }
+      await safeUnzip(archivePath, destDir)
       return
     }
     // tar.gz / tgz
+    // 0.1.17 (review fix): list the members FIRST. `tar` has no entry
+    // validation, and a post-extract walk cannot see a member that was written
+    // outside destDir (e.g. `../evil`) — the file is already gone from destDir.
+    const listing = await execFileAsync('tar', ['-tzf', archivePath], {
+      timeout: 120000,
+      windowsHide: true,
+      maxBuffer: 32 * 1024 * 1024,
+      env
+    })
+    for (const raw of String(listing.stdout).split('\n')) {
+      const member = raw.trim()
+      if (!member) continue
+      const normalized = member.replace(/\\/g, '/')
+      if (
+        normalized.startsWith('/') ||
+        /^[a-zA-Z]:/.test(normalized) ||
+        normalized.split('/').includes('..')
+      ) {
+        throw new Error(`Unsafe path in archive: ${member}`)
+      }
+    }
     await execFileAsync('tar', ['-xzf', archivePath, '-C', destDir], {
       timeout: 180000,
       windowsHide: true,
       maxBuffer: 10 * 1024 * 1024,
       env
     })
-  }
-
-  /** Best python path for venv creation — portable preferred when system is missing. */
-  async resolvePythonForVenv(preference?: string): Promise<string> {
-    if (preference && preference.trim() && existsSync(preference.trim())) return preference.trim()
-    const st = await this.status()
-    if (st.pythonOrigin !== 'missing' && st.pythonPath) return st.pythonPath
-    // Last resort: let uv fetch a Python
-    const uv = st.components.find((c) => c.kind === 'uv' && c.installed)
-    if (uv?.path) return uv.path // caller may use `uv python install` / `uv venv`
-    return 'python'
+    assertExtractedInside(destDir)
   }
 
   /** Wipe a half-extracted runtime directory (install rollback). */

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useInstanceScope } from '@/composables/useInstanceScope'
 import { onMounted, onUnmounted, ref, computed, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter, useRoute } from 'vue-router'
@@ -123,7 +124,7 @@ function statusType(status: string): 'success' | 'error' | 'info' | 'default' | 
   if (status === 'done') return 'success'
   if (status === 'error') return 'error'
   if (status === 'running' || status === 'submitting') return 'info'
-  if (status === 'cancelled') return 'warning'
+  if (status === 'cancelled' || status === 'interrupted') return 'warning'
   return 'default'
 }
 
@@ -228,6 +229,15 @@ async function createJob(): Promise<void> {
   }
 }
 
+/**
+ * 0.1.17 (WP5-7): start/resume/retry return as soon as the run is accepted, so
+ * the window never blocks on a long batch. `batch.wait` settles on the terminal
+ * job for the existing result toast.
+ */
+async function settleJob(id: string, accepted: BatchJob): Promise<BatchJob> {
+  return (await ipc('batch.wait', id)) || accepted
+}
+
 async function start(id: string): Promise<void> {
   if (startingId.value) return
   const job = jobs.value.find((j) => j.id === id)
@@ -272,8 +282,8 @@ async function start(id: string): Promise<void> {
   }
   startingId.value = id
   try {
-    // start() submits every prompt, then waits until outputs settle.
-    const result = await ipc('batch.start', id)
+    // Accepted immediately (0.1.17), then awaited via batch.wait.
+    const result = await settleJob(id, await ipc('batch.start', id))
     if (result.status === 'done') {
       message.success(
         t('batch.jobDone', {
@@ -326,6 +336,70 @@ async function start(id: string): Promise<void> {
       message.error(msg)
     }
     await refresh()
+  } finally {
+    startingId.value = ''
+  }
+}
+
+/** 0.1.17 (WP5): continue an interrupted job (only the missing legs). */
+async function resumeJob(id: string): Promise<void> {
+  startingId.value = id
+  try {
+    const result = await settleJob(id, await ipc('batch.resume', id))
+    if (result.status === 'done') {
+      message.success(
+        t('batch.jobDone', {
+          submitted: result.submitted ?? 0,
+          completed: result.completed,
+          produced: result.produced,
+          failed: result.failed
+        })
+      )
+    } else if (result.status === 'cancelled') {
+      message.warning(t('batch.jobCancelled'))
+    } else {
+      message.warning(
+        t('batch.jobFinishedPartial', {
+          submitted: result.submitted ?? 0,
+          completed: result.completed,
+          failed: result.failed
+        })
+      )
+    }
+    await refresh()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    startingId.value = ''
+  }
+}
+
+/** 0.1.17 (WP5): re-submit only the legs that failed. */
+async function retryFailedJob(id: string): Promise<void> {
+  startingId.value = id
+  try {
+    const result = await settleJob(id, await ipc('batch.retryFailed', id))
+    if (result.status === 'done') {
+      message.success(
+        t('batch.jobDone', {
+          submitted: result.submitted ?? 0,
+          completed: result.completed,
+          produced: result.produced,
+          failed: result.failed
+        })
+      )
+    } else {
+      message.warning(
+        t('batch.jobFinishedPartial', {
+          submitted: result.submitted ?? 0,
+          completed: result.completed,
+          failed: result.failed
+        })
+      )
+    }
+    await refresh()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
   } finally {
     startingId.value = ''
   }
@@ -412,6 +486,12 @@ watch(
   },
   { immediate: true }
 )
+
+// 0.1.17 (WP9): jobs and the draft target belong to one instance scope.
+useInstanceScope(() => {
+  draft.value.instanceId = ''
+  void refresh()
+})
 
 onMounted(async () => {
   await store.bootstrap({ keepSelection: true })
@@ -590,6 +670,32 @@ onUnmounted(() => {
                 </template>
                 {{ needInstanceHint }}
               </NTooltip>
+              <!-- 0.1.17 (WP5): resume / retry-failed for interrupted jobs.
+                   The tooltip states the honest limit: prompts already queued
+                   inside ComfyUI cannot be restored after a server restart. -->
+              <NTooltip v-if="job.status === 'interrupted'">
+                <template #trigger>
+                  <NButton
+                    size="small"
+                    type="warning"
+                    secondary
+                    :loading="startingId === job.id"
+                    @click="resumeJob(job.id)"
+                  >
+                    {{ $t('batch.resume') }}
+                  </NButton>
+                </template>
+                {{ $t('batch.resumeHint') }}
+              </NTooltip>
+              <NButton
+                v-if="job.failed > 0 && !isBusy(job.status) && job.status !== 'queued'"
+                size="small"
+                secondary
+                :loading="startingId === job.id"
+                @click="retryFailedJob(job.id)"
+              >
+                {{ $t('batch.retryFailed') }}
+              </NButton>
               <NButton
                 size="small"
                 secondary

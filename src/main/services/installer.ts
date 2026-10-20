@@ -31,7 +31,8 @@ import {
   loadSettings,
   userDataDir,
   saveInstallRun,
-  loadLatestInstallRun
+  loadLatestInstallRun,
+  clearInstallRuns
 } from './db'
 import {
   hasParentHop,
@@ -41,6 +42,7 @@ import {
   normalizeForCompare
 } from './security'
 import { comfyChildEnv } from './childEnv'
+import { killProcessTree } from './processTree'
 import { bootstrapService } from './bootstrap'
 
 const EXEC_OPTS = {
@@ -170,16 +172,145 @@ export function officialTorchIndex(channel: TorchChannel): string {
   return TORCH_INDEX[channel] || TORCH_INDEX.cpu
 }
 
+/**
+ * CUDA major.minor a channel must report from `torch.version.cuda` (0.1.17).
+ * `null` means "CPU build" — true for cpu/mps, and also for rocm/xpu whose
+ * builds expose `torch.version.hip` / IPEX instead of a CUDA tag.
+ */
+export function expectedCudaForChannel(channel: TorchChannel): string | null {
+  switch (channel) {
+    case 'cu126':
+      return '12.6'
+    case 'cu124':
+      return '12.4'
+    case 'cu130':
+      return '13.0'
+    default:
+      return null
+  }
+}
+
 export function listStarterModels(): StarterModel[] {
   return STARTER_MODELS
 }
 
+/**
+ * Subdirectories inside a ComfyUI tree that hold USER data (0.1.17 WP2).
+ * Non-empty ones make the directory undeletable by an installer retry.
+ */
+/**
+ * Top-level entries that count as user data. 0.1.17 (review fix): the old code
+ * only checked the exact names, so a renamed/derived dir (`models_old`,
+ * `custom_nodes-backup`) neither counted as user data nor as foreign content —
+ * the debris guard then deleted it.
+ */
+const USER_DATA_FAMILIES = ['models', 'custom_nodes', 'user', 'output', 'input']
+
+function isUserDataEntry(name: string): boolean {
+  const lower = name.toLowerCase()
+  return USER_DATA_FAMILIES.some(
+    (base) =>
+      lower === base ||
+      lower.startsWith(`${base}_`) ||
+      lower.startsWith(`${base}-`) ||
+      lower.startsWith(`${base}.`)
+  )
+}
+
+export function userDataDirsIn(comfyDir: string): string[] {
+  const found: string[] = []
+  let entries: string[] = []
+  try {
+    entries = readdirSync(comfyDir)
+  } catch {
+    return ['<unreadable>']
+  }
+  for (const name of entries) {
+    if (!isUserDataEntry(name)) continue
+    const p = join(comfyDir, name)
+    try {
+      if (existsSync(p) && readdirSync(p).length > 0) found.push(name)
+    } catch {
+      // Unreadable is treated as precious — never delete what we cannot read.
+      found.push(name)
+    }
+  }
+  return found
+}
+
+/** Typical top-level ComfyUI entries — anything else is "foreign" content. */
+const COMFY_TOP_LEVEL_OK =
+  /^(main\.py|requirements\.txt|comfy|comfyui|app|web|script_examples|\.git|\.github|LICENSE|README)/i
+
+function foreignEntriesIn(comfyDir: string): string[] {
+  try {
+    return readdirSync(comfyDir).filter((n) => !COMFY_TOP_LEVEL_OK.test(n) && !isUserDataEntry(n))
+  } catch {
+    return ['<unreadable>']
+  }
+}
+
+/**
+ * Can a failed/retried install delete this ComfyUI dir? Only when it holds no
+ * user data AND is either marked as ours or has no foreign content (0.1.17 WP2).
+ */
+export function canDeleteComfyDebris(comfyDir: string, installRoot: string): boolean {
+  if (userDataDirsIn(comfyDir).length) return false
+  const marker = existsSync(join(installRoot, '.comfypilot-env.json'))
+  return marker || foreignEntriesIn(comfyDir).length === 0
+}
+
+/**
+ * Prepare an existing ComfyUI dir for a (re)fetch: user data is archived to
+ * `<dir>.cp-old-<ts>` and reported, provable debris is deleted, anything else
+ * throws so the caller can surface a clear refusal (0.1.17 WP2).
+ */
+export function disposeExistingComfyDir(
+  comfyDir: string,
+  installRoot: string
+): { action: 'deleted' | 'archived'; precious: string[]; archivePath?: string } {
+  const precious = userDataDirsIn(comfyDir)
+  if (precious.length) {
+    const archivePath = `${comfyDir}.cp-old-${Date.now()}`
+    try {
+      renameSync(comfyDir, archivePath)
+    } catch (e) {
+      throw new Error(
+        `Refusing to delete ${comfyDir}: contains user data (${precious.join(', ')}) and could not be archived (${e instanceof Error ? e.message : String(e)})`
+      )
+    }
+    return { action: 'archived', precious, archivePath }
+  }
+  if (!canDeleteComfyDebris(comfyDir, installRoot)) {
+    throw new Error(
+      `Refusing to delete ${comfyDir}: directory is non-empty and not a ComfyPilot install remnant (has ${foreignEntriesIn(
+        comfyDir
+      )
+        .slice(0, 3)
+        .join(', ')}）`
+    )
+  }
+  rmSync(comfyDir, { recursive: true, force: true })
+  return { action: 'deleted', precious }
+}
+
 export class InstallerService extends EventEmitter {
   private progress: InstallProgress | null = null
-  private cancelled = false
+  /**
+   * 0.1.17 (WP1): cancellation is per-run, not a permanent latch. The old
+   * boolean stayed true after the first cancel, so every later `this.run()`
+   * (including the read-only preflight probes) threw instantly and the UI
+   * reported "python/uv missing" on a machine that had them.
+   */
+  private runEpoch = 0
+  private cancelledEpoch = -1
   private running = false
   private children = new Set<ChildProcess>()
   private runRejects = new Set<(err: Error) => void>()
+
+  private get isCancelled(): boolean {
+    return this.cancelledEpoch === this.runEpoch
+  }
 
   getStatus(): InstallProgress | null {
     if (this.progress) return this.progress
@@ -188,7 +319,25 @@ export class InstallerService extends EventEmitter {
     try {
       const last = loadLatestInstallRun()
       if (last && typeof last === 'object') {
-        return last as unknown as InstallProgress
+        const run = last as unknown as InstallProgress
+        // A persisted `running` run cannot be live in a fresh process. Without
+        // this relabel the UI showed a stuck install forever and offered no way
+        // out (0.1.17 WP1).
+        if (run.status === 'running') {
+          run.status = 'interrupted'
+          run.error = 'Interrupted by app exit'
+          run.message = 'Previous install was interrupted — safe to retry'
+          const running = (run.steps || []).find?.((s) => s.status === 'running')
+          if (running) running.status = 'interrupted'
+          try {
+            saveInstallRun(
+              run as unknown as { runId: string; status: string } & Record<string, unknown>
+            )
+          } catch {
+            /* status is still corrected in memory */
+          }
+        }
+        return run
       }
     } catch {
       /* ignore */
@@ -196,8 +345,35 @@ export class InstallerService extends EventEmitter {
     return null
   }
 
+  /**
+   * Forget every persisted/in-memory run so a wedged "running" badge can be
+   * cleared by the user (0.1.17 WP1). Does not touch files on disk.
+   */
+  reset(): void {
+    // 0.1.17 (review fix): cancel() writes `cancelled` before the kills settle,
+    // and the UI flips to "Reset" at that moment. Resetting a still-running
+    // installer let a new run start while the old one was still unwinding —
+    // both shared `children`/`progress`, and the old finally cleared the new
+    // run's child set. Refuse until the previous run is really gone.
+    if (this.children.size > 0) {
+      throw new Error('Installation is still running — wait for it to stop before resetting')
+    }
+    this.runEpoch += 1
+    this.cancelledEpoch = -1
+    this.progress = null
+    this.running = false
+    try {
+      clearInstallRuns()
+    } catch {
+      /* ignore */
+    }
+    this.emit('progress', null)
+  }
+
   cancel(): boolean {
-    this.cancelled = true
+    const hadActiveRun = this.running || this.progress?.status === 'running'
+    // Latch THIS epoch only — a later start() gets a fresh one.
+    this.cancelledEpoch = this.runEpoch
     // Abort in-flight runtime downloads/extracts too (bootstrap has no idea
     // about installer.run children).
     try {
@@ -209,50 +385,37 @@ export class InstallerService extends EventEmitter {
     for (const child of this.children) {
       kills.push(this.killTree(child))
     }
-    for (const rej of this.runRejects) {
-      try {
-        rej(new Error('Installation cancelled'))
-      } catch {
-        /* ignore */
+    // 0.1.17 (WP1): write a terminal state immediately. Relying on the run's
+    // own catch left `running` persisted whenever no step was in flight.
+    if (this.progress && this.progress.status === 'running') {
+      this.progress.status = 'cancelled'
+      this.progress.error = 'Installation cancelled'
+      const active = this.progress.steps.find((s) => s.status === 'running')
+      if (active) {
+        active.status = 'cancelled'
+        active.detail = 'Installation cancelled'
       }
+      this.emitProgress('Installation cancelled')
     }
-    this.runRejects.clear()
-    void Promise.allSettled(kills).then(() => this.children.clear())
-    return true
-  }
-
-  private killTree(child: ChildProcess): Promise<void> {
-    return new Promise((resolve) => {
-      if (process.platform === 'win32' && child.pid) {
-        execFile(
-          'taskkill',
-          ['/PID', String(child.pid), '/T', '/F'],
-          { windowsHide: true, timeout: 8000 },
-          () => {
-            try {
-              if (child.exitCode === null) child.kill('SIGKILL')
-            } catch {
-              /* ignore */
-            }
-            resolve()
-          }
-        )
-        return
-      }
-      try {
-        child.kill('SIGTERM')
-      } catch {
-        /* ignore */
-      }
-      setTimeout(() => {
+    // Reject the awaiting run only AFTER the process tree is gone, so a
+    // cancelled install can never keep writing into the target directory.
+    void Promise.allSettled(kills).then(() => {
+      this.children.clear()
+      for (const rej of [...this.runRejects]) {
         try {
-          if (child.exitCode === null) child.kill('SIGKILL')
+          rej(new Error('Installation cancelled'))
         } catch {
           /* ignore */
         }
-        resolve()
-      }, 500)
+      }
+      this.runRejects.clear()
     })
+    return hadActiveRun || Boolean(this.progress)
+  }
+
+  private killTree(child: ChildProcess): Promise<void> {
+    // 0.1.17 (WP1-5): one implementation for the whole tree (Windows taskkill /T).
+    return killProcessTree(child)
   }
 
   private async run(
@@ -261,12 +424,34 @@ export class InstallerService extends EventEmitter {
     opts?: { cwd?: string; timeout?: number }
   ): Promise<string> {
     this.assertNotCancelled()
+    return this.execChild(cmd, args, opts, true)
+  }
+
+  /**
+   * Read-only probe (preflight / detection). Deliberately NOT affected by a
+   * previous run's cancellation and not registered for kill-on-cancel: probing
+   * the machine must never be answered by a stale cancel latch (0.1.17 WP1).
+   */
+  private async probe(
+    cmd: string,
+    args: string[],
+    opts?: { cwd?: string; timeout?: number }
+  ): Promise<string> {
+    return this.execChild(cmd, args, opts, false)
+  }
+
+  private execChild(
+    cmd: string,
+    args: string[],
+    opts: { cwd?: string; timeout?: number } | undefined,
+    trackable: boolean
+  ): Promise<string> {
     return new Promise((resolvePromise, reject) => {
       const onReject = (err: Error): void => {
         this.runRejects.delete(onReject)
         reject(err)
       }
-      this.runRejects.add(onReject)
+      if (trackable) this.runRejects.add(onReject)
       const child = execFile(
         cmd,
         args,
@@ -278,9 +463,11 @@ export class InstallerService extends EventEmitter {
           env: comfyChildEnv(loadSettings())
         },
         (err, stdout, stderr) => {
-          this.children.delete(child)
-          this.runRejects.delete(onReject)
-          if (this.cancelled) {
+          if (trackable) {
+            this.children.delete(child)
+            this.runRejects.delete(onReject)
+          }
+          if (trackable && this.isCancelled) {
             reject(new Error('Installation cancelled'))
             return
           }
@@ -291,7 +478,7 @@ export class InstallerService extends EventEmitter {
           resolvePromise(stdout)
         }
       )
-      this.children.add(child)
+      if (trackable) this.children.add(child)
     })
   }
 
@@ -350,7 +537,7 @@ export class InstallerService extends EventEmitter {
   }
 
   private assertNotCancelled(): void {
-    if (this.cancelled) throw new Error('Installation cancelled')
+    if (this.isCancelled) throw new Error('Installation cancelled')
   }
 
   async detectGpu(): Promise<GpuCapability[]> {
@@ -459,6 +646,53 @@ export class InstallerService extends EventEmitter {
       detailParams: { root }
     })
 
+    // 0.1.17 (WP2): network shares and over-long paths fail late and confusingly
+    // (torch extraction), so refuse them up front instead of mid-install.
+    if (rootOk && /^\\\\/.test(root)) {
+      checks.push({
+        id: 'unc',
+        ok: false,
+        detail: 'Network (UNC) install paths are not supported — choose a local disk folder',
+        detailKey: 'preflight.uncPath'
+      })
+    }
+    if (rootOk && root.length > 240) {
+      checks.push({
+        id: 'longpath',
+        ok: false,
+        detail: `Install path is too long (${root.length} > 240) — Python/torch extraction will fail`,
+        detailKey: 'preflight.longPath',
+        detailParams: { n: root.length }
+      })
+    }
+    if (rootOk) {
+      // Writability: a read-only / protected folder used to fail after the
+      // runtime downloads, when the venv could not be created. Probe the
+      // nearest EXISTING directory — preflight must not create anything.
+      const probeDir = existsSync(root) ? root : dirname(root)
+      try {
+        if (!existsSync(probeDir)) throw new Error(`Directory does not exist: ${probeDir}`)
+        const probe = join(probeDir, `.cp-write-probe-${Date.now()}`)
+        writeFileSync(probe, 'ok')
+        rmSync(probe, { force: true })
+        checks.push({
+          id: 'writable',
+          ok: true,
+          detail: `Writable: ${probeDir}`,
+          detailKey: 'preflight.writableOk',
+          detailParams: { root: probeDir }
+        })
+      } catch (e) {
+        checks.push({
+          id: 'writable',
+          ok: false,
+          detail: `Cannot write to ${probeDir}: ${e instanceof Error ? e.message : String(e)}`,
+          detailKey: 'preflight.notWritable',
+          detailParams: { root: probeDir }
+        })
+      }
+    }
+
     // Disk — require torch estimate + 4GB margin for ComfyUI/venv
     const needGb = (TORCH_DISK_GB[opts.torchChannel || 'cpu'] || 3) + 4
     let freeGb = 0
@@ -495,7 +729,7 @@ export class InstallerService extends EventEmitter {
 
     // git — optional when using zip install (default). Only warn.
     try {
-      const out = await this.run('git', ['--version'], { timeout: 5000 })
+      const out = await this.probe('git', ['--version'], { timeout: 5000 })
       checks.push({ id: 'git', ok: true, detail: out.trim() })
     } catch {
       checks.push({
@@ -513,7 +747,7 @@ export class InstallerService extends EventEmitter {
     // python — soft-fail with bootstrap fix when missing
     const python = opts.pythonPath && opts.pythonPath.trim() ? opts.pythonPath.trim() : 'python'
     try {
-      const out = await this.run(python, ['--version'], { timeout: 8000 })
+      const out = await this.probe(python, ['--version'], { timeout: 8000 })
       const m = out.match(/Python\s+(3)\.(\d+)/i)
       const major = m ? Number(m[1]) : 0
       const minor = m ? Number(m[2]) : -1
@@ -546,7 +780,7 @@ export class InstallerService extends EventEmitter {
       let uvOk = false
       let uvDetail = ''
       try {
-        const out = await this.run('uv', ['--version'], { timeout: 5000 })
+        const out = await this.probe('uv', ['--version'], { timeout: 5000 })
         uvOk = true
         uvDetail = out.trim()
       } catch {
@@ -554,7 +788,7 @@ export class InstallerService extends EventEmitter {
           const { findInRuntimes } = await import('./bootstrap')
           const portable = findInRuntimes('uv')
           if (portable) {
-            const out = await this.run(portable, ['--version'], { timeout: 5000 })
+            const out = await this.probe(portable, ['--version'], { timeout: 5000 })
             uvOk = true
             uvDetail = out.trim()
           }
@@ -625,7 +859,9 @@ export class InstallerService extends EventEmitter {
     }
 
     this.running = true
-    this.cancelled = false
+    // Fresh epoch: a cancel of the previous run must not poison this one.
+    this.runEpoch += 1
+    this.cancelledEpoch = -1
     const runId = randomUUID()
     this.progress = {
       runId,
@@ -636,8 +872,11 @@ export class InstallerService extends EventEmitter {
       percent: 0
     }
     this.emitProgress('Install started')
+    // Only the run that owns the current epoch may clear the flag — a reset()
+    // followed by a new start must not be clobbered by the old run's finally.
+    const myEpoch = this.runEpoch
     void this.runPlan(plan).finally(() => {
-      this.running = false
+      if (this.runEpoch === myEpoch) this.running = false
     })
     return { runId }
   }
@@ -651,6 +890,45 @@ export class InstallerService extends EventEmitter {
     const win = join(venvPath, 'Scripts', 'python.exe')
     const unix = join(venvPath, 'bin', 'python')
     return existsSync(win) ? win : unix
+  }
+
+  /**
+   * Verify the installed torch really matches the requested channel (0.1.17 WP2).
+   * `pip install torch` succeeds against a cached/wrong wheel, so the install
+   * used to report "done" while the venv still held a CPU build on a CUDA box.
+   */
+  private async verifyTorchChannel(vpy: string, channel: TorchChannel): Promise<void> {
+    const script =
+      'import json,torch;print(json.dumps({"cuda":torch.version.cuda,"hip":torch.version.hip,"torch":torch.__version__}))'
+    let out = ''
+    try {
+      out = await this.run(vpy, ['-c', script], { timeout: 60000 })
+    } catch (e) {
+      throw new Error(
+        `torch import failed after install (${e instanceof Error ? e.message : String(e)}) — the wheel for ${channel} did not install correctly`
+      )
+    }
+    const line = out.trim().split('\n').filter(Boolean).pop() || '{}'
+    let info: { cuda?: string | null; hip?: string | null; torch?: string } = {}
+    try {
+      info = JSON.parse(line)
+    } catch {
+      throw new Error(`Could not read torch build info (got: ${line.slice(0, 120)})`)
+    }
+    const want = expectedCudaForChannel(channel)
+    const got = info.cuda ?? null
+    const matches = want === null ? got === null : String(got).startsWith(want)
+    if (!matches) {
+      const advice =
+        want === null
+          ? 'The requested channel is CPU-only but a CUDA build is installed.'
+          : `Expected CUDA ${want} (channel ${channel}) but torch reports ${got ?? 'none'}. Check your driver version or switch the torch channel / mirror.`
+      throw new Error(`torch ${info.torch || '?'} channel mismatch: ${advice}`)
+    }
+    this.log(
+      'torch',
+      `verified torch ${info.torch || '?'} (cuda ${got ?? 'none'}${info.hip ? `, hip ${info.hip}` : ''})`
+    )
   }
 
   private pipArgs(base: string[]): string[] {
@@ -817,23 +1095,20 @@ export class InstallerService extends EventEmitter {
         if (existsSync(comfyDir)) {
           if (!isPathInside(comfyDir, installRoot))
             throw new Error('Refusing to remove ComfyUI outside install root')
-          // Only remove debris WE created: either a prior ComfyPilot install
-          // (marker file present) or a directory that looks like a crashed clone
-          // (no foreign top-level content besides typical ComfyUI names).
-          const marker = existsSync(join(installRoot, '.comfypilot-env.json'))
-          const foreign = readdirSync(comfyDir).filter(
-            (n) =>
-              !/^(main\.py|requirements\.txt|comfy|comfyui|app|web|custom_nodes|models|input|output|user|script_examples|\.git|\.github|LICENSE|README)/i.test(
-                n
-              )
-          )
-          if (!marker && foreign.length) {
-            throw new Error(
-              `Refusing to delete ${comfyDir}: directory is non-empty and not a ComfyPilot install remnant (has ${foreign.slice(0, 3).join(', ')}）`
+          // 0.1.17 (WP2): user data always wins over a retry. The 0.1.16 guard
+          // only checked "foreign" top-level names, so a directory holding the
+          // user's models/custom_nodes was deleted whenever our marker existed.
+          // Shared rule lives in disposeExistingComfyDir().
+          const disposed = disposeExistingComfyDir(comfyDir, installRoot)
+          if (disposed.action === 'archived') {
+            this.log(
+              'comfyui',
+              `Preserved existing user data (${disposed.precious.join(', ')}) → ${disposed.archivePath}`
             )
+            this.emitProgress(`Preserved ${disposed.precious.join(', ')} → ${disposed.archivePath}`)
+          } else {
+            this.log('comfyui', 'Removed incomplete ComfyUI dir — re-fetching')
           }
-          rmSync(comfyDir, { recursive: true, force: true })
-          this.log('comfyui', 'Removed incomplete ComfyUI dir — re-fetching')
         }
         if (comfySource === 'git') {
           const repo = plan.comfyRepo || COMFY_REPO
@@ -878,6 +1153,10 @@ export class InstallerService extends EventEmitter {
               'install',
               '--python',
               vpy,
+              // 0.1.17 (WP2): --upgrade is required — without it a CPU torch
+              // already present in the venv is "satisfied" and the channel
+              // switch silently keeps the old wheel (env.ts always upgrades).
+              '--upgrade',
               'torch',
               'torchvision',
               'torchaudio',
@@ -899,6 +1178,7 @@ export class InstallerService extends EventEmitter {
               '-m',
               'pip',
               'install',
+              '--upgrade',
               'torch',
               'torchvision',
               'torchaudio',
@@ -920,6 +1200,8 @@ export class InstallerService extends EventEmitter {
         )
         await installTorchWith(official)
       }
+      // 0.1.17 (WP2): "said installed" is not "is the requested channel".
+      await this.verifyTorchChannel(vpy, plan.torchChannel)
       this.setStep('torch', 'done', plan.torchChannel)
       this.assertNotCancelled()
 
@@ -1083,7 +1365,7 @@ export class InstallerService extends EventEmitter {
       this.emitProgress('Install complete')
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      const cancelled = this.cancelled || /Installation cancelled/i.test(message)
+      const cancelled = this.isCancelled || /Installation cancelled/i.test(message)
       const cleaned: string[] = []
       try {
         const root = resolve(normalizePathEverySegment(plan.installRoot))
@@ -1093,18 +1375,17 @@ export class InstallerService extends EventEmitter {
           existsSync(comfyDir) &&
           !existsSync(join(comfyDir, 'main.py'))
         ) {
-          // Same debris rule as the fetch step: never delete foreign content here,
-          // otherwise the "refuse to delete non-install dirs" guard is defeated.
-          const marker = existsSync(join(root, '.comfypilot-env.json'))
-          const foreign = readdirSync(comfyDir).filter(
-            (n) =>
-              !/^(main\.py|requirements\.txt|comfy|comfyui|app|web|custom_nodes|models|input|output|user|script_examples|\.git|\.github|LICENSE|README)/i.test(
-                n
-              )
-          )
-          if (marker || !foreign.length) {
+          // 0.1.17 (WP2): user data (models/custom_nodes/user/output) is never
+          // deleted, marker or not — a failed install must not cost the user
+          // their models. Shared rule lives in canDeleteComfyDebris().
+          if (canDeleteComfyDebris(comfyDir, root)) {
             rmSync(comfyDir, { recursive: true, force: true })
             cleaned.push('ComfyUI')
+          } else {
+            this.log(
+              'comfyui',
+              `Kept existing ComfyUI dir on failure (user data: ${userDataDirsIn(comfyDir).join(', ') || 'foreign content'})`
+            )
           }
         }
         const venvPath = join(root, '.venv')
@@ -1121,7 +1402,9 @@ export class InstallerService extends EventEmitter {
       }
       const cleanedNote = cleaned.length ? ` (cleaned: ${cleaned.join(', ')} — safe to retry)` : ''
       if (this.progress) {
-        this.progress.status = 'failed'
+        // 0.1.17 (WP1): a user cancel stays `cancelled` — the old code wrote
+        // `failed` here, which both lied and re-armed the stuck-run report.
+        this.progress.status = cancelled ? 'cancelled' : 'failed'
         this.progress.error = cancelled ? 'Installation cancelled' : message
         this.progress.message = this.progress.error + cleanedNote
         this.progress.bytes = undefined

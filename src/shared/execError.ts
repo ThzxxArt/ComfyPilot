@@ -29,12 +29,12 @@ export interface ParsedExecError {
   traceback: string[]
 }
 
-// eslint-disable-next-line no-control-regex
-const ANSI_RE = /\u001b\[[0-9;]*m/g
+// 0.1.17 (WP10): one implementation. `logLine` already inlines the full ANSI
+// matcher (CSI + OSC + single-char escapes); the narrow `\u001b[..m` copy here
+// diverged and left cursor/OSC sequences in exec diagnostics.
+import { stripAnsi } from './logLine'
 
-export function stripAnsi(text: string): string {
-  return String(text || '').replace(ANSI_RE, '')
-}
+export { stripAnsi }
 
 const TRIGGER_RE = /!!!\s*Exception during processing\s*!!!\s*(.*)$/i
 /** Python exception line: `ModuleNotFoundError: No module named 'x'`. */

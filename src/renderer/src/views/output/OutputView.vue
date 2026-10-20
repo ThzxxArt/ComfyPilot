@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, computed, watch } from 'vue'
+import { onMounted, onUnmounted, ref, computed, watch, h } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import {
@@ -71,6 +71,10 @@ const workflowFilter = ref('')
 const dateRange = ref<[number, number] | null>(null)
 const workflows = ref<WorkflowRecord[]>([])
 const selected = ref<Set<string>>(new Set())
+/** Page the current selection belongs to — selection is per page (0.1.17 WP9). */
+let selectionPageKey = ''
+/** True while onMounted assigns the initial root (skip the watcher's rescan). */
+let initRoot = false
 
 const typeOptions = computed(() => [
   { label: t('output.typeAll'), value: 'all' },
@@ -187,6 +191,41 @@ function clearFilters(): void {
   dateRange.value = null
 }
 
+/**
+ * 0.1.17 (WP7): walk the output root once and merge into the index. Listing
+ * (paging / filtering) is index-only now, so this is the only disk walk.
+ *
+ * Review fix: the walk is cancellable and reports progress; a second click
+ * must not start a parallel walk (both would merge the same rows).
+ */
+const scanning = ref(false)
+const scanProgress = ref<{ scanned: number; done: boolean; cancelled: boolean } | null>(null)
+
+async function scanOutputs(): Promise<void> {
+  if (scanning.value) return
+  scanning.value = true
+  scanProgress.value = { scanned: 0, done: false, cancelled: false }
+  try {
+    const res = await ipc('output.scan', { root: root.value || undefined })
+    if (res?.cancelled) {
+      message.info(t('output.scanCancelled'))
+    }
+  } catch {
+    /* a failed scan must not blank the page — the index still lists */
+  } finally {
+    scanning.value = false
+    scanProgress.value = null
+  }
+}
+
+async function cancelScan(): Promise<void> {
+  try {
+    await ipc('output.scanCancel')
+  } catch {
+    /* ignore */
+  }
+}
+
 async function refresh(): Promise<void> {
   const seq = ++reqSeq
   loading.value = true
@@ -213,7 +252,14 @@ async function refresh(): Promise<void> {
     if (seq !== reqSeq) return
     assets.value = result.items
     total.value = result.total
-    // prune selections that are no longer visible
+    // 0.1.17 (WP9): explicit cross-page policy — the selection is PER PAGE.
+    // It used to be silently dropped here (half-kept: the count could still show
+    // ids from the previous page while actions targeted the visible set).
+    const pageKey = `p${page.value}|s${pageSize.value}|${type.value}|${sort.value}|${order.value}`
+    if (selectionPageKey && selectionPageKey !== pageKey && selected.value.size) {
+      message.info(t('output.selectionClearedOnPageChange'), { duration: 4000 })
+    }
+    selectionPageKey = pageKey
     const ids = new Set(result.items.map((a) => a.id))
     for (const id of [...selected.value]) {
       if (!ids.has(id)) selected.value.delete(id)
@@ -505,19 +551,28 @@ async function doBatchDelete(ids: string[], deleteFile: boolean): Promise<void> 
       lightboxAsset.value = null
       lightboxSrc.value = ''
     }
-    for (const id of ids) selected.value.delete(id)
     const base = deleteFile
       ? t('output.deletedBatchWithFile', { ok: r.ok })
       : t('output.deletedBatchRecordOnly', { ok: r.ok })
     if (r.failed.length) {
-      message.warning(
-        `${base} — ${t('output.deleteBatchFailed', {
-          n: r.failed.length,
-          first: r.failed[0].error
-        })}`,
-        { duration: 8000 }
-      )
+      // 0.1.17 (WP9-2): the failures stay selected so a retry targets exactly
+      // them, and the dialog lists every failure (label + reason) instead of a
+      // single "first error" toast.
+      const failedIds = new Set(r.failed.map((f) => f.id))
+      selected.value = new Set([...selected.value].filter((id) => failedIds.has(id)))
+      message.warning(base, { duration: 6000 })
+      dialog.warning({
+        title: t('output.deleteBatchFailedTitle', { n: r.failed.length }),
+        content: () =>
+          h(
+            'div',
+            { class: 'batch-fail-list' },
+            r.failed.map((f) => h('div', { key: f.id }, `${f.label || f.id}: ${f.error}`))
+          ),
+        positiveText: t('common.confirm')
+      })
     } else {
+      for (const id of ids) selected.value.delete(id)
       message.success(base)
     }
     await refresh()
@@ -560,10 +615,18 @@ watch([type, sort, order, onlyFavorites, batchFilter, workflowFilter, dateRange]
   void refresh()
 })
 
-// root changes must reset page and refresh (was previously not watched).
+// 0.1.17 (review fix): the root input is bound with v-model, so every keystroke
+// used to trigger a full scan. Debounce, and skip the initial mount assignment
+// (onMounted scans once itself).
+let rootScanTimer: ReturnType<typeof setTimeout> | null = null
 watch(root, () => {
   page.value = 1
-  void refresh()
+  if (initRoot) return
+  if (rootScanTimer) clearTimeout(rootScanTimer)
+  rootScanTimer = setTimeout(() => {
+    rootScanTimer = null
+    void scanOutputs().then(() => refresh())
+  }, 500)
 })
 
 watch(page, () => void refresh())
@@ -574,6 +637,7 @@ watch(pageSize, () => {
 })
 
 let offBatch: (() => void) | null = null
+let offScan: (() => void) | null = null
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
 
 /** Debounced refresh when a batch produces new outputs. */
@@ -581,7 +645,8 @@ function scheduleRefresh(): void {
   if (refreshTimer) clearTimeout(refreshTimer)
   refreshTimer = setTimeout(() => {
     refreshTimer = null
-    void refresh()
+    // A finished batch writes new files — rescan before listing (WP7).
+    void scanOutputs().then(() => refresh())
   }, 1500)
 }
 
@@ -623,13 +688,40 @@ onMounted(async () => {
     /* keep empty */
   }
   // Auto-refresh when a batch produces new outputs.
-  offBatch = onIpc(IPC_EVENTS.batchProgress, () => scheduleRefresh())
+  // 0.1.17 (review fix): progress events arrive several times per second during
+  // a run; rescanning the whole tree every 1.5 s competed with the batch itself.
+  // Only a terminal status can have produced new files.
+  offBatch = onIpc(IPC_EVENTS.batchProgress, (p) => {
+    const status = (p as { status?: string } | null)?.status
+    if (status && !['done', 'error', 'cancelled', 'interrupted'].includes(status)) return
+    scheduleRefresh()
+  })
+  offScan = onIpc(IPC_EVENTS.outputScanProgress, (p) => {
+    const info = p as { scanned?: number; done?: boolean; cancelled?: boolean }
+    if (info?.done) {
+      scanProgress.value = null
+      return
+    }
+    scanProgress.value = {
+      scanned: Number(info?.scanned || 0),
+      done: false,
+      cancelled: Boolean(info?.cancelled)
+    }
+  })
   window.addEventListener('keydown', onLightboxKey)
+  // 0.1.17 (review fix): list the index FIRST, then walk in the background.
+  // Awaiting a 13 GB scan before the first page made an empty-looking page wait
+  // for the whole disk.
+  initRoot = true
   await refresh()
+  initRoot = false
+  void scanOutputs().then(() => refresh())
 })
 
 onUnmounted(() => {
   offBatch?.()
+  offScan?.()
+  if (rootScanTimer) clearTimeout(rootScanTimer)
   if (refreshTimer) clearTimeout(refreshTimer)
   window.removeEventListener('keydown', onLightboxKey)
 })
@@ -676,7 +768,13 @@ onUnmounted(() => {
           <template #checked>{{ $t('output.favOnly') }}</template>
           <template #unchecked>{{ $t('output.favAll') }}</template>
         </NSwitch>
-        <NButton type="primary" :loading="refreshing" @click="refresh">
+        <NTag v-if="scanning" size="small" type="info" round class="scan-chip">
+          {{ $t('output.scanning', { n: scanProgress?.scanned || 0 }) }}
+          <NButton text size="tiny" type="warning" @click="cancelScan">
+            {{ $t('common.cancel') }}
+          </NButton>
+        </NTag>
+        <NButton type="primary" :loading="refreshing" @click="scanOutputs().then(() => refresh())">
           <template #icon><NIcon :component="RefreshOutline" /></template>{{ $t('output.scan') }}
         </NButton>
       </NSpace>

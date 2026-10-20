@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   MedkitOutline,
@@ -11,6 +11,7 @@ import {
 } from '@vicons/ionicons5'
 import { NButton, NIcon, NSpace, NSpin, NTag, useMessage, NEmpty, NProgress } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
+import { reportMatchesInstance, useInstanceScope } from '@/composables/useInstanceScope'
 import { ipc, onDoctorProgress } from '@/composables/useIpc'
 import ListSkeleton from '@/components/ListSkeleton.vue'
 import type { DoctorCheck, DoctorReport } from '@shared/types'
@@ -24,6 +25,22 @@ const fixing = ref(false)
 const progress = ref<{ done?: number; title?: string } | null>(null)
 // Persisted in the app store so Dashboard "one-click doctor" survives the route change.
 const report = ref<DoctorReport | null>(store.doctorReport)
+/**
+ * 0.1.17 (WP9): a report belongs to the instance it was produced for. Showing
+ * (or worse, "fixing" from) another instance's report was possible before —
+ * switching instances left the old report on screen.
+ */
+const reportIsCurrent = computed(() =>
+  reportMatchesInstance(report.value?.instanceId, store.activeInstanceId)
+)
+
+useInstanceScope(() => {
+  // Report, progress and any in-flight fix belong to the previous instance.
+  report.value = null
+  store.doctorReport = null
+  progress.value = null
+  fixing.value = false
+})
 
 function iconFor(s: DoctorCheck['severity']) {
   if (s === 'pass') return CheckmarkCircleOutline
@@ -51,27 +68,36 @@ function groupLabel(g: string): string {
   return te(key) ? t(key) : g
 }
 
+/** Guards against a slow report landing after the user switched instances. */
+let runSeq = 0
+
 async function run(): Promise<void> {
   const id = store.activeInstanceId
   if (!id) {
     message.warning(t('common.needRunningInstance'))
     return
   }
+  const seq = ++runSeq
   running.value = true
   try {
-    report.value = await ipc('doctor.run', id)
-    store.doctorReport = report.value
+    const result = await ipc('doctor.run', id)
+    // 0.1.17 (review fix): switching instance clears the report, but the
+    // in-flight run used to write the OLD instance's report back afterwards.
+    if (seq !== runSeq || id !== store.activeInstanceId) return
+    report.value = result
+    store.doctorReport = result
     message.success(
       t('doctor.runComplete', {
-        pass: report.value.summary.pass,
-        warn: report.value.summary.warn,
-        fail: report.value.summary.fail
+        pass: result.summary.pass,
+        warn: result.summary.warn,
+        fail: result.summary.fail
       })
     )
   } catch (err) {
+    if (seq !== runSeq || id !== store.activeInstanceId) return
     message.error(err instanceof Error ? err.message : String(err))
   } finally {
-    running.value = false
+    if (seq === runSeq) running.value = false
   }
 }
 
@@ -80,6 +106,11 @@ async function fix(check: DoctorCheck): Promise<void> {
   const id = store.activeInstanceId
   if (!id) {
     message.warning(t('common.needRunningInstance'))
+    return
+  }
+  // 0.1.17 (WP9): never apply a fix derived from another instance's report.
+  if (!reportIsCurrent.value) {
+    message.warning(t('doctor.reportStale'))
     return
   }
   fixing.value = true

@@ -3918,7 +3918,7 @@ describe('node-op streaming fidelity (0.1.9)', () => {
     expect(maxStepLog).toBeLessThanOrEqual(1)
   })
 
-  it('pip output advances the requirements step fraction', async () => {
+  it('pip output stays indeterminate instead of inventing a fraction', async () => {
     seedGitPack('PipPack', { requirements: 'requests\n' })
     cpMock.__setExecHandler((cmd, args) => {
       if (args.includes('pull')) return { stdout: '' }
@@ -3932,10 +3932,21 @@ describe('node-op streaming fidelity (0.1.9)', () => {
       }
       return { stdout: '' }
     })
+    // 0.1.17 (WP2-4): pip has no denominator — the step must never carry an
+    // invented fraction, only stage text (honesty over motion).
+    let sawRequirements = false
     let maxReq = 0
-    const onProg = (p: { steps?: Array<{ id: string; progress?: number }> }): void => {
+    let lastDetail = ''
+    const onProg = (p: {
+      steps?: Array<{ id: string; status?: string; progress?: number; detail?: string }>
+    }): void => {
       const req = (p.steps || []).find((s) => s.id === 'requirements')
-      if (req?.progress) maxReq = Math.max(maxReq, req.progress)
+      if (!req) return
+      if (req.status === 'running') {
+        sawRequirements = true
+        if (req.detail) lastDetail = req.detail
+      }
+      if (req.progress) maxReq = Math.max(maxReq, req.progress)
     }
     nodePackService.on('op-progress', onProg)
     try {
@@ -3943,7 +3954,9 @@ describe('node-op streaming fidelity (0.1.9)', () => {
     } finally {
       nodePackService.off('op-progress', onProg)
     }
-    expect(maxReq).toBeGreaterThanOrEqual(0.7)
+    expect(sawRequirements).toBe(true)
+    expect(maxReq).toBe(0)
+    expect(lastDetail).toMatch(/Installing|Building|Finalizing/i)
   })
 
   it('reuseStream keeps the current runId for registry reinstalls inside an update', async () => {

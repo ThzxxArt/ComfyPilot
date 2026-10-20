@@ -254,7 +254,7 @@ describe('PipOpsService (0.1.12)', () => {
     await p
   })
 
-  it('advances the bar during the requirements phase (line heuristic, 0.1.13)', async () => {
+  it('keeps the requirements phase indeterminate (no invented fraction, 0.1.17)', async () => {
     const svc = await fresh()
     const events: any[] = []
     svc.on('progress', (p: any) => events.push(p))
@@ -264,10 +264,16 @@ describe('PipOpsService (0.1.12)', () => {
       return 'Successfully installed a b'
     }
     await svc.installSpec('i1', 'a')
-    // preflight done + download skipped settle the bar at 40%; the running
-    // requirements fraction must push intermediate frames above it.
-    const mid = events.filter((e) => e.status === 'running' && e.percent > 40)
-    expect(mid.length).toBeGreaterThan(0)
+    // The pip step must never carry a fake 0..1 fraction; only the stage text
+    // advances while it runs. The UI renders that as an indeterminate bar.
+    const reqFrames = events.filter((e) =>
+      (e.steps || []).some((s: any) => s.id === 'requirements' && s.status === 'running')
+    )
+    expect(reqFrames.length).toBeGreaterThan(0)
+    for (const e of reqFrames) {
+      const req = (e.steps || []).find((s: any) => s.id === 'requirements')
+      expect(req?.progress).toBeUndefined()
+    }
   })
 
   it('records a failed status + error on the snapshot (0.1.13)', async () => {
@@ -520,5 +526,20 @@ describe('PipOpsService (0.1.12)', () => {
     ).toBe('sageattention')
     expect(wheelPackageName('C:\\tmp\\Flash_Attn-2.6.0-cp312.whl')).toBe('flash-attn')
     expect(wheelPackageName('')).toBe('')
+  })
+})
+
+describe('pip stage text (0.1.17 WP2-4)', () => {
+  it('maps pip output lines to stage titles and ignores noise', async () => {
+    const { pipStageFromLine } = await import('../../src/main/services/pipOps')
+    expect(pipStageFromLine('Collecting requests')).toMatch(/Resolving/)
+    expect(pipStageFromLine('  Downloading requests-2.0.whl (63 kB)')).toMatch(/Resolving/)
+    expect(pipStageFromLine('Installing collected packages: requests')).toMatch(/Installing built/)
+    expect(pipStageFromLine('Building wheel for foo (setup.py)')).toMatch(/Building wheels/)
+    expect(pipStageFromLine('Successfully built foo')).toMatch(/Building wheels/)
+    expect(pipStageFromLine('Successfully installed requests-2.0')).toMatch(/Finalizing/)
+    // Noise must not invent a stage.
+    expect(pipStageFromLine('Requirement already satisfied: urllib3')).toBeNull()
+    expect(pipStageFromLine('')).toBeNull()
   })
 })

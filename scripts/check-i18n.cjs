@@ -292,6 +292,54 @@ for (const [pattern, leafs] of Object.entries(dynamicDomains)) {
 if (!dynBad) console.log('ALL DYNAMIC DOMAINS PRESENT')
 else process.exitCode = 1
 
+// Unused keys are REPORTED, not failed: dynamic lookups (status chips, step
+// labels, notify keys) are invisible to the regex. 0.1.17: the report is now
+// accurate — a key counts as used when its literal appears anywhere under src/
+// (map values, main-process `detailKey`/`titleKey` payloads) or when its parent
+// prefix is built dynamically (`\`install.stepStatus.${x}\``, `'models.cat.' + k`).
+let corpus = ''
+const dynPrefixes = new Set()
+function scanCorpus(dir) {
+  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, ent.name)
+    if (ent.isDirectory()) scanCorpus(p)
+    else if (/\.(vue|ts)$/.test(ent.name)) {
+      const src = fs.readFileSync(p, 'utf8')
+      corpus += '\n' + src
+      for (const m of src.matchAll(/`([a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_]+)*\.?)\$\{/g)) {
+        dynPrefixes.add(m[1].replace(/\.$/, ''))
+      }
+      for (const m of src.matchAll(/['"]([a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_]+)*\.)['"]\s*\+/g)) {
+        dynPrefixes.add(m[1].replace(/\.$/, ''))
+      }
+    }
+  }
+}
+scanCorpus(path.join(__dirname, '../src'))
+const isDynamic = (k) => [...dynPrefixes].some((pre) => k === pre || k.startsWith(pre + '.'))
+const trulyUnused = [...zh].filter(
+  (k) =>
+    !corpus.includes(`'${k}'`) &&
+    !corpus.includes(`"${k}"`) &&
+    !corpus.includes('`' + k + '`') &&
+    !isDynamic(k) &&
+    // Keys the dynamic-domain contract above requires (main may emit them as
+    // detailKey) are reserved on purpose — not dead.
+    !Object.entries(dynamicDomains).some(([pattern, leafs]) => {
+      const prefix = pattern.split('*')[0]
+      return leafs.some((leaf) => {
+        const full = pattern.includes('.*.')
+          ? prefix + leaf + pattern.split('*')[1]
+          : prefix.endsWith('.')
+            ? prefix + leaf
+            : pattern.replace('*', leaf)
+        return full === k
+      })
+    })
+)
+console.log('unused keys (informational)', trulyUnused.length)
+if (trulyUnused.length) console.log('UNUSED (safe to delete):', trulyUnused.join(', '))
+
 // ── 0.1.13: main-process notify keys ──
 // broadcastNotification({ titleKey, messageKey }) values are t()'d
 // DYNAMICALLY in the renderer — literals supplied by src/main are invisible
@@ -310,7 +358,9 @@ function walkMain(dir) {
     }
   }
 }
-walkMain(path.join(__dirname, '../src/main'))
+// 0.1.17 (review fix): renderer code supplies titleKey/messageKey literals too
+// (`broadcastNotification` is not the only producer) — scan all of src/.
+walkMain(path.join(__dirname, '../src'))
 const missingMain = [...mainKeys].filter((k) => !has(k))
 console.log('main notify keys', mainKeys.size)
 if (missingMain.length) {

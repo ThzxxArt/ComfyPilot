@@ -173,6 +173,12 @@ export function useLaunch() {
       if (result.adopted) {
         // External process was only signalled — it keeps running outside ComfyPilot.
         ui().message.warning(t('launch.signalledExternal', { name: info.name }))
+      } else if (result.exited === false) {
+        // 0.1.17 (review fix): the kill timed out — the process may still be
+        // alive. Saying "stopped" here was a lie the next launch tripped over.
+        ui().message.warning(t('launch.stopIncomplete', { name: info.name }), {
+          duration: 8000
+        })
       } else {
         ui().message.success(t('launch.stopped', { name: info.name }))
       }

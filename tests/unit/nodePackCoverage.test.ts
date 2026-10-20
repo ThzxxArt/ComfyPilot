@@ -1079,6 +1079,39 @@ describe('registry install prefers git clone', () => {
     expect(zips).toEqual([])
   })
 
+  // 0.1.17 (WP10): a requested version that could not be checked out must not be
+  // recorded as if it had been installed.
+  it('records installNote (not pinnedVersion) when the requested tag is missing', async () => {
+    seedRegistryApi({
+      url: 'https://cdn.example/pack.zip',
+      repository: 'https://github.com/u/NoTag.git',
+      status: 'active'
+    })
+    cpMock.__setExecHandler((cmd, args) => {
+      if (args.includes('--version')) return { stdout: 'git version 2.40' }
+      if (args.includes('clone')) {
+        const dest = args[args.length - 1]
+        h.mkdirPath(dest)
+        h.writeFile(join(dest, '__init__.py'), 'NODE_CLASS_MAPPINGS = {"N": None}\n')
+        h.writeFile(join(dest, 'pyproject.toml'), 'name = "NoTag"\nversion = "3.1.0"\n')
+        return { stdout: 'cloned' }
+      }
+      // Both `checkout tags/v9.9.9` and `checkout v9.9.9` fail.
+      if (args.includes('checkout')) return { error: new Error('pathspec did not match') }
+      return { stdout: '' }
+    })
+    const rec = await nodePackService.install({
+      id: 'NoTag',
+      source: 'registry',
+      version: '9.9.9',
+      instanceId: 'inst-1'
+    })
+    expect(rec.pinnedVersion).toBeUndefined()
+    expect(rec.version).toBe('3.1.0')
+    expect(rec.installNote).toMatch(/9\.9\.9/)
+    expect(rec.issues.some((i) => i.code === 'version-fallback')).toBe(true)
+  })
+
   it('falls back to zip when the git clone fails', async () => {
     seedRegistryApi({
       url: 'https://cdn.example/pack.zip',

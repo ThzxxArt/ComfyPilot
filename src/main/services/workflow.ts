@@ -1201,22 +1201,76 @@ interface PromptWorkflowLink {
   workflowName?: string
 }
 
+/**
+ * 0.1.17 (WP7): the prompt→workflow sidecar is written once per submitted
+ * prompt. Keeping it in memory and coalescing disk writes removes a full
+ * read-modify-write of the file from every queue submission.
+ */
+let promptLinksCache: Record<string, PromptWorkflowLink> | null = null
+let promptLinksStamp = 0
+let promptLinksTimer: NodeJS.Timeout | null = null
+
 function loadPromptLinks(): Record<string, PromptWorkflowLink> {
   try {
     const p = promptLinksPath()
-    if (!existsSync(p)) return {}
-    return JSON.parse(readFileSync(p, 'utf-8')) as Record<string, PromptWorkflowLink>
+    if (!existsSync(p)) {
+      promptLinksCache = promptLinksCache || {}
+      return promptLinksCache
+    }
+    if (promptLinksCache) {
+      try {
+        const mtime = statSync(p).mtimeMs
+        if (mtime === promptLinksStamp) return promptLinksCache
+      } catch {
+        /* fall through to a real read */
+      }
+    }
+    const parsed = JSON.parse(readFileSync(p, 'utf-8')) as Record<string, PromptWorkflowLink>
+    promptLinksCache = parsed
+    try {
+      promptLinksStamp = statSync(p).mtimeMs
+    } catch {
+      promptLinksStamp = 0
+    }
+    return parsed
   } catch {
-    return {}
+    return promptLinksCache || {}
+  }
+}
+
+function writePromptLinksNow(): void {
+  if (!promptLinksCache) return
+  try {
+    writeFileSync(promptLinksPath(), JSON.stringify(promptLinksCache, null, 2), 'utf-8')
+    try {
+      promptLinksStamp = statSync(promptLinksPath()).mtimeMs
+    } catch {
+      promptLinksStamp = 0
+    }
+  } catch {
+    /* best-effort */
   }
 }
 
 function savePromptLinks(map: Record<string, PromptWorkflowLink>): void {
-  try {
-    writeFileSync(promptLinksPath(), JSON.stringify(map, null, 2), 'utf-8')
-  } catch {
-    /* best-effort */
+  promptLinksCache = map
+  if (promptLinksTimer) return
+  promptLinksTimer = setTimeout(() => {
+    promptLinksTimer = null
+    writePromptLinksNow()
+  }, 500)
+  if (typeof (promptLinksTimer as { unref?: () => void }).unref === 'function') {
+    ;(promptLinksTimer as unknown as { unref: () => void }).unref()
   }
+}
+
+/** Flush the debounced sidecar (app quit / tests). */
+export function flushPromptLinks(): void {
+  if (promptLinksTimer) {
+    clearTimeout(promptLinksTimer)
+    promptLinksTimer = null
+  }
+  writePromptLinksNow()
 }
 
 /** Record promptId -> workflow linkage so walk() can backfill workflowId. */

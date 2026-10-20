@@ -9,6 +9,7 @@ import {
   RemoveCircleOutline
 } from '@vicons/ionicons5'
 import { NButton, NIcon, NModal, NProgress, NScrollbar, NSpace, NTag } from 'naive-ui'
+import IndeterminateBar from '@/components/IndeterminateBar.vue'
 import type { InstallStepStatus, UpdateStep } from '@shared/types'
 import { updateDetailOf, updateStepTitle, useComfyUpdate } from '@/composables/useComfyUpdate'
 
@@ -50,6 +51,11 @@ function toggleStepLog(id: string): void {
 
 const percent = computed(() => Math.max(0, Math.min(100, Math.round(progress.value?.percent || 0))))
 const steps = computed<UpdateStep[]>(() => progress.value?.steps || [])
+/** 0.1.17 (WP2-4): indeterminate while the active step has no real fraction. */
+const runningStep = computed(() => steps.value.find((s) => s.status === 'running') || null)
+const indeterminate = computed(
+  () => updating.value && !failed.value && !done.value && !runningStep.value?.progress
+)
 const failed = computed(() => progress.value?.status === 'failed')
 const done = computed(() => progress.value?.status === 'done' && progress.value?.step === 'done')
 /** Cancel button stays visible while cancelling (shows its loading state) — it must not vanish. */
@@ -112,7 +118,9 @@ async function onCancel(): Promise<void> {
     closable
   >
     <div class="upd-head">
+      <IndeterminateBar v-if="indeterminate" :height="10" :label="runningStep?.detail || ''" />
       <NProgress
+        v-else
         type="line"
         :percentage="percent"
         :height="10"

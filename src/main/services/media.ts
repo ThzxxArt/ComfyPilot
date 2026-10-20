@@ -21,7 +21,7 @@ import {
   workflowLibraryDir,
   listOutputAssetsAll,
   mergeUpsertOutputAsset,
-  updateOutputAsset
+  clearOutputAssetThumbnails
 } from './db'
 import { resolveOutputDir } from './p1p2'
 import { assertSafeRelativeFilename, isSafeExternalUrl, isPathInside } from './security'
@@ -330,13 +330,15 @@ export function thumbnailDisplayUrl(thumb?: string): string | null {
 export function pruneDeadOutputThumbRows(): number {
   let cleared = 0
   try {
+    // 0.1.17 (WP7): collect first, then clear in a single index write.
+    const dead: string[] = []
     for (const row of listOutputAssetsAll()) {
       if (!row.thumbnail) continue
       if (existsSync(row.thumbnail)) continue
       if (row.path && existsSync(row.path)) continue
-      const next = updateOutputAsset(row.id, { thumbnail: undefined })
-      if (next) cleared += 1
+      dead.push(row.id)
     }
+    if (dead.length) cleared = clearOutputAssetThumbnails(dead)
   } catch {
     /* best effort */
   }

@@ -1,7 +1,7 @@
 # ComfyPilot
 
 > **ComfyUI 全能管理器** — 本机 ComfyUI 生产线的控制塔  
-> TypeScript · Vue 3 · Electron · Naive UI · MIT · v0.1.16
+> TypeScript · Vue 3 · Electron · Naive UI · MIT · v0.1.17
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-4f6ef7)](./LICENSE)
 
@@ -132,7 +132,7 @@ node node_modules/electron/install.js
 npm run dev          # 开发模式
 npm run typecheck    # vue-tsc + tsc
 npm run typecheck:test # 测试源码 tsc（CI 门禁）
-npm run test         # 单元 + 集成（2492 tests）
+npm run test         # 单元 + 集成（2670 tests）
 npm run test:coverage
 npm run lint         # ESLint（含 --fix）
 npm run lint:check   # ESLint 只检查（CI 门禁）
@@ -253,7 +253,11 @@ Python 版本、Torch / CUDA、`extra_model_paths.yaml`、端口、磁盘、Regi
 | 媒体 URL       | `comfy-pilot-media:` 仅放行 thumbs / output 根 + 图片扩展名                   |
 | URL / 打开文件 | 仅 http(s)/mailto；禁止打开可执行/脚本类扩展名                                |
 | 网络请求       | 监控与内嵌页限制在 localhost 或已注册实例/远程                                |
-| 删除保护       | 装机清理仅删除 ComfyPilot 痕迹或空残骸，拒绝误删用户目录                      |
+| 删除保护       | 含 `models/` `custom_nodes/` `user/` `output/` 的旧目录**只归档不删除**（0.1.17）；装机清理仅删 ComfyPilot 痕迹或空残骸 |
+| 读路径         | 仅「用户显式选择 + 应用自有根」；词法检查（`..`/尾随空格）之外，**存在目标再按 realpath 复核**，批准根内的软链也无法外指（0.1.17） |
+| 凭据           | 代理密码与远程 API key 走 `safeStorage` 加密落盘；备份导出**脱敏**、恢复时保留本机密钥**并重新加密**；解密失败保留密文不覆盖 |
+| 设置端点       | 镜像/索引等 URL 仅接受 http(s)，拒绝 `file:`/`javascript:`                     |
+| 单实例         | `requestSingleInstanceLock`（`--allow-multiple-instances` 可显式绕过）        |
 
 危险操作（强杀、删模型、删节点、恢复备份）均需二次确认。
 
@@ -263,7 +267,7 @@ Python 版本、Torch / CUDA、`extra_model_paths.yaml`、端口、磁盘、Regi
 
 ```text
 ComfyPilot/
-├── package.json                 # v0.1.16 · MIT · ThzxxArt
+├── package.json                 # v0.1.17 · MIT · ThzxxArt
 ├── electron.vite.config.ts
 ├── electron-builder.yml         # Win NSIS / macOS DMG / Linux AppImage·deb + GitHub publish
 ├── vitest.config.ts             # 覆盖率门禁（0.1.8 按实测定档，见文件内说明）
@@ -293,7 +297,7 @@ ComfyPilot/
 │           ├── styles/tokens.ts # JS 侧设计 token
 │           └── views/           # dashboard/instances/install/models/…
 ├── tests/
-│   ├── unit/                    # 101 文件（+3 集成 = 104）· 2492 用例全绿 · 行为测试为主
+│   ├── unit/                    # 117 文件（+3 集成 = 120）· 2670 用例全绿 · 行为测试为主
 │   ├── integration/
 │   └── e2e/
 └── .github/workflows/ci.yml
@@ -307,7 +311,7 @@ ComfyPilot/
 npm run dev / typecheck / test / test:coverage / test:e2e / test:all
 ```
 
-**测试：** 2532 用例（112 文件）+ e2e 冒烟（含渲染挂载断言）。覆盖率门禁在 `vitest.config.ts` 内 **按实测定档（实测 − 2pp）**；测试源码纳入 tsc 门禁（`typecheck:test`）。测试临时目录全量自清（tmpfs 卫生）+ 磁盘门控与真实文件系统解耦（0.1.15）；0.1.16 新增稳定性/日志/性能模块各有独立测试与覆盖率档位。
+**测试：** 2670 用例（120 文件）+ e2e 冒烟（含渲染挂载断言）。覆盖率门禁在 `vitest.config.ts` 内 **按实测定档（实测 − 2pp）**；测试源码纳入 tsc 门禁（`typecheck:test`）。测试临时目录全量自清（tmpfs 卫生）+ 磁盘门控与真实文件系统解耦（0.1.15）；0.1.16 新增稳定性/日志/性能模块各有独立测试与覆盖率档位。
 
 **门禁脚本：**
 
@@ -439,6 +443,13 @@ ComfyUI 本身采用 GPL-3.0；本项目独立发布，采用 **MIT**。
 - [x] **0.1.16 环境加固**：ComfyUI 子进程统一注入 `PYTHONUTF8`/`PYTHONIOENCODING`（根治中文 Windows 下 `pip` 构建 `UnicodeDecodeError: 'gbk'`，如 argos-translate）+ `NO_PROXY` 去除 `[::1]` 括号（消除第三方节点 `Invalid port ':1]'`）+ 节点启动导入失败解析与提示（缺依赖可修，插件自身 bug 如实呈现）
 - [x] **0.1.16 性能与内存**：模型扫描由「逐文件整写」改为单次批量写（O(N²)→O(1)）；安装/下载进度写盘去抖合并（内存快照保证读写一致 + 退出 flush）；多类缓存（工作流分析/指纹/节点包元数据/输出映射/能力）统一 LRU 上限；模型表虚拟滚动、工作流列表改 computed、按实例状态 Map 淘汰
 - [x] **0.1.16 安全与收口**：`isSafeReadPath` 收敛到「用户显式选择路径 + 应用自有根」（不再放行全盘任意数据文件）；`isSafeEmbedUrl` 语义对齐（信任判定单点收敛）；preload `invoke` 增加运行时通道白名单（与事件白名单对称）
+- [x] **0.1.17 状态可信**：批跑 `start/resume/retry` 立即返回 + `batch.wait` 等终态（长批跑不再让窗口假死）；安装被中断后不再是永久“运行中”（持久化 `running` 在无活动 run 时落为 `interrupted`，可一键重置）；取消写入终态并等进程树真正退出后才 reject；取消不再污染预检（per-run epoch）；实例「启动中」取消后进程不会复活；批跑 / 更新中断后可续跑 / 重试失败 / 回滚
+- [x] **0.1.17 冻结可归因**：每个 IPC 通道计时，>1s 记 `slow-ops.log`（含通道名与耗时，❌ 参数值），>5s 弹一次“主进程卡顿”提示；watchdog 与诊断包带上归因记录——下一次卡顿不再只有一个毫秒数字
+- [x] **0.1.17 写放大收口**：`models`/`output_assets`/`node_packs`/`workflows` 四类热集合改为内存快照 + 400ms 合并写（外部手改按 mtime 失效）；产物列表与磁盘扫描解耦（`output.scan` 显式触发，翻页/筛选只查索引）；缩略图生成并发上限 8、失效缩略图单次批量清理；prompt→workflow 边车去抖
+- [x] **0.1.17 数据保护**：安装重试遇到含 `models/` / `custom_nodes/` / `user/` / `output/` 的旧目录只归档（`.cp-old-<ts>`）绝不删除；torch 安装统一 `--upgrade` 并在装后校验 `torch.version.cuda` 与通道一致，不一致即失败并给建议
+- [x] **0.1.17 安全边界**：单实例锁（`--allow-multiple-instances` 逃生）；读路径词法+realpath 双重复核（`..` 与软链都无法绕过）；启动脚本导出目录限白名单；`.desktop/.command/.app/.appimage` 拒绝打开；远程 API key 与代理密码走 `safeStorage` 加密（备份恢复同样重新加密，解密失败保留密文）；备份恢复的端点字段同样过 http(s) 校验；设置端点仅允许 http(s) 且拒绝携带凭据的 URL；运行时 zip/tar 解压统一校验（tar 先列表再解压）
+- [x] **0.1.17 进度诚实**：pip/依赖安装不再用「输出行数/40」伪造百分比——无分母阶段显示不确定进度条（`IndeterminateBar`）+ 阶段文案，有真实总量（git 对象）才显示数字
+- [x] **0.1.17 诚实回执**：请求的节点版本不可用时不写 `pinnedVersion`，改记 `installNote` 并作为可见 issue；离线检查更新返回 “unknown” 而非“有更新”；doctor 失败不再显示绿色；清空日志连轮转档一起删；批量改名只按成功计数；筛选隐藏的勾选行不再参与批量删除
 - [x] **0.1.16 安装器崩溃根治**：定位到 electron-builder `multiUser.nsh` 的已知缺陷（全新单用户安装触发 NSIS `System.dll` 访问违规 `0xc0000005 @ +0x1581`，多版本复现），**升级 electron-builder `25.1.8 → 26.15.3`**（上游修复版模板）根治，并以 Windows 原生同配置打包验证
 - [x] 工作流版本对照与打包分享：0.1.11 工作流对比视图（`workflow.compare`）；打包分享（ZIP 导出，0.1.5 已含）
 - [x] 更细的 GPU 多卡 / 共享显存展示：0.1.11 多卡 `GPU n` 索引徽标 + Windows 共享显存（Shared Usage/Limit 计数器）

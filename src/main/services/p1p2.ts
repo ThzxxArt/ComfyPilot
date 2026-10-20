@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events'
 import { randomUUID, createHash } from 'crypto'
 import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, unlinkSync } from 'fs'
+import type { Stats } from 'fs'
 import { join, extname, basename, dirname } from 'path'
 import type {
   BatchJob,
@@ -184,9 +185,33 @@ function normalizeLegacyJob(raw: Record<string, unknown>): BatchJob {
 export class BatchService extends EventEmitter {
   /** Ids with an in-flight run; cancel() clears the flag so late prompt results are ignored. */
   private runningIds = new Set<string>()
+  /** In-flight promises for `batch.wait` (0.1.17 WP5-7). */
+  private runs = new Map<string, Promise<BatchJob>>()
+  /**
+   * 0.1.17 (WP5): per-leg submit plan for a resumed/retry run. Absent = normal
+   * full run. `start` is the attempt index to continue from, `count` how many
+   * prompts to submit this time.
+   */
+  private runPlans = new Map<string, Array<{ start: number; count: number }>>()
 
   list(): BatchJob[] {
-    return listBatchJobs().map((j) => normalizeLegacyJob(j as unknown as Record<string, unknown>))
+    const jobs = listBatchJobs().map((j) =>
+      normalizeLegacyJob(j as unknown as Record<string, unknown>)
+    )
+    // 0.1.17 (WP5): self-heal — a persisted submitting/running job cannot be
+    // live in this process, so it is `interrupted`, not "running forever".
+    let changed = false
+    for (const j of jobs) {
+      if ((j.status === 'submitting' || j.status === 'running') && !this.runningIds.has(j.id)) {
+        j.status = 'interrupted'
+        j.finishedAt = j.finishedAt || Date.now()
+        j.errorSummary = j.errorSummary || 'Interrupted by app exit — resume or re-run'
+        upsertBatchJob(j)
+        changed = true
+      }
+    }
+    if (changed) this.emit('progress', jobs)
+    return jobs
   }
 
   create(input: {
@@ -236,25 +261,176 @@ export class BatchService extends EventEmitter {
   }
 
   /**
+   * 0.1.17 (WP5): continue an interrupted job. Only the legs that never
+   * completed are submitted again; counters and already-linked outputs stay.
+   * NOTE the honest boundary: prompts still inside ComfyUI's queue cannot be
+   * recovered after a server restart — they are re-submitted, not restored.
+   */
+  async resume(id: string): Promise<BatchJob> {
+    return this.start(id, { resume: true, plans: this.resumePlans(id) })
+  }
+
+  /** Plan for "only the legs that never ran" (shared by resume + resumeAsync). */
+  private resumePlans(id: string): Array<{ start: number; count: number }> {
+    this.list() // reconcile: interrupted rather than a ghost "running"
+    const job = this.list().find((j) => j.id === id)
+    if (!job) throw new Error('Batch job not found')
+    if (job.status === 'running' || job.status === 'submitting') {
+      throw new Error('Batch job is already running')
+    }
+    // 0.1.17 (review fix): a prompt submitted right before the app died can
+    // never be recovered (its history is gone). Counting it as "attempted"
+    // silently dropped it; count it as failed and say so, so the job reports
+    // the loss and "Retry failed" can re-run exactly those.
+    this.markLostPrompts(job)
+    const plans = job.items.map((it) => {
+      const attempted = Math.min(it.count, it.submitted + it.failed)
+      return { start: attempted, count: Math.max(0, it.count - attempted) }
+    })
+    if (!plans.some((p) => p.count > 0)) {
+      throw new Error('Nothing left to resume — start commits a fresh run')
+    }
+    return plans
+  }
+
+  /**
+   * Prompts handed to ComfyUI that never settled (app exited mid-run). They are
+   * lost forever — there is no history to link outputs from — so they become
+   * failures instead of vanishing from the counters.
+   */
+  private markLostPrompts(job: BatchJob): void {
+    let lost = 0
+    for (const it of job.items) {
+      const unsettled = Math.max(0, it.submitted - it.completed - it.failed)
+      if (!unsettled) continue
+      it.execFailed += unsettled
+      it.failed += unsettled
+      job.execFailed += unsettled
+      job.failed += unsettled
+      lost += unsettled
+    }
+    if (!lost) return
+    const note = `Lost ${lost} in-flight prompt(s) when the app exited — counted as failed; use "Retry failed" to re-run them`
+    job.notes = [job.notes, note].filter(Boolean).join('; ')
+    job.errorSummary = note
+    upsertBatchJob(job)
+    this.emit('progress', job)
+  }
+
+  /**
+   * 0.1.17 (WP5-7): fire-and-forget resume for the IPC layer — same validation
+   * as resume(), returns the accepted snapshot instead of the terminal job.
+   */
+  resumeAsync(id: string): BatchJob {
+    return this.startAsync(id, { resume: true, plans: this.resumePlans(id) })
+  }
+
+  /**
+   * 0.1.17 (WP5): re-submit only the legs that failed. This counts as a NEW run
+   * (counters start at zero) so the UI reports what the retry achieved instead
+   * of mixing runs together.
+   */
+  async retryFailed(id: string): Promise<BatchJob> {
+    return this.start(id, { plans: this.retryPlans(id) })
+  }
+
+  private retryPlans(id: string): Array<{ start: number; count: number }> {
+    this.list()
+    const job = this.list().find((j) => j.id === id)
+    if (!job) throw new Error('Batch job not found')
+    if (job.status === 'running' || job.status === 'submitting') {
+      throw new Error('Batch job is already running')
+    }
+    // 0.1.17 (review fix): continue the iteration counter past the attempts
+    // already made. Starting at 0 re-used the same increment seeds, so a retry
+    // re-rendered the same images with the same seeds as the first run.
+    const plans = job.items.map((it) => ({
+      start: Math.max(0, it.submitted + it.failed),
+      count: Math.max(0, it.failed)
+    }))
+    if (!plans.some((p) => p.count > 0)) throw new Error('No failed prompts to retry')
+    return plans
+  }
+
+  /** 0.1.17 (WP5-7): fire-and-forget retry for the IPC layer. */
+  retryFailedAsync(id: string): BatchJob {
+    return this.startAsync(id, { plans: this.retryPlans(id) })
+  }
+
+  /**
+   * 0.1.17 (WP5-7): fire-and-forget start used by the IPC layer so a long batch
+   * never holds the request open. `wait(id)` yields the same terminal job the
+   * awaited `start()` would have returned.
+   */
+  startAsync(
+    id: string,
+    opts?: {
+      resume?: boolean
+      plans?: Array<{ start: number; count: number }>
+    }
+  ): BatchJob {
+    if (this.runningIds.has(id)) throw new Error('Batch job is already running')
+    const job = this.list().find((j) => j.id === id)
+    if (!job) throw new Error('Batch job not found')
+    const p = this.start(id, opts)
+    this.runs.set(id, p)
+    void p
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.runs.get(id) === p) this.runs.delete(id)
+      })
+    // The synchronous prologue of start() already flipped the status/counters.
+    return this.list().find((j) => j.id === id) || job
+  }
+
+  /** Await the in-flight run for `id` (0.1.17 WP5-7 `batch.wait`). */
+  async wait(id: string): Promise<BatchJob | null> {
+    const p = this.runs.get(id)
+    if (p) {
+      try {
+        return await p
+      } catch {
+        // The run failed — return the persisted terminal snapshot instead of
+        // throwing twice for the same failure.
+      }
+    }
+    return this.list().find((j) => j.id === id) || null
+  }
+
+  /**
    * Submit every leg of the job to ComfyUI, then poll history until all
    * prompts settle so `produced` reflects real images — not just "queued".
    */
-  async start(id: string): Promise<BatchJob> {
+  async start(
+    id: string,
+    opts?: {
+      /** 0.1.17 (WP5): keep counters and only submit the remaining legs. */
+      resume?: boolean
+      /** Explicit per-leg submit plan (retry-failed). */
+      plans?: Array<{ start: number; count: number }>
+    }
+  ): Promise<BatchJob> {
     if (this.runningIds.has(id)) {
       throw new Error('Batch job is already running')
     }
+    if (opts?.plans) this.runPlans.set(id, opts.plans)
     const jobs = this.list()
     const job = jobs.find((j) => j.id === id)
-    if (!job) throw new Error('Batch job not found')
-    // Any deliberate re-run (done / error / queued / cancelled) starts from a
-    // clean slate: leftover counters from a previous run would otherwise
-    // inflate submitted/completed and hide real failures.
-    if (
-      job.status === 'done' ||
-      job.status === 'error' ||
-      job.status === 'queued' ||
-      job.status === 'cancelled'
-    ) {
+    if (!job) {
+      this.runPlans.delete(id)
+      throw new Error('Batch job not found')
+    }
+    // Any deliberate re-run (done / error / queued / cancelled / interrupted)
+    // starts from a clean slate: leftover counters from a previous run would
+    // otherwise inflate submitted/completed and hide real failures.
+    const rerun =
+      !opts?.resume &&
+      (job.status === 'done' ||
+        job.status === 'error' ||
+        job.status === 'queued' ||
+        job.status === 'cancelled' ||
+        job.status === 'interrupted')
+    if (rerun) {
       job.submitted = 0
       job.failed = 0
       job.submitFailed = 0
@@ -272,8 +448,14 @@ export class BatchService extends EventEmitter {
         it.promptIds = []
         it.seeds = []
         it.outputPaths = []
+        // 0.1.17 (WP5): a re-run must clear per-leg cancel flags, otherwise a
+        // previously cancelled leg is silently skipped forever.
+        it.cancelled = false
       }
     }
+    if (!opts?.plans) this.runPlans.delete(job.id)
+    job.runId = randomUUID()
+    job.startedAt = Date.now()
     job.status = 'submitting'
     job.finishedAt = undefined
     upsertBatchJob(job)
@@ -308,6 +490,9 @@ export class BatchService extends EventEmitter {
     // Remote outputs cannot be verified on this machine — `produced` counts
     // history-reported files instead of indexed local paths (0.1.11).
     const localInstancePath = inst?.path || ''
+    // 0.1.17 (WP5): the scanner must follow `--output-directory`, not assume
+    // `<instance>/output` — otherwise produced=0 while files exist elsewhere.
+    const localOutputDir = inst ? resolveOutputDir(inst) : ''
     const client = new ComfyApiClient(url, { headers: remoteAuthHeaders(remote) })
 
     this.runningIds.add(id)
@@ -346,8 +531,15 @@ export class BatchService extends EventEmitter {
 
         // Independent loop counter — item.submitted does NOT advance on
         // submit failure, so reusing it would collide seeds in increment mode.
-        let iteration = 0
-        for (let i = 0; i < item.count; i++) {
+        // 0.1.17 (WP5): a resume/retry plan narrows which attempts this run makes.
+        const plan = this.runPlans.get(job.id)?.[li]
+        // `start` is the ITERATION number (seed derivation), `count` how many
+        // attempts this run makes. A retry starts past the attempts it already
+        // made, so `start` may equal `item.count` — it must not clamp `count`.
+        const startAt = plan ? Math.max(0, plan.start) : 0
+        const runCount = plan ? Math.max(0, plan.count) : item.count
+        let iteration = startAt
+        for (let i = 0; i < runCount; i++) {
           const live = this.list().find((j) => j.id === id)
           if (!this.runningIds.has(id) || live?.status === 'cancelled') {
             return this.finishCancel(job)
@@ -432,7 +624,7 @@ export class BatchService extends EventEmitter {
       job.status = 'running'
       upsertBatchJob(job)
       this.emit('progress', job)
-      const settledIds = await this.awaitOutputs(job.id, client, localInstancePath)
+      const settledIds = await this.awaitOutputs(job.id, client, localInstancePath, localOutputDir)
 
       // The job may have been removed while we were polling — never resurrect it.
       const latest = this.list().find((j) => j.id === id)
@@ -493,6 +685,7 @@ export class BatchService extends EventEmitter {
       throw e
     } finally {
       this.runningIds.delete(id)
+      this.runPlans.delete(id)
     }
   }
 
@@ -551,7 +744,8 @@ export class BatchService extends EventEmitter {
   private async awaitOutputs(
     jobId: string,
     client: ComfyApiClient,
-    instancePath: string
+    instancePath: string,
+    outputDir: string
   ): Promise<Set<string>> {
     const settled = new Set<string>()
     // Scale the wait with the job: 30s base + 20s per prompt, capped at 30 min.
@@ -578,17 +772,27 @@ export class BatchService extends EventEmitter {
       const byId = new Map(history.map((h) => [h.promptId, h]))
       consecutiveEmpty = history.length === 0 ? consecutiveEmpty + 1 : 0
 
+      // 0.1.17 (WP5): point lookups run 8-at-a-time — the old serial loop made
+      // a 60-prompt job take 60 round-trips per poll.
+      const missing = pending.filter((p) => !byId.has(p))
+      const fetched = new Map<string, Awaited<ReturnType<ComfyApiClient['historyItem']>>>()
+      for (let i = 0; i < missing.length; i += 8) {
+        const batch = missing.slice(i, i + 8)
+        const results = await Promise.all(
+          batch.map(async (pid) => {
+            try {
+              return [pid, await client.historyItem(pid)] as const
+            } catch {
+              return [pid, null] as const
+            }
+          })
+        )
+        for (const [pid, one] of results) if (one) fetched.set(pid, one)
+        if (!this.runningIds.has(jobId)) return settled
+      }
+
       for (const pid of pending) {
-        let h = byId.get(pid)
-        if (!h) {
-          // Point lookup keeps prompts alive past the rolling window.
-          try {
-            const one = await client.historyItem(pid)
-            if (one) h = one
-          } catch {
-            /* keep pending */
-          }
-        }
+        const h = byId.get(pid) ?? fetched.get(pid) ?? null
         if (!h) continue
         settled.add(pid)
         const ok = h.status !== 'error'
@@ -617,7 +821,7 @@ export class BatchService extends EventEmitter {
             live.produced += h.outputs.length
           } else {
             for (const out of h.outputs) {
-              const abs = this.resolveHistoryOutput(out, instancePath)
+              const abs = this.resolveHistoryOutput(out, instancePath, outputDir)
               if (!abs) continue
               let linked = false
               for (const item of live.items) {
@@ -655,12 +859,16 @@ export class BatchService extends EventEmitter {
 
   private resolveHistoryOutput(
     out: { filename?: string; subfolder?: string; type?: string },
-    instancePath: string
+    instancePath: string,
+    outputDir?: string
   ): string | null {
     if (!out?.filename) return null
     const sub = out.subfolder || ''
-    const typeDir = out.type === 'input' ? 'input' : 'output'
-    const abs = join(instancePath, typeDir, sub, basename(out.filename))
+    // 0.1.17 (WP5): `output` files live under the resolved output dir (which
+    // already honours --output-directory); inputs stay under the instance.
+    const base =
+      out.type === 'input' ? join(instancePath, 'input') : outputDir || join(instancePath, 'output')
+    const abs = join(base, sub, basename(out.filename))
     if (!existsSync(abs)) {
       // History referenced a file that is not on disk — log it so the gap is
       // visible, and do NOT count it as a produced image.
@@ -760,8 +968,11 @@ export class BatchService extends EventEmitter {
   }
 
   cancel(id: string): BatchJob {
-    this.runningIds.delete(id)
+    // 0.1.17 (review fix): read the job BEFORE dropping the running flag.
+    // `list()` self-heals submitting/running rows to `interrupted`, so deleting
+    // first made a user cancel look like an app crash.
     const job = this.list().find((j) => j.id === id)
+    this.runningIds.delete(id)
     if (!job) throw new Error('Batch job not found')
     // Never clobber a terminal state that is not re-runnable via cancel.
     if (job.status === 'done' || job.status === 'error') {
@@ -819,6 +1030,44 @@ export class OutputService {
     for (const a of listOutputAssetsAll()) this.prevMap.set(a.path, a)
   }
 
+  /**
+   * Walk the output roots and merge what is on disk into the index (0.1.17
+   * WP7). Expensive by design — call it on page entry or an explicit refresh,
+   * never on every list/page/filter call.
+   */
+  scan(root?: string): number {
+    const roots = root ? [root] : this.defaultScanRoots()
+    // Depth is user-tunable (0.1.9): deep date/nested folders were silently
+    // invisible at the old hardcoded 4.
+    const raw = Number(loadSettings().outputScanDepth ?? 4)
+    const maxDepth = Number.isFinite(raw) ? Math.max(2, Math.min(10, Math.floor(raw))) : 4
+    this.refreshPrevMap()
+    const assets: OutputAsset[] = []
+    for (const r of roots) {
+      if (!r || !existsSync(r)) continue
+      this.walk(r, assets, 0, maxDepth)
+    }
+    // Field-level merge so batch/walk concurrent writes never drop linkage.
+    // One read-modify-write for the whole walk, not one per file.
+    mergeUpsertOutputAssets(assets)
+    for (const a of assets) this.prevMap.set(a.path, a)
+    return assets.length
+  }
+
+  /** Output roots of every local instance (plus a caller-picked root). */
+  private defaultScanRoots(): string[] {
+    const roots: string[] = []
+    for (const c of loadInstanceConfigs()) {
+      if (!c.path) continue
+      try {
+        roots.push(resolveOutputDir(c))
+      } catch {
+        /* malformed config — skip */
+      }
+    }
+    return roots
+  }
+
   list(opts?: {
     root?: string
     type?: string
@@ -834,27 +1083,9 @@ export class OutputService {
     createdFrom?: number
     createdTo?: number
   }): { items: OutputAsset[]; total: number; truncated: boolean } {
-    const scanRoots = [opts?.root].filter(Boolean) as string[]
-    // Depth is user-tunable (0.1.9): deep date/nested folders were silently
-    // invisible at the old hardcoded 4.
-    const maxDepth = (() => {
-      const raw = Number(loadSettings().outputScanDepth ?? 4)
-      if (!Number.isFinite(raw)) return 4
-      return Math.max(2, Math.min(10, Math.floor(raw)))
-    })()
-    if (scanRoots.length) {
-      this.refreshPrevMap()
-      const assets: OutputAsset[] = []
-      for (const root of scanRoots) {
-        if (!existsSync(root)) continue
-        this.walk(root, assets, 0, maxDepth)
-      }
-      // Field-level merge so batch/walk concurrent writes never drop linkage.
-      // One read-modify-write for the whole walk, not one per file.
-      mergeUpsertOutputAssets(assets)
-      for (const a of assets) this.prevMap.set(a.path, a)
-    }
-
+    // 0.1.17 (WP7): listing no longer walks the disk. Callers scan explicitly
+    // via `output.scan` (page entry / manual refresh), so paging and filtering
+    // are index-only. The old behaviour re-walked 13 GB on every page change.
     let all = listOutputAssetsAll()
     // When the caller scoped a root, only show files under it (the global index
     // also holds other instances / older roots).
@@ -886,8 +1117,10 @@ export class OutputService {
       return order * (a.createdAt - b.createdAt)
     })
 
-    const limit = opts?.limit ?? 200
-    const offset = opts?.offset ?? 0
+    // 0.1.17 (WP7): clamp here as well as at the IPC edge — a page must never be
+    // unbounded just because a caller forgot the limit.
+    const limit = Math.max(1, Math.min(Math.floor(Number(opts?.limit) || 200), 200))
+    const offset = Math.max(0, Math.floor(Number(opts?.offset) || 0))
     const items = all.slice(offset, offset + limit)
     return {
       items,
@@ -912,151 +1145,232 @@ export class OutputService {
           this.walk(full, out, depth + 1, maxDepth)
           continue
         }
-        const ext = extname(name).toLowerCase()
-        // 0.1.14: single source of truth — 3d/audio/raw-image files are now
-        // indexed (the old inline chain dropped them as 'other'); genuinely
-        // unknown formats are still skipped to keep the index bounded.
-        const type: OutputAsset['type'] = classifyOutputType(name)
-        if (type === 'other') continue
+        this.processFile(full, name, st, out)
+      } catch {
+        /* skip */
+      }
+    }
+  }
 
-        // Preserve user-linked fields from an existing index row (resident O(1) map).
-        const prev = this.prevMap.get(full)
+  /** Cancel a running `scanAsync` (0.1.17 review fix). */
+  cancelScan(): void {
+    this.scanCancelRequested = true
+  }
 
-        // (path,size,mtime) unchanged → the indexed analysis is still valid.
-        // PNG rows only skip once pngKeys proves a previous metadata pass ran.
-        if (
-          prev &&
-          prev.size === st.size &&
-          prev.createdAt === st.mtimeMs &&
-          (ext !== '.png' || Array.isArray(prev.params?.pngKeys))
-        ) {
-          let workflowId = prev.workflowId
-          let workflowName = prev.workflowName
-          if (!workflowId && prev.promptId) {
-            const link = lookupPromptWorkflowLink(prev.promptId)
-            if (link?.workflowId) {
-              workflowId = link.workflowId
-              workflowName = workflowName || link.workflowName
-            }
-          }
-          // Still unlinked? A fingerprint match may exist — outputs produced by
-          // direct ComfyUI-frontend runs never had a sidecar (0.1.11). Read the
-          // PNG head once, backfill, and persist a sidecar for cheap rescans.
-          if (!workflowId && type === 'image' && ext === '.png') {
-            try {
-              const meta = readPngTextMetaFromFile(full)
-              const raw = String(meta.prompt || meta.workflow || '')
-              const graph = raw ? (JSON.parse(raw) as Record<string, unknown>) : null
-              const hit = graph ? lookupWorkflowByFingerprint(graph)[0] : undefined
-              if (hit) {
-                workflowId = hit.workflowId
-                workflowName = workflowName || hit.workflowName
-                if (prev.promptId) {
-                  try {
-                    recordPromptWorkflowLink(prev.promptId, hit.workflowId, hit.workflowName)
-                  } catch {
-                    /* best-effort */
-                  }
-                }
-              }
-            } catch {
-              /* unreadable meta — keep unlinked */
-            }
-          }
-          out.push({
-            ...prev,
-            type,
-            size: st.size,
-            createdAt: st.mtimeMs,
-            fileName: basename(full),
-            workflowId,
-            workflowName
-          })
-          continue
+  private scanCancelRequested = false
+
+  /**
+   * Cancellable, yielding variant of `scan()` for the UI. It walks directory by
+   * directory, yields to the event loop between directories (so IPC and input
+   * stay responsive on a 13 GB output tree) and reports progress.
+   */
+  async scanAsync(
+    root?: string,
+    onProgress?: (p: { scanned: number; total: number; done: boolean; cancelled: boolean }) => void
+  ): Promise<{ scanned: number; cancelled: boolean }> {
+    this.scanCancelRequested = false
+    const roots = root ? [root] : this.defaultScanRoots()
+    const raw = Number(loadSettings().outputScanDepth ?? 4)
+    const maxDepth = Number.isFinite(raw) ? Math.max(2, Math.min(10, Math.floor(raw))) : 4
+    this.refreshPrevMap()
+    const assets: OutputAsset[] = []
+    let cancelled = false
+    const tick = (): Promise<void> => new Promise((r) => setImmediate(r))
+    const walkDir = async (dir: string, depth: number): Promise<void> => {
+      if (cancelled || this.scanCancelRequested || depth > maxDepth) {
+        cancelled = cancelled || this.scanCancelRequested
+        return
+      }
+      let entries: string[] = []
+      try {
+        entries = readdirSync(dir)
+      } catch {
+        return
+      }
+      for (const name of entries) {
+        if (this.scanCancelRequested) {
+          cancelled = true
+          return
         }
+        const full = join(dir, name)
+        try {
+          const st = statSync(full)
+          if (st.isDirectory()) {
+            await walkDir(full, depth + 1)
+            continue
+          }
+          this.processFile(full, name, st, assets)
+        } catch {
+          /* skip unreadable entry */
+        }
+      }
+      // A cancel requested by the progress callback (or another IPC) must be
+      // reflected even when no entry is left in this directory.
+      if (this.scanCancelRequested) cancelled = true
+      onProgress?.({ scanned: assets.length, total: assets.length, done: false, cancelled })
+      // Directory boundary: let IPC input and other windows work again.
+      await tick()
+    }
+    for (const r of roots) {
+      if (!r || !existsSync(r)) continue
+      await walkDir(r, 0)
+      if (cancelled) break
+    }
+    // A cancelled scan still merges what it read: partial truth beats a stale
+    // index, and the next scan fills the rest.
+    mergeUpsertOutputAssets(assets)
+    for (const a of assets) this.prevMap.set(a.path, a)
+    onProgress?.({ scanned: assets.length, total: assets.length, done: true, cancelled })
+    return { scanned: assets.length, cancelled }
+  }
 
-        let params: Record<string, unknown> = {}
-        let seed: number | undefined
-        let promptId: string | undefined
-        /** Embedded graph (prompt or workflow form) for fingerprint matching. */
-        let embeddedGraph: Record<string, unknown> | null = null
-        if (type === 'image' && ext === '.png') {
+  /**
+   * Build the index row for one file, or return null when the file is not an
+   * indexable output. Extracted so the synchronous walk and the cancellable
+   * async walk share exactly one implementation (0.1.17 review fix).
+   */
+  private processFile(full: string, name: string, st: Stats, out: OutputAsset[]): void {
+    const ext = extname(name).toLowerCase()
+    // 0.1.14: single source of truth — 3d/audio/raw-image files are now
+    // indexed (the old inline chain dropped them as 'other'); genuinely
+    // unknown formats are still skipped to keep the index bounded.
+    const type: OutputAsset['type'] = classifyOutputType(name)
+    if (type === 'other') return
+
+    // Preserve user-linked fields from an existing index row (resident O(1) map).
+    const prev = this.prevMap.get(full)
+
+    // (path,size,mtime) unchanged → the indexed analysis is still valid.
+    // PNG rows only skip once pngKeys proves a previous metadata pass ran.
+    if (
+      prev &&
+      prev.size === st.size &&
+      prev.createdAt === st.mtimeMs &&
+      (ext !== '.png' || Array.isArray(prev.params?.pngKeys))
+    ) {
+      let workflowId = prev.workflowId
+      let workflowName = prev.workflowName
+      if (!workflowId && prev.promptId) {
+        const link = lookupPromptWorkflowLink(prev.promptId)
+        if (link?.workflowId) {
+          workflowId = link.workflowId
+          workflowName = workflowName || link.workflowName
+        }
+      }
+      // Still unlinked? A fingerprint match may exist — outputs produced by
+      // direct ComfyUI-frontend runs never had a sidecar (0.1.11). Read the
+      // PNG head once, backfill, and persist a sidecar for cheap rescans.
+      if (!workflowId && type === 'image' && ext === '.png') {
+        try {
+          const meta = readPngTextMetaFromFile(full)
+          const raw = String(meta.prompt || meta.workflow || '')
+          const graph = raw ? (JSON.parse(raw) as Record<string, unknown>) : null
+          const hit = graph ? lookupWorkflowByFingerprint(graph)[0] : undefined
+          if (hit) {
+            workflowId = hit.workflowId
+            workflowName = workflowName || hit.workflowName
+            if (prev.promptId) {
+              try {
+                recordPromptWorkflowLink(prev.promptId, hit.workflowId, hit.workflowName)
+              } catch {
+                /* best-effort */
+              }
+            }
+          }
+        } catch {
+          /* unreadable meta — keep unlinked */
+        }
+      }
+      out.push({
+        ...prev,
+        type,
+        size: st.size,
+        createdAt: st.mtimeMs,
+        fileName: basename(full),
+        workflowId,
+        workflowName
+      })
+      return
+    }
+
+    let params: Record<string, unknown> = {}
+    let seed: number | undefined
+    let promptId: string | undefined
+    /** Embedded graph (prompt or workflow form) for fingerprint matching. */
+    let embeddedGraph: Record<string, unknown> | null = null
+    if (type === 'image' && ext === '.png') {
+      try {
+        const meta = readPngTextMetaFromFile(full)
+        if (meta.prompt) {
           try {
-            const meta = readPngTextMetaFromFile(full)
-            if (meta.prompt) {
-              try {
-                const prompt = JSON.parse(String(meta.prompt)) as Record<
-                  string,
-                  { inputs?: Record<string, unknown>; class_type?: string }
-                >
-                embeddedGraph = prompt as Record<string, unknown>
-                params.nodeCount = Object.keys(prompt).length
-                for (const node of Object.values(prompt)) {
-                  if (node?.inputs && typeof node.inputs.seed === 'number' && seed == null) {
-                    seed = node.inputs.seed as number
-                  }
-                }
-              } catch {
-                /* ignore */
+            const prompt = JSON.parse(String(meta.prompt)) as Record<
+              string,
+              { inputs?: Record<string, unknown>; class_type?: string }
+            >
+            embeddedGraph = prompt as Record<string, unknown>
+            params.nodeCount = Object.keys(prompt).length
+            for (const node of Object.values(prompt)) {
+              if (node?.inputs && typeof node.inputs.seed === 'number' && seed == null) {
+                seed = node.inputs.seed as number
               }
-            }
-            if (!embeddedGraph && meta.workflow) {
-              try {
-                embeddedGraph = JSON.parse(String(meta.workflow)) as Record<string, unknown>
-              } catch {
-                /* ignore */
-              }
-            }
-            if (meta.seed && seed == null) seed = Number(meta.seed)
-            if (meta.prompt_id) promptId = String(meta.prompt_id)
-            params = {
-              ...params,
-              pngKeys: Object.keys(meta),
-              workflow: undefined,
-              prompt: undefined
             }
           } catch {
             /* ignore */
           }
         }
-
-        // Attribution priority: existing record → queue-time sidecar →
-        // content-fingerprint reverse match (covers ComfyUI-frontend runs).
-        const link = promptId ? lookupPromptWorkflowLink(promptId) : undefined
-        let fpHit: { workflowId: string; workflowName: string } | undefined
-        if (!prev?.workflowId && !link?.workflowId && embeddedGraph) {
-          fpHit = lookupWorkflowByFingerprint(embeddedGraph)[0]
-          if (fpHit && promptId) {
-            try {
-              recordPromptWorkflowLink(promptId, fpHit.workflowId, fpHit.workflowName)
-            } catch {
-              /* best-effort */
-            }
+        if (!embeddedGraph && meta.workflow) {
+          try {
+            embeddedGraph = JSON.parse(String(meta.workflow)) as Record<string, unknown>
+          } catch {
+            /* ignore */
           }
         }
-
-        out.push({
-          id: createHash('sha1').update(full).digest('hex').slice(0, 16),
-          path: full,
-          fileName: basename(full),
-          type,
-          size: st.size,
-          createdAt: st.mtimeMs,
-          seed: seed ?? prev?.seed,
-          promptId: promptId ?? prev?.promptId,
-          favorite: prev?.favorite,
-          workflowId: prev?.workflowId || link?.workflowId || fpHit?.workflowId,
-          workflowName: prev?.workflowName || link?.workflowName || fpHit?.workflowName,
-          batchJobId: prev?.batchJobId,
-          thumbnail: prev?.thumbnail,
-          width: prev?.width,
-          height: prev?.height,
-          params: { ...(prev?.params || {}), ...params }
-        })
+        if (meta.seed && seed == null) seed = Number(meta.seed)
+        if (meta.prompt_id) promptId = String(meta.prompt_id)
+        params = {
+          ...params,
+          pngKeys: Object.keys(meta),
+          workflow: undefined,
+          prompt: undefined
+        }
       } catch {
-        /* skip */
+        /* ignore */
       }
     }
+
+    // Attribution priority: existing record → queue-time sidecar →
+    // content-fingerprint reverse match (covers ComfyUI-frontend runs).
+    const link = promptId ? lookupPromptWorkflowLink(promptId) : undefined
+    let fpHit: { workflowId: string; workflowName: string } | undefined
+    if (!prev?.workflowId && !link?.workflowId && embeddedGraph) {
+      fpHit = lookupWorkflowByFingerprint(embeddedGraph)[0]
+      if (fpHit && promptId) {
+        try {
+          recordPromptWorkflowLink(promptId, fpHit.workflowId, fpHit.workflowName)
+        } catch {
+          /* best-effort */
+        }
+      }
+    }
+
+    out.push({
+      id: createHash('sha1').update(full).digest('hex').slice(0, 16),
+      path: full,
+      fileName: basename(full),
+      type,
+      size: st.size,
+      createdAt: st.mtimeMs,
+      seed: seed ?? prev?.seed,
+      promptId: promptId ?? prev?.promptId,
+      favorite: prev?.favorite,
+      workflowId: prev?.workflowId || link?.workflowId || fpHit?.workflowId,
+      workflowName: prev?.workflowName || link?.workflowName || fpHit?.workflowName,
+      batchJobId: prev?.batchJobId,
+      thumbnail: prev?.thumbnail,
+      width: prev?.width,
+      height: prev?.height,
+      params: { ...(prev?.params || {}), ...params }
+    })
   }
 
   favorite(id: string, favorite: boolean): boolean {
@@ -1084,19 +1398,27 @@ export class OutputService {
   batchRemove(
     ids: string[],
     deleteFile: boolean
-  ): { ok: number; failed: Array<{ id: string; error: string }> } {
-    const failed: Array<{ id: string; error: string }> = []
+  ): { ok: number; failed: Array<{ id: string; label: string; error: string }> } {
+    // 0.1.17 (WP9-2): failures carry a human label so the UI can list every one
+    // (id alone is unreadable in a dialog).
+    const rows = new Map(listOutputAssetsAll().map((a) => [a.id, a]))
+    const failed: Array<{ id: string; label: string; error: string }> = []
     let ok = 0
     for (const raw of ids) {
       const id = sanitizeId(raw)
+      const label = rows.get(id)?.fileName || String(raw)
       try {
         if (!id || !this.remove(id, Boolean(deleteFile))) {
-          failed.push({ id: String(raw), error: 'not found' })
+          failed.push({ id: String(raw), label, error: 'not found' })
           continue
         }
         ok += 1
       } catch (e) {
-        failed.push({ id: String(raw), error: e instanceof Error ? e.message : String(e) })
+        failed.push({
+          id: String(raw),
+          label,
+          error: e instanceof Error ? e.message : String(e)
+        })
       }
     }
     return { ok, failed }

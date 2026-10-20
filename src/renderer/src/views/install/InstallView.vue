@@ -348,9 +348,24 @@ function stepStatusTag(
 ): 'success' | 'error' | 'info' | 'warning' | 'default' {
   if (status === 'done') return 'success'
   if (status === 'failed') return 'error'
-  if (status === 'cancelled') return 'warning'
+  if (status === 'cancelled' || status === 'interrupted') return 'warning'
   if (status === 'running') return 'info'
   return 'default'
+}
+
+/** Clear a terminal / interrupted install snapshot so a new run can start clean. */
+async function resetInstall(): Promise<void> {
+  try {
+    await ipc('installer.reset')
+    progress.value = null
+    installing.value = false
+    message.success(t('install.resetDone'))
+  } catch (err) {
+    // 0.1.17 (review fix): resetting while the installer is still unwinding is
+    // refused by main; say why instead of showing a raw English error.
+    const raw = errText(err)
+    message.error(/still running/i.test(raw) ? t('install.resetBusy') : raw)
+  }
 }
 
 function errText(err: unknown): string {
@@ -748,6 +763,18 @@ onUnmounted(() => {
     </div>
 
     <div class="page-body">
+      <NAlert
+        v-if="progress?.status === 'interrupted'"
+        type="warning"
+        class="mb"
+        :title="$t('install.interruptedTitle')"
+      >
+        {{ $t('install.interruptedBody') }}
+        <div class="done-actions">
+          <NButton secondary @click="resetInstall">{{ $t('install.resetRun') }}</NButton>
+        </div>
+      </NAlert>
+
       <NAlert v-if="isFailed" type="error" class="mb" :title="$t('install.failedTitle')">
         {{ progress?.error }}
       </NAlert>
@@ -1054,6 +1081,11 @@ onUnmounted(() => {
               @click="cancelInstall"
             >
               {{ $t('install.cancel') }}
+            </NButton>
+            <!-- 0.1.17 (WP1): escape hatch for a run that can no longer progress
+                 (cancelled/failed/interrupted snapshot). -->
+            <NButton v-else-if="progress" size="small" secondary @click="resetInstall">
+              {{ $t('install.resetRun') }}
             </NButton>
           </div>
 

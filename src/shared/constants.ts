@@ -6,7 +6,7 @@ export const APP_NAME = 'ComfyPilot'
  * Build injects __APP_VERSION__ from package.json; dev falls back to the literal.
  */
 declare const __APP_VERSION__: string | undefined
-export const APP_VERSION = (typeof __APP_VERSION__ !== 'undefined' && __APP_VERSION__) || '0.1.16'
+export const APP_VERSION = (typeof __APP_VERSION__ !== 'undefined' && __APP_VERSION__) || '0.1.17'
 
 export const DEFAULT_SETTINGS: AppSettings = {
   locale: 'zh-CN',
@@ -175,7 +175,9 @@ export const TORCH_DISK_GB: Record<TorchChannel, number> = {
  */
 export const RUNTIME_SOURCES: Record<
   string,
-  { url: string; sha256?: string; sizeHint: number; description: string }
+  // 0.1.17 (WP10): the unused optional `sha256` field was removed — integrity
+  // is verified from the `<url>.sha256` sidecar in bootstrap.ts, never here.
+  { url: string; sizeHint: number; description: string }
 > = {
   // uv standalone — also bootstraps CPython via `uv python install`
   'uv-win-x64': {

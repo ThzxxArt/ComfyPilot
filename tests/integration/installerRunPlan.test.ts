@@ -142,6 +142,12 @@ vi.mock('child_process', () => ({
         cb(null, '', '')
         return
       }
+      // 0.1.17 (WP2): the installer verifies the torch channel after install.
+      // Answer the CPU build (this suite only plans torchChannel 'cpu').
+      if (args[0] === '-c' && String(args[1] || '').includes('torch.version.cuda')) {
+        cb(null, '{"cuda": null, "hip": null, "torch": "2.6.0+cpu"}', '')
+        return
+      }
       cb(null, 'ok', '')
     }
     if (h.hang) {
@@ -327,6 +333,12 @@ describe('installer runPlan (integration)', () => {
         writeFileSync(join(dest, 'requirements.txt'), 'torch\n')
         return queueMicrotask(() => cb(null, '', ''))
       }
+      // 0.1.17 (WP2): torch channel verification runs after the install.
+      if (args[0] === '-c' && String(args[1] || '').includes('torch.version.cuda')) {
+        return queueMicrotask(() =>
+          cb(null, '{"cuda": null, "hip": null, "torch": "2.6.0+cpu"}', '')
+        )
+      }
       queueMicrotask(() => cb(null, 'ok', ''))
     }
     const svc = await freshService()
@@ -437,6 +449,12 @@ describe('installer runPlan (integration)', () => {
         writeFileSync(join(venvPath, 'Scripts', 'python.exe'), '')
         return queueMicrotask(() => cb(null, '', ''))
       }
+      // 0.1.17 (WP2): torch channel verification runs after the install.
+      if (args[0] === '-c' && String(args[1] || '').includes('torch.version.cuda')) {
+        return queueMicrotask(() =>
+          cb(null, '{"cuda": null, "hip": null, "torch": "2.6.0+cpu"}', '')
+        )
+      }
       queueMicrotask(() => cb(null, 'ok', ''))
     }
     const svc = await freshService()
@@ -459,6 +477,12 @@ describe('installer runPlan (integration)', () => {
         writeFileSync(join(venvPath, 'Scripts', 'python.exe'), '')
         return queueMicrotask(() => cb(null, '', ''))
       }
+      // 0.1.17 (WP2): torch channel verification runs after the install.
+      if (args[0] === '-c' && String(args[1] || '').includes('torch.version.cuda')) {
+        return queueMicrotask(() =>
+          cb(null, '{"cuda": null, "hip": null, "torch": "2.6.0+cpu"}', '')
+        )
+      }
       queueMicrotask(() => cb(null, 'ok', ''))
     }
     const svc = await freshService()
@@ -479,6 +503,12 @@ describe('installer runPlan (integration)', () => {
     )
     h.execImpl = (cmd, args, cb) => {
       if (args[0] === '--version') return queueMicrotask(() => cb(new Error('ENOENT'), '', ''))
+      // 0.1.17 (WP2): torch channel verification runs after the install.
+      if (args[0] === '-c' && String(args[1] || '').includes('torch.version.cuda')) {
+        return queueMicrotask(() =>
+          cb(null, '{"cuda": null, "hip": null, "torch": "2.6.0+cpu"}', '')
+        )
+      }
       queueMicrotask(() => cb(null, 'ok', ''))
     }
     const svc = await freshService()
@@ -500,6 +530,12 @@ describe('installer runPlan (integration)', () => {
       if ((args[0] === '-m' && args[1] === 'venv') || args[0] === 'venv') {
         return queueMicrotask(() => cb(null, '', '')) // no python.exe created
       }
+      // 0.1.17 (WP2): torch channel verification runs after the install.
+      if (args[0] === '-c' && String(args[1] || '').includes('torch.version.cuda')) {
+        return queueMicrotask(() =>
+          cb(null, '{"cuda": null, "hip": null, "torch": "2.6.0+cpu"}', '')
+        )
+      }
       queueMicrotask(() => cb(null, 'ok', ''))
     }
     const svc = await freshService()
@@ -518,6 +554,12 @@ describe('installer runPlan (integration)', () => {
         mkdirSync(join(venvPath, 'Scripts'), { recursive: true })
         writeFileSync(join(venvPath, 'Scripts', 'python.exe'), '')
         return queueMicrotask(() => cb(null, '', ''))
+      }
+      // 0.1.17 (WP2): torch channel verification runs after the install.
+      if (args[0] === '-c' && String(args[1] || '').includes('torch.version.cuda')) {
+        return queueMicrotask(() =>
+          cb(null, '{"cuda": null, "hip": null, "torch": "2.6.0+cpu"}', '')
+        )
       }
       queueMicrotask(() => cb(null, 'ok', ''))
     }
@@ -556,6 +598,12 @@ describe('installer runPlan (integration)', () => {
           writeFileSync(join(venvPath, 'Scripts', 'python.exe'), '')
           return queueMicrotask(() => cb(null, '', ''))
         }
+        // 0.1.17 (WP2): torch channel verification runs after the install.
+        if (args[0] === '-c' && String(args[1] || '').includes('torch.version.cuda')) {
+          return queueMicrotask(() =>
+            cb(null, '{"cuda": null, "hip": null, "torch": "2.6.0+cpu"}', '')
+          )
+        }
         queueMicrotask(() => cb(null, 'ok', ''))
       }
       // fresh root so the previous main.py is not reused
@@ -577,7 +625,10 @@ describe('installer runPlan (integration)', () => {
       (s) => s.step !== undefined && s.steps.some((st) => st.status === 'running')
     )
     svc.cancel()
-    const p = await waitStatus(svc, (s) => s.status === 'failed', 8000)
+    // 0.1.17 (WP1): cancel() writes the terminal `cancelled` state itself; the
+    // run no longer has to unwind a dead await to become honest.
+    const p = await waitStatus(svc, (s) => s.status === 'cancelled' || s.status === 'failed', 8000)
+    expect(p.status).toBe('cancelled')
     expect(p.error).toMatch(/cancelled/i)
   })
 
@@ -587,7 +638,7 @@ describe('installer runPlan (integration)', () => {
     await svc.start(plan())
     await expect(svc.start(plan())).rejects.toThrow(/already running/i)
     svc.cancel()
-    await waitStatus(svc, (s) => s.status === 'failed', 8000)
+    await waitStatus(svc, (s) => s.status === 'cancelled' || s.status === 'failed', 8000)
   })
 
   it('git mode rejects unsafe repo / branch at start()', async () => {

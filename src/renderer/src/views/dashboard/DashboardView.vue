@@ -307,6 +307,33 @@ async function runDoctor(): Promise<void> {
           </ol>
         </section>
 
+        <!-- 0.1.17 (review fix): with a remote selected there is no local
+             instance to launch — the old hero rendered a dead "launch" button
+             (activeInstance is null by design while a remote is active). -->
+        <section v-else-if="store.isRemoteActive" class="card hero">
+          <div class="hero-left">
+            <div class="hero-kicker">{{ $t('dashboard.remoteReadonly') }}</div>
+            <div class="hero-name" :title="store.activeRemote?.name">
+              {{ store.activeRemote?.name || store.activeRemoteId }}
+            </div>
+            <div class="hero-meta mono">{{ store.activeRemote?.baseUrl }}</div>
+          </div>
+          <div class="hero-actions">
+            <NButton
+              type="primary"
+              size="large"
+              :disabled="!store.activeRemote?.baseUrl"
+              @click="
+                store.activeRemote?.baseUrl &&
+                router.push({ path: '/embed', query: { url: store.activeRemote.baseUrl } })
+              "
+            >
+              <template #icon><NIcon :component="PlayOutline" /></template>
+              {{ $t('dashboard.openFrontend') }}
+            </NButton>
+          </div>
+        </section>
+
         <!-- Launcher hero -->
         <section v-else class="card hero">
           <div class="hero-left">

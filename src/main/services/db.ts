@@ -15,10 +15,12 @@ import {
   writeFileSync,
   renameSync,
   readdirSync,
-  lstatSync
+  lstatSync,
+  statSync
 } from 'fs'
 import { randomUUID } from 'crypto'
 import { DEFAULT_SETTINGS } from '@shared/constants'
+import { decryptSecretSafe, encryptSecret, isEncryptedSecret } from './secretStorage'
 import type {
   AppSettings,
   BatchJob,
@@ -289,12 +291,54 @@ interface PendingWrite {
 }
 const pendingWrites = new Map<string, PendingWrite>()
 const fileCache = new Map<string, unknown>()
+/** mtime recorded when a collection entered the cache (external-edit detection). */
+const fileCacheStamp = new Map<string, number>()
 let flushTimer: NodeJS.Timeout | null = null
 const FLUSH_MS = 400
 
+/**
+ * Hot collections (0.1.17 WP7): written many times per user action. Reads are
+ * served from the in-memory snapshot, disk writes coalesce into one per
+ * FLUSH_MS window. Everything else keeps the synchronous write it always had.
+ */
+// Collections written through `scheduleFileWrite` must be listed here, or a
+// cold read bypasses the in-memory snapshot and misses the pending write.
+const DEBOUNCED_COLLECTIONS = new Set([
+  'models',
+  'output_assets',
+  'node_packs',
+  'workflows',
+  'downloads',
+  'install-runs'
+])
+
 function readJsoncCached<T>(name: string, fallback: T): T {
+  // Non-debounced collections keep the old behaviour: direct writers delete the
+  // cache entry, and caching their cold reads would only add a second owner.
+  if (!DEBOUNCED_COLLECTIONS.has(name)) return readJsonc<T>(name, fallback)
+  if (fileCache.has(name) && !pendingWrites.has(name)) {
+    // External edit (hand-edited jsonc) invalidates the snapshot.
+    try {
+      const mtime = statSync(fileFor(name)).mtimeMs
+      if (fileCacheStamp.get(name) !== mtime) {
+        fileCache.delete(name)
+        fileCacheStamp.delete(name)
+      }
+    } catch {
+      /* file missing — keep the snapshot until a write recreates it */
+    }
+  }
   if (fileCache.has(name)) return fileCache.get(name) as T
-  return readJsonc<T>(name, fallback)
+  // 0.1.17 (review fix): a cold read used to be served from disk on every call
+  // — "reads stay in memory" only became true after the first write.
+  const loaded = readJsonc<T>(name, fallback)
+  fileCache.set(name, loaded)
+  try {
+    fileCacheStamp.set(name, statSync(fileFor(name)).mtimeMs)
+  } catch {
+    fileCacheStamp.delete(name)
+  }
+  return loaded
 }
 
 function scheduleFileWrite(name: string, value: unknown, header?: string): void {
@@ -311,22 +355,36 @@ function scheduleFileWrite(name: string, value: unknown, header?: string): void 
   }
 }
 
-/** Write every debounced collection to disk immediately. Safe to call anytime. */
-export function flushPendingWrites(): void {
+/**
+ * Write every debounced collection to disk immediately. Safe to call anytime.
+ *
+ * 0.1.17 (review fix): a failed write used to be swallowed after the queue had
+ * already been cleared, so the user lost the data silently and memory/disk
+ * diverged. Failures now stay queued for the next flush and are reported.
+ */
+export function flushPendingWrites(): { failed: string[] } {
   if (flushTimer) {
     clearTimeout(flushTimer)
     flushTimer = null
   }
-  if (!pendingWrites.size) return
+  const failed: string[] = []
+  if (!pendingWrites.size) return { failed }
   const entries = [...pendingWrites.entries()]
   pendingWrites.clear()
   for (const [name, entry] of entries) {
     try {
       writeJsonc(name, entry.value, entry.header)
-    } catch {
-      /* persistence is best-effort */
+      // Refresh the stamp so our own write is not mistaken for an external edit.
+      fileCacheStamp.set(name, statSync(fileFor(name)).mtimeMs)
+    } catch (e) {
+      // Keep the newest value queued; a later flush (quit or the next tick)
+      // retries instead of dropping it.
+      failed.push(name)
+      pendingWrites.set(name, entry)
+      console.error(`[db] failed to persist ${name}:`, e instanceof Error ? e.message : e)
     }
   }
+  return { failed }
 }
 
 /**
@@ -349,26 +407,36 @@ function withWriteLock<T>(name: string, fn: () => T): T {
   }
 }
 
+function persistList(name: string, next: unknown[]): void {
+  if (DEBOUNCED_COLLECTIONS.has(name)) {
+    scheduleFileWrite(name, next)
+    return
+  }
+  writeJsonc(name, next)
+  fileCache.delete(name)
+  fileCacheStamp.delete(name)
+}
+
 function upsertInList<T extends { id?: string; path?: string; name?: string }>(
   name: string,
   item: T,
   match: (a: T, b: T) => boolean
 ): void {
   withWriteLock(name, () => {
-    const list = readJsonc<T[]>(name, [])
+    const list = readJsoncCached<T[]>(name, [])
     const i = list.findIndex((x) => match(x, item))
     if (i >= 0) list[i] = item
     else list.push(item)
-    writeJsonc(name, list)
+    persistList(name, list)
   })
 }
 
 /** Read-modify-write a whole list under the per-file lock. */
 function mutateInList<T>(name: string, fallback: T[], fn: (list: T[]) => T[]): T[] {
   return withWriteLock(name, () => {
-    const list = readJsonc<T[]>(name, fallback)
+    const list = readJsoncCached<T[]>(name, fallback)
     const next = fn(list)
-    writeJsonc(name, next)
+    persistList(name, next)
     return next
   })
 }
@@ -378,40 +446,19 @@ const SETTINGS_HEADER = `ComfyPilot settings (JSONC)
 // Edit safely — comments are allowed. Saved as <userData>/data/settings.jsonc`
 
 /**
- * Encrypt/decrypt proxy password using Electron safeStorage (OS keychain).
- * Falls back to plaintext when safeStorage is unavailable (tests, early init)
- * so existing configs keep working.
+ * 0.1.17 (review fix): set when the stored proxy password could not be decrypted
+ * on this machine. `saveSettings` then keeps the ciphertext instead of writing
+ * an empty password over it.
  */
-function encryptProxyPassword(password: string): string {
-  if (!password) return ''
-  try {
-    // Lazy require — safeStorage needs app ready and is main-process only.
-    const { safeStorage } = require('electron') as typeof import('electron')
-    if (safeStorage?.isEncryptionAvailable?.()) {
-      return 'enc:' + safeStorage.encryptString(password).toString('base64')
-    }
-  } catch {
-    /* not in Electron (tests) */
-  }
-  return password
-}
-
-function decryptProxyPassword(stored: string): string {
-  if (!stored || !stored.startsWith('enc:')) return stored
-  try {
-    const { safeStorage } = require('electron') as typeof import('electron')
-    const buf = Buffer.from(stored.slice(4), 'base64')
-    return safeStorage.decryptString(buf)
-  } catch {
-    return ''
-  }
-}
+let proxyPasswordUnreadable = false
 
 export function loadSettings(): AppSettings {
   const stored = readJsonc<Partial<AppSettings>>('settings', {})
   const proxy = { ...DEFAULT_SETTINGS.proxy, ...(stored.proxy || {}) }
   // Decrypt the password if it was stored encrypted.
-  proxy.password = decryptProxyPassword(proxy.password)
+  const decrypted = decryptSecretSafe(proxy.password)
+  proxyPasswordUnreadable = decrypted.failed
+  proxy.password = decrypted.value
   return {
     ...DEFAULT_SETTINGS,
     ...stored,
@@ -455,10 +502,19 @@ export function saveSettings(patch: Partial<AppSettings>): AppSettings {
     ...cleanPatch,
     proxy: { ...current.proxy, ...((cleanPatch.proxy as Partial<AppSettings['proxy']>) || {}) }
   }
+  // 0.1.17 (review fix): an unreadable secret must never be replaced by the
+  // empty string the UI shows. Keep the stored ciphertext unless the caller
+  // supplied a new password.
+  let password = next.proxy.password
+  if (!password && proxyPasswordUnreadable) {
+    const stored = readJsonc<Partial<AppSettings>>('settings', {})
+    const raw = String(stored.proxy?.password || '')
+    if (isEncryptedSecret(raw)) password = raw
+  }
   // Encrypt the password before persisting.
   const toWrite: AppSettings = {
     ...next,
-    proxy: { ...next.proxy, password: encryptProxyPassword(next.proxy.password) }
+    proxy: { ...next.proxy, password: encryptSecret(password) }
   }
   writeJsonc('settings', toWrite, SETTINGS_HEADER)
   return next
@@ -503,17 +559,17 @@ export function upsertModels(items: ModelRecord[]): void {
 }
 
 export function listModels(): ModelRecord[] {
-  return readJsonc<ModelRecord[]>('models', [])
+  return readJsoncCached<ModelRecord[]>('models', [])
 }
 
 export function deleteModel(id: string): boolean {
-  const before = readJsonc<ModelRecord[]>('models', []).length
+  const before = readJsoncCached<ModelRecord[]>('models', []).length
   const next = mutateInList<ModelRecord>('models', [], (list) => list.filter((m) => m.id !== id))
   return next.length !== before
 }
 
 export function findModelByPath(path: string): ModelRecord | null {
-  return readJsonc<ModelRecord[]>('models', []).find((m) => m.path === path) || null
+  return readJsoncCached<ModelRecord[]>('models', []).find((m) => m.path === path) || null
 }
 
 export function updateModel(id: string, patch: Partial<ModelRecord>): void {
@@ -531,15 +587,39 @@ export function upsertNodePack(p: NodePack): void {
   upsertInList('node_packs', p, (a, b) => a.id === b.id || a.name === b.name)
 }
 
+/**
+ * Junk directory names an early scanner indexed as node packs (0.1.17).
+ * `__pycache__` / `*.pyc` / macOS `._*` are never real custom nodes.
+ */
+function isJunkNodePack(p: { name?: string; path?: string }): boolean {
+  const raw = String(p.name || p.path || '')
+  const base = raw.split(/[\\/]/).filter(Boolean).pop() || ''
+  return base === '__pycache__' || base.endsWith('.pyc') || base.startsWith('._')
+}
+
 export function listNodePacks(): NodePack[] {
-  return readJsonc<NodePack[]>('node_packs', [])
+  const list = readJsoncCached<NodePack[]>('node_packs', [])
+  const clean = list.filter((p) => !isJunkNodePack(p))
+  if (clean.length !== list.length) {
+    // Self-heal once; a read must never fail because the cleanup write failed.
+    try {
+      writeJsonc('node_packs', clean)
+    } catch {
+      /* ignore */
+    }
+  }
+  return clean
 }
 
 export function deleteNodePack(id: string): boolean {
-  const list = readJsonc<NodePack[]>('node_packs', [])
+  // 0.1.17 (review fix): go through the debounced collection path. Writing the
+  // file directly while an upsert was still queued let the pending (older) list
+  // flush afterwards and resurrect the deleted pack.
+  const list = listNodePacks()
   const next = list.filter((p) => p.id !== id)
-  writeJsonc('node_packs', next)
-  return next.length !== list.length
+  if (next.length === list.length) return false
+  persistList('node_packs', next)
+  return true
 }
 
 // ---------- Snapshots ----------
@@ -566,7 +646,7 @@ export function getSnapshot(id: string): NodeSnapshot | null {
 
 // ---------- Workflows ----------
 export function listWorkflows(): WorkflowRecord[] {
-  return readJsonc<WorkflowRecord[]>('workflows', [])
+  return readJsoncCached<WorkflowRecord[]>('workflows', [])
 }
 
 export function upsertWorkflow(w: WorkflowRecord): void {
@@ -600,7 +680,7 @@ export function updateWorkflow(id: string, patch: Partial<WorkflowRecord>): Work
 }
 
 export function deleteWorkflow(id: string): boolean {
-  const before = readJsonc<WorkflowRecord[]>('workflows', []).length
+  const before = readJsoncCached<WorkflowRecord[]>('workflows', []).length
   const next = mutateInList<WorkflowRecord>('workflows', [], (list) =>
     list.filter((w) => w.id !== id)
   )
@@ -721,7 +801,7 @@ export function listOutputAssets(opts?: {
   sort?: 'createdAt' | 'size' | 'name'
   order?: 'asc' | 'desc'
 }): OutputAsset[] {
-  const all = readJsonc<OutputAsset[]>('output_assets', [])
+  const all = readJsoncCached<OutputAsset[]>('output_assets', [])
   const sort = opts?.sort || 'createdAt'
   const order = opts?.order === 'asc' ? 1 : -1
   const sorted = [...all].sort((a, b) => {
@@ -735,15 +815,33 @@ export function listOutputAssets(opts?: {
 }
 
 export function listOutputAssetsAll(): OutputAsset[] {
-  return readJsonc<OutputAsset[]>('output_assets', [])
+  return readJsoncCached<OutputAsset[]>('output_assets', [])
 }
 
 export function deleteOutputAsset(id: string): boolean {
-  const before = readJsonc<OutputAsset[]>('output_assets', []).length
+  const before = readJsoncCached<OutputAsset[]>('output_assets', []).length
   const next = mutateInList<OutputAsset>('output_assets', [], (list) =>
     list.filter((a) => a.id !== id)
   )
   return next.length !== before
+}
+
+/**
+ * Clear the recorded thumbnail on many rows in ONE write (0.1.17 WP7).
+ * The prune loop used to rewrite the whole index once per dead row.
+ */
+export function clearOutputAssetThumbnails(ids: string[]): number {
+  if (!ids.length) return 0
+  const wanted = new Set(ids)
+  let cleared = 0
+  mutateInList<OutputAsset>('output_assets', [], (list) =>
+    list.map((a) => {
+      if (!wanted.has(a.id)) return a
+      cleared += 1
+      return { ...a, thumbnail: undefined }
+    })
+  )
+  return cleared
 }
 
 export function updateOutputAsset(id: string, patch: Partial<OutputAsset>): OutputAsset | null {
@@ -760,12 +858,46 @@ export function updateOutputAsset(id: string, patch: Partial<OutputAsset>): Outp
 }
 
 // ---------- Remote ----------
+/** Remote ids whose stored apiKey could not be decrypted in this process. */
+const lockedRemoteApiKeys = new Set<string>()
+
 export function listRemotes(): RemoteInstanceConfig[] {
-  return readJsonc<RemoteInstanceConfig[]>('remote_instances', [])
+  // 0.1.17 (WP8): API keys are encrypted at rest; decrypt on every read so all
+  // consumers (test/batch/backup) keep receiving usable values.
+  return readJsonc<RemoteInstanceConfig[]>('remote_instances', []).map((r) => {
+    if (!r.apiKey) return r
+    const d = decryptSecretSafe(r.apiKey)
+    if (d.failed) {
+      // Do not hand out an empty key as if it were the real one, and remember
+      // that saving this record must not overwrite the ciphertext.
+      lockedRemoteApiKeys.add(r.id)
+      return { ...r, apiKey: '', apiKeyLocked: true }
+    }
+    lockedRemoteApiKeys.delete(r.id)
+    return { ...r, apiKey: d.value }
+  })
 }
 
 export function upsertRemote(c: RemoteInstanceConfig): void {
-  upsertInList('remote_instances', c, (a, b) => a.id === b.id)
+  // Encrypt before persisting — `upsertInList` compares by id only, so the
+  // stored representation may differ from the in-memory one.
+  let apiKey = c.apiKey
+  if (!apiKey && lockedRemoteApiKeys.has(c.id)) {
+    const prev = readJsonc<RemoteInstanceConfig[]>('remote_instances', []).find(
+      (r) => r.id === c.id
+    )
+    if (prev?.apiKey && isEncryptedSecret(prev.apiKey)) {
+      // Unreadable on this machine — keep the ciphertext instead of erasing it.
+      apiKey = prev.apiKey
+    }
+  }
+  const { apiKeyLocked: _ignored, ...rest } = c
+  const stored: RemoteInstanceConfig = {
+    ...rest,
+    ...(apiKey ? { apiKey: encryptSecret(apiKey) } : { apiKey })
+  }
+  if (apiKey) lockedRemoteApiKeys.delete(c.id)
+  upsertInList('remote_instances', stored, (a, b) => a.id === b.id)
 }
 
 export function deleteRemote(id: string): boolean {

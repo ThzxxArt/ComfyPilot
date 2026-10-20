@@ -36,11 +36,6 @@ export class LruCache<K, V> {
     return value
   }
 
-  /** Peek without refreshing recency. */
-  peek(key: K): V | undefined {
-    return this.map.get(key)
-  }
-
   set(key: K, value: V): void {
     if (this.map.has(key)) this.map.delete(key)
     this.map.set(key, value)

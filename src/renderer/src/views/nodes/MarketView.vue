@@ -282,11 +282,21 @@ async function refreshIndex(): Promise<void> {
   }
 }
 
+/**
+ * 0.1.17 (WP9): both tabs write into the same item list. A slow registry
+ * response arriving after the user switched to "manager" used to overwrite the
+ * manager list (and vice versa) — every response is now tied to a sequence +
+ * the tab that requested it.
+ */
+let loadSeq = 0
+
 async function load(reset = true): Promise<void> {
   if (sourceTab.value === 'manager') {
     await loadManager()
     return
   }
+  const seq = ++loadSeq
+  const tab = sourceTab.value
   if (reset) {
     loading.value = true
     page.value = 1
@@ -303,6 +313,8 @@ async function load(reset = true): Promise<void> {
       limit: pageSize,
       instanceId: store.activeInstanceId || undefined
     })
+    // Discard a response that no longer matches the visible tab/sequence.
+    if (seq !== loadSeq || tab !== sourceTab.value) return
     const mapped = res.items.map(mapRegistryItem)
     if (reset) allItems.value = mapped
     else allItems.value = [...allItems.value, ...mapped]
@@ -367,12 +379,14 @@ async function loadCurrentPage(): Promise<void> {
 
 // ---- manager load ----
 async function loadManager(): Promise<void> {
+  const seq = ++loadSeq
   loading.value = true
   page.value = 1
   activeQuery.value = query.value.trim()
   sourceError.value = ''
   try {
     const raw = await ipc('node.managerChannel')
+    if (seq !== loadSeq || sourceTab.value !== 'manager') return
     allItems.value = raw.map(mapManagerItem)
     total.value = allItems.value.length
     totalPages.value = Math.max(1, Math.ceil(allItems.value.length / pageSize))
@@ -391,12 +405,15 @@ async function loadManager(): Promise<void> {
 // ---- unified install / update ----
 async function install(item: DisplayItem): Promise<void> {
   if (installingItem.value) return
+  // 0.1.17 (WP9): the click's own source decides the transport; switching tabs
+  // while the dialog is open must not reroute the install.
+  const source = item.source
   installingItem.value = item.id
   opModalTitle.value = t('nodes.installing')
   showOpModal.value = true
   try {
     const rec =
-      item.source === 'registry'
+      source === 'registry'
         ? await ipc('market.install', {
             id: item.id,
             version: item.version || undefined,

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, h, onMounted, ref } from 'vue'
+import { useInstanceScope } from '@/composables/useInstanceScope'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import {
@@ -497,6 +498,13 @@ function clearFilters(): void {
   keyword.value = ''
   onlyFavorites.value = false
 }
+
+// 0.1.17 (WP9): workflows are instance-scoped — switching instances must drop
+// the old filters/list so edits can never target the previous instance.
+useInstanceScope(() => {
+  clearFilters()
+  void refresh()
+})
 
 onMounted(async () => {
   await store.bootstrap({ keepSelection: true })

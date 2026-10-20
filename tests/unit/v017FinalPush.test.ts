@@ -193,7 +193,9 @@ describe('useComfyUpdate structure', () => {
       'startUpdate',
       'cancelUpdate',
       'repairEnv',
-      'clearProgress'
+      // 0.1.17 (WP10): `clearProgress` was an unused export and is gone; the
+      // live cancel surface for node ops is asserted instead.
+      'cancelNodeOp'
     ]
     for (const a of actions) {
       expect(src, `missing ${a}`).toContain(a)

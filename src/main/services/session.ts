@@ -111,6 +111,17 @@ export function exportAppDiagnostics(now = Date.now()): string {
   } catch {
     /* ignore */
   }
+  // 0.1.17 (WP6): ship the slow-IPC attribution log with the diagnostics so a
+  // freeze report has its channel/duration evidence attached.
+  try {
+    const slow = join(logsDir(), 'slow-ops.log')
+    if (existsSync(slow)) {
+      const tail = readFileSync(slow, 'utf-8').split('\n').slice(-1000).join('\n')
+      writeFileSync(join(dir, 'slow-ops.log'), tail, 'utf-8')
+    }
+  } catch {
+    /* ignore */
+  }
   try {
     writeFileSync(
       join(dir, 'runtime.json'),

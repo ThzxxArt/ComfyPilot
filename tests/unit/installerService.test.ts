@@ -310,8 +310,15 @@ describe('installer service internals', () => {
         return { pid: 1, exitCode: null, kill: () => undefined }
       }
       const { installerService } = await import('../../src/main/services/installer')
+      // Unique path: this branch is only reachable while nothing exists there
+      // (a leftover dir from a previous run used to flip the assertion).
+      const missing = join(
+        ROOT,
+        `no-such-parent-${Math.random().toString(36).slice(2, 8)}`,
+        'child'
+      )
       const res = await installerService.preflight({
-        installRoot: join(ROOT, 'no-such-parent-zzz', 'child'),
+        installRoot: missing,
         useUv: false
       })
       expect(res.checks.find((c) => c.id === 'disk')?.detail).toContain('will be created')
@@ -511,7 +518,9 @@ describe('installer service internals', () => {
         progress: unknown
         children: Set<unknown>
         runRejects: Set<(e: Error) => void>
-        cancelled: boolean
+        // 0.1.17 (WP1): cancellation is an epoch pair, not a boolean latch.
+        runEpoch: number
+        cancelledEpoch: number
         killTree: (c: unknown) => Promise<void>
       }
       // Explicit setup — never rely on a previous test's leftover progress.
@@ -535,7 +544,15 @@ describe('installer service internals', () => {
       anySvc.children.add(fakeChild)
       const ok = installerService.cancel()
       expect(ok).toBe(true)
-      expect(anySvc.cancelled).toBe(true)
+      expect(anySvc.cancelledEpoch).toBe(anySvc.runEpoch)
+      // Runners are rejected only AFTER the process tree is gone (WP1) — the
+      // POSIX branch of killTree resolves on a 500 ms timer. Poll instead of a
+      // fixed sleep: under CPU contention the timer can fire late and a fixed
+      // 700 ms margin made this case intermittently red.
+      const deadline = Date.now() + 5000
+      while (!rejected && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 25))
+      }
       expect((rejected as unknown as Error).message).toMatch(/cancelled/i)
       expect(anySvc.runRejects.size).toBe(0)
     })
@@ -701,6 +718,220 @@ describe('installer service internals', () => {
       expect(res).toEqual({ ok: true })
       expect(spy).toHaveBeenCalled()
       spy.mockRestore()
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // 0.1.17 (WP2): never delete user data; torch channel truth.
+  // -------------------------------------------------------------------------
+  describe('install data protection + torch truth (0.1.17)', () => {
+    it('archives a ComfyUI dir that holds user models instead of deleting it', async () => {
+      const mod = await import('../../src/main/services/installer')
+      const root = join(ROOT, 'wp2-archive')
+      const comfyDir = join(root, 'ComfyUI')
+      mkdirSync(join(comfyDir, 'models', 'checkpoints'), { recursive: true })
+      writeFileSync(join(comfyDir, 'models', 'checkpoints', 'a.safetensors'), 'x')
+      // Even WITH our own marker the directory must survive.
+      writeFileSync(join(root, '.comfypilot-env.json'), '{}')
+
+      const res = mod.disposeExistingComfyDir(comfyDir, root)
+      expect(res.action).toBe('archived')
+      expect(res.precious).toContain('models')
+      expect(existsSync(comfyDir)).toBe(false)
+      expect(
+        existsSync(join(res.archivePath as string, 'models', 'checkpoints', 'a.safetensors'))
+      ).toBe(true)
+    })
+
+    it('still deletes provable debris (marker, no user data)', async () => {
+      const mod = await import('../../src/main/services/installer')
+      const root = join(ROOT, 'wp2-debris')
+      const comfyDir = join(root, 'ComfyUI')
+      mkdirSync(comfyDir, { recursive: true })
+      writeFileSync(join(comfyDir, 'main.py'), '# half-extracted')
+      writeFileSync(join(root, '.comfypilot-env.json'), '{}')
+      expect(mod.canDeleteComfyDebris(comfyDir, root)).toBe(true)
+      expect(mod.disposeExistingComfyDir(comfyDir, root).action).toBe('deleted')
+      expect(existsSync(comfyDir)).toBe(false)
+    })
+
+    it('refuses to delete a foreign directory and never touches user data', async () => {
+      const mod = await import('../../src/main/services/installer')
+      const root = join(ROOT, 'wp2-foreign')
+      const comfyDir = join(root, 'ComfyUI')
+      mkdirSync(comfyDir, { recursive: true })
+      writeFileSync(join(comfyDir, 'my-notes.txt'), 'do not delete')
+      expect(mod.canDeleteComfyDebris(comfyDir, root)).toBe(false)
+      expect(() => mod.disposeExistingComfyDir(comfyDir, root)).toThrow(/Refusing to delete/)
+      expect(existsSync(join(comfyDir, 'my-notes.txt'))).toBe(true)
+    })
+
+    it('maps channels to the CUDA tag torch must report', async () => {
+      const { expectedCudaForChannel } = await import('../../src/main/services/installer')
+      expect(expectedCudaForChannel('cu126')).toBe('12.6')
+      expect(expectedCudaForChannel('cu124')).toBe('12.4')
+      expect(expectedCudaForChannel('cu130')).toBe('13.0')
+      expect(expectedCudaForChannel('cpu')).toBeNull()
+      expect(expectedCudaForChannel('rocm')).toBeNull()
+    })
+
+    it('fails the install when torch reports the wrong channel', async () => {
+      const { installerService } = await import('../../src/main/services/installer')
+      // A previous test may have cancelled this singleton; a fresh epoch is the
+      // same path a new install run takes.
+      installerService.reset()
+      const anySvc = installerService as unknown as {
+        verifyTorchChannel: (vpy: string, channel: string) => Promise<void>
+      }
+      h.execImpl = (_cmd, _args, _o, cb) => {
+        queueMicrotask(() => cb(null, '{"cuda": "12.4", "hip": null, "torch": "2.6.0+cu124"}', ''))
+        return { pid: 1, exitCode: null, kill: () => undefined }
+      }
+      await expect(anySvc.verifyTorchChannel('/venv/python', 'cu126')).rejects.toThrow(
+        /channel mismatch/i
+      )
+      // CPU channel against a CUDA build is equally dishonest.
+      await expect(anySvc.verifyTorchChannel('/venv/python', 'cpu')).rejects.toThrow(
+        /channel mismatch/i
+      )
+    })
+
+    it('accepts a matching torch build (cuda and cpu)', async () => {
+      const { installerService } = await import('../../src/main/services/installer')
+      installerService.reset()
+      const anySvc = installerService as unknown as {
+        verifyTorchChannel: (vpy: string, channel: string) => Promise<void>
+      }
+      h.execImpl = (_cmd, _args, _o, cb) => {
+        queueMicrotask(() => cb(null, '{"cuda": "12.6", "hip": null, "torch": "2.6.0"}', ''))
+        return { pid: 1, exitCode: null, kill: () => undefined }
+      }
+      await expect(anySvc.verifyTorchChannel('/venv/python', 'cu126')).resolves.toBeUndefined()
+      h.execImpl = (_cmd, _args, _o, cb) => {
+        queueMicrotask(() => cb(null, '{"cuda": null, "hip": null, "torch": "2.6.0+cpu"}', ''))
+        return { pid: 1, exitCode: null, kill: () => undefined }
+      }
+      await expect(anySvc.verifyTorchChannel('/venv/python', 'cpu')).resolves.toBeUndefined()
+    })
+
+    it('preflight refuses unwritable roots, UNC paths and over-long paths', async () => {
+      const { installerService } = await import('../../src/main/services/installer')
+      h.execImpl = (_cmd, args, _o, cb) => {
+        if (args[0] === '--version') queueMicrotask(() => cb(null, 'Python 3.12.1', ''))
+        return { pid: 1, exitCode: null, kill: () => undefined }
+      }
+      const long = join(ROOT, 'x'.repeat(260))
+      const res = await installerService.preflight({ installRoot: long, useUv: false })
+      expect(res.checks.find((c) => c.id === 'longpath')?.ok).toBe(false)
+      expect(res.ok).toBe(false)
+
+      const unc = await installerService.preflight({
+        installRoot: '\\\\server\\share\\ComfyUI',
+        useUv: false
+      })
+      expect(unc.checks.find((c) => c.id === 'unc')?.ok).toBe(false)
+      expect(unc.ok).toBe(false)
+
+      const okRoot = join(ROOT, 'wp2-writable')
+      mkdirSync(okRoot, { recursive: true })
+      const good = await installerService.preflight({ installRoot: okRoot, useUv: false })
+      expect(good.checks.find((c) => c.id === 'writable')?.ok).toBe(true)
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // 0.1.17 (WP1): run-state honesty — interrupted reload, cancel terminal state,
+  // preflight immune to a stale cancel latch, reset escape hatch.
+  // -------------------------------------------------------------------------
+  describe('run state machine (0.1.17)', () => {
+    /** Isolated data dir per test: install runs persist under userData/data. */
+    function freshDataDir(tag: string): string {
+      const dir = join(ROOT, `wp1-${tag}-${Math.random().toString(36).slice(2, 8)}`)
+      mkdirSync(join(dir, 'data'), { recursive: true })
+      h.getPathImpl = () => dir
+      return dir
+    }
+
+    it('relabels a persisted running run as interrupted on load', async () => {
+      freshDataDir('interrupted')
+      vi.resetModules()
+      const db = await import('../../src/main/services/db')
+      const { installerService } = await import('../../src/main/services/installer')
+      db.saveInstallRun({
+        runId: 'r-stuck',
+        status: 'running',
+        step: 'pip',
+        steps: [{ id: 'pip', status: 'running', log: [] }],
+        message: 'Installing…',
+        percent: 42
+      })
+      db.flushPendingWrites()
+      // Fresh service (as after an app restart) restores the persisted run.
+      const st = installerService.getStatus()
+      expect(st?.status).toBe('interrupted')
+      expect(st?.error).toMatch(/app exit/i)
+      expect(st?.steps[0].status).toBe('interrupted')
+      // The correction is persisted, so the UI cannot resurrect the ghost.
+      expect(db.loadLatestInstallRun()?.status).toBe('interrupted')
+    })
+
+    it('cancel() writes a terminal cancelled state immediately', async () => {
+      freshDataDir('cancel')
+      vi.resetModules()
+      const db = await import('../../src/main/services/db')
+      const { installerService } = await import('../../src/main/services/installer')
+      h.execImpl = () => {
+        // Never call back: the run stays in-flight while we cancel it.
+        return { pid: 1, exitCode: null, kill: () => undefined } as never
+      }
+      await installerService.start({
+        installRoot: join(ROOT, 'inst-cancel'),
+        instanceName: 'Cancel me',
+        useUv: true
+      } as never)
+      expect(installerService.getStatus()?.status).toBe('running')
+      expect(installerService.cancel()).toBe(true)
+      // No in-flight step had to throw for this to land.
+      expect(installerService.getStatus()?.status).toBe('cancelled')
+      expect(installerService.getStatus()?.error).toMatch(/cancelled/i)
+      db.flushPendingWrites()
+      expect(db.loadLatestInstallRun()?.status).toBe('cancelled')
+    })
+
+    it('preflight still probes the machine after a cancel (no stale latch)', async () => {
+      vi.resetModules()
+      const { installerService } = await import('../../src/main/services/installer')
+      h.execImpl = (cmd, args, _o, cb) => {
+        if (args[0] === '--version') {
+          if (String(cmd).includes('git')) queueMicrotask(() => cb(null, 'git version 2.44.0', ''))
+          else if (String(cmd).includes('uv')) queueMicrotask(() => cb(null, 'uv 0.8.15', ''))
+          else queueMicrotask(() => cb(null, 'Python 3.12.1', ''))
+        }
+        return { pid: 1, exitCode: null, kill: () => undefined }
+      }
+      // Poison the service exactly as a user-cancelled install would.
+      installerService.cancel()
+      const root = join(ROOT, 'preflight-after-cancel')
+      mkdirSync(root, { recursive: true })
+      const res = await installerService.preflight({ installRoot: root, useUv: true })
+      expect(res.checks.find((c) => c.id === 'python')?.ok).toBe(true)
+      expect(res.checks.find((c) => c.id === 'uv')?.ok).toBe(true)
+      expect(res.checks.find((c) => c.id === 'git')?.ok).toBe(true)
+    })
+
+    it('reset() clears both the in-memory and persisted run', async () => {
+      freshDataDir('reset')
+      vi.resetModules()
+      const db = await import('../../src/main/services/db')
+      const { installerService } = await import('../../src/main/services/installer')
+      await installerService.start({
+        installRoot: join(ROOT, 'inst-reset'),
+        instanceName: 'Reset me',
+        useUv: false
+      } as never)
+      installerService.reset()
+      expect(installerService.getStatus()).toBeNull()
+      expect(db.loadLatestInstallRun()).toBeNull()
     })
   })
 })

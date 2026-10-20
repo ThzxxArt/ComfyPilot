@@ -76,7 +76,14 @@ export default defineConfig({
         'src/main/services/lru.ts',
         'src/main/services/logFile.ts',
         'src/main/services/session.ts',
-        'src/main/services/startupIssues.ts'
+        'src/main/services/startupIssues.ts',
+        // ── 0.1.17: freeze attribution, secret-at-rest, scoped selection ──
+        'src/main/services/slowOps.ts',
+        'src/main/services/workPool.ts',
+        'src/main/services/processTree.ts',
+        'src/main/services/secretStorage.ts',
+        'src/renderer/src/composables/useScopedSelection.ts',
+        'src/renderer/src/composables/useInstanceScope.ts'
       ],
       thresholds: {
         // ── 实测定档：高覆盖模块（0.1.10 全量实测 − 2pp）──
@@ -226,6 +233,47 @@ export default defineConfig({
           lines: 98,
           functions: 98,
           branches: 68
+        },
+        // ── 0.1.17 新增模块（首轮实测 − 2pp）──
+        // NOTE: handlers.ts is deliberately NOT in `include` — registerIpcHandlers
+        // needs a live ipcMain. Its decision logic lives in security.ts /
+        // workPool.ts / processTree.ts (all gated); the wiring is covered by e2e
+        // plus the channel-set contract test rather than unit coverage.
+        'src/main/services/processTree.ts': {
+          statements: 76,
+          lines: 76,
+          functions: 98,
+          branches: 73
+        },
+        'src/main/services/workPool.ts': {
+          statements: 95,
+          lines: 95,
+          functions: 95,
+          branches: 79
+        },
+        'src/main/services/slowOps.ts': {
+          statements: 84,
+          lines: 84,
+          functions: 92,
+          branches: 71
+        },
+        'src/main/services/secretStorage.ts': {
+          statements: 88,
+          lines: 88,
+          functions: 98,
+          branches: 86
+        },
+        'src/renderer/src/composables/useScopedSelection.ts': {
+          statements: 86,
+          lines: 86,
+          functions: 81,
+          branches: 98
+        },
+        'src/renderer/src/composables/useInstanceScope.ts': {
+          statements: 95,
+          lines: 95,
+          functions: 95,
+          branches: 95
         },
         // ── 全局下限（0.1.10 全量实测 − 2pp）──
         statements: 88,

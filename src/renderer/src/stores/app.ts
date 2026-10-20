@@ -24,6 +24,8 @@ export const useAppStore = defineStore('app', () => {
    * or Workflows' selector both land here.
    */
   const instanceSwitchTick = ref(0)
+  /** Last bootstrap failure (0.1.17 WP9) — views can show it instead of a blank page. */
+  const bootstrapError = ref('')
   const system = ref<SystemSnapshot | null>(null)
   /** Last doctor report — survives navigation from Dashboard "one-click check" into DoctorView. */
   const doctorReport = ref<DoctorReport | null>(null)
@@ -36,9 +38,15 @@ export const useAppStore = defineStore('app', () => {
    */
   const notificationSeq = ref(0)
 
-  const activeInstance = computed(
-    () => instances.value.find((i) => i.id === activeInstanceId.value) || instances.value[0] || null
-  )
+  const activeInstance = computed(() => {
+    // 0.1.17 (WP9): with a remote selected, `activeInstance` must NOT fall back
+    // to instances[0] — callers saw a local instance while the header showed a
+    // remote, and local-only actions targeted the wrong machine.
+    if (activeRemoteId.value) return null
+    return (
+      instances.value.find((i) => i.id === activeInstanceId.value) || instances.value[0] || null
+    )
+  })
 
   /** The selected remote (null when a local instance is active). */
   const activeRemote = computed(
@@ -90,7 +98,19 @@ export const useAppStore = defineStore('app', () => {
       system.value = await ipc('monitor.system')
       void syncWs()
     } catch (err) {
+      // 0.1.17 (WP9): a failed bootstrap used to be console-only — the UI looked
+      // empty with no explanation. Surface it as an app notification too.
       console.error('bootstrap failed', err)
+      bootstrapError.value = err instanceof Error ? err.message : String(err)
+      pushNotification({
+        type: 'error',
+        title: 'ComfyPilot could not load its data',
+        titleKey: 'notify.bootstrapFailed',
+        message: bootstrapError.value,
+        messageKey: 'notify.bootstrapFailedMsg',
+        params: { error: bootstrapError.value },
+        duration: 10000
+      })
     } finally {
       ready.value = true
     }
@@ -203,6 +223,7 @@ export const useAppStore = defineStore('app', () => {
     notificationSeq,
     activeInstance,
     bootstrap,
+    bootstrapError,
     refreshInstances,
     refreshRemotes,
     bindLive,

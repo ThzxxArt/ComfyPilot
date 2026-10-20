@@ -559,10 +559,6 @@ export function useComfyUpdate() {
     }
   }
 
-  function clearProgress(): void {
-    clearProgressInternal()
-  }
-
   /** Abort the in-flight single node op for an instance. */
   async function cancelNodeOp(instanceId?: string): Promise<boolean> {
     return ipc('node.cancelOp', instanceId || undefined)
@@ -594,7 +590,6 @@ export function useComfyUpdate() {
     startUpdate,
     cancelUpdate,
     repairEnv,
-    clearProgress,
     cancelNodeOp,
     cancelNodeBatch,
     selectNodeOpInstance,

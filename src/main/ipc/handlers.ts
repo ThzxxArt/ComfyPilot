@@ -1,7 +1,7 @@
 import { ipcMain, dialog, shell, BrowserWindow, WebContentsView, clipboard } from 'electron'
 import { existsSync } from 'fs'
 import { homedir } from 'os'
-import { basename, extname, join } from 'path'
+import { basename, join } from 'path'
 import type {
   IpcResult,
   ComfyInstanceConfig,
@@ -11,9 +11,12 @@ import type {
   WorkflowRecord,
   AppSettings,
   InstallPlan,
-  LaunchOptions
+  LaunchOptions,
+  BatchJob
 } from '@shared/types'
 import { IPC_EVENTS } from '@shared/types'
+import { mapPool } from '../services/workPool'
+import { withPausedSlowOp } from '../services/slowOps'
 import {
   isSafeExternalUrl,
   isSafeEmbedUrl,
@@ -21,7 +24,9 @@ import {
   isSafeOpenPath,
   isLocalhostUrl,
   resolveInsideAnyRoot,
-  normalizeForCompare
+  normalizeForCompare,
+  isSafeDataReadPath,
+  assertSafeEndpointSetting
 } from '../services/security'
 import {
   loadSettings,
@@ -51,6 +56,7 @@ import { installerService, listStarterModels } from '../services/installer'
 import { testProxy, syncProxyFromSettings } from '../services/proxy'
 import { execDiagnosticsService } from '../services/execDiagnostics'
 import { PIP_RECIPES } from '@shared/pipRecipes'
+import { instrumentIpcHandle, setSlowOpListener, FREEZE_OP_MS } from '../services/slowOps'
 
 function ok<T>(data: T): IpcResult<T> {
   // Structured-clone safety: never hand a class instance / Response / Proxy
@@ -187,18 +193,6 @@ function requireLocalInstanceId(instanceId?: string): string | undefined {
   return target
 }
 
-const READ_DATA_EXTS = new Set([
-  '.json',
-  '.png',
-  '.jpg',
-  '.jpeg',
-  '.webp',
-  '.gif',
-  '.yaml',
-  '.yml',
-  '.txt'
-])
-
 // Paths the user explicitly chose via the OS picker (0.1.16). A picked file is
 // trusted as-is; a picked folder becomes a readable root for the session.
 // Anything else must resolve under an app-owned root — the old implementation
@@ -234,26 +228,26 @@ function allowedReadRoots(): string[] {
   return roots
 }
 
-function isUnderAnyRoot(target: string, roots: string[]): boolean {
-  const t = normalizeForCompare(target)
-  return roots.some((r) => {
-    if (!r) return false
-    const n = normalizeForCompare(r)
-    if (!n) return false
-    return t === n || t.startsWith(n.endsWith('/') ? n : n + '/')
-  })
+/** Settings fields that must be http(s) URLs when set (0.1.17 WP8). */
+const URL_SETTING_KEYS = [
+  'githubEndpoint',
+  'hfEndpoint',
+  'civitaiEndpoint',
+  'pipIndex',
+  'torchIndexMirror'
+] as const
+
+function assertSafeEndpointSettings(patch: Partial<AppSettings>): void {
+  for (const key of URL_SETTING_KEYS) {
+    assertSafeEndpointSetting(key, (patch as Record<string, unknown>)[key])
+  }
 }
 
 function isSafeReadPath(path: string): boolean {
-  if (!path || path.includes('\0')) return false
-  const ext = extname(basename(path)).toLowerCase()
-  if (!READ_DATA_EXTS.has(ext)) return false
-  // Reject executable/script extensions outright (defence in depth).
-  if (!isSafeOpenPath(path)) return false
-  // Trusted: an explicitly picked file (or a file under a picked folder).
-  if (isUnderAnyRoot(path, [...approvedReadRoots])) return true
-  // Otherwise: only files that resolve under an app-owned root.
-  return existsSync(path) && isUnderAnyRoot(path, allowedReadRoots())
+  return isSafeDataReadPath(path, {
+    approvedRoots: [...approvedReadRoots],
+    allowedRoots: allowedReadRoots()
+  })
 }
 
 let embedView: WebContentsView | null = null
@@ -297,15 +291,124 @@ async function openEmbedInternal(url: string, title?: string): Promise<boolean> 
       event.preventDefault()
     }
   })
-  void view.webContents.loadURL(url)
+  // 0.1.17 (WP9): report load failures to the renderer so the embed pane can
+  // show an error + retry instead of a silent blank rectangle.
+  view.webContents.on('did-finish-load', () => {
+    broadcast(IPC_EVENTS.embedState, { state: 'ready', url })
+  })
+  view.webContents.on(
+    'did-fail-load',
+    (_e, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      if (!isMainFrame) return
+      broadcast(IPC_EVENTS.embedState, {
+        state: 'failed',
+        url,
+        errorCode,
+        errorDescription,
+        validatedURL
+      })
+    }
+  )
+  void view.webContents.loadURL(url).catch((err: unknown) => {
+    broadcast(IPC_EVENTS.embedState, {
+      state: 'failed',
+      url,
+      errorDescription: err instanceof Error ? err.message : String(err)
+    })
+  })
   return true
 }
 
 /** Late-bound window getter so openEmbedInternal can run before registerIpcHandlers. */
 let getWindowRef: () => BrowserWindow | null = () => null
 
+/**
+ * 0.1.17 (WP5): terminal-state notification for a batch run, shared by
+ * start / resume / retryFailed so all three report the same way.
+ */
+function notifyBatchTerminal(result: {
+  name: string
+  status: string
+  submitted: number
+  completed: number
+  produced: number
+  failed: number
+  errorSummary?: string
+}): void {
+  if (result.status === 'done') {
+    broadcastNotification({
+      type: 'success',
+      title: `Batch done: ${result.name}`,
+      titleKey: 'notify.batchDone',
+      params: { name: result.name },
+      message: `queued ${result.submitted} · ok ${result.completed} · produced ${result.produced} · failed ${result.failed}`
+    })
+  } else if (result.status === 'error') {
+    broadcastNotification({
+      type: 'error',
+      title: `Batch failed: ${result.name}`,
+      titleKey: 'notify.batchFailed',
+      params: { name: result.name },
+      message:
+        result.errorSummary ||
+        `queued ${result.submitted} · ok ${result.completed} · produced ${result.produced} · failed ${result.failed}`,
+      duration: 8000
+    })
+  } else if (result.status === 'cancelled') {
+    broadcastNotification({
+      type: 'warning',
+      title: `Batch cancelled: ${result.name}`,
+      titleKey: 'notify.batchCancelled',
+      params: { name: result.name },
+      message: `queued ${result.submitted} · ok ${result.completed} · failed ${result.failed}`
+    })
+  }
+}
+
 export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void {
   getWindowRef = getWindow
+
+  /** Require the batch job's backend to be live (local running / online remote). */
+  async function requireBatchTarget(jobId: string): Promise<{ id: string; name: string }> {
+    const job = batchService.list().find((j) => j.id === jobId)
+    const targetId = String(job?.instanceId || '')
+    if (targetId.startsWith('remote:')) {
+      const status = await remoteService.test(targetId.slice('remote:'.length))
+      if (!status.online) {
+        throw new Error(`Remote instance is offline: ${status.error || targetId}`)
+      }
+    } else {
+      await requireRunningInstance(targetId)
+    }
+    return { id: targetId, name: job?.name || jobId }
+  }
+
+  // 0.1.17 (WP6): every channel registered below is timed. A call at or above
+  // FREEZE_OP_MS also raises one throttled toast, so the user learns the app
+  // (not their click) froze. Recording itself never throws into the call.
+  const notifiedAt = new Map<string, number>()
+  setSlowOpListener((entry) => {
+    if (!entry.freeze || entry.ms < FREEZE_OP_MS) return
+    const now = Date.now()
+    const last = notifiedAt.get(entry.channel) || 0
+    if (now - last < 60_000) return
+    notifiedAt.set(entry.channel, now)
+    broadcastNotification({
+      type: 'warning',
+      title: 'Main process was busy',
+      titleKey: 'notify.appFreeze',
+      message: `${entry.channel} took ${entry.ms} ms`,
+      messageKey: 'notify.appFreezeMsg',
+      params: { channel: entry.channel, ms: entry.ms },
+      duration: 8000
+    })
+  })
+  instrumentIpcHandle(
+    ipcMain as unknown as {
+      handle: (channel: string, listener: (...args: never[]) => unknown) => unknown
+    }
+  )
+
   // settings
   ipcMain.handle(
     'settings.get',
@@ -314,6 +417,10 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle(
     'settings.set',
     wrap(async (patch: Partial<AppSettings>) => {
+      // 0.1.17 (WP8): endpoint-shaped settings flow straight into installers and
+      // network probes. Accepting `file:`/`javascript:`/garbage there turned a
+      // settings write into a local-file or scheme-injection primitive.
+      assertSafeEndpointSettings(patch)
       const next = saveSettings(patch)
       // Re-apply proxy whenever settings change
       syncProxyFromSettings()
@@ -418,6 +525,11 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     'instance.forceKill',
     wrap((id: string) => instanceService.forceKill(sanitizeId(id)))
   )
+  // 0.1.17 (WP3): manual orphan sweep (also runs at startup).
+  ipcMain.handle(
+    'instance.sweepStale',
+    wrap(() => instanceService.sweepStaleProcesses())
+  )
   ipcMain.handle(
     'instance.startAll',
     wrap(() => instanceService.startAll())
@@ -464,6 +576,33 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       const result = await instanceService.exportLogs(sanitizeId(id))
       shell.showItemInFolder(result.path)
       return result
+    })
+  )
+  // 0.1.17 (WP4): an update that died mid-run leaves a journal + backup.
+  ipcMain.handle(
+    'instance.updateJournal',
+    wrap(async (id: string) => {
+      const { comfyUpdaterService } = await import('../services/updater')
+      return comfyUpdaterService.readJournal(sanitizeId(id))
+    })
+  )
+  ipcMain.handle(
+    'instance.rollbackUpdate',
+    wrap(async (id: string) => {
+      const { comfyUpdaterService } = await import('../services/updater')
+      const safeId = sanitizeId(id)
+      const ok = await comfyUpdaterService.rollbackFromJournal(safeId)
+      if (ok) {
+        broadcastNotification({
+          type: 'success',
+          title: 'Update rolled back',
+          titleKey: 'notify.updateRolledBack',
+          message: 'Core files restored from the pre-update backup',
+          messageKey: 'notify.updateRolledBackMsg',
+          duration: 6000
+        })
+      }
+      return ok
     })
   )
   ipcMain.handle(
@@ -1274,6 +1413,15 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     wrap(() => installerService.cancel())
   )
   ipcMain.handle(
+    'installer.reset',
+    wrap(() => {
+      // 0.1.17 (WP1): user-facing escape hatch for a run stuck as "running"
+      // (app killed mid-install). Clears the persisted snapshot only.
+      installerService.reset()
+      return true
+    })
+  )
+  ipcMain.handle(
     'installer.suggestInstallRoot',
     wrap(() => installerService.suggestInstallRoot())
   )
@@ -1316,7 +1464,16 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     'instance.exportLaunchScript',
     wrap(async (id: string, opts?: { dir?: string; kind?: 'bat' | 'sh' }) => {
       const { instanceService } = await import('../services/instance')
-      return instanceService.exportLaunchScript(id, opts)
+      // 0.1.17 (WP8): `dir` came from the renderer and was joined unchecked, so
+      // a compromised renderer could drop a .bat into an autostart folder.
+      // Only app-owned / reachable roots are honoured; anything else falls back
+      // to the user-facing save dialog (which the UI always uses anyway).
+      let dir = opts?.dir
+      if (dir) {
+        const allowed = resolveInsideAnyRoot(dir, await collectRevealRoots())
+        if (!allowed) dir = undefined
+      }
+      return instanceService.exportLaunchScript(sanitizeId(id), { ...opts, dir })
     })
   )
 
@@ -1354,66 +1511,69 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       }
     )
   )
+  /**
+   * Shared launcher (0.1.17 WP5-7): the IPC call returns as soon as the run is
+   * accepted, the terminal notification is attached to the same promise, and
+   * `batch.wait` can await it from the UI. A long batch no longer holds the
+   * request open (which made the window look frozen until the last image).
+   */
+  const launchBatch = async (
+    safeId: string,
+    kick: () => BatchJob | Promise<BatchJob>
+  ): Promise<BatchJob> => {
+    const target = await requireBatchTarget(safeId)
+    let initial: BatchJob
+    try {
+      initial = await kick()
+    } catch (e) {
+      broadcastNotification({
+        type: 'error',
+        title: `Batch failed: ${target.name}`,
+        titleKey: 'notify.batchFailed',
+        params: { name: target.name },
+        message: e instanceof Error ? e.message : String(e),
+        duration: 8000
+      })
+      throw e
+    }
+    void batchService
+      .wait(safeId)
+      .then((settled) => {
+        if (settled) notifyBatchTerminal(settled)
+      })
+      .catch(() => undefined)
+    return initial
+  }
+
   ipcMain.handle(
     'batch.start',
     wrap(async (id: string) => {
       const safeId = sanitizeId(id)
-      const job = batchService.list().find((j) => j.id === safeId)
-      // The target must be a live backend — local instance or a reachable
-      // remote (0.1.11); never auto-start anything.
-      const targetId = String(job?.instanceId || '')
-      if (targetId.startsWith('remote:')) {
-        const status = await remoteService.test(targetId.slice('remote:'.length))
-        if (!status.online) {
-          throw new Error(`Remote instance is offline: ${status.error || targetId}`)
-        }
-      } else {
-        await requireRunningInstance(targetId)
-      }
-      try {
-        const result = await batchService.start(safeId)
-        // Surface terminal state as a global notification (task done / failed).
-        if (result.status === 'done') {
-          broadcastNotification({
-            type: 'success',
-            title: `Batch done: ${result.name}`,
-            titleKey: 'notify.batchDone',
-            params: { name: result.name },
-            message: `queued ${result.submitted} · ok ${result.completed} · produced ${result.produced} · failed ${result.failed}`
-          })
-        } else if (result.status === 'error') {
-          broadcastNotification({
-            type: 'error',
-            title: `Batch failed: ${result.name}`,
-            titleKey: 'notify.batchFailed',
-            params: { name: result.name },
-            message:
-              result.errorSummary ||
-              `queued ${result.submitted} · ok ${result.completed} · produced ${result.produced} · failed ${result.failed}`,
-            duration: 8000
-          })
-        } else if (result.status === 'cancelled') {
-          broadcastNotification({
-            type: 'warning',
-            title: `Batch cancelled: ${result.name}`,
-            titleKey: 'notify.batchCancelled',
-            params: { name: result.name },
-            message: `queued ${result.submitted} · ok ${result.completed} · failed ${result.failed}`
-          })
-        }
-        return result
-      } catch (e) {
-        broadcastNotification({
-          type: 'error',
-          title: `Batch failed: ${job?.name || safeId}`,
-          titleKey: 'notify.batchFailed',
-          params: { name: job?.name || safeId },
-          message: e instanceof Error ? e.message : String(e),
-          duration: 8000
-        })
-        throw e
-      }
+      return launchBatch(safeId, () => batchService.startAsync(safeId))
     })
+  )
+  // 0.1.17 (WP5): continue an interrupted job / retry only its failed legs.
+  ipcMain.handle(
+    'batch.resume',
+    wrap(async (id: string) => {
+      const safeId = sanitizeId(id)
+      return launchBatch(safeId, () => batchService.resumeAsync(safeId))
+    })
+  )
+  ipcMain.handle(
+    'batch.retryFailed',
+    wrap(async (id: string) => {
+      const safeId = sanitizeId(id)
+      return launchBatch(safeId, () => batchService.retryFailedAsync(safeId))
+    })
+  )
+  // 0.1.17 (WP5-7): settle without polling.
+  ipcMain.handle(
+    'batch.wait',
+    wrap((id: string) =>
+      // A long batch is a legitimate wait, not a frozen main process.
+      withPausedSlowOp(() => batchService.wait(sanitizeId(id)))
+    )
   )
   ipcMain.handle(
     'batch.cancel',
@@ -1456,6 +1616,40 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   )
 
   // output
+  // 0.1.17 (WP7): explicit disk scan, separate from listing. The async walk
+  // yields between directories, reports progress and can be cancelled — the
+  // old synchronous walk froze every IPC call for the whole 13 GB tree.
+  ipcMain.handle(
+    'output.scan',
+    wrap(async (opts?: { root?: string }) => {
+      const { outputService } = await import('../services/p1p2')
+      let root = opts?.root
+      if (root) {
+        const { workflowLibraryDir } = await import('../services/db')
+        const { resolveOutputDir } = await import('../services/p1p2')
+        const allowed = [
+          workflowLibraryDir(),
+          ...loadInstanceConfigs().map((i) => resolveOutputDir(i)),
+          ...loadInstanceConfigs().map((i) => join(i.path, 'user', 'default', 'workflows'))
+        ].filter(Boolean) as string[]
+        const resolved = resolveInsideAnyRoot(root, allowed)
+        if (!resolved) throw new Error('Output root is outside the allowed areas')
+        root = resolved
+      }
+      const result = await outputService.scanAsync(root, (p) => {
+        broadcast(IPC_EVENTS.outputScanProgress, p)
+      })
+      return { scanned: result.scanned, cancelled: result.cancelled }
+    })
+  )
+  ipcMain.handle(
+    'output.scanCancel',
+    wrap(async () => {
+      const { outputService } = await import('../services/p1p2')
+      outputService.cancelScan()
+      return true
+    })
+  )
   ipcMain.handle(
     'output.list',
     wrap(
@@ -1491,38 +1685,43 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
         const { thumbnailDisplayUrl, toMediaUrl, resolveMediaUrlToPath, thumbnailService } =
           await import('../services/media')
         const { existsSync } = await import('fs')
-        const result = outputService.list(opts)
+        // 0.1.17 (WP7): cap the page size and never scan here — scanning is an
+        // explicit `output.scan` (a page of 200 thumbs used to rewrite the
+        // whole index once per thumbnail).
+        const result = outputService.list({
+          ...opts,
+          limit: Math.max(1, Math.min(Number(opts?.limit) || 60, 200))
+        })
         // Generate downscaled thumbs for image assets so the grid does not load
         // full-size PNGs (产物库缩略图管线). A recorded thumb that no longer
         // exists on disk (stale DB row / cache eviction) must NOT win over a
         // regenerated thumb or the full-size fallback — that produced 403s.
-        const items = await Promise.all(
-          result.items.map(async (a) => {
-            let thumb: string | undefined
-            if (a.thumbnail) {
-              if (a.thumbnail.startsWith('comfy-pilot-media:')) {
-                thumb = resolveMediaUrlToPath(a.thumbnail) ? a.thumbnail : undefined
-              } else if (existsSync(a.thumbnail)) {
-                thumb = thumbnailDisplayUrl(a.thumbnail) || undefined
-              }
+        // One item is cheap; 200 image decodes at once is not. Bounded pool of 8.
+        const items = await mapPool(result.items, 8, async (a) => {
+          let thumb: string | undefined
+          if (a.thumbnail) {
+            if (a.thumbnail.startsWith('comfy-pilot-media:')) {
+              thumb = resolveMediaUrlToPath(a.thumbnail) ? a.thumbnail : undefined
+            } else if (existsSync(a.thumbnail)) {
+              thumb = thumbnailDisplayUrl(a.thumbnail) || undefined
             }
-            if (!thumb && a.type === 'image') {
-              const generated = await thumbnailService.ensureOutputThumb(a.path)
-              if (generated) thumb = thumbnailDisplayUrl(generated) || undefined
-            }
-            // Only advertise media URLs for files that still exist — a stale DB
-            // row for a deleted output must not produce a 403ing <img>/<video>.
-            const mediaUrl = existsSync(a.path) ? toMediaUrl(a.path) || undefined : undefined
-            return {
-              ...a,
-              // Images fall back to the full-size URL; videos render <video>
-              // directly from mediaUrl (no raster thumb possible without ffmpeg).
-              thumbnail: thumb || (a.type === 'image' ? mediaUrl : undefined),
-              // Full-resolution media URL — the lightbox must never get a bare fs path.
-              mediaUrl
-            }
-          })
-        )
+          }
+          if (!thumb && a.type === 'image') {
+            const generated = await thumbnailService.ensureOutputThumb(a.path)
+            if (generated) thumb = thumbnailDisplayUrl(generated) || undefined
+          }
+          // Only advertise media URLs for files that still exist — a stale DB
+          // row for a deleted output must not produce a 403ing <img>/<video>.
+          const mediaUrl = existsSync(a.path) ? toMediaUrl(a.path) || undefined : undefined
+          return {
+            ...a,
+            // Images fall back to the full-size URL; videos render <video>
+            // directly from mediaUrl (no raster thumb possible without ffmpeg).
+            thumbnail: thumb || (a.type === 'image' ? mediaUrl : undefined),
+            // Full-resolution media URL — the lightbox must never get a bare fs path.
+            mediaUrl
+          }
+        })
         return { ...result, items }
       }
     )

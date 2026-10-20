@@ -94,6 +94,12 @@ const h = vi.hoisted(() => {
     /** Captured argv/opts of the most recent spawn (0.1.9 spawn-contract tests). */
     lastSpawn: null as null | { cmd: string; args: string[]; opts: unknown },
     spawnFail: null as Error | null,
+    /**
+     * 0.1.17 (WP3): real children emit 'exit' after a successful kill and
+     * stop() now awaits that. Set true to model a process that ignores the
+     * polite signal (SIGTERM→SIGKILL escalation tests).
+     */
+    childIgnoresKill: false,
     spawnExitImmediate: null as null | { code: number | null; signal: string | null },
     saveDialogResult: { canceled: true, filePath: undefined } as {
       canceled: boolean
@@ -113,6 +119,7 @@ const h = vi.hoisted(() => {
     killSignals: string[]
     kill: (signal?: string) => boolean
     on: (ev: string, cb: Cb) => unknown
+    once: (ev: string, cb: Cb) => unknown
     emit: (ev: string, ...args: unknown[]) => boolean
   }
 
@@ -130,9 +137,21 @@ const h = vi.hoisted(() => {
       kill(signal?: string) {
         child.killSignals.push(signal || 'SIGTERM')
         child.killed = true
+        // A real process emits 'exit' shortly after a successful kill; stop()
+        // awaits it (0.1.17 WP3). `childIgnoresKill` models a stuck process.
+        if (!state.childIgnoresKill) {
+          queueMicrotask(() => {
+            if (child.exitCode === null) {
+              child.exitCode = 0
+              child.signalCode = signal || 'SIGTERM'
+              em.emit('exit', 0, signal || 'SIGTERM')
+            }
+          })
+        }
         return true
       },
       on: em.on,
+      once: em.once,
       emit: em.emit
     }
     return child
@@ -393,6 +412,7 @@ beforeEach(() => {
   h.state.spawnCount = 0
   h.state.lastSpawn = null
   h.state.spawnFail = null
+  h.state.childIgnoresKill = false
   h.state.spawnExitImmediate = null
   h.state.saveDialogResult = { canceled: true, filePath: undefined }
   h.state.processKillCalls = []
@@ -1624,22 +1644,25 @@ describe('waitReady()', () => {
 // stop / restart / forceKill / killAllNow
 // ===========================================================================
 describe('stop()', () => {
-  it('sends SIGTERM then escalates to SIGKILL after 3s if still alive', async () => {
+  it('awaits exit after SIGTERM and escalates to SIGKILL if still alive', async () => {
     vi.useFakeTimers()
     register(cfg({ id: 'stop' }))
     h.state.fetchImpl = okStats
+    // Process that ignores the polite signal — the escalation path.
+    h.state.childIgnoresKill = true
     const startP = svc.start('stop')
     await vi.advanceTimersByTimeAsync(250)
     await startP
     const child = childOf(svc, 'stop')
     const stopP = svc.stop('stop')
     await vi.advanceTimersByTimeAsync(0)
-    await stopP
     expect(child.killSignals).toContain('SIGTERM')
-    // process never exits on its own — advance past the escalation window
+    // 0.1.17 (WP3): stop() now WAITS for the exit instead of returning early.
     expect(child.exitCode).toBeNull()
-    await vi.advanceTimersByTimeAsync(3001)
+    await vi.advanceTimersByTimeAsync(4600)
+    const info = await stopP
     expect(child.killSignals).toContain('SIGKILL')
+    expect(info.exited).toBe(false)
   })
 
   it('does not SIGKILL when the child already exited', async () => {
@@ -1650,12 +1673,14 @@ describe('stop()', () => {
     await vi.advanceTimersByTimeAsync(250)
     await startP
     const child = childOf(svc, 'dead')
+    // Already gone before stop() runs.
+    child.exitCode = 0
     const stopP = svc.stop('dead')
     await vi.advanceTimersByTimeAsync(0)
-    await stopP
-    child.exitCode = 0
-    await vi.advanceTimersByTimeAsync(3001)
+    const info = await stopP
+    await vi.advanceTimersByTimeAsync(4600)
     expect(child.killSignals).not.toContain('SIGKILL')
+    expect(info.exited).toBe(true)
   })
 
   it('warns instead of killing when stopping an adopted external process', async () => {
@@ -1801,6 +1826,24 @@ describe('getLogs / clearLogs', () => {
     expect(svc.clearLogs('clr')).toBe(true)
     expect(svc.getLogs('clr')).toEqual([])
     expect(svc.clearLogs('ghost')).toBe(false)
+  })
+
+  it('clearLogs also removes the rotated generation (0.1.17 WP10)', async () => {
+    register(cfg({ id: 'rot' }))
+    h.state.fetchImpl = failFetch
+    await svc.start('rot')
+    const child = childOf(svc, 'rot')
+    child.stdout.emit('data', Buffer.from('fresh\n'))
+    mkdirSync(h.state.logs, { recursive: true })
+    writeFileSync(
+      join(h.state.logs, 'rot.log.1'),
+      `[${new Date().toISOString()}] INFO old history\n`
+    )
+    // readLogFile reads `.log.1` FIRST — clearing only `.log` left history behind.
+    expect(svc.getLogs('rot').some((l) => l.message.includes('old history'))).toBe(true)
+    expect(svc.clearLogs('rot')).toBe(true)
+    expect(existsSync(join(h.state.logs, 'rot.log.1'))).toBe(false)
+    expect(svc.getLogs('rot')).toEqual([])
   })
 })
 
@@ -2143,5 +2186,245 @@ describe('instance log pipeline (0.1.16)', () => {
     // Python logging writes INFO to STDERR — it must NOT be painted as a warning.
     expect(lines[1].level).toBe('info')
     expect(lines[2].level).toBe('error')
+  })
+})
+
+// ===========================================================================
+// 0.1.17 (WP3): lifecycle truth — no ghost spawns, awaited stops, crash
+// classification, orphan ledger.
+// ===========================================================================
+describe('lifecycle truth (0.1.17 WP3)', () => {
+  it('stop() during starting kills the child that start already spawned', async () => {
+    register(cfg({ id: 'quickstop' }))
+    h.state.fetchImpl = failFetch
+    const startP = svc.start('quickstop')
+    // User hits stop while the instance is still "starting". Attach the
+    // rejection expectation first — the throw lands while stop() is awaited.
+    const startAssertion = expect(startP).rejects.toThrow(/cancelled/i)
+    const stopP = svc.stop('quickstop')
+    await startAssertion
+    const info = await stopP
+    expect(info.status).toBe('stopped')
+    // The runtime no longer holds the child (start was cancelled), so inspect
+    // the process that was actually spawned.
+    const child = h.state.lastChild as unknown as ReturnType<typeof h.makeChild>
+    expect(child.killSignals.length).toBeGreaterThan(0)
+    expect(child.exitCode).not.toBeNull()
+  })
+
+  it('stopAll also stops instances that are still starting', async () => {
+    register(cfg({ id: 'sa' }), cfg({ id: 'sb', port: 8189 }))
+    h.state.fetchImpl = failFetch
+    const startA = svc.start('sa')
+    const startAssertion = expect(startA).rejects.toThrow(/cancelled/i)
+    const results = await svc.stopAll()
+    await startAssertion
+    expect(results.map((r) => r.status)).toEqual(['stopped'])
+    expect(results[0].ok).toBe(true)
+  })
+
+  it('awaited stop reports exited=true when the process went away', async () => {
+    register(cfg({ id: 'exitinfo' }))
+    h.state.fetchImpl = okStats
+    await svc.start('exitinfo')
+    const info = await svc.stop('exitinfo')
+    expect(info.exited).toBe(true)
+  })
+
+  it('concurrent stop() calls share one kill and agree on exited (review fix)', async () => {
+    register(cfg({ id: 'cstop' }))
+    h.state.fetchImpl = okStats
+    await svc.start('cstop')
+    const child = h.state.lastChild as unknown as ReturnType<typeof h.makeChild>
+    const before = child.killSignals.length
+    const [a, b] = await Promise.all([svc.stop('cstop'), svc.stop('cstop')])
+    expect(child.killSignals.length - before).toBe(1)
+    expect(a.exited).toBe(true)
+    expect(b.exited).toBe(true)
+    expect(a.status).toBe('stopped')
+  })
+
+  it('a process that ignores the kill stays owned and reports error (review fix)', async () => {
+    vi.useFakeTimers()
+    try {
+      register(cfg({ id: 'stuck' }))
+      h.state.fetchImpl = okStats
+      const startP = svc.start('stuck')
+      await vi.advanceTimersByTimeAsync(300)
+      await startP
+      h.state.childIgnoresKill = true
+      const child = h.state.lastChild as unknown as ReturnType<typeof h.makeChild>
+      const stopP = svc.stop('stuck')
+      await vi.advanceTimersByTimeAsync(6000)
+      const info = await stopP
+      expect(info.exited).toBe(false)
+      // The UI must not be told "stopped" while the process is alive.
+      expect(info.status).toBe('error')
+      // The handle is retained so a retry can still reach the process.
+      const before = child.killSignals.length
+      const retryP = svc.stop('stuck')
+      await vi.advanceTimersByTimeAsync(6000)
+      const retry = await retryP
+      expect(retry.exited).toBe(false)
+      expect(child.killSignals.length).toBeGreaterThan(before)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('restart refuses to adopt the process it could not stop', async () => {
+    vi.useFakeTimers()
+    try {
+      register(cfg({ id: 'radopt' }))
+      h.state.fetchImpl = failFetch
+      const startP = svc.start('radopt')
+      await vi.advanceTimersByTimeAsync(250)
+      await startP
+      // The port never frees, but /system_stats would answer (adopt candidate).
+      h.state.portsInUse.add(8188)
+      h.state.fetchImpl = okStats
+      const restartP = svc.restart('radopt')
+      // Attach the rejection expectation BEFORE advancing: the throw happens
+      // inside the timer window and would otherwise surface as unhandled.
+      const assertion = expect(restartP).rejects.toThrow(/refusing to adopt/i)
+      await vi.advanceTimersByTimeAsync(10_000)
+      await assertion
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('classifies an unexpected exit (OOM) and emits a report', async () => {
+    register(cfg({ id: 'crash' }))
+    h.state.fetchImpl = okStats
+    await svc.start('crash')
+    const child = childOf(svc, 'crash')
+    const events: Array<{ instanceId: string; report: { kind: string; hint: string } }> = []
+    svc.on('exit', (e: unknown) => {
+      events.push(e as (typeof events)[number])
+    })
+    child.stdout.emit('data', Buffer.from('torch.cuda.OutOfMemoryError: CUDA out of memory\n'))
+    child.emit('exit', 1, null)
+    expect(events).toHaveLength(1)
+    expect(events[0].instanceId).toBe('crash')
+    expect(events[0].report.kind).toBe('oom')
+    expect(events[0].report.hint).toMatch(/memory/i)
+  })
+
+  it('does not call every crash a GPU driver problem just because CUDA is mentioned', async () => {
+    register(cfg({ id: 'plaincuda' }))
+    h.state.fetchImpl = okStats
+    await svc.start('plaincuda')
+    const child = childOf(svc, 'plaincuda')
+    const events: Array<{ report: { kind: string } }> = []
+    svc.on('exit', (e: unknown) => {
+      events.push(e as (typeof events)[number])
+    })
+    // A normal startup banner mentions torch.cuda; the exit cause is unrelated.
+    child.stdout.emit(
+      'data',
+      Buffer.from('Total VRAM 24564 MB, total RAM 32768 MB\ntorch.cuda.is_available() = True\n')
+    )
+    child.emit('exit', 1, null)
+    expect(events[0].report.kind).toBe('unknown')
+  })
+
+  it('still classifies an explicit CUDA driver failure', async () => {
+    register(cfg({ id: 'drv' }))
+    h.state.fetchImpl = okStats
+    await svc.start('drv')
+    const child = childOf(svc, 'drv')
+    const events: Array<{ report: { kind: string } }> = []
+    svc.on('exit', (e: unknown) => {
+      events.push(e as (typeof events)[number])
+    })
+    child.stderr.emit('data', Buffer.from('RuntimeError: CUDA driver initialization failed\n'))
+    child.emit('exit', 1, null)
+    expect(events[0].report.kind).toBe('driver')
+  })
+
+  it('classifies a dependency failure', async () => {
+    register(cfg({ id: 'dep' }))
+    h.state.fetchImpl = okStats
+    await svc.start('dep')
+    const child = childOf(svc, 'dep')
+    const events: Array<{ report: { kind: string } }> = []
+    svc.on('exit', (e: unknown) => {
+      events.push(e as (typeof events)[number])
+    })
+    child.stderr.emit('data', Buffer.from("ModuleNotFoundError: No module named 'torch'\n"))
+    child.emit('exit', 1, null)
+    expect(events[0].report.kind).toBe('dependency')
+  })
+
+  it('does not emit a crash report for an intentional stop', async () => {
+    register(cfg({ id: 'quiet' }))
+    h.state.fetchImpl = okStats
+    await svc.start('quiet')
+    const child = childOf(svc, 'quiet')
+    const events: unknown[] = []
+    svc.on('exit', (e: unknown) => {
+      events.push(e as (typeof events)[number])
+    })
+    await svc.stop('quiet')
+    child.exitCode = 0
+    child.emit('exit', 0, 'SIGTERM')
+    expect(events).toHaveLength(0)
+  })
+
+  it('records spawned pids and forgets them on exit', async () => {
+    register(cfg({ id: 'ledger' }))
+    h.state.fetchImpl = okStats
+    await svc.start('ledger')
+    const child = childOf(svc, 'ledger')
+    const file = join(LOGS, 'pids.json')
+    let ledger = JSON.parse(readFileSync(file, 'utf-8')) as Record<string, { pid: number }>
+    expect(ledger.ledger?.pid).toBe(child.pid)
+    child.exitCode = 0
+    child.emit('exit', 0, null)
+    ledger = JSON.parse(readFileSync(file, 'utf-8')) as Record<string, { pid: number }>
+    expect(ledger.ledger).toBeUndefined()
+  })
+
+  it('sweep reports an unverifiable orphan instead of killing it', async () => {
+    mkdirSync(LOGS, { recursive: true })
+    // The pid is alive (this very test process) but its command line cannot
+    // prove it belongs to the recorded instance path.
+    writeFileSync(
+      join(LOGS, 'pids.json'),
+      JSON.stringify({
+        ghost: { pid: process.pid, path: '/definitely/not/this/process', startedAt: Date.now() }
+      })
+    )
+    h.state.execHandler = () => ({ stdout: 'some other process' })
+    const res = await svc.sweepStaleProcesses()
+    expect(res.entries).toBe(1)
+    expect(res.killed).toEqual([])
+    expect(res.unverified).toHaveLength(1)
+    // The entry is kept so a later sweep can retry it.
+    const ledger = JSON.parse(readFileSync(join(LOGS, 'pids.json'), 'utf-8')) as Record<
+      string,
+      unknown
+    >
+    expect(Object.keys(ledger)).toEqual(['ghost'])
+  })
+
+  it('sweep drops entries whose pid is gone', async () => {
+    mkdirSync(LOGS, { recursive: true })
+    writeFileSync(
+      join(LOGS, 'pids.json'),
+      JSON.stringify({
+        dead: { pid: 999_999_999, path: '/gone', startedAt: 1 }
+      })
+    )
+    const res = await svc.sweepStaleProcesses()
+    expect(res.entries).toBe(1)
+    expect(res.killed).toEqual([])
+    expect(res.unverified).toEqual([])
+    const ledger = JSON.parse(readFileSync(join(LOGS, 'pids.json'), 'utf-8')) as Record<
+      string,
+      unknown
+    >
+    expect(Object.keys(ledger)).toEqual([])
   })
 })

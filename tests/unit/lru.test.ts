@@ -23,11 +23,10 @@ describe('LruCache (0.1.16)', () => {
     expect(c.has('b')).toBe(false)
   })
 
-  it('supports delete/clear/size and peek without refresh', () => {
+  it('supports delete/clear/size', () => {
     const c = new LruCache<string, number>(3)
     c.set('a', 1)
     c.set('b', 2)
-    expect(c.peek('a')).toBe(1)
     expect(c.size).toBe(2)
     expect(c.delete('a')).toBe(true)
     c.clear()

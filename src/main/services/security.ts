@@ -1,5 +1,6 @@
 import { isAbsolute, normalize, resolve, dirname, basename, extname, join } from 'path'
 import { randomUUID } from 'crypto'
+import { existsSync, realpathSync } from 'fs'
 
 /** Path traversal + allowlist helpers used across main-process services. */
 
@@ -256,7 +257,15 @@ const BLOCKED_OPEN_EXTENSIONS = new Set([
   '.url',
   '.pif',
   '.application',
-  '.gadget'
+  '.gadget',
+  // 0.1.17 (WP8): the macOS/Linux launcher and bundle formats were missing —
+  // `foo.command`, `Foo.app/…`, `x.desktop` and `x.AppImage` all execute on
+  // the platforms that understand them, and `shell.openPath` delegates to the
+  // desktop environment.
+  '.desktop',
+  '.command',
+  '.app',
+  '.appimage'
 ])
 
 export function isSafeOpenPath(path: string): boolean {
@@ -278,6 +287,104 @@ export function safeJoinFile(root: string, fileName: string): string {
 
 export function isAbsoluteOrRelativePath(p: string): boolean {
   return Boolean(p) && (isAbsolute(p) || p.includes('/') || p.includes('\\'))
+}
+
+/**
+ * Data file extensions the renderer may ask the main process to read
+ * (workflow JSON, media for import, manifests). Everything else is refused
+ * before any filesystem call.
+ */
+export const READ_DATA_EXTS = new Set([
+  '.json',
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.webp',
+  '.gif',
+  '.yaml',
+  '.yml',
+  '.txt'
+])
+
+/**
+ * Read gate for renderer-supplied data paths (0.1.16 policy, hardened 0.1.17).
+ *
+ * Allowed when the path:
+ *   1. has a data extension and is not a blocked executable/script type,
+ *   2. resolves under a root the user explicitly picked this session, or
+ *   3. exists and resolves under an app-owned root.
+ *
+ * Containment MUST use `resolveInsideAnyRoot` (real hop collapsing). The 0.1.16
+ * implementation compared normalized strings, so `D:\picked\..\..\Windows\…`
+ * passed while `D:\picked` was approved.
+ */
+export function isSafeDataReadPath(
+  path: string,
+  opts: { approvedRoots: string[]; allowedRoots: string[] }
+): boolean {
+  if (!path || path.includes('\0')) return false
+  const ext = extname(basename(path)).toLowerCase()
+  if (!READ_DATA_EXTS.has(ext)) return false
+  if (!isSafeOpenPath(path)) return false
+  const approved = opts.approvedRoots.filter(Boolean)
+  if (resolveInsideAnyRoot(path, approved)) {
+    return realpathInsideAnyRoot(path, approved)
+  }
+  if (!existsSync(path)) return false
+  const allowed = opts.allowedRoots.filter(Boolean)
+  return Boolean(resolveInsideAnyRoot(path, allowed)) && realpathInsideAnyRoot(path, allowed)
+}
+
+/**
+ * 0.1.17 (review fix): the lexical check above cannot see symlinks.
+ * A link dropped inside an approved folder could point at any readable file and
+ * still pass containment, so an existing target is resolved to its real path and
+ * re-checked against the roots' real paths.
+ *
+ * Non-existent targets return true: the lexical check already succeeded and
+ * there is no link to follow (the caller's read will simply fail).
+ */
+function realpathInsideAnyRoot(candidate: string, roots: string[]): boolean {
+  let real: string
+  try {
+    real = realpathSync(candidate)
+  } catch {
+    return true
+  }
+  for (const root of roots) {
+    let realRoot: string
+    try {
+      realRoot = realpathSync(root)
+    } catch {
+      realRoot = resolve(root)
+    }
+    if (real === realRoot || isPathInside(real, realRoot)) return true
+  }
+  return false
+}
+
+/**
+ * Settings endpoints (mirrors, indexes) must be http(s) URLs or empty.
+ * They flow into installers and network probes, so a `file:`/`javascript:`
+ * value turns a settings write into a local-file/scheme injection primitive.
+ */
+export function assertSafeEndpointSetting(field: string, raw: unknown): void {
+  if (raw === undefined || raw === null || raw === '') return
+  if (typeof raw !== 'string') throw new Error(`${field} must be a URL`)
+  let parsed: URL
+  try {
+    parsed = new URL(raw)
+  } catch {
+    throw new Error(`${field} must be a valid URL`)
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`${field} must use http(s)`)
+  }
+  // 0.1.17 (review fix): `https://user:token@host/` parses fine but persists the
+  // credential in plaintext and leaks it into installer/probe URLs.
+  if (parsed.username || parsed.password) {
+    throw new Error(`${field} must not embed credentials`)
+  }
 }
 
 export { dirname, basename, extname }

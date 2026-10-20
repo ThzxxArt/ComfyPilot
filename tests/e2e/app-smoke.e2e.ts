@@ -70,7 +70,10 @@ describe.skipIf(skip)('electron app smoke (real bundle)', () => {
         env: {
           ...process.env,
           ELECTRON_ENABLE_LOGGING: '1',
-          COMFYPILOT_E2E: '1'
+          COMFYPILOT_E2E: '1',
+          // 0.1.17 (review fix): the single-instance lock would make the smoke
+          // test exit immediately whenever a dev instance is already running.
+          COMFYPILOT_ALLOW_MULTIPLE: '1'
         },
         windowsHide: true
       })

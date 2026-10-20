@@ -20,6 +20,7 @@ import {
   useMessage
 } from 'naive-ui'
 import type { InstallStepStatus, UpdateStep } from '@shared/types'
+import IndeterminateBar from '@/components/IndeterminateBar.vue'
 import { updateDetailOf, updateStepTitle, useComfyUpdate } from '@/composables/useComfyUpdate'
 
 /**
@@ -129,6 +130,16 @@ const percent = computed(() => {
 })
 
 const steps = computed<UpdateStep[]>(() => ownProgress.value?.steps || [])
+/** 0.1.17 (WP2-4): a running step without a real fraction renders indeterminate. */
+const runningStep = computed(() => steps.value.find((s) => s.status === 'running') || null)
+const indeterminate = computed(
+  () =>
+    running.value &&
+    !failed.value &&
+    !cancelled.value &&
+    mode.value !== 'batch' &&
+    !runningStep.value?.progress
+)
 /** Terminal lines: the live stream when present; otherwise the per-step logs
  *  a hydrated snapshot carries (state restored after a renderer reload). */
 const terminalLines = computed(() => {
@@ -274,7 +285,9 @@ function stepTitle(s: UpdateStep): string {
     :closable="true"
   >
     <div class="upd-head">
+      <IndeterminateBar v-if="indeterminate" :height="10" :label="runningStep?.detail || ''" />
       <NProgress
+        v-else
         type="line"
         :percentage="percent"
         :height="10"

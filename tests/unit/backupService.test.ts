@@ -25,6 +25,17 @@ const h = vi.hoisted(() => {
   return { state }
 })
 
+// 0.1.17 (review fix): prove the restore path re-encrypts instead of writing
+// whatever `listRemotes()` handed it (which is decrypted plaintext).
+vi.mock('../../src/main/services/secretStorage', () => ({
+  encryptSecret: (s: string) => (s ? `enc:${Buffer.from(s, 'utf-8').toString('base64')}` : ''),
+  decryptSecretSafe: (s: string) =>
+    s.startsWith('enc:')
+      ? { value: Buffer.from(s.slice(4), 'base64').toString('utf-8'), failed: false }
+      : { value: s, failed: false },
+  isEncryptedSecret: (s: string) => s.startsWith('enc:')
+}))
+
 vi.mock('../../src/main/services/db', () => ({
   backupDir: () => join(h.state.root, 'backups'),
   userDataDir: () => h.state.root,
@@ -63,6 +74,7 @@ describe('BackupService (0.1.10 behaviour)', () => {
     if (h.state.root) rmSync(h.state.root, { recursive: true, force: true })
     h.state.root = mkdtempSync(join(tmpdir(), 'cp-backup-'))
     h.state.backups = []
+    h.state.savedSettings = null
     h.state.savedSettings = null
     h.state.settings = { locale: 'zh-CN' }
     h.state.instances = []
@@ -164,5 +176,95 @@ describe('BackupService (0.1.10 behaviour)', () => {
     expect(existsSync(dir)).toBe(false)
     expect(h.state.backups).toHaveLength(0)
     expect(svc.openFolder(manifest.id)).toContain(manifest.id)
+  })
+
+  // 0.1.17 (WP8): backups are user-copied folders — credentials must not ride along.
+  it('create() strips proxy password and remote API keys from the snapshot', async () => {
+    h.state.settings = {
+      locale: 'zh-CN',
+      proxy: { host: '127.0.0.1', port: 7890, password: 'hunter2' }
+    } as typeof h.state.settings
+    h.state.remotes = [
+      { id: 'r1', name: 'R', baseUrl: 'http://127.0.0.1:8188', apiKey: 'sk-live-secret' }
+    ]
+    const svc = await freshBackup()
+    const manifest = svc.create({ name: 'secrets' })
+    const dir = join(h.state.root, 'backups', manifest.id)
+
+    const settings = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf-8'))
+    expect(settings.proxy).toEqual({ host: '127.0.0.1', port: 7890, password: '' })
+    const remotes = JSON.parse(readFileSync(join(dir, 'remote-instances.json'), 'utf-8'))
+    expect(remotes[0].apiKey).toBe('')
+    expect(manifest.notes).toContain('credentials excluded')
+  })
+
+  it('restore() preserves this machine’s credentials when the backup has none', async () => {
+    h.state.settings = {
+      locale: 'zh-CN',
+      proxy: { host: 'old', port: 1080, password: 'local-pass' }
+    } as typeof h.state.settings
+    h.state.remotes = [
+      { id: 'r1', name: 'R', baseUrl: 'http://127.0.0.1:8188', apiKey: 'local-key' }
+    ]
+    const svc = await freshBackup()
+    const id = 'b-keep-secrets'
+    const dir = join(h.state.root, 'backups', id)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      join(dir, 'settings.json'),
+      JSON.stringify({ locale: 'en-US', proxy: { host: 'new', port: 1080, password: '' } })
+    )
+    writeFileSync(
+      join(dir, 'remote-instances.json'),
+      JSON.stringify([{ id: 'r1', name: 'R', baseUrl: 'http://127.0.0.1:8188', apiKey: '' }])
+    )
+
+    expect(svc.restore(id)).toBe(true)
+    const saved = h.state.savedSettings as any
+    expect(saved.locale).toBe('en-US')
+    expect(saved.proxy).toEqual({ host: 'new', port: 1080, password: 'local-pass' })
+    const remotes = JSON.parse(
+      readFileSync(join(h.state.root, 'remote_instances.jsonc'), 'utf-8')
+    ) as Array<Record<string, unknown>>
+    // The local key is preserved, but re-encrypted on disk (0.1.17 review fix).
+    expect(remotes[0].apiKey).toBe(`enc:${Buffer.from('local-key', 'utf-8').toString('base64')}`)
+    expect(remotes[0].apiKeyLocked).toBeUndefined()
+  })
+})
+
+describe('restore() validates untrusted settings (review fix)', () => {
+  beforeEach(() => {
+    if (h.state.root) rmSync(h.state.root, { recursive: true, force: true })
+    h.state.root = mkdtempSync(join(tmpdir(), 'cp-backup-'))
+    h.state.savedSettings = null
+    h.state.settings = { locale: 'zh-CN' }
+  })
+
+  it('rejects a backup whose mirror endpoint is not http(s)', async () => {
+    h.state.settings = { locale: 'zh-CN' } as typeof h.state.settings
+    const svc = await freshBackup()
+    const id = 'b-bad-endpoint'
+    const dir = join(h.state.root, 'backups', id)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      join(dir, 'settings.json'),
+      JSON.stringify({ locale: 'en-US', githubEndpoint: 'file:///etc/passwd' })
+    )
+    expect(() => svc.restore(id)).toThrow(/http\(s\)/)
+    // Aborted in phase 1: nothing was applied.
+    expect(h.state.savedSettings).toBeNull()
+  })
+
+  it('rejects a backup whose endpoint embeds credentials', async () => {
+    h.state.settings = { locale: 'zh-CN' } as typeof h.state.settings
+    const svc = await freshBackup()
+    const id = 'b-cred-endpoint'
+    const dir = join(h.state.root, 'backups', id)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      join(dir, 'settings.json'),
+      JSON.stringify({ locale: 'en-US', pipIndex: 'https://user:token@example.com/simple' })
+    )
+    expect(() => svc.restore(id)).toThrow(/credentials/)
   })
 })

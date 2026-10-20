@@ -89,12 +89,11 @@ async function setLocale(loc: 'zh-CN' | 'en-US'): Promise<void> {
   locale.value = loc
   // Persist immediately — leaving the page without Save used to silently
   // revert the language on next launch (0.1.11).
-  try {
-    const next = await ipc('settings.set', { locale: loc })
-    store.settings = next
-  } catch (err) {
-    message.error(err instanceof Error ? err.message : String(err))
-  }
+  //
+  // 0.1.17 (WP9): save the WHOLE form, not just the locale. Saving only the
+  // locale let the settings watch merge the stored values back over the form,
+  // silently discarding unsaved edits the user had typed.
+  await save({ silent: true })
 }
 
 const form = ref<AppSettings>(cloneSettings(store.settings))
@@ -147,14 +146,31 @@ async function addScanRoot(): Promise<void> {
 }
 /** Skip watch merge while we are the ones writing store.settings */
 let suppressSettingsWatch = false
-/** User has typed into the proxy form — do not clobber those edits */
-let userEditedProxy = false
+/**
+ * 0.1.17 (WP9-9): fields the user has edited since the last save. The old merge
+ * only protected `proxy`, so any background settings refresh silently reverted
+ * edits in every other field on screen.
+ */
+const editedKeys = new Set<keyof AppSettings>()
 let applyingIncoming = false
 
+function sameValue(a: unknown, b: unknown): boolean {
+  try {
+    return JSON.stringify(a) === JSON.stringify(b)
+  } catch {
+    return a === b
+  }
+}
+
 watch(
-  () => form.value.proxy,
+  form,
   () => {
-    if (!applyingIncoming) userEditedProxy = true
+    if (applyingIncoming || suppressSettingsWatch) return
+    const saved = store.settings as AppSettings | undefined
+    for (const key of Object.keys(form.value) as Array<keyof AppSettings>) {
+      if (!saved || !sameValue(form.value[key], saved[key])) editedKeys.add(key)
+      else editedKeys.delete(key)
+    }
   },
   { deep: true }
 )
@@ -167,14 +183,15 @@ watch(
     try {
       const incoming = cloneSettings(s)
       for (const key of Object.keys(incoming) as Array<keyof AppSettings>) {
-        if (key === 'proxy' && userEditedProxy) continue
+        // Never clobber a field the user is editing.
+        if (editedKeys.has(key as keyof AppSettings)) continue
         // @ts-expect-error index write
         form.value[key] = incoming[key]
       }
     } finally {
       applyingIncoming = false
     }
-    if (!userEditedProxy) proxyTestResult.value = null
+    if (!editedKeys.has('proxy')) proxyTestResult.value = null
   },
   { deep: true }
 )
@@ -194,7 +211,7 @@ async function save(opts?: { silent?: boolean }): Promise<boolean> {
       }
     } finally {
       applyingIncoming = false
-      userEditedProxy = false
+      editedKeys.clear()
     }
     if (!opts?.silent) message.success(t('settings.saveSuccess'))
     return true
@@ -236,6 +253,9 @@ async function applyProxy(): Promise<void> {
 async function loadRemotes(): Promise<void> {
   try {
     remotes.value = await ipc('remote.list')
+    // 0.1.17 (WP10): the app-store copy feeds the global instance selector —
+    // without this it kept showing the pre-edit remote list until restart.
+    await store.refreshRemotes()
   } catch (err) {
     console.error(err)
   }

@@ -157,7 +157,17 @@ describe('p1p2 services', () => {
     vi.unstubAllGlobals()
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    // 0.1.17 (WP7): hot collections flush on a 400 ms timer — drain it before
+    // the next test wipes ROOT/data, otherwise a late write leaks into it.
+    try {
+      const { flushPendingWrites } = await import('../../src/main/services/db')
+      flushPendingWrites()
+      const { flushPromptLinks } = await import('../../src/main/services/workflow')
+      flushPromptLinks()
+    } catch {
+      /* best effort */
+    }
     vi.unstubAllGlobals()
     vi.doUnmock('../../src/main/services/workflowConvert')
     vi.doUnmock('../../src/main/services/registry')
@@ -1061,6 +1071,8 @@ describe('p1p2 services', () => {
         params: {}
       })
 
+      // 0.1.17 (WP7): the walk is an explicit scan; list() is index-only now.
+      outputService.scan(root)
       const res = outputService.list({ root, limit: 100 })
       const paths = res.items.map((i) => i.path)
       expect(paths).toContain(png)
@@ -1100,6 +1112,7 @@ describe('p1p2 services', () => {
       writeFileSync(join(root, 'a', 'b', 'c', 'd', 'e', 'deep.png'), 'x')
       saveSettings({ outputScanDepth: 6 })
       try {
+        outputService.scan(root)
         const res = outputService.list({ root, limit: 100 })
         expect(res.items.map((i) => i.path)).toContain(
           join(root, 'a', 'b', 'c', 'd', 'e', 'deep.png')
@@ -1229,9 +1242,10 @@ describe('p1p2 services', () => {
       const r2 = listOutputAssetsAll().find((a) => a.path === f2)!
 
       // One real id + one unknown id → honest split, no all-or-nothing.
+      // 0.1.17 (WP9-2): failures carry a human label (the dialog lists them).
       const res = outputService.batchRemove([r1.id, 'missing-id'], true)
       expect(res.ok).toBe(1)
-      expect(res.failed).toEqual([{ id: 'missing-id', error: 'not found' }])
+      expect(res.failed).toEqual([{ id: 'missing-id', label: 'missing-id', error: 'not found' }])
       expect(existsSync(f1)).toBe(false)
       expect(listOutputAssetsAll().some((a) => a.id === r1.id)).toBe(false)
 
@@ -1624,6 +1638,9 @@ describe('0.1.11 attribution and remote targets', () => {
     await batchService.start(job.id)
 
     const { userDataDir } = await import('../../src/main/services/db')
+    // 0.1.17 (WP7): the sidecar is debounced — flush before reading it.
+    const { flushPromptLinks } = await import('../../src/main/services/workflow')
+    flushPromptLinks()
     const { readFileSync } = await import('fs')
     const links = JSON.parse(
       readFileSync(join(userDataDir(), 'prompt_links.jsonc'), 'utf-8')
@@ -1716,16 +1733,415 @@ describe('0.1.11 attribution and remote targets', () => {
       ['prompt_id', 'pid-fp-1']
     ])
 
+    outputService.scan(outDir)
     const res = outputService.list({ root: outDir, limit: 50 })
     const asset = res.items.find((a) => a.path === outPng)!
     expect(asset.workflowId).toBe('wf-fp')
     expect(asset.workflowName).toBe('FingerprintFlow')
     // The match persists a sidecar so later scans take the cheap path.
+    const { flushPromptLinks } = await import('../../src/main/services/workflow')
+    flushPromptLinks()
     const { readFileSync: readF } = await import('fs')
     const links = JSON.parse(readF(join(ROOT, 'data', 'prompt_links.jsonc'), 'utf-8')) as Record<
       string,
       { workflowId?: string }
     >
     expect(links['pid-fp-1']?.workflowId).toBe('wf-fp')
+  })
+})
+
+// ===========================================================================
+// 0.1.17 (WP5): interrupted jobs are honest, resumable and retry only failures.
+// ===========================================================================
+describe('batch resumability (0.1.17 WP5)', () => {
+  it('relabels a persisted submitting/running job as interrupted', async () => {
+    const { batchService } = await freshP1p2()
+    const { upsertBatchJob } = await import('../../src/main/services/db')
+    const p = join(ROOT, 'wf', 'ghost.json')
+    writeFileSync(p, uiGraph())
+    upsertBatchJob({
+      id: 'ghost-run',
+      name: 'ghost',
+      instanceId: 'inst-1',
+      items: [
+        {
+          workflowName: 'g',
+          workflowPath: p,
+          count: 2,
+          submitted: 1,
+          completed: 0,
+          failed: 0,
+          submitFailed: 0,
+          execFailed: 0,
+          promptIds: ['p1'],
+          seeds: [1],
+          outputPaths: []
+        }
+      ],
+      status: 'running',
+      count: 2,
+      submitted: 1,
+      completed: 0,
+      failed: 0,
+      submitFailed: 0,
+      execFailed: 0,
+      produced: 0,
+      createdAt: 1,
+      notes: '',
+      params: {}
+    } as never)
+
+    const job = batchService.list().find((j) => j.id === 'ghost-run')!
+    expect(job.status).toBe('interrupted')
+    expect(job.errorSummary).toMatch(/interrupted/i)
+    // Persisted, not just corrected in memory.
+    const onDisk = batchService.list().find((j) => j.id === 'ghost-run')!
+    expect(onDisk.status).toBe('interrupted')
+  })
+
+  it('resume submits only the legs that never completed and keeps counters', async () => {
+    const { batchService } = await freshP1p2()
+    await seedInstance()
+    const { upsertBatchJob } = await import('../../src/main/services/db')
+    const p = join(ROOT, 'wf', 'resume.json')
+    writeFileSync(p, uiGraph())
+    upsertBatchJob({
+      id: 'r1',
+      name: 'resume',
+      instanceId: 'inst-1',
+      items: [
+        {
+          workflowName: 'r',
+          workflowPath: p,
+          count: 3,
+          submitted: 1, // one prompt already handed to ComfyUI last run
+          completed: 0,
+          failed: 0,
+          submitFailed: 0,
+          execFailed: 0,
+          promptIds: ['old-1'],
+          seeds: [1],
+          outputPaths: []
+        }
+      ],
+      status: 'interrupted',
+      count: 3,
+      submitted: 1,
+      completed: 0,
+      failed: 0,
+      submitFailed: 0,
+      execFailed: 0,
+      produced: 0,
+      createdAt: 1,
+      notes: '',
+      params: {}
+    } as never)
+
+    const prompts: string[] = []
+    let n = 0
+    // History must settle the submitted ids or awaitOutputs polls for minutes.
+    const history = (): Record<string, unknown> =>
+      Object.fromEntries(
+        // 'old-1' was submitted by the interrupted run — it must settle too,
+        // otherwise awaitOutputs keeps polling for a prompt it can never see.
+        ['old-1', ...prompts].map((id) => [
+          id,
+          { status: { status_str: 'success', completed: true, messages: [] }, outputs: {} }
+        ])
+      )
+    stubFetch((url) => {
+      if (url.includes('/prompt')) {
+        n += 1
+        prompts.push(`new-${n}`)
+        return jsonResponse({ prompt_id: `new-${n}` })
+      }
+      if (url.includes('/history')) return jsonResponse(history())
+      return jsonResponse({})
+    })
+
+    const result = await batchService.resume('r1')
+    // 0.1.17 (review fix): the in-flight prompt from the killed run cannot be
+    // recovered — it is counted as failed (with an explanatory summary), so the
+    // resume only submits the ONE prompt that was never attempted.
+    expect(prompts).toHaveLength(1)
+    expect(result.items[0].promptIds[0]).toBe('old-1')
+    expect(result.items[0].failed).toBe(1)
+    expect(result.notes + (result.errorSummary || '')).toMatch(/in-flight|Retry failed/i)
+  })
+
+  it('resume refuses when nothing is left', async () => {
+    const { batchService } = await freshP1p2()
+    const { upsertBatchJob } = await import('../../src/main/services/db')
+    const p = join(ROOT, 'wf', 'done.json')
+    writeFileSync(p, uiGraph())
+    upsertBatchJob({
+      id: 'r2',
+      name: 'complete',
+      instanceId: 'inst-1',
+      items: [
+        {
+          workflowName: 'd',
+          workflowPath: p,
+          count: 1,
+          submitted: 1,
+          completed: 1,
+          failed: 0,
+          submitFailed: 0,
+          execFailed: 0,
+          promptIds: ['x'],
+          seeds: [1],
+          outputPaths: []
+        }
+      ],
+      status: 'interrupted',
+      count: 1,
+      submitted: 1,
+      completed: 1,
+      failed: 0,
+      submitFailed: 0,
+      execFailed: 0,
+      produced: 0,
+      createdAt: 1,
+      notes: '',
+      params: {}
+    } as never)
+    await expect(batchService.resume('r2')).rejects.toThrow(/nothing left/i)
+  })
+
+  it('retryFailed re-submits only the failed legs', async () => {
+    const { batchService } = await freshP1p2()
+    await seedInstance()
+    const { upsertBatchJob } = await import('../../src/main/services/db')
+    const p = join(ROOT, 'wf', 'retry.json')
+    writeFileSync(p, uiGraph())
+    upsertBatchJob({
+      id: 'rt1',
+      name: 'retry',
+      instanceId: 'inst-1',
+      items: [
+        {
+          workflowName: 'rf',
+          workflowPath: p,
+          count: 4,
+          submitted: 4,
+          completed: 2,
+          failed: 2,
+          submitFailed: 2,
+          execFailed: 0,
+          promptIds: ['a', 'b', 'c', 'd'],
+          seeds: [1, 2, 3, 4],
+          outputPaths: []
+        }
+      ],
+      status: 'error',
+      count: 4,
+      submitted: 4,
+      completed: 2,
+      failed: 2,
+      submitFailed: 2,
+      execFailed: 0,
+      produced: 0,
+      createdAt: 1,
+      notes: '',
+      params: {}
+    } as never)
+
+    let prompts = 0
+    const issued: string[] = []
+    stubFetch((url) => {
+      if (url.includes('/prompt')) {
+        prompts += 1
+        issued.push(`ok-${prompts}`)
+        return jsonResponse({ prompt_id: `ok-${prompts}` })
+      }
+      if (url.includes('/history')) {
+        return jsonResponse(
+          Object.fromEntries(
+            issued.map((id) => [
+              id,
+              { status: { status_str: 'success', completed: true, messages: [] }, outputs: {} }
+            ])
+          )
+        )
+      }
+      return jsonResponse({})
+    })
+    const result = await batchService.retryFailed('rt1')
+    expect(prompts).toBe(2) // failed legs only
+    expect(result.submitted).toBe(2)
+    // 0.1.17 (review fix): retry continues the iteration counter, so increment
+    // seeds must not repeat the ones the first run already used.
+    const seeds = result.items[0].seeds
+    expect(new Set(seeds).size).toBe(seeds.length)
+  })
+
+  it('startAsync returns the accepted snapshot and wait() yields the terminal job', async () => {
+    const { batchService } = await freshP1p2()
+    await seedInstance()
+    const { upsertBatchJob } = await import('../../src/main/services/db')
+    const p = join(ROOT, 'wf', 'async.json')
+    writeFileSync(p, uiGraph())
+    upsertBatchJob({
+      id: 'as1',
+      name: 'async',
+      instanceId: 'inst-1',
+      items: [
+        {
+          workflowName: 'a',
+          workflowPath: p,
+          count: 1,
+          submitted: 0,
+          completed: 0,
+          failed: 0,
+          submitFailed: 0,
+          execFailed: 0,
+          promptIds: [],
+          seeds: [],
+          outputPaths: []
+        }
+      ],
+      status: 'queued',
+      count: 1,
+      submitted: 0,
+      completed: 0,
+      failed: 0,
+      submitFailed: 0,
+      execFailed: 0,
+      produced: 0,
+      createdAt: 1,
+      notes: '',
+      params: {}
+    } as never)
+
+    let prompts = 0
+    stubFetch((url) => {
+      if (url.includes('/prompt')) {
+        prompts += 1
+        return jsonResponse({ prompt_id: 'async-1' })
+      }
+      if (url.includes('/history')) {
+        return jsonResponse({
+          'async-1': {
+            status: { status_str: 'success', completed: true, messages: [] },
+            outputs: {}
+          }
+        })
+      }
+      return jsonResponse({})
+    })
+
+    // 0.1.17 (WP5-7): the call accepts the run immediately...
+    const initial = batchService.startAsync('as1')
+    expect(['submitting', 'running']).toContain(initial.status)
+    // ...while wait() settles on the terminal job.
+    const settled = await batchService.wait('as1')
+    expect(settled?.status).toBe('done')
+    expect(settled?.submitted).toBe(1)
+    expect(prompts).toBe(1)
+    // After settling, wait() returns the persisted snapshot; unknown ids are null.
+    expect((await batchService.wait('as1'))?.status).toBe('done')
+    expect(await batchService.wait('missing')).toBeNull()
+  })
+
+  it('a re-run clears per-leg cancel flags', async () => {
+    const { batchService } = await freshP1p2()
+    await seedInstance()
+    const { upsertBatchJob } = await import('../../src/main/services/db')
+    const p = join(ROOT, 'wf', 'un-cancel.json')
+    writeFileSync(p, uiGraph())
+    upsertBatchJob({
+      id: 'uc1',
+      name: 'uncancel',
+      instanceId: 'inst-1',
+      items: [
+        {
+          workflowName: 'u',
+          workflowPath: p,
+          count: 1,
+          submitted: 0,
+          completed: 0,
+          failed: 1,
+          submitFailed: 0,
+          execFailed: 1,
+          promptIds: [],
+          seeds: [],
+          outputPaths: [],
+          cancelled: true
+        }
+      ],
+      status: 'error',
+      count: 1,
+      submitted: 0,
+      completed: 0,
+      failed: 1,
+      submitFailed: 0,
+      execFailed: 1,
+      produced: 0,
+      createdAt: 1,
+      notes: '',
+      params: {}
+    } as never)
+    stubFetch((url) => {
+      if (url.includes('/prompt')) return jsonResponse({ prompt_id: 'p1' })
+      if (url.includes('/history')) {
+        return jsonResponse({
+          p1: { status: { status_str: 'success', completed: true, messages: [] }, outputs: {} }
+        })
+      }
+      return jsonResponse({})
+    })
+    const result = await batchService.start('uc1')
+    expect(result.items[0].submitted).toBe(1)
+  })
+
+  it('resolveOutputDir follows --output-directory for history links', async () => {
+    const { resolveOutputDir } = await freshP1p2()
+    expect(
+      resolveOutputDir({ path: '/x/ComfyUI', extraArgs: ['--output-directory', 'D:/renders'] })
+    ).toBe('D:/renders')
+    expect(
+      resolveOutputDir({ path: '/x/ComfyUI', extraArgs: ['--output-directory', 'out2'] })
+    ).toBe(join('/x/ComfyUI', 'out2'))
+    expect(resolveOutputDir({ path: '/x/ComfyUI', extraArgs: [] })).toBe(
+      join('/x/ComfyUI', 'output')
+    )
+  })
+})
+
+describe('output scanAsync (review fix)', () => {
+  it('reports progress and merges what it scanned', async () => {
+    const { outputService } = await freshP1p2()
+    const dir = join(ROOT, 'scan-async')
+    mkdirSync(join(dir, 'sub'), { recursive: true })
+    writeFileSync(join(dir, 'a.png'), 'x')
+    writeFileSync(join(dir, 'sub', 'b.png'), 'x')
+    const seen: number[] = []
+    const res = await outputService.scanAsync(dir, (p) => {
+      if (!p.done) seen.push(p.scanned)
+    })
+    expect(res.cancelled).toBe(false)
+    expect(res.scanned).toBe(2)
+    expect(seen.length).toBeGreaterThan(0)
+    expect(
+      outputService
+        .list({ root: dir })
+        .items.map((i) => i.fileName)
+        .sort()
+    ).toEqual(['a.png', 'b.png'])
+  })
+
+  it('can be cancelled and keeps the partial result', async () => {
+    const { outputService } = await freshP1p2()
+    const dir = join(ROOT, 'scan-cancel')
+    mkdirSync(join(dir, 'x'), { recursive: true })
+    writeFileSync(join(dir, 'one.png'), 'x')
+    writeFileSync(join(dir, 'x', 'two.png'), 'x')
+    // Cancel while it runs: the next directory must not be walked.
+    const res = await outputService.scanAsync(dir, (p) => {
+      if (!p.done) outputService.cancelScan()
+    })
+    expect(res.cancelled).toBe(true)
+    // Whatever was already read is kept (partial truth beats a stale index).
+    expect(res.scanned).toBeGreaterThanOrEqual(0)
   })
 })

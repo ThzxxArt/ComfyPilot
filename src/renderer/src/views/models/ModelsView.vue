@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, h, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useScopedSelection } from '@/composables/useScopedSelection'
+import { useInstanceScope } from '@/composables/useInstanceScope'
 import { useRoute } from 'vue-router'
 import {
   CloudDownloadOutline,
@@ -323,35 +325,60 @@ function openDetail(row: ModelRecord): void {
   showDetail.value = true
 }
 
-// ---------- 0.1.15: multi-select batch management ----------
-const checkedRowKeys = ref<Array<string | number>>([])
-const selectedModels = computed(() =>
-  models.value.filter((m) => checkedRowKeys.value.includes(m.id))
-)
+// ---------- 0.1.15: multi-select batch management (scoped in 0.1.17) ----------
+/**
+ * 0.1.17 (WP9): batch operations act on visible ∩ checked. The 0.1.15 code used
+ * the raw check set, so rows hidden by a search/category filter were deleted —
+ * files included — without ever being on screen.
+ */
+const selection = useScopedSelection<ModelRecord>(filtered, (m) => m.id)
+const checkedRowKeys = computed({
+  get: () => selection.checked.value,
+  set: (keys: Array<string | number>) => selection.setChecked(keys.map(String))
+})
+const selectedModels = computed(() => selection.selectedItems.value)
+/** One batch op at a time — double-clicking Delete must not run it twice. */
+const batchBusy = ref(false)
 
 /** Shared honest report for a batch outcome (ok n / failed m with first cause). */
 function reportBatchOutcome(outcome: BatchOpOutcome, successText: string): void {
   if (outcome.failed.length) {
-    const first = outcome.failed[0]
-    message.warning(
-      `${successText} — ${t('models.batchFailed', {
-        n: outcome.failed.length,
-        name: first.label,
-        error: first.error
-      })}`,
-      { duration: 8000 }
-    )
+    // Failed rows stay selected so the user can retry exactly them (WP9).
+    selection.keepFailed(outcome.failed.map((f) => f.id))
+    dialog.warning({
+      title: t('models.batchFailedTitle', { n: outcome.failed.length }),
+      content: () =>
+        h(
+          'div',
+          { class: 'batch-fail-list' },
+          outcome.failed.map((f) => h('div', { key: f.id }, `${f.label}: ${f.error}`))
+        ),
+      positiveText: t('common.confirm')
+    })
+    message.warning(successText, { duration: 6000 })
   } else {
+    selection.clear()
     message.success(successText)
   }
 }
 
+/** Preview of what a batch action will hit, so the confirm box cannot lie. */
+function batchTargetSummary(): string {
+  const names = selectedModels.value.slice(0, 3).map((m) => m.name)
+  const more = selectedModels.value.length - names.length
+  return names.join('、') + (more > 0 ? ` +${more}` : '')
+}
+
 function confirmBatchDelete(): void {
   const n = selectedModels.value.length
-  if (!n) return
+  if (!n || batchBusy.value) return
+  const hidden = selection.hiddenCount.value
   dialog.warning({
     title: t('models.batchDelete'),
-    content: t('models.batchDeleteConfirm', { n }),
+    content:
+      t('models.batchDeleteConfirm', { n }) +
+      ` (${batchTargetSummary()})` +
+      (hidden ? ` — ${t('models.batchHiddenSkipped', { n: hidden })}` : ''),
     positiveText: t('models.deleteFileToo'),
     negativeText: t('models.removeRecordOnly'),
     onPositiveClick: () => void doBatchDelete(true),
@@ -360,36 +387,44 @@ function confirmBatchDelete(): void {
 }
 
 async function doBatchDelete(deleteFile: boolean): Promise<void> {
-  // Snapshot plain items BEFORE any await so mid-flight refreshes cannot
-  // change what the user selected.
-  const items = selectedModels.value.map((m) => ({ id: m.id, label: m.name }))
-  const outcome = await runBatchOps(items, async (it) => {
-    await ipc('model.delete', it.id, deleteFile)
-  })
-  checkedRowKeys.value = []
-  await refresh()
-  reportBatchOutcome(
-    outcome,
-    deleteFile
-      ? t('models.batchDeletedWithFile', { ok: outcome.ok })
-      : t('models.batchDeletedRecordOnly', { ok: outcome.ok })
-  )
+  if (batchBusy.value) return
+  batchBusy.value = true
+  try {
+    // Snapshot plain items BEFORE any await so mid-flight refreshes cannot
+    // change what the user selected.
+    const items = selectedModels.value.map((m) => ({ id: m.id, label: m.name }))
+    const outcome = await runBatchOps(items, async (it) => {
+      await ipc('model.delete', it.id, deleteFile)
+    })
+    await refresh()
+    reportBatchOutcome(
+      outcome,
+      deleteFile
+        ? t('models.batchDeletedWithFile', { ok: outcome.ok })
+        : t('models.batchDeletedRecordOnly', { ok: outcome.ok })
+    )
+  } finally {
+    batchBusy.value = false
+  }
 }
 
 async function batchMove(): Promise<void> {
+  if (batchBusy.value) return
   const items = selectedModels.value.map((m) => ({ id: m.id, label: m.name }))
   if (!items.length) return
+  batchBusy.value = true
   try {
     const dir = await ipc('shell.pickDirectory')
     if (!dir) return
     const outcome = await runBatchOps(items, async (it) => {
       await ipc('model.move', it.id, dir)
     })
-    checkedRowKeys.value = []
     await refresh()
     reportBatchOutcome(outcome, t('models.batchMoved', { ok: outcome.ok }))
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    batchBusy.value = false
   }
 }
 
@@ -625,15 +660,15 @@ async function scan(hash = false): Promise<void> {
 const pendingRescan = ref(false)
 
 // Active instance changed → drop stale list and re-scan against the new roots.
-watch(
-  () => store.instanceSwitchTick,
-  () => {
-    void refresh()
-    if (scanning.value) pendingRescan.value = true
-    else void scan(false)
-    extraPathsFile.value = defaultExtraPathsFile()
-  }
-)
+// 0.1.17 (WP9): one subscription helper for every view (useInstanceScope).
+useInstanceScope(() => {
+  // A check set from the previous instance must never be applied.
+  selection.clear()
+  void refresh()
+  if (scanning.value) pendingRescan.value = true
+  else void scan(false)
+  extraPathsFile.value = defaultExtraPathsFile()
+})
 
 // Deep-link query can change while the view is alive (router reuse).
 watch(
@@ -674,7 +709,17 @@ async function batchRename(dryRun = true): Promise<void> {
     if (!dryRun) {
       showRename.value = false
       await refresh()
-      message.success(t('models.renameDoneCount', { n: renameResult.value.length }))
+      // 0.1.17 (WP10): count SUCCESSES only — a failed row used to be reported
+      // as renamed because the message used result.length.
+      const okCount = renameResult.value.filter((r) => r.ok).length
+      const failCount = renameResult.value.length - okCount
+      if (failCount > 0) {
+        message.warning(t('models.renamePartial', { ok: okCount, failed: failCount }), {
+          duration: 8000
+        })
+      } else {
+        message.success(t('models.renameDoneCount', { n: okCount }))
+      }
     }
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
@@ -888,7 +933,12 @@ onUnmounted(() => {
           </NSpace>
           <!-- Multi-select batch actions (0.1.15) — appear only with a selection. -->
           <NSpace v-if="checkedRowKeys.length" align="center" :size="8" class="cat-batch">
-            <span class="meta">{{ $t('models.selectedCount', { n: checkedRowKeys.length }) }}</span>
+            <span class="meta">
+              {{ $t('models.selectedCount', { n: selectedModels.length }) }}
+              <template v-if="selection.hiddenCount.value">
+                · {{ $t('models.batchHiddenSkipped', { n: selection.hiddenCount.value }) }}
+              </template>
+            </span>
             <NButton size="small" secondary type="error" @click="confirmBatchDelete">
               {{ $t('models.batchDelete') }}
             </NButton>

@@ -56,7 +56,8 @@ import type {
   ExecFailure,
   InstanceCapabilities,
   LaunchCommandPreview,
-  LaunchProfile
+  LaunchProfile,
+  UpdateJournal
 } from '@shared/types'
 import LaunchProfileEditor from '@/components/LaunchProfileEditor.vue'
 import { LAUNCH_ARG_ERROR_KEYS, launchArgWarningKey } from '@shared/launchArgs'
@@ -183,6 +184,30 @@ async function restartWithProfile(): Promise<void> {
   // Never restart with stale config after a failed save, and never restart the
   // wrong instance when the route switched mid-flight.
   if (!saved || instance.value?.id !== target.id) return
+  await restart(target)
+  await refresh()
+  void store.syncWs()
+}
+
+/**
+ * 0.1.17 (WP3): recover from a classified crash. OOM gets a one-click
+ * "--lowvram" retry; anything else restarts with the current arguments.
+ */
+async function recoverCrash(lowerVram: boolean): Promise<void> {
+  const target = instance.value
+  if (!target) return
+  if (lowerVram) {
+    const profile = { ...(target.launchProfile || {}), vram: 'lowvram' as const }
+    try {
+      await ipc('instance.save', { ...target, launchProfile: profile })
+      if (instance.value?.id === target.id) {
+        instance.value = { ...instance.value, launchProfile: profile }
+      }
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : String(err))
+      return
+    }
+  }
   await restart(target)
   await refresh()
   void store.syncWs()
@@ -526,6 +551,14 @@ async function doStop(): Promise<void> {
 
 let refreshSeq = 0
 let errorNotifiedFor: string | null = null
+// 0.1.17 (WP9): the latch is per-instance; without the reset a second failure on
+// the SAME instance never surfaced again after navigating away and back.
+watch(
+  () => id.value,
+  () => {
+    errorNotifiedFor = null
+  }
+)
 
 /** Parse recent boot-log import failures for the running instance (0.1.16). */
 async function checkStartupIssues(forId: string): Promise<void> {
@@ -560,6 +593,13 @@ async function refresh(): Promise<void> {
     if (seq !== refreshSeq || forId !== id.value) return
     logs.value = logsResult
     requestLogScroll()
+    // 0.1.17 (WP4): surface an unfinished update (journal + backup) if one exists.
+    try {
+      pendingUpdate.value = await ipc('instance.updateJournal', forId)
+    } catch {
+      pendingUpdate.value = null
+    }
+    if (seq !== refreshSeq || forId !== id.value) return
     // 0.1.12: recorded runtime failures (WS + log-parsed), newest first.
     void loadExecFailures(forId)
     // Restore the pip-op banner/modal state after reloads / view switches.
@@ -612,9 +652,16 @@ const {
   repairing: repairInFlight,
   progress
 } = useComfyUpdate()
+/** Only the instance this page is about may paint its update banner here. */
+const updateBelongsToDetail = computed(
+  () => !progress.value?.instanceId || progress.value.instanceId === id.value
+)
 const showUpdateModal = ref(false)
 const updateModalTitle = ref('')
 const updateInfo = ref<ComfyUpdateInfo | null>(null)
+/** 0.1.17 (WP4): unfinished update journal (app died mid-update). */
+const pendingUpdate = ref<UpdateJournal | null>(null)
+const rollingBack = ref(false)
 const checkingUpdate = ref(false)
 const repairing = ref(false)
 
@@ -641,6 +688,27 @@ function releaseDate(iso?: string): string {
 /** Open the upstream releases page (changelog) in the system browser. */
 function openReleaseNotes(): void {
   void ipc('shell.openExternal', 'https://github.com/Comfy-Org/ComfyUI/releases/latest')
+}
+
+/** 0.1.17 (WP4): restore the backup left by an interrupted update. */
+async function rollbackPendingUpdate(): Promise<void> {
+  const target = instance.value
+  if (!target) return
+  rollingBack.value = true
+  try {
+    const ok = await ipc('instance.rollbackUpdate', target.id)
+    if (ok) {
+      message.success(t('instance.rollbackDone'))
+      pendingUpdate.value = null
+    } else {
+      message.error(t('instance.rollbackFailed'))
+    }
+    await refresh()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    rollingBack.value = false
+  }
 }
 
 async function doCheckUpdate(): Promise<void> {
@@ -976,9 +1044,19 @@ watch(
     </div>
 
     <div class="page-body">
+      <!-- 0.1.17 (WP4): an update that never finished leaves a journal + backup
+           behind; offer the rollback it promised instead of a dead end. -->
+      <div v-if="pendingUpdate" class="update-running-banner card">
+        <NTag size="small" type="warning" round>{{ $t('instance.updateUnfinished') }}</NTag>
+        <span class="meta update-running-msg mono">{{ pendingUpdate.backupPath }}</span>
+        <NButton size="tiny" secondary :loading="rollingBack" @click="rollbackPendingUpdate">{{
+          $t('instance.rollbackUpdate')
+        }}</NButton>
+      </div>
       <!-- The progress modal is closable while running (0.1.11); this banner
            keeps the operation reachable until it settles. -->
-      <div v-if="updating" class="update-running-banner card">
+      <!-- 0.1.17 (review fix): this page only shows the update it owns. -->
+      <div v-if="updating && updateBelongsToDetail" class="update-running-banner card">
         <NTag size="small" type="info" round>{{ $t('update.inProgress') }}</NTag>
         <span class="meta update-running-msg mono">{{ progress?.message || '' }}</span>
         <NButton size="tiny" secondary @click="reopenUpdateModal">{{
@@ -1026,6 +1104,14 @@ watch(
                     >
                       {{ instance.lastError }}
                     </span>
+                    <template v-if="instance?.status === 'error' && instance?.lastExit">
+                      <NButton size="tiny" secondary @click="recoverCrash(false)">
+                        {{ $t('instance.restartSame') }}
+                      </NButton>
+                      <NButton size="tiny" type="warning" secondary @click="recoverCrash(true)">
+                        {{ $t('instance.restartLowVram') }}
+                      </NButton>
+                    </template>
                   </NSpace>
                 </NDescriptionsItem>
                 <NDescriptionsItem :label="$t('instance.metaPid')">{{
@@ -1257,14 +1343,22 @@ watch(
                   </span>
                   <span>{{ sourceLabel(updateInfo.source) }}</span>
                 </div>
-                <NTag size="small" round :type="updateInfo.updatable ? 'warning' : 'success'">
+                <NTag
+                  size="small"
+                  round
+                  :type="
+                    updateInfo.unknown ? 'default' : updateInfo.updatable ? 'warning' : 'success'
+                  "
+                >
                   {{
-                    updateInfo.updatable
-                      ? $t('instance.updateAvailable', {
-                          latest: updateInfo.latest || updateInfo.current,
-                          current: updateInfo.current
-                        })
-                      : $t('instance.updateNone')
+                    updateInfo.unknown
+                      ? $t('instance.updateUnknown')
+                      : updateInfo.updatable
+                        ? $t('instance.updateAvailable', {
+                            latest: updateInfo.latest || updateInfo.current,
+                            current: updateInfo.current
+                          })
+                        : $t('instance.updateNone')
                   }}
                 </NTag>
                 <div v-if="updateInfo.latestRelease" class="update-release-line">

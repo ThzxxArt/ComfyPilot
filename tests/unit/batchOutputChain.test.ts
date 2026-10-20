@@ -254,6 +254,8 @@ describe('OutputService list ordering', () => {
     writeFileSync(join(scanRoot, 'no-extension'), 'none')
 
     const { outputService } = await import('../../src/main/services/p1p2')
+    // 0.1.17 (WP7): walk explicitly — list() no longer touches the disk.
+    outputService.scan(scanRoot)
     const { items } = outputService.list({ root: scanRoot })
 
     const byName = new Map(items.map((a) => [a.fileName, a.type]))

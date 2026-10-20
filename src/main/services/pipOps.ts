@@ -66,14 +66,27 @@ interface OpContext {
     status: 'running' | 'done' | 'skipped' | 'failed',
     message: string
   ) => void
-  /** Advance the running step's fraction (0..1) — 0.1.13 line heuristics. */
-  fraction: (id: UpdateStepId, fraction: number) => void
 }
 
 interface ActiveOp {
   runId: string
   abort: AbortController
   progress: UpdateProgress
+}
+
+/**
+ * Map a pip/uv output line to a human stage title (0.1.17 WP2-4).
+ * Pure so the mapping is testable; returns null for lines that say nothing.
+ */
+export function pipStageFromLine(line: string): string | null {
+  const s = String(line || '')
+  if (/Collecting |Downloading |Fetching /i.test(s)) return 'Resolving and downloading packages…'
+  if (/Installing collected packages|Prepared \d+ packages|Installed \d+ package/i.test(s)) {
+    return 'Installing built packages…'
+  }
+  if (/Building wheel|Successfully built/i.test(s)) return 'Building wheels…'
+  if (/Successfully installed/i.test(s)) return 'Finalizing installation…'
+  return null
 }
 
 /** Extract the distribution name from an installed wheel filename. */
@@ -212,25 +225,16 @@ export class PipOpsService extends EventEmitter {
         await ctx.resolve()
         ctx.step('download', 'skipped', 'No download step')
         ctx.step('requirements', 'running', `Installing requirements for ${label || reqFile}…`)
-        // Line-count heuristic drives the requirements fraction so the bar
-        // moves through the (usually longest) pip phase (0.1.13).
-        let pipLines = 0
+        // 0.1.17 (WP2-4): pip output is not a progress source. The line-count
+        // fraction (pipLines / 40) was invented progress — the step is now
+        // genuinely indeterminate and only the stage text changes.
         await installRequirements(ctx.python, reqFile, throwingExec, {
           uvPath: ctx.uvPath,
           pipIndex: String(settings.pipIndex || '').trim(),
           onLine: (line) => {
             ctx.log(line)
-            pipLines += 1
-            let frac = Math.min(0.9, pipLines / 40)
-            if (
-              /Installing collected packages|Prepared \d+ packages|Installed \d+ package|Resolved \d+ package/i.test(
-                line
-              )
-            ) {
-              frac = 0.75
-            }
-            if (/Successfully installed|Successfully built/i.test(line)) frac = 0.95
-            ctx.fraction('requirements', frac)
+            const stage = pipStageFromLine(line)
+            if (stage) ctx.step('requirements', 'running', stage)
           },
           signal: ctx.signal
         })
@@ -297,18 +301,6 @@ export class PipOpsService extends EventEmitter {
       else if (x.status === 'running') sum += Math.max(0, Math.min(1, x.progress ?? 0))
     }
     return Math.max(0, Math.min(100, Math.round((sum / Math.max(1, p.steps.length)) * 100)))
-  }
-
-  /** Advance the running step's fraction (0..1) and re-emit the stream. */
-  private setStepFraction(op: ActiveOp, step: UpdateStepId, fraction: number): void {
-    const s = op.progress.steps.find((x) => x.id === step)
-    if (!s || s.status !== 'running') return
-    const next = Math.max(0, Math.min(1, fraction))
-    // Never regress inside a step — pip/uv output can repeat markers.
-    if ((s.progress ?? 0) >= next) return
-    s.progress = next
-    op.progress.percent = this.computePercent(op.progress)
-    this.emit('progress', { ...op.progress, steps: op.progress.steps.map((x) => ({ ...x })) })
   }
 
   private emitStep(
@@ -411,7 +403,6 @@ export class PipOpsService extends EventEmitter {
       signal: op.abort.signal,
       log: (line) => this.emitLog(op, instanceId, line),
       step: (id, status, message) => this.emitStep(op, id, status, message),
-      fraction: (id, fraction) => this.setStepFraction(op, id, fraction),
       resolve: async () => {
         if (resolved) return
         const cfg = loadInstanceConfigs().find((c) => c.id === instanceId)
@@ -524,7 +515,6 @@ export class PipOpsService extends EventEmitter {
   /** uv-first install of arbitrary targets (specs or local wheel paths) with mirror retry. */
   private async pipInstallTargets(ctx: OpContext, targets: string[]): Promise<void> {
     const pipIndex = String(loadSettings().pipIndex || '').trim()
-    let pipLines = 0
     const run = (c: string, a: string[], timeout: number): Promise<string> =>
       runStreaming(
         c,
@@ -534,19 +524,10 @@ export class PipOpsService extends EventEmitter {
           signal: ctx.signal,
           onLine: (line) => {
             ctx.log(line)
-            // Line-count heuristic keeps the requirements bar moving during a
-            // long install (0.1.13 — previously it sat still until the end).
-            pipLines += 1
-            let frac = Math.min(0.9, pipLines / 40)
-            if (
-              /Installing collected packages|Prepared \d+ packages|Installed \d+ package|Resolved \d+ package/i.test(
-                line
-              )
-            ) {
-              frac = 0.75
-            }
-            if (/Successfully installed|Successfully built/i.test(line)) frac = 0.95
-            ctx.fraction('requirements', frac)
+            // 0.1.17 (WP2-4): no invented fraction — the stage text is the
+            // honest signal while pip works (see pipStageFromLine).
+            const stage = pipStageFromLine(line)
+            if (stage) ctx.step('requirements', 'running', stage)
           }
         },
         throwingExec

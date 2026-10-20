@@ -173,6 +173,17 @@ function consumeEditQuery(): string | null {
   return editId
 }
 
+/** 0.1.17 (WP9): a key pressed inside a nested control (button/input) must not
+ * navigate — only the card itself should respond. */
+function onCardEnter(e: KeyboardEvent, id: string): void {
+  // 0.1.17 (review fix): the old `.prevent` modifier fired even for keydowns
+  // bubbling from nested buttons/inputs, so Enter/Space could no longer
+  // activate them. Only prevent the default when the card itself is focused.
+  if (e.target !== e.currentTarget) return
+  e.preventDefault()
+  void router.push(`/instances/${id}`)
+}
+
 onMounted(async () => {
   loading.value = true
   try {
@@ -508,9 +519,16 @@ async function probeEnv(info: ComfyInstanceInfo): Promise<void> {
 
 // ---------- ComfyUI update / repair (0.1.4) ----------
 const { startUpdate, checkComfyUpdate, repairEnv, updating, repairing, progress } = useComfyUpdate()
+/**
+ * 0.1.17 (WP9): an update/repair belongs to ONE instance. The banner used to
+ * show on every instance page, implying the wrong machine was being updated.
+ */
+const activeUpdateInstance = computed(() => {
+  const id = progress.value?.instanceId
+  return id ? store.instances.find((i) => i.id === id)?.name || id : ''
+})
 const showUpdateModal = ref(false)
 const updateModalTitle = ref('')
-const updateInfos = ref<Record<string, ComfyUpdateInfo>>({})
 
 /** Reopen the (now closable) progress modal after the user hid it (0.1.11). */
 function reopenUpdateModal(): void {
@@ -543,12 +561,14 @@ function updateInfoSummary(info: ComfyUpdateInfo): string {
     )
   }
   parts.push(
-    info.updatable
-      ? t('instance.updateAvailable', {
-          latest: info.latest || info.current,
-          current: info.current
-        })
-      : t('instance.updateNone')
+    info.unknown
+      ? t('instance.updateUnknown')
+      : info.updatable
+        ? t('instance.updateAvailable', {
+            latest: info.latest || info.current,
+            current: info.current
+          })
+        : t('instance.updateNone')
   )
   if (info.error) parts.push(t('instance.updateCheckFailed', { error: info.error }))
   return parts.join(' · ')
@@ -557,7 +577,6 @@ function updateInfoSummary(info: ComfyUpdateInfo): string {
 async function doCheckComfyUpdate(item: ComfyInstanceInfo): Promise<void> {
   try {
     const info = await checkComfyUpdate(item.id)
-    updateInfos.value = { ...updateInfos.value, [item.id]: info }
     dialog.info({
       title: t('instance.checkUpdate'),
       content: updateInfoSummary(info),
@@ -660,7 +679,9 @@ async function startAll(): Promise<void> {
     const results = await ipc('instance.startAll')
     await store.refreshInstances()
     void store.syncWs()
-    const ok = results.filter((r) => r.ok).length
+    // 0.1.17 (review fix): a process that ignored the kill is not a success —
+    // count it as a failure so the summary cannot claim everything stopped.
+    const ok = results.filter((r) => r.ok && r.exited !== false).length
     const fail = results.length - ok
     const already = results.filter((r) => r.ok && beforeRunning.has(r.id)).length
     const text = t('instance.startAllSummary', {
@@ -877,8 +898,12 @@ function statusClass(s: string): string {
     <div class="page-body">
       <!-- The progress modal is closable while running (0.1.11); this banner
            keeps the operation reachable until it settles. -->
+      <!-- 0.1.17 (review fix): always visible (it names the instance). Gating it
+           on the ACTIVE instance hid the only progress entry point for an
+           update started from another instance's card. -->
       <div v-if="updating" class="update-running-banner card">
         <NTag size="small" type="info" round>{{ $t('update.inProgress') }}</NTag>
+        <span v-if="activeUpdateInstance" class="meta">{{ activeUpdateInstance }}</span>
         <span class="meta update-running-msg mono">{{ progress?.message || '' }}</span>
         <NButton size="tiny" secondary @click="reopenUpdateModal">{{
           $t('nodes.viewProgress')
@@ -894,8 +919,8 @@ function statusClass(s: string): string {
             tabindex="0"
             :aria-label="item.name"
             @click="router.push(`/instances/${item.id}`)"
-            @keydown.enter.prevent="router.push(`/instances/${item.id}`)"
-            @keydown.space.prevent="router.push(`/instances/${item.id}`)"
+            @keydown.enter="onCardEnter($event, item.id)"
+            @keydown.space="onCardEnter($event, item.id)"
           >
             <div class="inst-top">
               <div class="inst-main">

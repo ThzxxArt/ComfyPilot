@@ -157,6 +157,28 @@ interface RuntimeEntry {
   lastEmittedStatus?: InstanceStatus
   /** Timestamp of the last status IPC (same-status throttle). */
   lastStatusEmitAt?: number
+  /**
+   * 0.1.17 (WP3): set by stop() while a start is still winding up. startInner
+   * checks it after every await so a process can never appear AFTER the UI was
+   * told "stopped".
+   */
+  cancelRequested?: boolean
+  /** Structured crash classification (0.1.17 WP3), cleared on the next start. */
+  lastExit?: InstanceExitReport
+  /**
+   * 0.1.17 (WP3): set by restart() so the following start refuses to adopt a
+   * still-running old process instead of silently reusing it.
+   */
+  expectingStop?: boolean
+}
+
+/** Why a managed process died, in terms the UI can act on (0.1.17 WP3). */
+export interface InstanceExitReport {
+  kind: 'oom' | 'port' | 'dependency' | 'driver' | 'cancelled' | 'unknown'
+  code: number | null
+  signal: NodeJS.Signals | null
+  hint: string
+  at: number
 }
 
 /** Per-instance outcome of a batch start/stop so the UI can summarize.
@@ -167,7 +189,11 @@ export type InstanceActionResult = ComfyInstanceInfo & {
 }
 
 /** stop/forceKill result: `adopted` marks an external process we only signalled. */
-export type InstanceStopResult = ComfyInstanceInfo & { adopted?: boolean }
+export type InstanceStopResult = ComfyInstanceInfo & {
+  adopted?: boolean
+  /** 0.1.17 (WP3): false = the process may still be running after the grace window. */
+  exited?: boolean
+}
 
 const LOG_CAP = 5000
 /** Minimum gap between same-status IPC pushes triggered by log lines. */
@@ -183,6 +209,8 @@ const READY_EXTEND_MS = 120_000
 export class InstanceService extends EventEmitter {
   private runtimes = new Map<string, RuntimeEntry>()
   private startingIds = new Set<string>()
+  /** One stop in flight per instance; concurrent callers await the same kill. */
+  private stopping = new Map<string, Promise<InstanceStopResult>>()
 
   private ensureRuntime(config: ComfyInstanceConfig): RuntimeEntry {
     let rt = this.runtimes.get(config.id)
@@ -315,6 +343,9 @@ export class InstanceService extends EventEmitter {
       startedAt: rt.startedAt,
       uptimeMs: rt.startedAt ? Date.now() - rt.startedAt : undefined,
       lastError: rt.lastError,
+      // 0.1.17 (WP3): structured crash reason so the UI can offer the right
+      // recovery (restart vs. lower VRAM and restart).
+      lastExit: rt.lastExit,
       managerEnabled: rt.config.extraArgs?.some((a) => a.includes('enable-manager')),
       version: this.probeVersion(rt.config.path),
       // Real version reported by the running server (0.1.10) — only set when a
@@ -650,15 +681,26 @@ export class InstanceService extends EventEmitter {
     // Wipe the on-disk history too — getLogs merges the file back in, so leaving
     // it would make "Clear logs" a no-op on the next read. Also clear when there
     // is no live runtime (after an app restart the file is the only history).
+    //
+    // 0.1.17 (WP10): the rotated generation `<id>.log.1` is read FIRST by
+    // readLogFile, so deleting only `<id>.log` resurrected history on the next
+    // refresh (and on Windows the live file may be exclusively held by the
+    // child). Delete every generation the reader can see.
     let removed = false
+    const prefixes = [`${id}.log`]
     try {
-      const file = join(logsDir(), `${id}.log`)
-      if (existsSync(file)) {
-        rmSync(file)
-        removed = true
+      for (const name of readdirSync(logsDir())) {
+        if (prefixes.some((p) => name === p || name.startsWith(`${p}.`))) {
+          try {
+            rmSync(join(logsDir(), name), { force: true })
+            removed = true
+          } catch {
+            /* a locked generation must not stop the others */
+          }
+        }
       }
     } catch {
-      /* ignore */
+      /* logs dir missing — nothing to clear */
     }
     if (rt) this.emitStatus(rt)
     return Boolean(rt) || removed
@@ -983,8 +1025,10 @@ export class InstanceService extends EventEmitter {
   }
 
   /**
-   * Export the full instance log to a file (0.1.11). Unlike the clipboard
-   * copy, this streams the ENTIRE buffer + log file to disk and reveals it.
+   * Export the instance log to a file (0.1.11). Bounded, not unlimited: the
+   * in-memory buffer is capped at 100k lines and readLogFile only reads the
+   * tail of each generation (MAX_LOG_READ_BYTES). The comment used to claim
+   * "ENTIRE" while doing exactly this — now it says what it does (0.1.17).
    */
   async exportLogs(id: string): Promise<{ path: string }> {
     const lines = this.getLogs(id, 100_000)
@@ -1275,6 +1319,10 @@ export class InstanceService extends EventEmitter {
     const config = loadInstanceConfigs().find((c) => c.id === id)
     if (!config) throw new Error(`Instance not found: ${id}`)
     const rt = this.ensureRuntime(config)
+    // 0.1.17 (WP3): clear any previous cancel request BEFORE the first await —
+    // doing it at the generation bump (after the port probe) swallowed a stop()
+    // that arrived while the very first checkPort was in flight.
+    rt.cancelRequested = false
     if (rt.process && rt.process.exitCode === null) {
       if (rt.ready) return this.toInfo(rt)
       // Process is up but not ready yet — wait for the existing probe.
@@ -1284,7 +1332,25 @@ export class InstanceService extends EventEmitter {
     }
 
     let effectivePort = config.port || 8188
-    const portCheck = await this.checkPort(effectivePort)
+    let portCheck = await this.checkPort(effectivePort)
+    if (!portCheck.available && rt.expectingStop) {
+      // 0.1.17 (WP3): a restart must NEVER adopt the process it just tried to
+      // stop — that would silently keep the old (possibly broken) server while
+      // claiming a fresh start. Wait for the port, then refuse.
+      for (let i = 0; i < 20 && !portCheck.available; i++) {
+        await new Promise((r) => setTimeout(r, 250))
+        portCheck = await this.checkPort(effectivePort)
+      }
+      if (!portCheck.available) {
+        rt.expectingStop = false
+        rt.lastError = `Port ${effectivePort} is still in use after stopping — refusing to adopt the old process`
+        rt.status = 'error'
+        this.pushLog(rt, 'error', rt.lastError)
+        this.emitStatus(rt)
+        throw new Error(rt.lastError)
+      }
+    }
+    rt.expectingStop = false
     if (!portCheck.available) {
       // Port may be occupied by a ComfyUI we can adopt (already running).
       const base = this.baseUrlOf({ ...config, port: effectivePort })
@@ -1335,6 +1401,7 @@ export class InstanceService extends EventEmitter {
     rt.generation += 1
     const gen = rt.generation
     rt.intentionalStop = false
+    rt.lastExit = undefined
     rt.status = 'starting'
     rt.ready = false
     rt.managed = true
@@ -1394,6 +1461,8 @@ export class InstanceService extends EventEmitter {
       rt.process = child
       rt.pid = child.pid
       rt.startedAt = Date.now()
+      // 0.1.17 (WP3): ledger entry so an app crash cannot orphan a 20 GB server.
+      this.rememberPid(rt)
 
       // Level comes from the LINE'S OWN `[LEVEL]` token first (0.1.16) — Python
       // logging writes nearly everything to stderr, so the old "stderr ⇒ warn"
@@ -1436,6 +1505,17 @@ export class InstanceService extends EventEmitter {
         const intentional = rt.intentionalStop || signal === 'SIGTERM' || signal === 'SIGKILL'
         rt.status = intentional ? 'stopped' : code === 0 ? 'stopped' : 'error'
         if (!intentional && code !== 0) rt.lastError = `Exited with code ${code}`
+        // 0.1.17 (WP3): classify the crash and tell the user, instead of only
+        // flipping a status chip the UI may not even be looking at.
+        const unexpected = !intentional && code !== 0
+        if (unexpected) {
+          const report = this.classifyExit(rt, code, signal)
+          rt.lastExit = report
+          rt.lastError = `${report.hint} (exit=${code ?? '?'} signal=${signal ?? 'none'})`
+          this.pushLog(rt, 'error', `Crash classified as ${report.kind}: ${report.hint}`)
+          this.emit('exit', { instanceId: rt.config.id, report })
+        }
+        this.forgetPid(rt.config.id)
         this.clearReadyProbe(rt)
         // The process is gone — its online version is no longer "online".
         capabilityService.invalidate(rt.config.id)
@@ -1457,12 +1537,275 @@ export class InstanceService extends EventEmitter {
 
     // Surface errors fast: if the process dies in the first moments, rethrow.
     await new Promise((r) => setTimeout(r, 200))
+    // 0.1.17 (WP3): a stop() that arrived while we were starting wins. Without
+    // this check the freshly spawned process survived the "stopped" the user
+    // already saw (the old code only ignored the request when no process
+    // existed yet, and stopAll skipped such instances entirely).
+    if (rt.cancelRequested && rt.generation === gen) {
+      const pending = rt.process
+      rt.cancelRequested = false
+      rt.intentionalStop = true
+      await this.terminateChild(pending, 3000)
+      if (rt.generation === gen) {
+        if (rt.process === pending) {
+          rt.process = undefined
+          rt.pid = undefined
+        }
+        rt.status = 'stopped'
+        rt.managed = false
+        this.clearReadyProbe(rt, 'Start cancelled')
+        this.pushLog(rt, 'info', 'Start cancelled before the instance became ready')
+        this.emitStatus(rt)
+      }
+      throw new Error('Instance start cancelled')
+    }
     const lateStatus = rt.status as InstanceStatus
     if (rt.generation === gen && lateStatus === 'error' && rt.lastError) {
       throw new Error(rt.lastError)
     }
 
     return this.toInfo(rt)
+  }
+
+  /**
+   * Best-effort structured crash classification from the log tail (WP3).
+   * Read-only: the UI uses it to offer "restart" or "lower VRAM and restart".
+   */
+  private classifyExit(
+    rt: RuntimeEntry,
+    code: number | null,
+    signal: NodeJS.Signals | null
+  ): InstanceExitReport {
+    const tail = (rt.logs || [])
+      .slice(-200)
+      .map((l) => l.message)
+      .join('\n')
+      .toLowerCase()
+    const at = Date.now()
+    if (rt.cancelRequested || rt.intentionalStop) {
+      return { kind: 'cancelled', code, signal, hint: 'Stopped by request', at }
+    }
+    if (/out of memory|cuda error: out of memory|allocation on device|memoryerror/.test(tail)) {
+      return {
+        kind: 'oom',
+        code,
+        signal,
+        hint: 'GPU/CPU ran out of memory — lower the resolution or free VRAM',
+        at
+      }
+    }
+    if (/address already in use|eaddrinuse|port \d+ is already in use/.test(tail)) {
+      return { kind: 'port', code, signal, hint: 'Port was taken by another process', at }
+    }
+    if (/modulenotfounderror|importerror|cannot import name|no module named/.test(tail)) {
+      return {
+        kind: 'dependency',
+        code,
+        signal,
+        hint: 'A Python dependency is missing or broken — run Repair env',
+        at
+      }
+    }
+    // 0.1.17 (review fix): this used to match the bare word `cuda`/`hip`, which
+    // every normal start log contains ("Total VRAM … torch.cuda …"), so ANY
+    // crash was reported as a GPU driver problem. Require an actual failure
+    // phrase instead of a mention.
+    if (
+      /(cuda error|cuda failed|cuda driver|cuda runtime|no cuda-capable device|nvidia.*(error|failed|not found)|nvml.*(error|failed)|hip.*(error|failed)|rocm.*(error|failed)|driver.*(error|failed|not found))/.test(
+        tail
+      )
+    ) {
+      return {
+        kind: 'driver',
+        code,
+        signal,
+        hint: 'GPU driver/CUDA problem — check the driver or torch channel',
+        at
+      }
+    }
+    return { kind: 'unknown', code, signal, hint: `Exited with code ${code}`, at }
+  }
+
+  // ---------- orphan pid ledger (0.1.17 WP3) ----------
+
+  private pidsFile(): string {
+    return join(logsDir(), 'pids.json')
+  }
+
+  private readPids(): Record<string, { pid: number; path?: string; startedAt: number }> {
+    try {
+      const raw = JSON.parse(readFileSync(this.pidsFile(), 'utf-8')) as Record<
+        string,
+        { pid: number; path?: string; startedAt: number }
+      >
+      return raw && typeof raw === 'object' ? raw : {}
+    } catch {
+      return {}
+    }
+  }
+
+  private writePids(next: Record<string, { pid: number; path?: string; startedAt: number }>): void {
+    try {
+      mkdirSync(logsDir(), { recursive: true })
+      writeFileSync(this.pidsFile(), JSON.stringify(next, null, 2), 'utf-8')
+    } catch {
+      /* ledger is best-effort */
+    }
+  }
+
+  /** Record a spawned process so a crashed app can find it again. */
+  private rememberPid(rt: RuntimeEntry): void {
+    if (!rt.pid) return
+    const all = this.readPids()
+    all[rt.config.id] = { pid: rt.pid, path: rt.config.path, startedAt: Date.now() }
+    this.writePids(all)
+  }
+
+  /** Drop the ledger entry (process exited or was stopped). */
+  private forgetPid(instanceId: string): void {
+    const all = this.readPids()
+    if (!(instanceId in all)) return
+    delete all[instanceId]
+    this.writePids(all)
+  }
+
+  private isPidAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch (e) {
+      // EPERM means the pid exists but belongs to another user.
+      return (e as NodeJS.ErrnoException)?.code === 'EPERM'
+    }
+  }
+
+  /**
+   * Command line of a live pid, when the OS can tell us. Used to CONFIRM a
+   * ledger entry is really our ComfyUI before killing it (PID reuse is real).
+   */
+  private async processCommandLine(pid: number): Promise<string | null> {
+    try {
+      if (process.platform === 'win32') {
+        const { stdout } = await execFileAsync(
+          'powershell.exe',
+          [
+            '-NoProfile',
+            '-NonInteractive',
+            '-Command',
+            `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`
+          ],
+          { timeout: 8000, windowsHide: true }
+        )
+        return stdout.trim() || null
+      }
+      return readFileSync(`/proc/${pid}/cmdline`, 'utf-8').replace(/\0/g, ' ').trim() || null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Startup sweep of the ledger (0.1.17 WP3). A process we started that
+   * outlived the app holds tens of GB of VRAM, so it must not be forgotten.
+   * Conservative: only terminate when the command line proves it is ours;
+   * anything unverifiable is reported, never killed.
+   */
+  async sweepStaleProcesses(): Promise<{
+    entries: number
+    killed: string[]
+    unverified: string[]
+  }> {
+    const all = this.readPids()
+    const ids = Object.keys(all)
+    const killed: string[] = []
+    const unverified: string[] = []
+    if (!ids.length) return { entries: 0, killed, unverified }
+    const next: typeof all = {}
+    for (const id of ids) {
+      const entry = all[id]
+      if (!entry?.pid || !this.isPidAlive(entry.pid)) continue // gone — drop
+      const cmd = await this.processCommandLine(entry.pid)
+      const expected = String(entry.path || '')
+      if (cmd && expected && cmd.includes(expected)) {
+        try {
+          if (process.platform === 'win32') {
+            await execFileAsync('taskkill', ['/PID', String(entry.pid), '/T', '/F'], {
+              timeout: 8000,
+              windowsHide: true
+            })
+          } else {
+            process.kill(entry.pid, 'SIGKILL')
+          }
+          killed.push(`${id} (pid ${entry.pid})`)
+          continue
+        } catch {
+          /* fall through to unverified */
+        }
+      }
+      unverified.push(`${id} (pid ${entry.pid}${cmd ? '' : ', command line unavailable'})`)
+      next[id] = entry
+    }
+    this.writePids(next)
+    return { entries: ids.length, killed, unverified }
+  }
+
+  /** Stop a child process tree, gracefully first (0.1.17 WP3).
+   *
+   * Windows has no signals: the old code called `child.kill('SIGTERM')`, which
+   * Node implements as an immediate TerminateProcess — ComfyUI never got to
+   * release its page-locked VRAM. `taskkill /T` (no /F) asks the whole tree to
+   * close, and only escalates to `/F` after the grace window.
+   *
+   * @returns true when the child actually exited before the grace window ended.
+   */
+  private async terminateChild(
+    child: ChildProcessWithoutNullStreams | undefined,
+    graceMs = 3000
+  ): Promise<boolean> {
+    if (!child) return true
+    if (child.exitCode !== null) return true
+
+    const exited = new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), graceMs)
+      child.once('exit', () => {
+        clearTimeout(timer)
+        resolve(true)
+      })
+    })
+
+    const pid = child.pid
+    if (process.platform === 'win32' && pid) {
+      await execFileAsync('taskkill', ['/PID', String(pid), '/T'], {
+        windowsHide: true,
+        timeout: 5000
+      }).catch(() => undefined)
+    } else {
+      try {
+        child.kill('SIGTERM')
+      } catch {
+        /* already gone */
+      }
+    }
+
+    if (await exited) return true
+
+    // Escalate: the process ignored the polite request.
+    if (process.platform === 'win32' && pid) {
+      await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F'], {
+        windowsHide: true,
+        timeout: 5000
+      }).catch(() => undefined)
+    } else {
+      try {
+        if (child.exitCode === null) child.kill('SIGKILL')
+      } catch {
+        /* already gone */
+      }
+    }
+    return Promise.race([
+      exited,
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(child.exitCode !== null), 1500))
+    ])
   }
 
   async startAll(): Promise<InstanceActionResult[]> {
@@ -1496,7 +1839,14 @@ export class InstanceService extends EventEmitter {
   async stopAll(): Promise<InstanceActionResult[]> {
     const out: InstanceActionResult[] = []
     for (const rt of this.runtimes.values()) {
-      if (!rt.process) continue
+      // 0.1.17 (WP3): "starting" counts, even before the status flips — a start
+      // that is still in its port probe has no process yet but is in flight.
+      const live =
+        Boolean(rt.process) ||
+        rt.status === 'running' ||
+        rt.status === 'starting' ||
+        this.startingIds.has(rt.config.id)
+      if (!live) continue
       const id = rt.config.id
       try {
         const info = await this.stop(id)
@@ -1515,6 +1865,34 @@ export class InstanceService extends EventEmitter {
   async stop(id: string): Promise<InstanceStopResult> {
     const rt = this.runtimes.get(id)
     if (!rt) throw new Error(`Instance not found: ${id}`)
+    // 0.1.17 (review fix): one stop in flight per instance. Without this, a
+    // second caller saw the already-cleared process handle and returned
+    // `exited:true` while the first stop was still waiting for the kill —
+    // the updater then overwrote a live process's files.
+    const inFlight = this.stopping.get(id)
+    if (inFlight) return inFlight
+    const p = this.stopInner(rt)
+    this.stopping.set(id, p)
+    try {
+      return await p
+    } finally {
+      this.stopping.delete(id)
+    }
+  }
+
+  private async stopInner(rt: RuntimeEntry): Promise<InstanceStopResult> {
+    const id = rt.config.id
+    // 0.1.17 (WP3): a start that is still in flight (port check, spawn, the
+    // 200 ms settle window) must be aborted AND awaited. The old code bumped
+    // the generation and returned "stopped" while startInner went on to spawn,
+    // so the process reappeared seconds later.
+    if (this.startingIds.has(id) || rt.status === 'starting') {
+      rt.cancelRequested = true
+      const deadline = Date.now() + 10_000
+      while (this.startingIds.has(id) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 50))
+      }
+    }
     rt.intentionalStop = true
     rt.generation += 1
     const child = rt.process
@@ -1523,45 +1901,56 @@ export class InstanceService extends EventEmitter {
     // external process can still see that it was live.
     const wasRunning = rt.status === 'running' || rt.status === 'starting'
     const wasReady = rt.ready
-    rt.process = undefined
-    rt.pid = undefined
-    rt.status = 'stopped'
     this.clearReadyProbe(rt, wasManaged ? 'Stopped' : 'External process left running')
     // Drop the online version — a stopped instance shows the install stamp.
     capabilityService.invalidate(id)
     let adopted = false
+    let exited = true
     if (child) {
-      try {
-        child.kill('SIGTERM')
-      } catch {
-        /* already dead */
+      // Awaited: the UI's "stopped" must mean the process is actually gone.
+      exited = await this.terminateChild(child)
+      if (!exited) {
+        // Keep the handle: the process may still be alive, so a later stop or
+        // force-kill must be able to reach it. Status says "error", not "stopped".
+        rt.status = 'error'
+        this.pushLog(
+          rt,
+          'warn',
+          `Process ${child.pid ?? '?'} did not exit within the grace window — it may still be running`
+        )
+      } else {
+        rt.process = undefined
+        rt.pid = undefined
+        rt.status = 'stopped'
       }
-      setTimeout(() => {
-        try {
-          // `killed` is true after ANY successful kill() (including SIGTERM), so it
-          // cannot gate escalation — only exitCode tells us the child is gone.
-          if (child.exitCode === null) child.kill('SIGKILL')
-        } catch {
-          /* ignore */
-        }
-      }, 3000)
-    } else if (!wasManaged && (wasReady || wasRunning)) {
-      // We only adopted an external ComfyUI — be honest instead of pretending we killed it.
-      adopted = true
-      this.pushLog(
-        rt,
-        'warn',
-        'Stop requested for an adopted external process — it is still running outside ComfyPilot'
-      )
+    } else {
+      rt.process = undefined
+      rt.pid = undefined
+      rt.status = 'stopped'
+      if (!wasManaged && (wasReady || wasRunning)) {
+        // We only adopted an external ComfyUI — be honest instead of pretending we killed it.
+        adopted = true
+        this.pushLog(
+          rt,
+          'warn',
+          'Stop requested for an adopted external process — it is still running outside ComfyPilot'
+        )
+      }
     }
     rt.managed = false
     this.emitStatus(rt)
+    if (exited) this.forgetPid(id)
     const info = this.toInfo(rt) as InstanceStopResult
     if (adopted) info.adopted = true
+    info.exited = exited
     return info
   }
 
   async restart(id: string, opts?: LaunchOptions): Promise<ComfyInstanceInfo> {
+    const rtBefore = this.runtimes.get(id)
+    // 0.1.17 (WP3): tell the following start() that a stop is in progress, so it
+    // waits for the port instead of adopting the process it just replaced.
+    if (rtBefore) rtBefore.expectingStop = true
     await this.stop(id)
     // Wait until port is free (or timeout) so start() does not race a dying process.
     const config = loadInstanceConfigs().find((c) => c.id === id)
@@ -1616,6 +2005,7 @@ export class InstanceService extends EventEmitter {
     rt.managed = false
     this.pushLog(rt, 'warn', 'Force killed')
     this.emitStatus(rt)
+    this.forgetPid(id)
     const info = this.toInfo(rt) as InstanceStopResult
     if (adopted) info.adopted = true
     return info
@@ -1634,6 +2024,7 @@ export class InstanceService extends EventEmitter {
           /* ignore */
         }
         rt.process = undefined
+        this.forgetPid(rt.config.id)
         rt.status = 'stopped'
       }
     }

@@ -54,7 +54,9 @@ describe('batch four-bucket counting semantics', () => {
       join(__dirname, '..', '..', 'src', 'main', 'services', 'p1p2.ts'),
       'utf-8'
     )
-    expect(src).toContain('let iteration = 0')
+    // 0.1.17 (WP5): the counter now starts at the resume offset, but it is
+    // still an independent counter — never derived from item.submitted.
+    expect(src).toContain('let iteration = startAt')
     expect(src).not.toContain('const iteration = item.submitted')
   })
 })
@@ -103,26 +105,29 @@ describe('settings schema validation strips unknown keys', () => {
   })
 })
 
-describe('proxy password encryption (safeStorage)', () => {
-  it('encryptProxyPassword falls back to plaintext without electron', () => {
+describe('secret-at-rest helper (safeStorage)', () => {
+  // 0.1.17 (WP8): encryption moved out of db.ts into the single-owner
+  // `secretStorage` module; this contract check follows it. Behaviour is
+  // covered for real in tests/unit/wp8SecretsAtRest.test.ts.
+  it('keeps the enc: prefix contract and the plaintext fallback', () => {
     const src = readFileSync(
-      join(__dirname, '..', '..', 'src', 'main', 'services', 'db.ts'),
+      join(__dirname, '..', '..', 'src', 'main', 'services', 'secretStorage.ts'),
       'utf-8'
     )
-    expect(src).toContain('encryptProxyPassword')
-    expect(src).toContain('decryptProxyPassword')
-    expect(src).toContain("startsWith('enc:')")
+    expect(src).toContain('export function encryptSecret')
+    expect(src).toContain('export function decryptSecret')
+    expect(src).toContain('startsWith(PREFIX)')
     expect(src).toContain('safeStorage')
   })
 
-  it('decryptProxyPassword returns plaintext for non-enc values', () => {
-    // Can't call internal fn directly; contract check on source
+  it('db.ts consumes the shared helper instead of owning a copy', () => {
     const src = readFileSync(
       join(__dirname, '..', '..', 'src', 'main', 'services', 'db.ts'),
       'utf-8'
     )
-    // Must handle both enc: and plain
-    expect(src).toContain('decryptProxyPassword')
+    expect(src).toContain("from './secretStorage'")
+    expect(src).not.toContain('function encryptSecret')
+    expect(src).not.toContain('function decryptSecret')
   })
 })
 

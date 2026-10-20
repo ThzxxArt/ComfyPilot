@@ -94,7 +94,17 @@ export async function safeUnzip(zipPath: string, destDir: string): Promise<void>
     await execFileAsync('unzip', ['-o', zipPath, '-d', destDir], EXEC)
   }
 
-  // Post-extract containment walk (defense in depth)
+  assertExtractedInside(destDir)
+}
+
+/**
+ * Post-extract containment walk (defense in depth).
+ *
+ * 0.1.17 (WP8): exported so the tarball path in bootstrap gets the same check
+ * instead of owning a second, drifting copy. Throws after removing the tree:
+ * a half-extracted runtime must not survive.
+ */
+export function assertExtractedInside(destDir: string): void {
   const stack = [destDir]
   const visited = new Set<string>()
   const markReal = (p: string): string => {

@@ -67,6 +67,9 @@ describe('workflowService.queue remote targets (0.1.11)', () => {
     expect(call.url.startsWith('http://10.1.1.1:9000/')).toBe(true)
     expect((call.init?.headers as Record<string, string>).Authorization).toBe('Bearer k-1')
     // Queue-time sidecar persists for later output attribution.
+    // 0.1.17 (WP7): debounced — flush before asserting the file.
+    const { flushPromptLinks } = await import('../../src/main/services/workflow')
+    flushPromptLinks()
     const links = JSON.parse(
       readFileSync(join(ROOT, 'data', 'prompt_links.jsonc'), 'utf-8')
     ) as Record<string, unknown>

@@ -55,7 +55,8 @@ describe('v0.1.7 collaboration & data contracts', () => {
     const p1p2 = readSrc('src/main/services/p1p2.ts')
     // Must NOT use item.submitted as iteration seed source
     expect(p1p2).not.toContain('const iteration = item.submitted')
-    expect(p1p2).toContain('let iteration = 0')
+    // 0.1.17 (WP5): counter starts at the resume offset; still independent.
+    expect(p1p2).toContain('let iteration = startAt')
   })
 
   it('op-progress uses per-instance Map, not a singleton', () => {

@@ -20,6 +20,8 @@ import {
   flushPendingWrites
 } from './services/db'
 import { markSessionStart, markSessionCleanExit, recordCrashDetail } from './services/session'
+import { describeRecentSlowOps } from './services/slowOps'
+import { flushPromptLinks } from './services/workflow'
 import { monitorEventLoopDelay } from 'perf_hooks'
 import { IPC_EVENTS } from '@shared/types'
 import { APP_NAME } from '@shared/constants'
@@ -120,7 +122,11 @@ function startWatchdog(): void {
         const rssMb = Math.round(mem.rss / 1048576)
         if ((heapMb > 1536 || lagMs > 5000) && Date.now() - lastWarn > 60_000) {
           lastWarn = Date.now()
-          crashLog(`watchdog: heap=${heapMb}MB rss=${rssMb}MB eventLoopMax=${Math.round(lagMs)}ms`)
+          // 0.1.17 (WP6): name the IPC channel(s) that blew the budget instead
+          // of leaving a bare millisecond number.
+          crashLog(
+            `watchdog: heap=${heapMb}MB rss=${rssMb}MB eventLoopMax=${Math.round(lagMs)}ms slow=${describeRecentSlowOps(3)}`
+          )
         }
       } catch {
         /* sampling must never throw */
@@ -362,7 +368,27 @@ function createWindow(): void {
 }
 
 crashLog('module body done, registering whenReady')
+
+// 0.1.17 (WP8): a second copy of the app used to start alongside the first,
+// both writing settings/instances/logs and both driving child ComfyUI
+// processes. The lock makes the second launch focus the existing window.
+// Escape hatch for support/debug: `--allow-multiple-instances` (or env).
+const allowMultipleInstances =
+  process.argv.includes('--allow-multiple-instances') ||
+  process.env.COMFYPILOT_ALLOW_MULTIPLE === '1'
+const gotSingleInstanceLock = allowMultipleInstances || app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  crashLog('another instance owns the lock — quitting this one')
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    crashLog('second-instance: focusing existing window')
+    revealWindow()
+  })
+}
+
 app.whenReady().then(async () => {
+  if (!gotSingleInstanceLock) return
   const e2e = process.env.COMFYPILOT_E2E === '1' || process.argv.includes('--e2e-smoke')
   crashLog('whenReady start')
 
@@ -540,6 +566,51 @@ app.whenReady().then(async () => {
       /* diagnosis must never break log streaming */
     }
   })
+  // 0.1.17 (WP3): an unexpected exit carries a classified reason and a toast, so
+  // a crashed instance is visible without keeping the log panel open.
+  instanceService.on(
+    'exit',
+    (evt: { instanceId: string; report: { kind: string; hint: string } }) => {
+      crashLog(`instance ${evt.instanceId} crashed: ${evt.report.kind} — ${evt.report.hint}`)
+      broadcastNotification({
+        type: 'error',
+        title: 'ComfyUI stopped unexpectedly',
+        titleKey: 'notify.instanceCrash',
+        message: evt.report.hint,
+        messageKey: 'notify.instanceCrashMsg',
+        params: { kind: evt.report.kind, hint: evt.report.hint },
+        duration: 10000
+      })
+    }
+  )
+  // Orphan sweep (0.1.17 WP3): a ComfyUI we started that survived an app crash
+  // keeps tens of GB of VRAM. Terminate only when the command line proves the
+  // pid is ours; anything unverifiable is reported, never killed.
+  void instanceService
+    .sweepStaleProcesses()
+    .then((res) => {
+      if (res.killed.length) {
+        crashLog(`orphan sweep: terminated ${res.killed.join(', ')}`)
+        broadcastNotification({
+          type: 'warning',
+          title: 'Orphan ComfyUI terminated',
+          titleKey: 'notify.orphanKilled',
+          message: res.killed.join(', '),
+          duration: 8000
+        })
+      }
+      if (res.unverified.length) {
+        crashLog(`orphan sweep: unverified ${res.unverified.join(', ')}`)
+        broadcastNotification({
+          type: 'warning',
+          title: 'A previous ComfyUI may still be running',
+          titleKey: 'notify.orphanUnverified',
+          message: res.unverified.join(', '),
+          duration: 10000
+        })
+      }
+    })
+    .catch((e) => crashLog('orphan sweep failed: ' + String(e)))
   // Record WS execution_error payloads for ComfyPilot-submitted runs and
   // surface every failure as an event + one toast/notification.
   monitorService.on('ws', (evt) => {
@@ -740,6 +811,8 @@ app.whenReady().then(async () => {
     }
     try {
       flushPendingWrites()
+      // 0.1.17 (WP7): the prompt→workflow sidecar is debounced too.
+      flushPromptLinks()
     } catch {
       /* ignore */
     }
