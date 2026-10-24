@@ -66,7 +66,16 @@ describe.skipIf(skip)('electron app smoke (real bundle)', () => {
       // Real Electron (not ELECTRON_RUN_AS_NODE) loading the packaged entry.
       // Entry as a RELATIVE path: under WSL, Windows Electron (via interop)
       // cannot resolve POSIX absolute paths like /mnt/d/….
-      const p = spawn(bin, ['out/main/bootstrap.cjs', '--e2e-smoke'], {
+      // GitHub's Linux runners have no correctly-configured SUID sandbox helper
+      // (chrome-sandbox must be root:4755), so Electron aborts before main runs.
+      // CI already isolates the job; run the smoke test without the sandbox there.
+      // The switch goes BEFORE the entry — Electron treats the first bare
+      // argument as the app path.
+      const args =
+        process.platform === 'linux' && process.env.CI
+          ? ['--no-sandbox', 'out/main/bootstrap.cjs', '--e2e-smoke']
+          : ['out/main/bootstrap.cjs', '--e2e-smoke']
+      const p = spawn(bin, args, {
         env: {
           ...process.env,
           ELECTRON_ENABLE_LOGGING: '1',
@@ -146,9 +155,7 @@ describe.skipIf(skip)('electron app smoke (real bundle)', () => {
     }
     // Any renderer console error is a red build: silent runtime failures used
     // to leave a green smoke run.
-    const consoleErrors = result.text
-      .split('\n')
-      .filter((l) => l.includes('[e2e] console-error:'))
+    const consoleErrors = result.text.split('\n').filter((l) => l.includes('[e2e] console-error:'))
     expect(consoleErrors, `renderer console errors:\n${consoleErrors.join('\n')}`).toEqual([])
     expect(result.text).not.toContain('[e2e] preload-error:')
     expect(result.code === 0 || result.code === null).toBe(true)
