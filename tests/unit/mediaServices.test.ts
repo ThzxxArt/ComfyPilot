@@ -13,7 +13,6 @@ import {
   utimesSync
 } from 'fs'
 import { join, dirname, basename } from 'path'
-import { tmpdir } from 'os'
 import { createHash } from 'crypto'
 import type { ModelRecord } from '../../src/shared/types'
 
@@ -30,7 +29,14 @@ const h = vi.hoisted(() => ({
   readFileSyncImpl: null as null | ((...a: unknown[]) => unknown),
   writeFileSyncImpl: null as null | ((...a: unknown[]) => unknown),
   renameSyncImpl: null as null | ((...a: unknown[]) => unknown),
-  actualReadFileSync: null as null | ((...a: unknown[]) => unknown)
+  actualReadFileSync: null as null | ((...a: unknown[]) => unknown),
+  // 0.1.18 (CI fix): every worker used the SAME app.getPath() dir. db caches
+  // invalidate on external mtime changes, so parallel test files sharing the
+  // models file could load each other's (empty) list and `ensureAll()` saw no
+  // models. Give each worker its own root.
+  root: `${
+    process.env.TEMP || process.env.TMP || process.env.TMPDIR || '/tmp'
+  }/cp-media-svc-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
 }))
 
 vi.mock('fs', async (importOriginal) => {
@@ -55,7 +61,7 @@ vi.mock('fs', async (importOriginal) => {
 })
 
 vi.mock('electron', () => ({
-  app: { getPath: () => join(tmpdir(), 'cp-media-svc') },
+  app: { getPath: () => h.root },
   nativeImage: {
     createFromPath: (p: string) => ({
       isEmpty: () => !existsSync(p) || p.includes('broken'),
@@ -102,7 +108,7 @@ vi.mock('child_process', () => ({
   spawn: () => ({ pid: 1, exitCode: null, kill: () => undefined })
 }))
 
-const ROOT = join(tmpdir(), 'cp-media-svc')
+const ROOT = h.root
 
 function rec(overrides: Partial<ModelRecord> = {}): ModelRecord {
   return {
@@ -280,9 +286,13 @@ describe('media services', () => {
       writeFileSync(existingThumb, 'x')
 
       const p1 = join(ROOT, 'models', 'ea1.safetensors')
+      const p2 = join(ROOT, 'models', 'ea2.safetensors')
       writeFileSync(p1, 'x')
+      writeFileSync(p2, 'x')
+      // Distinct paths: upsert merges records that share a path, which used to
+      // turn these two fixtures into one (already-thumbnailed) row.
       upsertModel(rec({ id: 'ea-has', path: p1, thumbnail: existingThumb }))
-      upsertModel(rec({ id: 'ea-need', path: p1 }))
+      upsertModel(rec({ id: 'ea-need', path: p2 }))
       const n = await media.thumbnailService.ensureAll()
       expect(n).toBeGreaterThanOrEqual(1)
       deleteModel('ea-has')
