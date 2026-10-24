@@ -63,6 +63,10 @@ jobs:
         run: npm run test:behavior
 
       - name: Coverage ratchet
+        # The baseline is measured on Linux; per-file V8 numbers differ enough
+        # on Windows (path shims, native helpers) that a cross-platform ratchet
+        # produces false regressions. Windows still uploads its own coverage.
+        if: runner.os == 'Linux'
         run: node scripts/coverage-ratchet.cjs
 
       - name: Upload coverage report
