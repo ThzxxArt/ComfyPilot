@@ -698,7 +698,7 @@ describe('resolveRemovalTargets branches via uninstall', () => {
     // list() finds 'Shell' (the direct child)
     const listed = nodePackService.list('inst-1')
     expect(listed.length).toBeGreaterThan(0)
-    const shellPack = listed.find((p) => p.path === shell)
+    const shellPack = listed.find((p) => h.norm(p.path) === h.norm(shell))
     expect(shellPack).toBeTruthy()
     h.state.nodePacks = [
       {
