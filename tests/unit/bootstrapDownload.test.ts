@@ -32,6 +32,16 @@ vi.mock('systeminformation', () => ({
   default: { graphics: async () => ({ controllers: [] }) }
 }))
 
+// 0.1.18 (CI): extraction is not what these tests assert. Keeping the real
+// unzip made Windows spawn PowerShell on the fake archive (and time out at
+// 15s); a deterministic failure keeps the pre-extraction behaviour under test.
+vi.mock('../../src/main/services/zipSafe', () => ({
+  safeUnzip: async () => {
+    throw new Error('test: not a real archive')
+  },
+  assertExtractedInside: () => undefined
+}))
+
 import { RUNTIME_SOURCES } from '../../src/shared/constants'
 
 /** Same platform selection as bootstrap.platformKey(). */
@@ -54,7 +64,14 @@ describe('bootstrap resumable download (0.1.13)', () => {
   // tmpfs hygiene (0.1.15): un-cleaned 16MB download fixtures used to
   // accumulate under /tmp until the installer disk gate tripped.
   beforeEach(() => {
-    if (h.root) rmSync(h.root, { recursive: true, force: true })
+    if (h.root) {
+      try {
+        rmSync(h.root, { recursive: true, force: true })
+      } catch {
+        // Windows: a previous timed-out test may still hold a file handle.
+        // A fresh mkdtemp keeps the next test isolated anyway.
+      }
+    }
     h.root = mkdtempSync(join(tmpdir(), 'cp-boot-dl-'))
     h.fetchImpl = null
     vi.resetModules()

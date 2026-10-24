@@ -38,8 +38,8 @@ const h = vi.hoisted(() => {
   }
 
   /** All virtual keys use forward slashes — normalize before map lookups. */
-  function norm(p: string): string {
-    return String(p).replace(/\\/g, '/')
+  function norm(p: string | undefined): string {
+    return String(p ?? '').replace(/\\/g, '/')
   }
 
   function detachFromParent(p: string): void {
@@ -466,7 +466,7 @@ describe('list() meta name/version fallbacks', () => {
     const packs = nodePackService.list('C:/fake/ComfyUI')
     // The name regex requires ≥1 char, so `name = ""` never matches and the
     // folder name wins deterministically.
-    const p = packs.find((x) => x.path === dir)!
+    const p = packs.find((x) => h.norm(x.path) === h.norm(dir))!
     expect(p.name).toBe('EmptyName')
     expect(p.version).toBe('0.0.0')
   })
@@ -690,7 +690,7 @@ describe('resolveRemovalTargets branches via uninstall', () => {
       { '__init__.py': 'x', 'pyproject.toml': 'name = "Inner"\nversion = "1.0.0"\n' },
       'Shell'
     )
-    const shell = dirname(pack)
+    const shell = h.norm(dirname(pack))
     // add sibling residue
     mkdirs(join(shell, '.git'))
     const shellList = h.state.dirs.get(shell)!
@@ -772,7 +772,7 @@ describe('createSnapshot persistence failures', () => {
     const snap = nodePackService.createSnapshot()
     expect(snap.name.startsWith('snapshot-')).toBe(true)
     expect(snap.packs.length).toBe(1)
-    expect(snap.packs[0].path).toBe(dir)
+    expect(h.norm(snap.packs[0].path)).toBe(h.norm(dir))
     expect(snap.packs[0].source).toBeTruthy()
     delete process.env.COMFYUI_PATH
   })
@@ -957,7 +957,7 @@ describe('list() meta empty-name and no-version fallbacks', () => {
     writeFile(join(dir, '__init__.py'), 'x')
     const packs = nodePackService.list('C:/fake/ComfyUI')
     // The name regex requires ≥1 char — the folder name is the deterministic result.
-    const p = packs.find((x) => x.path === dir)!
+    const p = packs.find((x) => h.norm(x.path) === h.norm(dir))!
     expect(p.name).toBe('FallbackName')
   })
 
@@ -966,7 +966,7 @@ describe('list() meta empty-name and no-version fallbacks', () => {
     const dir = seedPackDir('BarePack', { 'something.py': 'print(1)\n' })
     // no __init__.py → NO_ENTRY warning; no pyproject/package.json
     const packs = nodePackService.list('C:/fake/ComfyUI')
-    const p = packs.find((x) => x.path === dir)!
+    const p = packs.find((x) => h.norm(x.path) === h.norm(dir))!
     expect(p).toBeTruthy()
     expect(p.version).toBe('0.0.0')
     expect(p.nodeList).toEqual([])
