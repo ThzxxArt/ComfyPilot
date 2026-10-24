@@ -94,22 +94,22 @@ const h = vi.hoisted(() => {
     rmPath(f)
   }
 
-  return { state, rmPath, renamePath }
+  return { state, rmPath, renamePath, norm }
 })
 
 vi.mock('fs', () => {
-  const { state, rmPath, renamePath } = h
+  const { state, rmPath, renamePath, norm } = h
   return {
     existsSync: (p: unknown) => {
-      const s = String(p)
+      const s = norm(String(p))
       return state.exists.has(s) || state.dirs.has(s) || state.files.has(s) || state.isDir.has(s)
     },
     readdirSync: (p: unknown) => {
-      const s = String(p)
+      const s = norm(String(p))
       return state.dirs.get(s) || []
     },
     statSync: (p: unknown) => {
-      const s = String(p)
+      const s = norm(String(p))
       return {
         isDirectory: () => state.isDir.has(s) || state.dirs.has(s),
         isFile: () => state.files.has(s),
@@ -118,14 +118,14 @@ vi.mock('fs', () => {
       }
     },
     readFileSync: (p: unknown) => {
-      const s = String(p)
+      const s = norm(String(p))
       return state.files.get(s) || ''
     },
     writeFileSync: vi.fn(() => {
       if (h.state.writeFileSyncThrows) throw new Error('disk full')
     }),
     unlinkSync: vi.fn((p: unknown) => {
-      const s = String(p)
+      const s = norm(String(p))
       state.files.delete(s)
       state.exists.delete(s)
     }),
@@ -315,17 +315,20 @@ function reset(): void {
   ]
 }
 
+// 0.1.18 (CI): the virtual fs is keyed with FORWARD slashes; helpers store
+// normalized keys so Windows `join` output (backslashes) still matches.
 function mkdirs(p: string): void {
   const parts = p.replace(/\\/g, '/').split('/')
   let cur = parts[0] + (parts[0].endsWith(':') ? '/' : '')
   for (let i = 1; i < parts.length; i++) {
-    cur = join(cur, parts[i])
+    cur = cur.endsWith('/') ? cur + parts[i] : `${cur}/${parts[i]}`
     if (!h.state.dirs.has(cur)) {
       h.state.dirs.set(cur, [])
       h.state.isDir.add(cur)
       h.state.exists.add(cur)
-      const parent = dirname(cur)
-      const base = cur.split(/[\\/]/).pop()!
+      const idx = cur.lastIndexOf('/')
+      const parent = cur.slice(0, idx) || '/'
+      const base = cur.slice(idx + 1)
       if (h.state.dirs.has(parent) && !h.state.dirs.get(parent)!.includes(base)) {
         h.state.dirs.get(parent)!.push(base)
       }
@@ -334,18 +337,19 @@ function mkdirs(p: string): void {
 }
 
 function writeFile(p: string, content: string): void {
-  mkdirs(dirname(p))
-  h.state.files.set(p, content)
-  h.state.exists.add(p)
-  const parent = dirname(p)
-  const base = p.split(/[\\/]/).pop()!
+  const key = p.replace(/\\/g, '/')
+  mkdirs(key.slice(0, key.lastIndexOf('/')))
+  h.state.files.set(key, content)
+  h.state.exists.add(key)
+  const parent = key.slice(0, key.lastIndexOf('/'))
+  const base = key.slice(key.lastIndexOf('/') + 1)
   if (h.state.dirs.has(parent) && !h.state.dirs.get(parent)!.includes(base)) {
     h.state.dirs.get(parent)!.push(base)
   }
 }
 
 function seedRoot(): string {
-  const root = join('C:/fake/ComfyUI', 'custom_nodes')
+  const root = 'C:/fake/ComfyUI/custom_nodes'
   mkdirs(root)
   return root
 }
@@ -356,12 +360,12 @@ function seedPackDir(
   nestedUnder?: string
 ): string {
   const root = seedRoot()
-  const shell = nestedUnder ? join(root, nestedUnder) : join(root, name)
-  const packDir = nestedUnder ? join(shell, name) : shell
+  const shell = nestedUnder ? `${root}/${nestedUnder}` : `${root}/${name}`
+  const packDir = nestedUnder ? `${shell}/${name}` : shell
   mkdirs(packDir)
   // ensure parent listings
   const rootList = h.state.dirs.get(root)!
-  const shellBase = shell.split(/[\\/]/).pop()!
+  const shellBase = shell.slice(shell.lastIndexOf('/') + 1)
   if (!rootList.includes(shellBase)) rootList.push(shellBase)
   if (nestedUnder) {
     const shellList = h.state.dirs.get(shell)!
@@ -369,7 +373,7 @@ function seedPackDir(
     if (!shellList.includes(packBase)) shellList.push(packBase)
   }
   for (const [rel, content] of Object.entries(files)) {
-    writeFile(join(packDir, rel), content)
+    writeFile(`${packDir}/${rel}`, content)
   }
   return packDir
 }
@@ -709,8 +713,8 @@ describe('resolveRemovalTargets branches via uninstall', () => {
     const ok = await nodePackService.uninstall(shellPack!.name, 'inst-1')
     expect(ok).toBe(true)
     // shell removed (direct child of custom_nodes)
-    expect(h.state.dirs.has(shell)).toBe(false)
-    expect(h.state.dirs.has(pack)).toBe(false)
+    expect(h.state.dirs.has(h.norm(shell))).toBe(false)
+    expect(h.state.dirs.has(h.norm(pack))).toBe(false)
   })
 
   it('removes a flat pack and keeps the custom_nodes root', async () => {
@@ -735,8 +739,8 @@ describe('resolveRemovalTargets branches via uninstall', () => {
     ]
     const ok = await nodePackService.uninstall('Direct', 'inst-1')
     expect(ok).toBe(true)
-    expect(h.state.dirs.has(root)).toBe(true)
-    expect(h.state.dirs.has(pack)).toBe(false)
+    expect(h.state.dirs.has(h.norm(root))).toBe(true)
+    expect(h.state.dirs.has(h.norm(pack))).toBe(false)
   })
 })
 
@@ -928,8 +932,8 @@ describe('toggle name.disabled edge', () => {
     // toggle by the disabled folder's listed name — must refuse, not silently diverge.
     expect(() => nodePackService.toggle(disabled!.name, true)).toThrow(/already exists/)
     // both directories remain untouched
-    expect(h.state.dirs.has(cleanDir)).toBe(true)
-    expect(h.state.dirs.has(disabledDir)).toBe(true)
+    expect(h.state.dirs.has(h.norm(cleanDir))).toBe(true)
+    expect(h.state.dirs.has(h.norm(disabledDir))).toBe(true)
     delete process.env.COMFYUI_PATH
   })
 })

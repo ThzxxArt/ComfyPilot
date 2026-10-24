@@ -94,6 +94,9 @@ describe('categorize (ComfyUI folder_paths mapping)', () => {
 })
 
 describe('parseExtraModelPaths (upstream key layout)', () => {
+  // Windows `join` mixes separators with the yaml's forward slashes; compare
+  // normalized forms instead of assuming POSIX.
+  const slash = (p: string): string => p.replace(/\\/g, '/')
   it('parses block scalars, base_path and third-party keys', async () => {
     const { parseExtraModelPaths } = await import('../../src/main/services/model')
     const yamlFile = join(dir, 'extra_model_paths.yaml')
@@ -111,9 +114,9 @@ describe('parseExtraModelPaths (upstream key layout)', () => {
       ].join('\n')
     )
     const roots = parseExtraModelPaths(yamlFile)
-    expect(roots).toContain('D:/AI/models/ckpt')
-    expect(roots).toContain('D:/more/ckpt')
-    expect(roots).toContain('D:/AI/models/audio')
+    expect(roots.map(slash)).toContain('D:/AI/models/ckpt')
+    expect(roots.map(slash)).toContain('D:/more/ckpt')
+    expect(roots.map(slash)).toContain('D:/AI/models/audio')
   })
 
   it('resolves relative values against the yaml directory when no base_path', async () => {
@@ -121,7 +124,7 @@ describe('parseExtraModelPaths (upstream key layout)', () => {
     const yamlFile = join(dir, 'no-base.yaml')
     writeFileSync(yamlFile, ['comfy:', '  loras: extra/loras'].join('\n'))
     const roots = parseExtraModelPaths(yamlFile)
-    expect(roots).toContain(join(dir, 'extra/loras').replace(/\\/g, '/'))
+    expect(roots.map(slash)).toContain(slash(join(dir, 'extra/loras')))
   })
 
   it('accepts legacy clip/unet keys (aliases still mapped by categorize)', async () => {
@@ -129,8 +132,8 @@ describe('parseExtraModelPaths (upstream key layout)', () => {
     const yamlFile = join(dir, 'legacy.yaml')
     writeFileSync(yamlFile, ['comfy:', '  clip: legacy/clip', '  unet: legacy/unet'].join('\n'))
     const roots = parseExtraModelPaths(yamlFile)
-    expect(roots).toContain(join(dir, 'legacy/clip').replace(/\\/g, '/'))
-    expect(roots).toContain(join(dir, 'legacy/unet').replace(/\\/g, '/'))
+    expect(roots.map(slash)).toContain(slash(join(dir, 'legacy/clip')))
+    expect(roots.map(slash)).toContain(slash(join(dir, 'legacy/unet')))
   })
 
   it('modelOnly skips custom_nodes/datasets (scan must not walk node packs)', async () => {
@@ -141,10 +144,10 @@ describe('parseExtraModelPaths (upstream key layout)', () => {
       ['comfy:', '  checkpoints: ckpt', '  custom_nodes: nodes', '  datasets: data'].join('\n')
     )
     const all = parseExtraModelPaths(yamlFile)
-    expect(all).toContain(join(dir, 'nodes').replace(/\\/g, '/'))
+    expect(all.map(slash)).toContain(slash(join(dir, 'nodes')))
     const modelOnly = parseExtraModelPaths(yamlFile, true, { modelOnly: true })
-    expect(modelOnly).toContain(join(dir, 'ckpt').replace(/\\/g, '/'))
-    expect(modelOnly).not.toContain(join(dir, 'nodes').replace(/\\/g, '/'))
-    expect(modelOnly).not.toContain(join(dir, 'data').replace(/\\/g, '/'))
+    expect(modelOnly.map(slash)).toContain(slash(join(dir, 'ckpt')))
+    expect(modelOnly.map(slash)).not.toContain(slash(join(dir, 'nodes')))
+    expect(modelOnly.map(slash)).not.toContain(slash(join(dir, 'data')))
   })
 })

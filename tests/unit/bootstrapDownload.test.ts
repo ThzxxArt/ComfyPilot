@@ -105,36 +105,40 @@ describe('bootstrap resumable download (0.1.13)', () => {
   }
 
   it('sends a Range request resuming from the .part bytes, then promotes it (0.1.13)', async () => {
-    await allowUnverified()
-    const { sizeHint, dest, part } = uvPaths()
-    const already = 1024
-    writeFileSync(part, Buffer.alloc(already, 7))
-    let seenRange = ''
-    const rest = Buffer.alloc(sizeHint - already, 2)
-    h.fetchImpl = async (_url, init) => {
-      const range = String((init?.headers as Record<string, string> | undefined)?.Range || '')
-      if (!range) {
-        // The post-download SHA256SUMS probe — 404 keeps the official hash
-        // unset (pin-on-first-use path).
-        return new Response('', { status: 404 })
+    // Windows sources carry a build-time pin; the fake bytes here only test the
+    // resume/promote mechanics, so drop the pin on this platform too.
+    await withRuntimePin(undefined, async () => {
+      await allowUnverified()
+      const { sizeHint, dest, part } = uvPaths()
+      const already = 1024
+      writeFileSync(part, Buffer.alloc(already, 7))
+      let seenRange = ''
+      const rest = Buffer.alloc(sizeHint - already, 2)
+      h.fetchImpl = async (_url, init) => {
+        const range = String((init?.headers as Record<string, string> | undefined)?.Range || '')
+        if (!range) {
+          // The post-download SHA256SUMS probe — 404 keeps the official hash
+          // unset (pin-on-first-use path).
+          return new Response('', { status: 404 })
+        }
+        seenRange = range
+        // undici does not derive content-length for a Buffer body — real
+        // servers always send it (the downloader's length gate relies on it).
+        return new Response(rest, {
+          status: 206,
+          headers: { 'content-length': String(rest.length) }
+        })
       }
-      seenRange = range
-      // undici does not derive content-length for a Buffer body — real
-      // servers always send it (the downloader's length gate relies on it).
-      return new Response(rest, {
-        status: 206,
-        headers: { 'content-length': String(rest.length) }
-      })
-    }
-    const svc = await freshService()
-    // Extraction of the fake bytes fails — the point is what happened BEFORE
-    // it: the resume offset came from `.part` (the old code read `dest`,
-    // which never exists mid-download, so every retry restarted at 0).
-    await expect(svc.download('uv')).rejects.toThrow()
-    expect(seenRange).toBe(`bytes=${already}-`)
-    expect(existsSync(dest)).toBe(true)
-    expect(statSync(dest).size).toBe(sizeHint)
-    expect(existsSync(part)).toBe(false)
+      const svc = await freshService()
+      // Extraction of the fake bytes fails — the point is what happened BEFORE
+      // it: the resume offset came from `.part` (the old code read `dest`,
+      // which never exists mid-download, so every retry restarted at 0).
+      await expect(svc.download('uv')).rejects.toThrow()
+      expect(seenRange).toBe(`bytes=${already}-`)
+      expect(existsSync(dest)).toBe(true)
+      expect(statSync(dest).size).toBe(sizeHint)
+      expect(existsSync(part)).toBe(false)
+    })
   })
 
   it('refuses a runtime with no official checksum and no pin (S3)', async () => {
@@ -177,17 +181,19 @@ describe('bootstrap resumable download (0.1.13)', () => {
   })
 
   it('promotes a complete .part to dest on HTTP 416 (0.1.13)', async () => {
-    await allowUnverified()
-    const { sizeHint, dest, part } = uvPaths()
-    // A partial covering ≥ 90% of the hint is treated as the finished archive.
-    const payload = Buffer.alloc(Math.ceil(sizeHint * 0.95), 1)
-    writeFileSync(part, payload)
-    h.fetchImpl = async () => new Response(null, { status: 416 })
-    const svc = await freshService()
-    await expect(svc.download('uv')).rejects.toThrow()
-    expect(existsSync(dest)).toBe(true)
-    expect(statSync(dest).size).toBe(payload.length)
-    expect(existsSync(part)).toBe(false)
+    await withRuntimePin(undefined, async () => {
+      await allowUnverified()
+      const { sizeHint, dest, part } = uvPaths()
+      // A partial covering ≥ 90% of the hint is treated as the finished archive.
+      const payload = Buffer.alloc(Math.ceil(sizeHint * 0.95), 1)
+      writeFileSync(part, payload)
+      h.fetchImpl = async () => new Response(null, { status: 416 })
+      const svc = await freshService()
+      await expect(svc.download('uv')).rejects.toThrow()
+      expect(existsSync(dest)).toBe(true)
+      expect(statSync(dest).size).toBe(payload.length)
+      expect(existsSync(part)).toBe(false)
+    })
   })
 
   it('rejects a truncated .part on 416 instead of promoting it (0.1.13)', async () => {

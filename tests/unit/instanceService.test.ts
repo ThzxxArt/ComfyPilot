@@ -324,6 +324,17 @@ import {
 // helpers
 // ---------------------------------------------------------------------------
 const ROOT = join(tmpdir(), 'cp-instance-svc')
+
+/**
+ * 0.1.18 (CI): stop()/killAllNow() take a `taskkill` branch on win32, so the
+ * POSIX signal expectations are only meaningful with a forced platform — the
+ * same trick processTree.test.ts uses. Returns a restore function.
+ */
+function forcePlatform(value: NodeJS.Platform): () => void {
+  const real = process.platform
+  Object.defineProperty(process, 'platform', { value, configurable: true })
+  return () => Object.defineProperty(process, 'platform', { value: real, configurable: true })
+}
 const HOME = join(ROOT, 'home')
 const USER = join(ROOT, 'user')
 const LOGS = join(ROOT, 'logs')
@@ -1662,25 +1673,30 @@ describe('waitReady()', () => {
 // ===========================================================================
 describe('stop()', () => {
   it('graceful mode asks SIGTERM first and escalates to SIGKILL if still alive', async () => {
-    vi.useFakeTimers()
-    h.state.settings.stopMode = 'graceful'
-    register(cfg({ id: 'stop' }))
-    h.state.fetchImpl = okStats
-    // Process that ignores the polite signal — the escalation path.
-    h.state.childIgnoresKill = true
-    const startP = svc.start('stop')
-    await vi.advanceTimersByTimeAsync(250)
-    await startP
-    const child = childOf(svc, 'stop')
-    const stopP = svc.stop('stop')
-    await vi.advanceTimersByTimeAsync(0)
-    expect(child.killSignals).toContain('SIGTERM')
-    // 0.1.17 (WP3): stop() now WAITS for the exit instead of returning early.
-    expect(child.exitCode).toBeNull()
-    await vi.advanceTimersByTimeAsync(4600)
-    const info = await stopP
-    expect(child.killSignals).toContain('SIGKILL')
-    expect(info.exited).toBe(false)
+    const restore = forcePlatform('linux')
+    try {
+      vi.useFakeTimers()
+      h.state.settings.stopMode = 'graceful'
+      register(cfg({ id: 'stop' }))
+      h.state.fetchImpl = okStats
+      // Process that ignores the polite signal — the escalation path.
+      h.state.childIgnoresKill = true
+      const startP = svc.start('stop')
+      await vi.advanceTimersByTimeAsync(250)
+      await startP
+      const child = childOf(svc, 'stop')
+      const stopP = svc.stop('stop')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(child.killSignals).toContain('SIGTERM')
+      // 0.1.17 (WP3): stop() now WAITS for the exit instead of returning early.
+      expect(child.exitCode).toBeNull()
+      await vi.advanceTimersByTimeAsync(4600)
+      const info = await stopP
+      expect(child.killSignals).toContain('SIGKILL')
+      expect(info.exited).toBe(false)
+    } finally {
+      restore()
+    }
   })
 
   it('fast mode (default) kills the tree immediately — no 3 s grace', async () => {
@@ -1807,16 +1823,21 @@ describe('forceKill()', () => {
 
 describe('killAllNow()', () => {
   it('synchronously kills every live child', () => {
-    register(cfg({ id: 'k1' }), cfg({ id: 'k2', port: 8189 }))
-    // materialize runtime entries, then attach live children
-    svc.list()
-    const c1 = h.makeChild()
-    const c2 = h.makeChild()
-    pokeRuntime(svc, 'k1', { process: c1, pid: c1.pid, managed: true, status: 'running' })
-    pokeRuntime(svc, 'k2', { process: c2, pid: c2.pid, managed: true, status: 'running' })
-    svc.killAllNow()
-    expect(c1.killSignals.length).toBeGreaterThan(0)
-    expect(c2.killSignals.length).toBeGreaterThan(0)
+    const restore = forcePlatform('linux')
+    try {
+      register(cfg({ id: 'k1' }), cfg({ id: 'k2', port: 8189 }))
+      // materialize runtime entries, then attach live children
+      svc.list()
+      const c1 = h.makeChild()
+      const c2 = h.makeChild()
+      pokeRuntime(svc, 'k1', { process: c1, pid: c1.pid, managed: true, status: 'running' })
+      pokeRuntime(svc, 'k2', { process: c2, pid: c2.pid, managed: true, status: 'running' })
+      svc.killAllNow()
+      expect(c1.killSignals.length).toBeGreaterThan(0)
+      expect(c2.killSignals.length).toBeGreaterThan(0)
+    } finally {
+      restore()
+    }
   })
 })
 
