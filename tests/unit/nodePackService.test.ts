@@ -4300,3 +4300,68 @@ describe('pip deps recording and removal (0.1.10)', () => {
     }
   })
 })
+
+// =====================================================================
+// 0.1.18 (WP3 / L9): recovery center for interrupted updates
+// =====================================================================
+describe('recovery of interrupted update leftovers', () => {
+  it('reports .bak-/._unzip_tmp_ entries and never lists them as packs', () => {
+    seedPack({ name: 'PackA' })
+    h.mkdirPath(join(ROOT, 'PackA.bak-1700000000000'))
+    h.writeFile(join(ROOT, 'PackA.bak-1700000000000', '__init__.py'), 'x')
+    h.mkdirPath(join(ROOT, '._unzip_tmp_1700_abcd'))
+    const entries = nodePackService.scanRecovery('inst-1')
+    expect(entries.map((e) => e.kind).sort()).toEqual(['backup', 'temp'])
+    const backup = entries.find((e) => e.kind === 'backup')!
+    expect(backup.packName).toBe('PackA')
+    expect(backup.liveExists).toBe(true)
+    // The hidden leftovers must not appear as installed packs.
+    expect(nodePackService.list('inst-1').map((p) => p.name)).toEqual(['PackA'])
+  })
+
+  it('restores a backup when the live pack is gone', () => {
+    h.mkdirPath(join(ROOT, 'Gone.bak-1700000000000'))
+    h.writeFile(join(ROOT, 'Gone.bak-1700000000000', 'pyproject.toml'), 'name = "Gone"')
+    const restored = nodePackService.restoreRecovery('Gone.bak-1700000000000', 'inst-1')
+    expect(restored.packName).toBe('Gone')
+    expect(h.state.isDir.has(join(ROOT, 'Gone'))).toBe(true)
+    expect(h.state.isDir.has(join(ROOT, 'Gone.bak-1700000000000'))).toBe(false)
+    expect(nodePackService.scanRecovery('inst-1')).toHaveLength(0)
+  })
+
+  it('refuses to restore over a live pack (RECOVERY_TARGET_EXISTS)', () => {
+    seedPack({ name: 'PackA' })
+    h.mkdirPath(join(ROOT, 'PackA.bak-1700000000000'))
+    expect(() => nodePackService.restoreRecovery('PackA.bak-1700000000000', 'inst-1')).toThrow(
+      /already exists/
+    )
+  })
+
+  it('rejects traversal names and unknown entries on restore/clean', () => {
+    h.mkdirPath(ROOT)
+    h.writeFile(join(ROOT, '..', 'evil'), 'x')
+    expect(() => nodePackService.cleanRecovery('../evil', 'inst-1')).toThrow(/Not a recoverable/)
+    expect(() => nodePackService.restoreRecovery('not-there', 'inst-1')).toThrow(
+      /Not a recoverable/
+    )
+    // A valid backup must still be removable through clean().
+    h.mkdirPath(join(ROOT, 'Old.bak-1700000000000'))
+    expect(nodePackService.cleanRecovery('Old.bak-1700000000000', 'inst-1')).toBe(true)
+    expect(h.state.isDir.has(join(ROOT, 'Old.bak-1700000000000'))).toBe(false)
+  })
+
+  it('reports a duplicate live + .disabled copy and can clean it', () => {
+    seedPack({ name: 'Dup' })
+    h.mkdirPath(join(ROOT, '.disabled', 'Dup'))
+    const entry = nodePackService
+      .scanRecovery('inst-1')
+      .find((e) => e.kind === 'duplicate' && e.packName === 'Dup')
+    expect(entry).toBeTruthy()
+    // POSIX separator on every platform — join() emitted '\\' on Windows and
+    // recoveryEntry then rejected the row as un-cleanable.
+    expect(entry!.name).toBe('.disabled/Dup')
+    expect(entry!.liveExists).toBe(true)
+    nodePackService.cleanRecovery(entry!.name, 'inst-1')
+    expect(nodePackService.scanRecovery('inst-1').some((e) => e.kind === 'duplicate')).toBe(false)
+  })
+})

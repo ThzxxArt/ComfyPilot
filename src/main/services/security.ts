@@ -1,6 +1,6 @@
 import { isAbsolute, normalize, resolve, dirname, basename, extname, join } from 'path'
 import { randomUUID } from 'crypto'
-import { existsSync, realpathSync } from 'fs'
+import { existsSync, realpathSync, statSync } from 'fs'
 
 /** Path traversal + allowlist helpers used across main-process services. */
 
@@ -385,6 +385,149 @@ export function assertSafeEndpointSetting(field: string, raw: unknown): void {
   if (parsed.username || parsed.password) {
     throw new Error(`${field} must not embed credentials`)
   }
+}
+
+/**
+ * 0.1.18 (WP1): settings validation moved next to the other trust boundaries.
+ *
+ * `settings.set` used to validate only the five URL fields. Everything else was
+ * persisted verbatim, including `securityLevel` — an unknown value silently
+ * weakened the node-pack install gate (`nodePack.ts` only recognises the four
+ * documented levels) and `modelScanRoots` could become an arbitrary read root.
+ * `backup.restore` accepted the same object from a file, so the validator is
+ * shared by both writers.
+ */
+export const SETTINGS_URL_KEYS = [
+  'githubEndpoint',
+  'hfEndpoint',
+  'civitaiEndpoint',
+  'pipIndex',
+  'torchIndexMirror'
+] as const
+
+const SETTINGS_ENUM_KEYS: Record<string, readonly string[]> = {
+  locale: ['zh-CN', 'en-US'],
+  securityLevel: ['strong', 'normal', 'normal-', 'weak'],
+  networkMode: ['public', 'private', 'offline', 'personal_cloud'],
+  stopMode: ['fast', 'graceful']
+}
+
+const SETTINGS_BOOLEAN_KEYS = [
+  'enableAutoCheckUpdates',
+  'embedFrontend',
+  'allowGitUrlInstall',
+  'allowPipInstall',
+  'useAria2',
+  'launchOnBoot',
+  'minimizeToTray',
+  'autoStartInstancesOnLaunch',
+  'allowUnverifiedRuntime'
+] as const
+
+/**
+ * Validate the subset of `AppSettings` that is attacker-reachable (settings.set
+ * from the renderer, settings.json from a backup). Unknown keys are ignored —
+ * `saveSettings` strips them; this function only rejects unsafe *values*.
+ */
+export function assertSafeSettingsPatch(patch: Record<string, unknown>): void {
+  for (const key of SETTINGS_URL_KEYS) {
+    assertSafeEndpointSetting(key, patch[key])
+  }
+  for (const [key, allowed] of Object.entries(SETTINGS_ENUM_KEYS)) {
+    const value = patch[key]
+    if (value === undefined) continue
+    if (typeof value !== 'string' || !allowed.includes(value)) {
+      throw new Error(`${key} must be one of: ${allowed.join(', ')}`)
+    }
+  }
+  for (const key of SETTINGS_BOOLEAN_KEYS) {
+    if (patch[key] === undefined) continue
+    if (typeof patch[key] !== 'boolean') throw new Error(`${key} must be a boolean`)
+  }
+  if (patch.modelScanRoots !== undefined) {
+    const roots = patch.modelScanRoots
+    if (!Array.isArray(roots)) throw new Error('modelScanRoots must be an array')
+    for (const raw of roots) {
+      if (typeof raw !== 'string' || !raw.trim())
+        throw new Error('modelScanRoots entries must be paths')
+      if (raw.includes('\0')) throw new Error('modelScanRoots contains an invalid path')
+      if (!existsSync(raw)) throw new Error(`modelScanRoots entry does not exist: ${raw}`)
+    }
+  }
+  if (patch.outputScanDepth !== undefined) {
+    const depth = Number(patch.outputScanDepth)
+    if (!Number.isInteger(depth) || depth < 2 || depth > 10) {
+      throw new Error('outputScanDepth must be an integer between 2 and 10')
+    }
+  }
+  if (patch.proxy !== undefined) {
+    const proxy = patch.proxy as Record<string, unknown>
+    if (!proxy || typeof proxy !== 'object' || Array.isArray(proxy)) {
+      throw new Error('proxy must be an object')
+    }
+    if (proxy.port !== undefined) {
+      const port = Number(proxy.port)
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        throw new Error('proxy.port must be between 1 and 65535')
+      }
+    }
+    for (const key of ['host', 'username', 'password', 'bypass'] as const) {
+      if (proxy[key] !== undefined && typeof proxy[key] !== 'string') {
+        throw new Error(`proxy.${key} must be a string`)
+      }
+    }
+    if (proxy.enabled !== undefined && typeof proxy.enabled !== 'boolean') {
+      throw new Error('proxy.enabled must be a boolean')
+    }
+    // 0.1.18 (regression): protocol was the one field interpolated verbatim
+    // into Chromium proxyRules. An unknown value silently disabled the proxy
+    // (traffic went direct) or injected extra rules.
+    if (proxy.protocol !== undefined) {
+      const allowed = ['http', 'https', 'socks5']
+      if (typeof proxy.protocol !== 'string' || !allowed.includes(proxy.protocol)) {
+        throw new Error(`proxy.protocol must be one of: ${allowed.join(', ')}`)
+      }
+    }
+    if (proxy.enabled === true) {
+      const host = String(proxy.host || '').trim()
+      if (!host) throw new Error('proxy.host is required when enabled')
+      if (/[;@\s\\/]/.test(host)) throw new Error('proxy.host contains illegal characters')
+    }
+  }
+  if (patch.aria2Path !== undefined) {
+    const raw = String(patch.aria2Path || '').trim()
+    if (raw) {
+      if (raw.includes('\0')) throw new Error('aria2Path contains an invalid character')
+      if (!isAbsolute(raw)) throw new Error('aria2Path must be an absolute path')
+      if (!existsSync(raw) || !statSync(raw).isFile()) {
+        throw new Error('aria2Path must point to an existing file')
+      }
+    }
+  }
+}
+
+/**
+ * 0.1.18 (regression fix): prepare an imported settings file for `saveSettings`.
+ *
+ * Two rules:
+ *  - credentials are never imported: the `proxy.password` KEY is removed, not
+ *    set to ''. Setting it to '' looked equivalent but flowed through
+ *    `saveSettings` and wiped the already-stored proxy password.
+ *  - the runtime-integrity escape hatch is local security state, not something
+ *    a downloaded config file may flip.
+ */
+export function stripImportedSettingsSecrets(raw: Record<string, unknown>): {
+  patch: Record<string, unknown>
+  applied: string[]
+} {
+  const patch: Record<string, unknown> = { ...raw }
+  if (patch.proxy && typeof patch.proxy === 'object' && !Array.isArray(patch.proxy)) {
+    const proxy = { ...(patch.proxy as Record<string, unknown>) }
+    delete proxy.password
+    patch.proxy = proxy
+  }
+  delete patch.allowUnverifiedRuntime
+  return { patch, applied: Object.keys(patch) }
 }
 
 export { dirname, basename, extname }

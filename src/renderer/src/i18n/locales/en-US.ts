@@ -47,7 +47,29 @@ export default {
     yes: 'Yes',
     no: 'No',
     noMatch: 'No matching results',
-    clearFilters: 'Clear filters'
+    clearFilters: 'Clear filters',
+    copy: 'Copy',
+    copyFailed: 'Copy failed — please select the text manually',
+    loadFailed: 'Failed to load',
+    details: 'Details',
+    dismiss: 'Got it'
+  },
+  list: {
+    empty: 'Nothing here yet',
+    filteredEmpty: 'No items match the current filters',
+    loadFailed: 'Failed to load — please retry',
+    retry: 'Retry'
+  },
+  confirm: {
+    deleteTitle: 'Confirm delete',
+    cannotUndo: 'This cannot be undone.'
+  },
+  target: {
+    required: 'Select a local instance first (a remote target is active, or nothing is selected)',
+    remoteBanner:
+      'Remote context: this page shows local assets; local-only operations are disabled.',
+    noneBanner: 'No local instance selected; local-only operations are unavailable.',
+    remote: 'Remote'
   },
   status: {
     stopped: 'Stopped',
@@ -99,7 +121,7 @@ export default {
     modelLibrary: 'Model library',
     nodeManage: 'Node manager',
     healthCheck: 'Health check',
-    proTip: 'Pro Tip',
+    proTip: 'Pro tip',
     embedTipText:
       'Embed the official ComfyUI Frontend in-app, or open it in an external browser — both work side by side.',
     runDoctor: 'Run doctor',
@@ -158,6 +180,18 @@ export default {
     allowPipLabel: 'Allow auto dependency install (allow_pip_install)',
     allowPipHint:
       'When off, a node pack\u2019s Python dependencies are NOT installed automatically — you get a warning dialog after install. Keep this on unless you manage deps yourself.',
+    allowUnverifiedRuntimeLabel: 'Allow unverified runtimes',
+    allowUnverifiedRuntimeHint:
+      'By default a runtime download with no published checksum and no prior verified hash is refused (so one bad download is never trusted forever). Enable only if you can verify the source yourself.',
+    credNeedsReentry: 'Needs re-entry',
+    proxyPasswordLockedHint:
+      'The saved proxy password cannot be decrypted (key changed or config migrated). Re-enter it and save — leaving it blank does not erase the stored ciphertext.',
+    remoteApiKeyPlaceholder: 'API key (optional, encrypted locally)',
+    remoteApiKeyHint: 'Required when the ComfyUI instance enables auth; leave blank otherwise.',
+    unsavedTitle: 'Unsaved changes',
+    unsavedBody: '{n} setting(s) are not saved yet; leaving discards them.',
+    saveAndLeave: 'Save and leave',
+    leaveWithoutSaving: 'Leave without saving',
     useAria2: 'Download with aria2',
     aria2Path: 'aria2 path',
     proxy: 'Network proxy',
@@ -198,6 +232,18 @@ export default {
     probeEnv: 'Probe environment',
     envProbeDone: 'Environment probe complete',
     availablePythons: 'Available interpreters: {n}',
+    importExportTitle: 'Import / export configuration',
+    importExportHint:
+      'Exports never contain the proxy password or API keys. Import shows the keys that will change and is re-validated in the main process.',
+    exportConfig: 'Export configuration',
+    importConfig: 'Import configuration',
+    exportDone: 'Configuration exported (no secrets)',
+    importPreviewTitle: 'Import preview',
+    importPreviewBody: '{n} setting(s) will change: {list}',
+    importNoChanges: 'No differences from the current settings.',
+    importApply: 'Apply',
+    importDone: 'Applied {n} setting(s)',
+    importInvalid: 'Import failed: {error}',
     about: 'About',
     aboutStorage: 'Storage: JSONC config files (no SQLite / no native modules)',
     aboutConfigDir: 'Config dir: {path}',
@@ -356,6 +402,7 @@ export default {
     logCopied: 'Copied {n} log lines',
     logExport: 'Export logs',
     logExported: 'Log exported: {path}',
+    logAriaLabel: 'ComfyUI live log (read-only)',
     logEmptyHint: 'Start an instance and logs will stream here.',
     logSearchPlaceholder: 'Search logs…',
     logFilterAll: 'All levels',
@@ -534,6 +581,7 @@ export default {
     runtimeNoMissing: 'No missing components'
   },
   models: {
+    bulkPartial: '{failed} of {total} operations failed; the rest were applied.',
     starterTitle: 'Recommended models',
     starterHint: 'You need at least one model before generating images.',
     downloadStarter: 'Download',
@@ -578,6 +626,13 @@ export default {
     batchFailedTitle: '{n} item(s) failed',
     batchHiddenSkipped: 'skipped {n} checked row(s) hidden by the filter',
     downloadsTitle: 'Downloads',
+    eta: '{t} left',
+    queuedHint: 'Queued',
+    prioritize: 'Prioritize',
+    prioritized: 'Moved to the front of the queue',
+    pauseAll: 'Pause all',
+    resumeAll: 'Resume all',
+    cancelAll: 'Cancel all',
     clearFinished: 'Clear finished',
     storageTotal: 'Total',
     empty: 'No models yet — run a scan to index your model folders.',
@@ -677,6 +732,43 @@ export default {
     reconcileAddRoots: 'Add {n} scan root(s)',
     reconcileAdded: 'Added {n} scan root(s) and rescanning'
   },
+  palette: {
+    title: 'Command palette',
+    placeholder: 'Search views, instances or actions… (Ctrl+K)',
+    view: 'View',
+    switchInstance: 'Switch instance',
+    launch: 'Launch current instance',
+    stop: 'Stop current instance',
+    openLogs: 'Open logs directory'
+  },
+  notifications: {
+    open: 'Notifications',
+    title: 'Notifications',
+    empty: 'No notifications yet.',
+    type_info: 'Info',
+    type_success: 'Success',
+    type_warning: 'Warning',
+    type_error: 'Error'
+  },
+  ops: {
+    alreadyFinished: 'That task has already finished.',
+    open: 'Tasks',
+    title: 'Background tasks',
+    empty: 'Nothing is running right now.',
+    cancel: 'Stop',
+    status_running: 'Running',
+    status_done: 'Done',
+    status_failed: 'Failed',
+    status_cancelled: 'Cancelled',
+    kind_install: 'Install',
+    'kind_comfy-update': 'ComfyUI update',
+    'kind_env-repair': 'Environment repair',
+    'kind_node-op': 'Node pack operation',
+    'kind_node-batch': 'Node pack batch update',
+    kind_batch: 'Batch run',
+    'kind_output-scan': 'Output scan',
+    'kind_registry-index': 'Market index'
+  },
   nodes: {
     title: 'Node manager',
     checking: 'Checking for updates…',
@@ -737,6 +829,22 @@ export default {
     unlocked: 'Unlocked',
     smokePassed: 'Smoke test passed',
     snapshotDeleted: 'Snapshot deleted',
+    recoveryTitle: '{n} leftover(s) from an interrupted update',
+    recoveryHint:
+      'The last update left a backup or temp directory behind. Restore the previous version below, or clean it up (cleanup is permanent).',
+    recoveryOpen: 'Review',
+    recoveryEmpty: 'Nothing to clean up.',
+    recoveryKind_backup: 'Update backup',
+    recoveryKind_temp: 'Temp unpack dir',
+    recoveryKind_duplicate: 'Duplicate copy',
+    recoveryRestorable: 'Can be restored as package “{name}”',
+    recoveryLiveExists: '“{name}” already exists — only cleanup is possible',
+    recoveryCleanable: 'Safe to clean up',
+    recoveryRestore: 'Restore',
+    recoveryClean: 'Clean up',
+    recoveryCleanConfirm: 'Delete {name}? This cannot be undone.',
+    recoveryRestored: 'Package restored',
+    recoveryCleaned: 'Leftover cleaned up',
     snapshotCreated: 'Snapshot: {name}',
     snapshotRestored:
       'Enabled/disabled states aligned to snapshot (versions not rolled back, missing packs not reinstalled)',
@@ -849,6 +957,11 @@ export default {
     hintPaging: 'Registry: {total} plugins · page {page}/{pages}',
     hintPagingWithIndex: 'Registry: {total} plugins · page {page}/{pages} · {idx}',
     indexUpdated: 'Full index updated: {n} items',
+    indexNeededTitle: 'A local full-catalog index is required',
+    indexNeededBody:
+      'Searching by name matches the whole catalog (~58 pages). To avoid crawling silently in the background, build the local index first (about 3–6 minutes, cancellable). Browsing the featured list does not need it.',
+    indexBuild: 'Build index',
+    indexCancelled: 'Index build cancelled',
     noMatches: 'No matching plugins in the catalog',
     registryEmpty: 'Registry has no data yet',
     tabRegistry: 'Registry',
@@ -877,10 +990,13 @@ export default {
     open: 'Open',
     params: 'Params',
     empty: 'Pick an output folder, then click Scan.',
+    cardHint: 'Click to select, double-click to open the lightbox',
     detailTitle: 'Asset details',
     size: 'Size',
     pngParams: 'PNG parameters',
     noPngParams: 'No embedded PNG parameters found',
+    zoomReset: 'Reset zoom',
+    zoomHint: 'Wheel to zoom · drag to pan · ←/→ to browse',
     close: 'Close',
     openFile: 'Open file',
     videoPlaybackUnsupported:
@@ -1081,6 +1197,19 @@ export default {
     description: 'Description',
     reveal: 'Reveal in folder',
     close: 'Close',
+    checkDeps: 'Check deps',
+    depsTitle: 'Dependencies for “{name}”',
+    depsModels: 'Models: {ok}/{total} already local',
+    depsFindModel: 'Find this model',
+    depsNodes: '{n} node type(s) missing',
+    depsFindNodes: 'Install nodes from the market',
+    depsNodesOk: 'All node types available',
+    depsNodesUnavailable:
+      'Instance is not running — node types were not checked (skipped, not blocking).',
+    depsUnavailable: 'Could not parse the workflow: {error}',
+    depsCheckFailed: 'Dependency check did not complete (IPC failed) — this is not an all-clear.',
+    depsNoInstance: 'No local instance selected — node-type check was skipped.',
+    depsHint: 'Missing items never block a submit; this is a heads-up only.',
     compare: 'Compare',
     compareWith: 'Compare with…',
     compareTitle: 'Compare workflows',
@@ -1100,7 +1229,8 @@ export default {
     cmpFieldModel: 'Model',
     cmpFieldOrigin: 'Origin',
     cmpFieldTags: 'Tags',
-    cmpFieldUpdatedAt: 'Updated'
+    cmpFieldUpdatedAt: 'Updated',
+    queueRemoteHint: 'The remote is probed for reachability first; offline remotes fail without submitting.',
   },
   monitor: {
     title: 'Monitor',
@@ -1119,6 +1249,7 @@ export default {
     freeMemoryConfirm:
       'Loaded models will be unloaded to free VRAM/RAM; the next generation reloads them (first image is slower).',
     freeMemoryDone: 'Free request sent',
+    vram: 'VRAM',
     cpuUsage: 'CPU usage',
     cpuHint: 'Sampled every 2s',
     memory: 'Memory',
@@ -1126,6 +1257,8 @@ export default {
     diskTotalHint: 'Total {n}',
     queueTasks: 'Queue tasks',
     queueHint: 'Running {running} · Pending {pending}',
+    vramHigh: 'VRAM usage above 90%',
+    vramHighHint: 'Further runs may hit OOM; free memory or lower resolution/batch size.',
     cpuTrend: 'CPU trend',
     noGpu: 'No GPU info detected (admin rights required on some platforms)',
     queueTitle: 'ComfyUI queue',
@@ -1153,6 +1286,7 @@ export default {
     openFrontend: 'Open Frontend',
     sharedLabel: 'Shared memory {used} / {total}',
     nodeDoneCount: '{n} node(s) finished',
+    localMachineHint: 'This machine (remotes expose no CPU/GPU/disk metrics)',
     remoteReadonlyTitle: 'Monitoring a remote instance',
     remoteReadonlyBody:
       'Showing queue and history of remote instance "{name}" in read-only mode — start/stop/update from the machine that hosts it.',
@@ -1194,7 +1328,11 @@ export default {
     stopIncomplete:
       'Stop was requested, but "{name}" did not exit in time — it may still be running. Use Force kill to confirm.',
     restarted: '{name} restarted',
-    forceKilled: 'Force-killed {name}'
+    forceKilled: 'Force-killed {name}',
+    adoptTitle: 'ComfyUI already on this port',
+    adoptBody:
+      'Port {port} is already serving a ComfyUI that this app did not start ({name}). Adopting lets you view and control it here, but Stop will not terminate that external process. Adopt it?',
+    adoptConfirm: 'Adopt and continue'
   },
   backup: {
     title: 'Backup & restore',
@@ -1203,10 +1341,30 @@ export default {
     createAction: 'Create',
     created: 'Backup {name} created',
     restore: 'Restore',
-    restoreConfirm:
-      'Restoring will overwrite current config (settings / instances / model list / node list / workflows / remotes). Continue?',
-    restored:
-      'Backup restored (config / instances / node packs / model manifests / workflows / remotes)',
+    restored: 'Backup restored — {n} workflow file(s) written',
+    preRestoreCreated: 'Automatic snapshot {id} was created before restoring; roll back to it if needed',
+    restorePartial: 'Restore finished with failures: {restored} restored, {failed} failed',
+    restoreSelected: 'Restore selected',
+    previewTitle: 'Confirm restore',
+    previewSections: 'Choose what to restore',
+    previewSettings: 'Settings that will change',
+    previewFiles: 'Workflow files',
+    previewWarnings: 'Notes',
+    previewInvalid:
+      'This backup references paths this machine does not trust; restore was refused.',
+    previewNote:
+      'Restore only writes into validated directories; absolute paths in the backup are remapped into this machine’s library.',
+    fileMissing: 'missing',
+    fileRemapped: 'remapped',
+    section: {
+      settings: 'Settings',
+      instances: 'Instances',
+      nodePacks: 'Node packs',
+      models: 'Models',
+      workflows: 'Workflows',
+      remotes: 'Remote instances',
+      snapshots: 'Node snapshots'
+    },
     openFolder: 'Open folder',
     deleteConfirm: 'Delete this backup?',
     empty: 'No backups yet',
@@ -1445,6 +1603,8 @@ export default {
     batchCancelled: 'Batch cancelled',
     downloadDone: 'Download complete',
     downloadFailed: 'Download failed',
+    vramHigh: 'VRAM usage is very high',
+    ramHigh: 'Memory usage is very high',
     indexWarning: 'Registry index incomplete',
     backupRestored: 'Backup restored',
     restartRequired: 'Restart instance to apply',
@@ -1511,6 +1671,11 @@ export default {
         desc: 'Installs onnx into the instance environment (needed by WanVideoWrapper FantasyPortrait and similar nodes).'
       }
     }
+  },
+  workflowDeps: {
+    title: 'Workflow is missing model files',
+    missingBody:
+      '{n} model file(s) are not in the local library: {list}. Submit anyway? Missing models usually fail at execution.'
   },
   nodePreflight: {
     title: 'Node preflight',

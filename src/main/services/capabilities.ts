@@ -14,6 +14,7 @@
 import type { ComfyInstanceConfig, InstanceCapabilities } from '@shared/types'
 import { versionAtLeast } from '@shared/launchArgs'
 import { loadInstanceConfigs } from './db'
+import { resolveReadTarget } from './target'
 import { LruCache } from './lru'
 
 export { versionAtLeast }
@@ -214,10 +215,8 @@ export class CapabilityService {
    * does not answer (honest, cacheable state).
    */
   async probe(instanceId?: string): Promise<InstanceCapabilities | null> {
-    const configs = loadInstanceConfigs()
-    const cfg = instanceId
-      ? configs.find((c) => c.id === instanceId)
-      : configs.find((c) => c.enabled !== false) || configs[0]
+    // 0.1.18 (WP2): single read-target policy (see services/target.ts).
+    const cfg = resolveReadTarget(instanceId)
     if (!cfg) return null
     const baseUrl = instanceBaseUrl(cfg)
     const cached = this.cachedForUrl(baseUrl)

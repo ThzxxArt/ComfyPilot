@@ -105,6 +105,36 @@ export function useLaunch() {
     const e = err as ComfyPilotIpcError
     const text = e?.message || String(err)
     const open = opts?.open ?? 'none'
+    // 0.1.18 (WP3): an unowned ComfyUI must not be silently adopted.
+    if (e?.code === 'ADOPT_CONFIRM_REQUIRED') {
+      ui().dialog.warning({
+        title: t('launch.adoptTitle'),
+        content: t('launch.adoptBody', { port: info.port, name: info.name }),
+        positiveText: t('launch.adoptConfirm'),
+        negativeText: t('common.cancel'),
+        onPositiveClick: () => {
+          void (async () => {
+            setBusy(info.id, true)
+            try {
+              const result = await ipc('instance.launch', info.id, {
+                ...opts,
+                open: 'none',
+                adoptExternal: true
+              })
+              await store.refreshInstances()
+              void store.syncWs()
+              await openFrontend(result, open)
+              ui().message.success(t('launch.ready', { name: result.name }))
+            } catch (err2) {
+              ui().message.error(err2 instanceof Error ? err2.message : String(err2))
+            } finally {
+              setBusy(info.id, false)
+            }
+          })()
+        }
+      })
+      return
+    }
     if (e?.code === 'PORT_IN_USE' && e.suggestedPort) {
       const suggested = e.suggestedPort
       ui().dialog.warning({

@@ -134,8 +134,11 @@ export function applyProxyToElectron(p: ProxySettings): {
   }
   assertSafeProxyHost(p.host)
   assertSafeProxyPort(p.port)
-  // Chromium proxyRules: no credentials; use socks: for socks5
-  const rules = `${p.protocol === 'socks5' ? 'socks' : p.protocol}://${p.host}:${p.port}`
+  // Chromium proxyRules: no credentials; use socks: for socks5. Normalise the
+  // scheme exactly like buildProxyUrl — a legacy config with no protocol used
+  // to produce "undefined://host:port" and silently disabled the proxy.
+  const proto = p.protocol === 'socks5' ? 'socks' : p.protocol === 'https' ? 'https' : 'http'
+  const rules = `${proto}://${p.host}:${p.port}`
   void ses
     .setProxy({
       mode: 'fixed_servers',
@@ -144,6 +147,23 @@ export function applyProxyToElectron(p: ProxySettings): {
     })
     .catch(() => {})
   return { enabled: true, url: redactProxyUrl(p), bypass }
+}
+
+/**
+ * 0.1.18 (WP1 / S2): decide whether a Chromium login challenge is OUR proxy's.
+ *
+ * `setProxy` cannot carry credentials, so an authenticated proxy used to fail
+ * every request with 407 ("network unreachable"). Returns null for site logins
+ * (those must never receive the proxy password) and when no user is configured.
+ */
+export function proxyAuthFor(
+  authInfo: { isProxy?: boolean } | undefined,
+  settings: { proxy: ProxySettings }
+): { username: string; password: string } | null {
+  if (!authInfo?.isProxy) return null
+  const p = settings?.proxy
+  if (!p?.enabled || !p.username) return null
+  return { username: p.username, password: p.password || '' }
 }
 
 /** Fetch via Electron session (honours session proxy). Does not leak proxy secrets. */

@@ -181,6 +181,13 @@ interface NodeOpView {
 const nodeOpViews = new Map<string, NodeOpView>()
 const viewedNodeInstanceId = ref('')
 const nodeOpLogs = ref<Array<{ packName?: string; line: string; ts: number }>>([])
+/**
+ * 0.1.18 (review): the authoritative node-op snapshot for the viewed instance,
+ * independent of the shared progress slot. When another operation (repair /
+ * ComfyUI update) owns the slot, the node-op modal still needs its steps and a
+ * cancel action — reading `progress` alone showed an empty modal.
+ */
+const nodeOpSnapshot = ref<UpdateProgress | null>(null)
 /** Monotonic counter so the modal's auto-scroll watcher fires even when the
  *  array length is pinned at the 3000-line cap. */
 const nodeOpLogSeq = ref(0)
@@ -257,6 +264,7 @@ function selectNodeOpInstance(instanceId: string): void {
   if (view) {
     nodeOpLogs.value = view.logs
     nodeOpLogSeq.value += 1
+    nodeOpSnapshot.value = view.progress ? { ...view.progress } : null
     if (view.progress) writeProgress('node-op', view.progress)
     mirrorBatchView(instanceId)
     return
@@ -264,6 +272,7 @@ function selectNodeOpInstance(instanceId: string): void {
   // Instance has no tracked node-op stream — show nothing rather than a stale
   // payload/batch from a different instance.
   nodeOpLogs.value = []
+  nodeOpSnapshot.value = null
   nodeBatch.value = null
   nodeBatchEntries.value = []
   nodeBatchActive.value = false
@@ -364,6 +373,8 @@ function ensureNodeSubscribed(): void {
           }
         }
         nodeOpLogs.value = view.logs
+        // Stash the snapshot even when another op owns the shared slot.
+        nodeOpSnapshot.value = { ...next }
         writeProgress('node-op', { ...next })
       }
     })
@@ -480,15 +491,18 @@ export function useComfyUpdate() {
     try {
       const snap = await ipc('node.opStatus', target || undefined)
       if (!snap || !snap.runId) return
-      if (snap.status !== 'running' && progressKind.value !== 'node-op') return
       const iid = snap.instanceId || target || 'default'
       const view = getOpView(iid)
       view.progress = snap
       if (!viewedNodeInstanceId.value || viewedNodeInstanceId.value === iid) {
         viewedNodeInstanceId.value = iid
         nodeOpLogs.value = view.logs
+        // A completed snapshot must still render when another op owns the slot.
+        nodeOpSnapshot.value = { ...snap }
       }
-      writeProgress('node-op', { ...snap })
+      if (snap.status === 'running' || progressKind.value === 'node-op') {
+        writeProgress('node-op', { ...snap })
+      }
     } catch {
       /* best-effort */
     }
@@ -523,7 +537,10 @@ export function useComfyUpdate() {
       const result = await ipc('instance.updateComfy', instanceId, opts)
       progressKind.value = 'comfy-update'
       progress.value = result
-      progressFinished.value = result.status === 'done' || result.status === 'failed'
+      // cancelled is terminal too: otherwise the finally released the slot and
+      // the modal lost its steps while the user was still looking at it.
+      progressFinished.value =
+        result.status === 'done' || result.status === 'failed' || result.status === 'cancelled'
       return result
     } finally {
       updatingComfy.value = false
@@ -532,6 +549,16 @@ export function useComfyUpdate() {
       // Release the slot so a subsequent node-op can claim it.
       if (progressKind.value === 'comfy-update' && !progressFinished.value)
         progressKind.value = null
+    }
+  }
+
+  /** 0.1.18 (WP3/L7): abort a running environment repair (pip can take 30 min). */
+  async function cancelRepair(): Promise<boolean> {
+    cancelling.value = true
+    try {
+      return await ipc('instance.repairCancel')
+    } finally {
+      cancelling.value = false
     }
   }
 
@@ -589,6 +616,7 @@ export function useComfyUpdate() {
     checkComfyUpdate,
     startUpdate,
     cancelUpdate,
+    cancelRepair,
     repairEnv,
     cancelNodeOp,
     cancelNodeBatch,
@@ -596,6 +624,7 @@ export function useComfyUpdate() {
     hydrateActiveOp,
     hydrateNodeOp,
     nodeOpLogSeq,
+    nodeOpSnapshot,
     viewedNodeInstanceId
   }
 }

@@ -9,18 +9,22 @@ import {
   FlashOutline,
   ConstructOutline
 } from '@vicons/ionicons5'
-import { NButton, NIcon, NSpace, NSpin, NTag, useMessage, NEmpty, NProgress } from 'naive-ui'
+import { NButton, NIcon, NSpace, NSpin, NTag, useMessage, NEmpty } from 'naive-ui'
+import IndeterminateBar from '@/components/IndeterminateBar.vue'
 import { useAppStore } from '@/stores/app'
 import { reportMatchesInstance, useInstanceScope } from '@/composables/useInstanceScope'
 import { ipc, onDoctorProgress } from '@/composables/useIpc'
 import ListSkeleton from '@/components/ListSkeleton.vue'
 import type { DoctorCheck, DoctorReport } from '@shared/types'
+import TargetBanner from '@/components/TargetBanner.vue'
 
 const store = useAppStore()
 const message = useMessage()
 const { t, te } = useI18n()
 const running = ref(false)
 const fixing = ref(false)
+/** 0.1.18 (WP6): per-check spinner — "fixing" used to spin every button at once. */
+const fixingId = ref('')
 /** Honest progress payload (0.1.15): checked count + phase title, no fake total. */
 const progress = ref<{ done?: number; title?: string } | null>(null)
 // Persisted in the app store so Dashboard "one-click doctor" survives the route change.
@@ -31,7 +35,7 @@ const report = ref<DoctorReport | null>(store.doctorReport)
  * switching instances left the old report on screen.
  */
 const reportIsCurrent = computed(() =>
-  reportMatchesInstance(report.value?.instanceId, store.activeInstanceId)
+  reportMatchesInstance(report.value?.instanceId, store.localTargetId)
 )
 
 useInstanceScope(() => {
@@ -72,7 +76,7 @@ function groupLabel(g: string): string {
 let runSeq = 0
 
 async function run(): Promise<void> {
-  const id = store.activeInstanceId
+  const id = store.localTargetId
   if (!id) {
     message.warning(t('common.needRunningInstance'))
     return
@@ -83,7 +87,7 @@ async function run(): Promise<void> {
     const result = await ipc('doctor.run', id)
     // 0.1.17 (review fix): switching instance clears the report, but the
     // in-flight run used to write the OLD instance's report back afterwards.
-    if (seq !== runSeq || id !== store.activeInstanceId) return
+    if (seq !== runSeq || id !== store.localTargetId) return
     report.value = result
     store.doctorReport = result
     message.success(
@@ -94,16 +98,29 @@ async function run(): Promise<void> {
       })
     )
   } catch (err) {
-    if (seq !== runSeq || id !== store.activeInstanceId) return
+    if (seq !== runSeq || id !== store.localTargetId) return
     message.error(err instanceof Error ? err.message : String(err))
   } finally {
     if (seq === runSeq) running.value = false
   }
 }
 
+/** 0.1.18 (WP6): a health check can be stopped; the main process aborts at the
+ *  next probe boundary and reports a cancelled terminal state. */
+async function cancelRun(): Promise<void> {
+  runSeq += 1
+  try {
+    await ipc('doctor.cancel')
+  } catch {
+    /* already finished */
+  } finally {
+    running.value = false
+  }
+}
+
 async function fix(check: DoctorCheck): Promise<void> {
   if (!check.fixId) return
-  const id = store.activeInstanceId
+  const id = store.localTargetId
   if (!id) {
     message.warning(t('common.needRunningInstance'))
     return
@@ -114,6 +131,7 @@ async function fix(check: DoctorCheck): Promise<void> {
     return
   }
   fixing.value = true
+  fixingId.value = check.fixId
   try {
     const res = await ipc('doctor.fix', id, check.fixId)
     message[res.ok ? 'success' : 'error'](res.message)
@@ -122,6 +140,7 @@ async function fix(check: DoctorCheck): Promise<void> {
     message.error(err instanceof Error ? err.message : String(err))
   } finally {
     fixing.value = false
+    fixingId.value = ''
   }
 }
 
@@ -143,18 +162,22 @@ onUnmounted(() => offProgress?.())
         <p class="page-subtitle">{{ t('doctor.subtitle') }}</p>
       </div>
       <NSpace>
-        <NButton type="primary" :loading="running" @click="run">
+        <NButton type="primary" :loading="running" :disabled="running" @click="run">
           <template #icon><NIcon :component="FlashOutline" /></template>
           {{ t('doctor.run') }}
+        </NButton>
+        <NButton v-if="running" secondary type="warning" @click="cancelRun">
+          {{ t('common.cancel') }}
         </NButton>
       </NSpace>
     </div>
 
+    <TargetBanner />
     <div class="page-body">
       <div v-if="running && progress" class="doctor-progress card">
         <!-- Indeterminate bar: the check set is conditional, so a percentage
              would be fabricated. The honest signal is the checked COUNT. -->
-        <NProgress type="line" :percentage="100" :height="8" :show-indicator="false" processing />
+        <IndeterminateBar :height="8" />
         <div class="doctor-progress-meta">
           {{ progress.title || t('doctor.run') }}
           <span v-if="progress.done"> — {{ t('doctor.checkedCount', { n: progress.done }) }}</span>
@@ -203,6 +226,7 @@ onUnmounted(() => offProgress?.())
                   type="primary"
                   secondary
                   :disabled="fixing || running"
+                  :loading="fixingId === check.fixId"
                   @click="fix(check)"
                 >
                   <template #icon><NIcon :component="ConstructOutline" /></template>

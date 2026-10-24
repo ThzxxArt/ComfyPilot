@@ -106,4 +106,31 @@ describe('useComfyUpdate state (0.1.11)', () => {
     api.selectNodeOpInstance('inst-1')
     expect(api.nodeCheck.value?.done).toBe(2)
   })
+
+  it('keeps a node-op snapshot when another operation owns the shared slot', async () => {
+    const mod = await import('@/composables/useComfyUpdate')
+    const api = mod.useComfyUpdate()
+    fire('event:repair', {
+      runId: 'repair-1',
+      instanceId: 'inst-1',
+      status: 'running',
+      steps: [],
+      step: 'venv',
+      message: '',
+      percent: 3
+    })
+    fire('event:node-op', {
+      runId: 'op-1',
+      instanceId: 'inst-1',
+      status: 'running',
+      steps: [],
+      step: 'download',
+      message: '',
+      percent: 10
+    })
+    // The slot still belongs to repair…
+    expect(api.progress.value?.runId).toBe('repair-1')
+    // …but the node modal can still read its own stream (steps + cancel).
+    expect(api.nodeOpSnapshot.value?.runId).toBe('op-1')
+  })
 })

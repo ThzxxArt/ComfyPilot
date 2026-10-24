@@ -10,6 +10,45 @@
 import { execFile, execFileSync } from 'child_process'
 import type { ChildProcess } from 'child_process'
 
+/** True while `pid` exists (EPERM still means it exists). */
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+/**
+ * 0.1.18 (review): SIGKILL is asynchronous. Returning immediately let callers
+ * (stop/update/uninstall) delete a venv while the worker still held it open.
+ * Wait for the process to actually disappear, or for the child's own exit
+ * event — whichever comes first — bounded by `ms`.
+ */
+function waitForGone(child: ChildProcess, pid: number, ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve()
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (): void => {
+      if (settled) return
+      settled = true
+      clearInterval(poll)
+      clearTimeout(deadline)
+      resolve()
+    }
+    const poll = setInterval(() => {
+      if (child.exitCode !== null || !isAlive(pid)) finish()
+    }, 50)
+    const deadline = setTimeout(finish, ms)
+    try {
+      child.once('exit', finish)
+    } catch {
+      /* a non-EventEmitter fake: the poll still bounds the wait */
+    }
+  })
+}
+
 /**
  * Resolve after the tree is gone (best effort — never throws).
  * `graceMs` asks the child to exit (SIGTERM) before the hard kill; Windows has
@@ -17,7 +56,7 @@ import type { ChildProcess } from 'child_process'
  */
 export function killProcessTree(
   child: ChildProcess,
-  opts?: { timeoutMs?: number; graceMs?: number }
+  opts?: { timeoutMs?: number; graceMs?: number; waitMs?: number }
 ): Promise<void> {
   const timeout = opts?.timeoutMs ?? 8000
   const grace = opts?.graceMs ?? 0
@@ -83,7 +122,8 @@ export function killProcessTree(
         return []
       }
     }
-    const killTreePosix = (signal: NodeJS.Signals): void => {
+    const waitMs = opts?.waitMs ?? 3000
+    const sweep = (signal: NodeJS.Signals): void => {
       for (const p of descendants()) {
         try {
           process.kill(p, signal)
@@ -91,6 +131,9 @@ export function killProcessTree(
           /* already gone */
         }
       }
+    }
+    const killTreePosix = (signal: NodeJS.Signals): void => {
+      sweep(signal)
       try {
         child.kill(signal)
       } catch {
@@ -99,7 +142,12 @@ export function killProcessTree(
     }
     if (grace <= 0) {
       killTreePosix('SIGKILL')
-      resolve()
+      // Only resolve once the process is really gone (bounded by waitMs): a
+      // caller may delete the venv right after this resolves.
+      void waitForGone(child, pid, waitMs).then(() => {
+        sweep('SIGKILL')
+        resolve()
+      })
       return
     }
     // Graceful first: ask the child to exit, escalate if it ignores us.
@@ -111,15 +159,24 @@ export function killProcessTree(
     const finish = (): void => {
       if (settled) return
       settled = true
+      clearTimeout(timer)
+      clearInterval(sweeper)
       resolve()
     }
+    // New descendants can appear during the grace period (a launcher spawning
+    // workers); keep sweeping instead of signalling the tree exactly once.
+    const sweeper = setInterval(() => sweep('SIGTERM'), 100)
     const timer = setTimeout(() => {
       killTreePosix('SIGKILL')
-      finish()
+      void waitForGone(child, pid, waitMs).then(() => {
+        sweep('SIGKILL')
+        finish()
+      })
     }, grace)
     try {
       child.once('exit', () => {
-        clearTimeout(timer)
+        // The direct child exited; descendants it left behind must still die.
+        sweep('SIGKILL')
         finish()
       })
     } catch {

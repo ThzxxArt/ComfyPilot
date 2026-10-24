@@ -9,7 +9,7 @@ import { monitorService } from './services/monitor'
 import { batchService } from './services/p1p2'
 import { installerService } from './services/installer'
 import { execDiagnosticsService } from './services/execDiagnostics'
-import { syncProxyFromSettings } from './services/proxy'
+import { proxyAuthFor, syncProxyFromSettings } from './services/proxy'
 import { createTray, destroyTray, refreshTray, hasTray } from './services/tray'
 import { setLaunchOnBoot } from './services/desktop'
 import {
@@ -26,6 +26,7 @@ import { monitorEventLoopDelay } from 'perf_hooks'
 import { IPC_EVENTS } from '@shared/types'
 import { APP_NAME } from '@shared/constants'
 import { isSafeExternalUrl, safeResolveUnder } from './services/security'
+import { bootMark } from './services/bootTiming'
 
 // Custom schemes must be privileged BEFORE app ready so <img src="comfy-pilot-media:...">
 // and fetch() work inside the renderer.
@@ -256,9 +257,12 @@ function createWindow(): void {
     }
   })
 
+  mainWindow.webContents.once('did-finish-load', () => bootMark('renderer-loaded'))
   mainWindow.on('ready-to-show', () => {
+    bootMark('window-ready-to-show')
     crashLog('ready-to-show')
     mainWindow?.show()
+    bootMark('window-shown')
   })
 
   // Close button hides to tray when minimizeToTray is on (launcher-friendly).
@@ -387,10 +391,32 @@ if (!gotSingleInstanceLock) {
   })
 }
 
+// 0.1.18 (WP0): Windows uses this id for toast/taskbar identity. Without it the
+// identity derives from the exe path and shifts between install locations.
+app.setAppUserModelId('com.comfy-pilot.app')
+
 app.whenReady().then(async () => {
   if (!gotSingleInstanceLock) return
   const e2e = process.env.COMFYPILOT_E2E === '1' || process.argv.includes('--e2e-smoke')
   crashLog('whenReady start')
+  bootMark('app-ready')
+
+  /**
+   * 0.1.18 (WP1 / S2): `setProxy` deliberately carries no credentials, so an
+   * authenticated proxy answered every session.fetch with 407 and the UI
+   * reported "network unreachable". Chromium asks through this event; we only
+   * ever answer PROXY challenges — never a site's own login.
+   */
+  app.on('login', (event, _webContents, _details, authInfo, callback) => {
+    try {
+      const creds = proxyAuthFor(authInfo, loadSettings())
+      if (!creds) return
+      event.preventDefault()
+      callback(creds.username, creds.password)
+    } catch {
+      /* malformed settings — let Chromium fail the request normally */
+    }
+  })
 
   // Log-root consolidation + session liveness + watchdog (0.1.16).
   try {
@@ -471,26 +497,53 @@ app.whenReady().then(async () => {
   }
 
   if (e2e) {
-    // Boot the real window, verify the renderer actually MOUNTED (not just
-    // "the process spawned"), then quit cleanly for the smoke suite.
+    // 0.1.18 (WP8): the smoke test must prove more than "a window appeared".
+    // It now checks the preload bridge, performs one REAL IPC round-trip, and
+    // fails the run on any renderer console error / unhandled rejection.
     const quitE2e = (): void => app.quit()
+    mainWindow?.webContents.on('console-message', (_e, level, message) => {
+      if (level >= 3) console.log(`[e2e] console-error: ${message}`)
+    })
+    mainWindow?.webContents.on('preload-error', (_e, path, err) => {
+      console.log(`[e2e] preload-error: ${path} ${err?.message || ''}`)
+    })
     setTimeout(() => {
       try {
         mainWindow?.webContents.once('did-finish-load', () => {
           void mainWindow?.webContents
             .executeJavaScript(
-              'Boolean(document.getElementById("app") && document.getElementById("app").childElementCount > 0)'
+              `(async () => {
+                const app = document.getElementById('app')
+                const mounted = Boolean(app && app.childElementCount > 0)
+                const api = window.comfyPilot
+                const bridgeOk = Boolean(api && typeof api.invoke === 'function' && typeof api.on === 'function' && Boolean(api.events) && typeof api.events === 'object')
+                let ipcOk = false
+                let version = ''
+                try {
+                  const res = await api.invoke('app.previousExit')
+                  ipcOk = Boolean(res && res.ok)
+                  const v = await api.invoke('settings.get')
+                  version = String(v && v.data && v.data.locale || '')
+                } catch { ipcOk = false }
+                return { mounted, bridgeOk, ipcOk, version }
+              })()`
             )
-            .then((mounted) => {
-              console.log(mounted ? '[e2e] renderer-mounted' : '[e2e] renderer-empty')
-            })
+            .then(
+              (r: { mounted?: boolean; bridgeOk?: boolean; ipcOk?: boolean; version?: string }) => {
+                console.log(r?.mounted ? '[e2e] renderer-mounted' : '[e2e] renderer-empty')
+                console.log(
+                  r?.bridgeOk ? '[e2e] preload-bridge-ok' : '[e2e] preload-bridge-missing'
+                )
+                console.log(r?.ipcOk ? '[e2e] ipc-ok' : '[e2e] ipc-failed')
+              }
+            )
             .catch(() => console.log('[e2e] renderer-probe-failed'))
             .finally(() => setTimeout(quitE2e, 300))
         })
       } catch {
         /* ignore */
       }
-      setTimeout(quitE2e, 2500)
+      setTimeout(quitE2e, 3000)
     }, 150)
   }
 
@@ -528,6 +581,10 @@ app.whenReady().then(async () => {
   }
 
   // Auto-start instances flagged with autoStart (consumes the previously dead field)
+  // 0.1.18 (review): the orphan sweep below runs concurrently with auto-start;
+  // it could see a freshly adopted pid and kill it. Auto-start now waits for the
+  // sweep to finish (the promise is assigned when the sweep is launched).
+  let sweepDone: Promise<void> = Promise.resolve()
   try {
     const settings = loadSettings()
     if (settings.autoStartInstancesOnLaunch !== false) {
@@ -535,6 +592,7 @@ app.whenReady().then(async () => {
       if (auto.length) {
         crashLog(`autoStart: ${auto.length} instance(s)`)
         void (async () => {
+          await sweepDone
           for (const c of auto) {
             try {
               await instanceService.start(c.id)
@@ -586,7 +644,7 @@ app.whenReady().then(async () => {
   // Orphan sweep (0.1.17 WP3): a ComfyUI we started that survived an app crash
   // keeps tens of GB of VRAM. Terminate only when the command line proves the
   // pid is ours; anything unverifiable is reported, never killed.
-  void instanceService
+  void (sweepDone = instanceService
     .sweepStaleProcesses()
     .then((res) => {
       if (res.killed.length) {
@@ -610,7 +668,7 @@ app.whenReady().then(async () => {
         })
       }
     })
-    .catch((e) => crashLog('orphan sweep failed: ' + String(e)))
+    .catch((e) => crashLog('orphan sweep failed: ' + String(e))))
   // Record WS execution_error payloads for ComfyPilot-submitted runs and
   // surface every failure as an event + one toast/notification.
   monitorService.on('ws', (evt) => {
@@ -744,6 +802,14 @@ app.whenReady().then(async () => {
       }
     })
     .catch(() => undefined)
+  // 0.1.18 (WP5): the task center aggregator subscribes to every long-task
+  // stream, then republishes normalized ops to the shell.
+  void import('./services/ops')
+    .then(async ({ operationRegistry }) => {
+      operationRegistry.on('changed', (op) => broadcast(IPC_EVENTS.opChanged, op))
+      await operationRegistry.init()
+    })
+    .catch(() => undefined)
   void import('./services/registryIndex')
     .then(({ registryIndex }) => {
       registryIndex.on('progress', (p) => broadcast(IPC_EVENTS.registryIndexProgress, p))
@@ -790,32 +856,47 @@ app.whenReady().then(async () => {
     else revealWindow()
   })
 
-  app.on('before-quit', () => {
+  let quitInProgress = false
+  app.on('before-quit', (event) => {
+    // 0.1.18 (review): a second quit request used to fall through to the default
+    // quit and exit before pending writes were flushed. Always intercept; the
+    // first handler finishes the cleanup and calls app.exit(0) itself.
+    event.preventDefault()
+    if (quitInProgress) return
+    quitInProgress = true
+    // 0.1.18 (WP3): wait for the process trees to actually die before exiting.
+    // The old synchronous handler returned while grandchildren (ComfyUI, pip)
+    // were still alive, so ports/VRAM stayed occupied after "quit".
     if (monitorTimer) clearInterval(monitorTimer)
     monitorService.disconnectWs()
-    try {
-      instanceService.killAllNow()
-    } catch {
-      /* ignore */
-    }
     try {
       destroyTray()
     } catch {
       /* ignore */
     }
-    // Mark this session as a clean exit and flush debounced writes (0.1.16).
-    try {
-      markSessionCleanExit()
-    } catch {
-      /* ignore */
-    }
-    try {
-      flushPendingWrites()
-      // 0.1.17 (WP7): the prompt→workflow sidecar is debounced too.
-      flushPromptLinks()
-    } catch {
-      /* ignore */
-    }
+    void (async () => {
+      try {
+        await instanceService.killAllForQuit(5000)
+      } catch {
+        /* ignore */
+      }
+      try {
+        markSessionCleanExit()
+      } catch {
+        /* ignore */
+      }
+      try {
+        flushPendingWrites()
+        // 0.1.17 (WP7): the prompt→workflow sidecar is debounced too.
+        flushPromptLinks()
+        // 0.1.18 (regression): batch progress is coalesced for 400 ms; flush it
+        // before exit or the last accepted promptIds are lost on quit.
+        batchService.flushBatchWrites()
+      } catch {
+        /* ignore */
+      }
+      app.exit(0)
+    })()
   })
 })
 

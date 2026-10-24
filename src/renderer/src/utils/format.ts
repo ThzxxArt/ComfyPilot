@@ -58,8 +58,17 @@ export function formatSpeed(bps: number): string {
 }
 
 /** ISO timestamp → local short date ('' — for absent/unparseable input). */
-export function formatDate(iso?: string): string {
+/**
+ * 0.1.18 (WP6): the UI language decides the date format. Falling back to the
+ * OS locale produced mixed-language dates (e.g. English UI, Chinese dates).
+ */
+export function formatDate(iso?: string, locale?: string): string {
   if (!iso) return '—'
   const d = new Date(iso)
-  return Number.isFinite(d.getTime()) ? d.toLocaleDateString() : '—'
+  if (!Number.isFinite(d.getTime())) return '—'
+  try {
+    return d.toLocaleDateString(locale || undefined)
+  } catch {
+    return d.toLocaleDateString()
+  }
 }

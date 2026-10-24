@@ -13,6 +13,7 @@ import type { InstallStepStatus, UpdateStep } from '@shared/types'
 import { updateDetailOf, updateStepTitle } from '@/composables/useComfyUpdate'
 import { usePipOps } from '@/composables/usePipOps'
 import IndeterminateBar from '@/components/IndeterminateBar.vue'
+import { stepPercent } from '@/utils/progress'
 
 /**
  * Pip-op modal (0.1.12) — install missing packages / apply fix recipes /
@@ -44,8 +45,9 @@ const steps = computed<UpdateStep[]>(() => progress.value?.steps || [])
  * real fraction, show an indeterminate bar instead of a stalled percentage.
  */
 const runningStep = computed(() => steps.value.find((s) => s.status === 'running') || null)
+const stepPct = computed(() => stepPercent(runningStep.value))
 const indeterminate = computed(
-  () => running.value && !failed.value && !cancelled.value && !runningStep.value?.progress
+  () => running.value && !failed.value && !cancelled.value && stepPct.value === null
 )
 
 const cancelling = ref(false)
@@ -141,11 +143,11 @@ function stepTitle(s: UpdateStep): string {
     :closable="true"
   >
     <div class="upd-head">
-      <IndeterminateBar v-if="indeterminate" :height="10" :label="runningStep?.detail || ''" />
+      <IndeterminateBar v-if="indeterminate" :height="10" :label="runningStep ? detail(runningStep) : ''" />
       <NProgress
         v-else
         type="line"
-        :percentage="percent"
+        :percentage="stepPct ?? percent"
         :height="10"
         :status="failed ? 'error' : done ? 'success' : 'default'"
         :processing="running && !failed"

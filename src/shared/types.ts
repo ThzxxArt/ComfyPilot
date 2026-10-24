@@ -106,6 +106,19 @@ export interface AppSettings {
   torchIndexMirror: string
   /** Output-library scan depth under the output root (0.1.9, default 4, 2..10). */
   outputScanDepth: number
+  /**
+   * Stop strategy (0.1.18). `fast` (default) terminates the tree immediately;
+   * `graceful` asks the tree to close and waits up to 3 s first. Node cannot
+   * send CTRL_BREAK, and `taskkill /T` without /F is a no-op for console
+   * Python — the old "graceful" default always burned the full 3 s.
+   */
+  stopMode?: 'fast' | 'graceful'
+  /**
+   * 0.1.18 (WP1 / S3): downloading a runtime with no published checksum and no
+   * prior pin is refused unless the user explicitly opts in here. TOFU used to
+   * trust (and permanently pin) whatever the first download produced.
+   */
+  allowUnverifiedRuntime?: boolean
 }
 
 // ---------- Instance ----------
@@ -229,6 +242,17 @@ export interface ComfyInstanceInfo extends ComfyInstanceConfig {
   }
 }
 
+/**
+ * Cross-view operation target (0.1.18 WP2).
+ *
+ * `none` means no local instance is selected; destructive local channels
+ * refuse it with `TARGET_REQUIRED` instead of silently using `instances[0]`.
+ */
+export interface TargetRef {
+  kind: 'local' | 'remote' | 'none'
+  id?: string
+}
+
 export interface InstanceDiscoveryCandidate {
   path: string
   score: number
@@ -264,6 +288,11 @@ export interface LaunchOptions {
   open?: 'embed' | 'browser' | 'none'
   /** When the configured port is busy, pick a free port, persist it, then start. */
   relocatePort?: boolean
+  /**
+   * 0.1.18 (WP3): allow adopting a ComfyUI this app did not start. The first
+   * attempt without it fails with ADOPT_CONFIRM_REQUIRED so the UI can ask.
+   */
+  adoptExternal?: boolean
 }
 
 export interface WaitReadyResult {
@@ -472,6 +501,14 @@ export interface DownloadTask {
   actualSha256?: string
   /** 'length' = Content-Length match only; 'sha256' = hash verified. */
   verified?: 'length' | 'sha256' | 'failed'
+  /** HTTP validators captured on the first response (0.1.18 resume safety). */
+  etag?: string
+  lastModified?: string
+  /**
+   * 0.1.18 (WP7): queue priority (higher runs first among waiting tasks).
+   * Default 0; bumping it moves a queued task ahead of later arrivals.
+   */
+  priority?: number
 }
 
 export interface StorageStats {
@@ -565,6 +602,29 @@ export interface NodeSnapshot {
 export interface NodeNameConflict {
   nodeName: string
   packs: string[]
+}
+
+/**
+ * 0.1.18 (WP3 / L9): a leftover inside `custom_nodes/` that a crashed or
+ * cancelled update left behind. Backups (`.bak-<ts>`) hold a real previous
+ * version and can be restored; temp unzip dirs and duplicate `.disabled`
+ * copies can only be cleaned.
+ */
+export type NodeRecoveryKind = 'backup' | 'temp' | 'duplicate'
+
+export interface NodeRecoveryEntry {
+  kind: NodeRecoveryKind
+  /** On-disk entry name inside `custom_nodes/` (a single path segment). */
+  name: string
+  /** Package name a backup belongs to ('' for temp/duplicate entries). */
+  packName: string
+  /** Absolute path of the leftover entry. */
+  path: string
+  /** Where the pack would live after a restore. */
+  livePath: string
+  /** True when a pack already occupies `livePath`. */
+  liveExists: boolean
+  mtimeMs: number
 }
 
 // ---------- Workflow ----------
@@ -772,6 +832,23 @@ export interface NodeDepsAudit {
 }
 
 /** Workflow preflight against /object_info (0.1.12, WP6). */
+/** 0.1.18 (WP7): model files a workflow needs vs the local index. */
+export interface WorkflowModelRequirement {
+  name: string
+  nodeType: string
+  present: boolean
+  /** Local basename that matched, when present (helps explain subfolders). */
+  matchedFile?: string
+}
+
+export interface WorkflowModelPreflight {
+  available: boolean
+  required: number
+  present: number
+  missing: WorkflowModelRequirement[]
+  error?: string
+}
+
 export interface WorkflowPreflight {
   /** False when object_info could not be fetched (offline/old server). */
   available: boolean
@@ -808,6 +885,12 @@ export interface OutputAsset {
   thumbnail?: string
   /** Full-resolution safe media URL for lightbox/detail (never a bare fs path). */
   mediaUrl?: string
+  /**
+   * True when the image has no cached thumbnail yet (0.1.18 WP4). The list IPC
+   * no longer generates thumbnails inline; the renderer asks for them lazily
+   * via `output.thumb`.
+   */
+  thumbPending?: boolean
 }
 
 /**
@@ -870,6 +953,44 @@ export interface BackupManifest {
     nodeSnapshots?: boolean
   }
   notes: string
+}
+
+/** Sections a backup restore can apply (0.1.18 WP1/WP7). */
+export type BackupRestoreSection =
+  'settings' | 'instances' | 'nodePacks' | 'models' | 'workflows' | 'remotes' | 'snapshots'
+
+export interface BackupWorkflowFilePreview {
+  id: string
+  name: string
+  /** Validated write target under a trusted root — never the backup's raw path. */
+  target: string
+  remapped: boolean
+  missing: boolean
+}
+
+/**
+ * Dry-run result shown before applying a restore (0.1.18). `canRestore:false`
+ * means the backup references paths this machine does not trust, or a file is
+ * unparseable; restore() refuses with the same evidence.
+ */
+export interface BackupRestorePreview {
+  id: string
+  name: string
+  counts: Record<string, number>
+  settingsChanged: string[]
+  workflowFiles: BackupWorkflowFilePreview[]
+  invalidPaths: string[]
+  warnings: string[]
+  canRestore: boolean
+}
+
+export interface BackupRestoreResult {
+  ok: boolean
+  restored: number
+  failed: number
+  warnings: string[]
+  /** 0.1.18 (review): automatic snapshot taken before applying the restore. */
+  preRestoreId?: string
 }
 
 // ---------- Environment ----------
@@ -1039,6 +1160,11 @@ export interface RegistryPageResult<T> {
   scanned: number
   /** true when the query had to be applied client-side */
   clientFiltered: boolean
+  /**
+   * 0.1.18 (WP4/F6): search needs the local full-catalog index, which is NOT
+   * built implicitly. The UI offers to build it (with progress + cancel).
+   */
+  needsIndex?: boolean
 }
 
 // ---------- Installer (one-click isolated setup) ----------
@@ -1236,6 +1362,13 @@ export interface UpdateStep {
    * indeterminate (0.1.17 WP2-4 removed the invented line-count fraction).
    */
   progress?: number
+  /**
+   * 0.1.18 (WP3): monotonic item counts for work measured in files/entries
+   * (zip overlay, core copy). `workTotal=0` means "not measured" — never a
+   * fake denominator. Real `0` is a valid value.
+   */
+  workDone?: number
+  workTotal?: number
 }
 
 export interface UpdateProgress {
@@ -1247,6 +1380,8 @@ export interface UpdateProgress {
   message: string
   percent: number
   error?: string
+  /** 0.1.18 (WP2): machine-readable failure cause (e.g. PORT_IN_USE). */
+  errorCode?: string
   /** Absolute path of the backup dir when the backup step completed. */
   backupPath?: string
   bytes?: InstallStepByteProgress
@@ -1277,6 +1412,12 @@ export interface UpdateJournal {
   backupPath: string
   backupKind: 'git' | 'files'
   startedAt: number
+  /**
+   * 0.1.18 (WP3): `verify-failed` keeps the journal (and therefore the UI's
+   * rollback entry) after a health-check failure. The backup survived but the
+   * journal used to be cleared, so the only recovery point became invisible.
+   */
+  status?: 'in-progress' | 'verify-failed'
 }
 
 export interface RepairEnvOptions {
@@ -1380,10 +1521,68 @@ export interface IpcResult<T = unknown> {
   suggestedPort?: number
 }
 
+/** 0.1.18 (WP5): a long-running operation visible in the shell task center. */
+export type BackgroundOpKind =
+  | 'install'
+  | 'comfy-update'
+  | 'env-repair'
+  | 'node-op'
+  | 'node-batch'
+  | 'batch'
+  | 'output-scan'
+  | 'registry-index'
+
+export interface BackgroundOp {
+  id: string
+  kind: BackgroundOpKind
+  /** Instance id, `remote:<id>`, a batch job id or 'local'. */
+  target: string
+  /** Optional context (pack name / batch name). */
+  title?: string
+  status: 'running' | 'done' | 'failed' | 'cancelled'
+  /** 0..100, or null when the op has no real denominator. */
+  percent: number | null
+  detail: string
+  cancellable: boolean
+  startedAt: number
+  finishedAt?: number
+  error?: string
+  /** Update/install run identity, when the underlying service has one. */
+  runId?: string
+}
+
+/** Full-catalog index status (0.1.18: exposes live crawl progress). */
+export interface RegistryIndexStatus {
+  ready: boolean
+  updatedAt: number
+  total: number
+  pages: number
+  count: number
+  skippedPages?: number
+  /** True while a full crawl is running in this process. */
+  building?: boolean
+  /** Pages fetched so far / total pages (only meaningful while building). */
+  done?: number
+  totalPages?: number
+}
+
 export type IpcChannelMap = {
   // settings
   'settings.get': { args: []; result: AppSettings }
   'settings.set': { args: [Partial<AppSettings>]; result: AppSettings }
+  /** 0.1.18 (WP1/S6): which stored secrets need re-entry (undecryptable). */
+  'settings.exportConfig': {
+    args: []
+    result: { version: number; exportedAt: number; settings: Partial<AppSettings> }
+  }
+  'settings.importConfig': {
+    args: [Record<string, unknown>]
+    result: { settings: AppSettings; applied: string[] }
+  }
+  'settings.credentialStatus': {
+    args: []
+    result: { proxyPasswordUnreadable: boolean; lockedRemoteIds: string[] }
+  }
   'settings.launchTemplates': { args: []; result: LaunchArgTemplate[] }
   'settings.dataDir': { args: []; result: string }
   /** Global app log directory (userData/logs) — 0.1.15, for the Settings button. */
@@ -1425,6 +1624,8 @@ export type IpcChannelMap = {
   'instance.updateStatus': { args: []; result: UpdateProgress | null }
   'instance.cancelUpdate': { args: []; result: boolean }
   'instance.repairEnv': { args: [string, RepairEnvOptions?]; result: EnvProbe }
+  /** 0.1.18 (WP3/L7): abort a running environment repair (pip can take 30 min). */
+  'instance.repairCancel': { args: []; result: boolean }
   /** Current repair-op snapshot (modal hydration after renderer reloads). */
   'instance.repairStatus': { args: []; result: UpdateProgress | null }
   'instance.capabilities': { args: [string]; result: InstanceCapabilities | null }
@@ -1463,6 +1664,8 @@ export type IpcChannelMap = {
   }
   'model.pauseDownload': { args: [string]; result: DownloadTask }
   'model.resumeDownload': { args: [string]; result: DownloadTask }
+  /** 0.1.18 (WP7): move a queued download ahead of the rest. */
+  'model.prioritizeDownload': { args: [string]; result: DownloadTask }
   'model.cancelDownload': { args: [string]; result: boolean }
   'model.clearFinishedDownloads': { args: []; result: number }
   'model.storageStats': { args: []; result: StorageStats[] }
@@ -1478,39 +1681,14 @@ export type IpcChannelMap = {
   // node packs
   'node.list': { args: [string?]; result: NodePackRecord[] }
   'node.refresh': { args: [string?]; result: NodePackRecord[] }
-  'registry.indexStatus': {
-    args: []
-    result: {
-      ready: boolean
-      updatedAt: number
-      total: number
-      pages: number
-      count: number
-      skippedPages?: number
-    }
-  }
-  'registry.refreshIndex': {
-    args: []
-    result: {
-      ready: boolean
-      updatedAt: number
-      total: number
-      pages: number
-      count: number
-      skippedPages?: number
-    }
-  }
-  'registry.ensureIndex': {
-    args: []
-    result: {
-      ready: boolean
-      updatedAt: number
-      total: number
-      pages: number
-      count: number
-      skippedPages?: number
-    }
-  }
+  'registry.indexStatus': { args: []; result: RegistryIndexStatus }
+  'registry.refreshIndex': { args: []; result: RegistryIndexStatus }
+  'registry.ensureIndex': { args: [{ force?: boolean }?]; result: RegistryIndexStatus }
+  /** 0.1.18 (WP4/F6): abort an in-flight full-catalog crawl. */
+  'registry.cancelIndex': { args: []; result: boolean }
+  /** 0.1.18 (WP5): shell task center. */
+  'ops.list': { args: []; result: BackgroundOp[] }
+  'ops.cancel': { args: [string]; result: boolean }
   'node.managerChannel': { args: []; result: RegistryNodePack[] }
   'node.install': {
     args: [
@@ -1551,6 +1729,10 @@ export type IpcChannelMap = {
   'node.installDeps': { args: [string, string?]; result: PipOpResult }
   /** Current node-op snapshot (modal hydration after renderer reloads). */
   'node.opStatus': { args: [string?]; result: UpdateProgress | null }
+  /** 0.1.18 (WP3): leftovers from an interrupted update (.bak-/._unzip_tmp_). */
+  'node.recoveryScan': { args: [string?]; result: NodeRecoveryEntry[] }
+  'node.recoveryRestore': { args: [string, string?]; result: NodeRecoveryEntry }
+  'node.recoveryClean': { args: [string, string?]; result: boolean }
 
   // workflows
   'workflow.list': { args: [{ includeMissing?: boolean }?]; result: WorkflowRecord[] }
@@ -1596,6 +1778,8 @@ export type IpcChannelMap = {
   'workflow.compare': { args: [string, string]; result: WorkflowCompareResult }
   /** Preflight one workflow file against the instance /object_info (0.1.12). */
   'workflow.preflight': { args: [string, string]; result: WorkflowPreflight }
+  /** 0.1.18 (WP7): which model files this workflow needs and which are absent. */
+  'workflow.checkModels': { args: [string, string?]; result: WorkflowModelPreflight }
   /**
    * Import the running LOCAL instance's built-in default workflow (0.1.15).
    * Requires ComfyUI v0.41+ (`GET /default_workflow`), where v0.40 and older
@@ -1609,6 +1793,11 @@ export type IpcChannelMap = {
   // monitor
   'monitor.system': { args: []; result: SystemSnapshot }
   'monitor.queue': { args: [string?]; result: QueueSnapshot }
+  /** 0.1.18 (WP7): 10-minute CPU/RAM/VRAM series (2 s cadence, capped 300). */
+  'monitor.series': {
+    args: []
+    result: Array<{ ts: number; cpu: number; ram: number; vram: number }>
+  }
   'monitor.history': { args: [string?]; result: QueueSnapshot }
   'monitor.jobs': { args: [string?]; result: ComfyJobSummary[] | null }
   'monitor.connectWs': { args: [string]; result: boolean }
@@ -1620,12 +1809,21 @@ export type IpcChannelMap = {
 
   // doctor
   'doctor.run': { args: [string]; result: DoctorReport }
+  /** 0.1.18 (WP6): abort a running health check at the next probe boundary. */
+  'doctor.cancel': { args: []; result: boolean }
   'doctor.fix': { args: [string, string]; result: { ok: boolean; message: string } }
 
   // backup
   'backup.list': { args: []; result: BackupManifest[] }
   'backup.create': { args: [{ name: string; notes?: string }]; result: BackupManifest }
-  'backup.restore': { args: [string]; result: boolean }
+  'backup.preview': {
+    args: [string]
+    result: BackupRestorePreview
+  }
+  'backup.restore': {
+    args: [string, { sections?: BackupRestoreSection[] }?]
+    result: BackupRestoreResult
+  }
   'backup.delete': { args: [string]; result: boolean }
   'backup.openFolder': { args: [string]; result: boolean }
 
@@ -1740,6 +1938,7 @@ export type IpcChannelMap = {
   }
 
   // output
+  'output.thumb': { args: [string]; result: { url?: string } }
   'output.list': {
     args: [
       {
@@ -1855,6 +2054,7 @@ export const IPC_CHANNELS = [
   'backup.delete',
   'backup.list',
   'backup.openFolder',
+  'backup.preview',
   'backup.restore',
   'batch.cancel',
   'batch.cancelItem',
@@ -1870,6 +2070,7 @@ export const IPC_CHANNELS = [
   'bootstrap.ensure',
   'bootstrap.status',
   'deps.recipes',
+  'doctor.cancel',
   'doctor.fix',
   'doctor.run',
   'embed.close',
@@ -1914,6 +2115,7 @@ export const IPC_CHANNELS = [
   'instance.previewLaunch',
   'instance.probeEnv',
   'instance.remove',
+  'instance.repairCancel',
   'instance.repairEnv',
   'instance.repairStatus',
   'instance.restart',
@@ -1943,6 +2145,7 @@ export const IPC_CHANNELS = [
   'model.pauseDownload',
   'model.reconcile',
   'model.rename',
+  'model.prioritizeDownload',
   'model.resumeDownload',
   'model.scan',
   'model.storageStats',
@@ -1953,6 +2156,7 @@ export const IPC_CHANNELS = [
   'monitor.disconnectWs',
   'monitor.freeMemory',
   'monitor.history',
+  'monitor.series',
   'monitor.interrupt',
   'monitor.jobs',
   'monitor.queue',
@@ -1973,6 +2177,9 @@ export const IPC_CHANNELS = [
   'node.lock',
   'node.managerChannel',
   'node.opStatus',
+  'node.recoveryClean',
+  'node.recoveryRestore',
+  'node.recoveryScan',
   'node.refresh',
   'node.restoreSnapshot',
   'node.smokeTest',
@@ -1982,6 +2189,7 @@ export const IPC_CHANNELS = [
   'node.uninstallDeps',
   'node.update',
   'node.updateAll',
+  'output.thumb',
   'output.assetsMatch',
   'output.batchDelete',
   'output.delete',
@@ -1995,6 +2203,9 @@ export const IPC_CHANNELS = [
   'output.reveal',
   'proxy.apply',
   'proxy.test',
+  'registry.cancelIndex',
+  'ops.cancel',
+  'ops.list',
   'registry.ensureIndex',
   'registry.indexStatus',
   'registry.refreshIndex',
@@ -2008,6 +2219,9 @@ export const IPC_CHANNELS = [
   'settings.get',
   'settings.launchTemplates',
   'settings.logsDir',
+  'settings.credentialStatus',
+  'settings.exportConfig',
+  'settings.importConfig',
   'settings.set',
   'shell.openExternal',
   'shell.openPath',
@@ -2028,6 +2242,7 @@ export const IPC_CHANNELS = [
   'workflow.list',
   'workflow.openInFrontend',
   'workflow.parsePngMeta',
+  'workflow.checkModels',
   'workflow.preflight',
   'workflow.queue',
   'workflow.rename',
@@ -2047,6 +2262,8 @@ export const IPC_EVENTS = {
   nodeInstallProgress: 'event:node-install-progress',
   installProgress: 'event:install-progress',
   registryIndexProgress: 'event:registry-index-progress',
+  /** A background operation changed (one op per event, 0.1.18 WP5). */
+  opChanged: 'event:op-changed',
   notification: 'event:notification',
   runtimeProgress: 'event:runtime-progress',
   comfyUpdateProgress: 'event:comfy-update-progress',

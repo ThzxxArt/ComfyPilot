@@ -40,7 +40,13 @@ import {
   replaceDownloadTasks,
   listDownloadTasks
 } from './db'
-import { resolveInsideAnyRoot, assertSafeRelativeFilename, isSafeExternalUrl } from './security'
+import { resolveReadTarget } from './target'
+import {
+  resolveInsideAnyRoot,
+  assertSafeRelativeFilename,
+  isSafeExternalUrl,
+  isPathInside
+} from './security'
 import { normalizeForCompare } from './security'
 import { LruCache } from './lru'
 
@@ -340,23 +346,46 @@ export class ModelService extends EventEmitter {
   /** Max concurrent downloads — protects disk/network; excess wait in 'queued'. */
   private static MAX_CONCURRENT = 3
   private runningCount = 0
-  private pendingStarts: Array<() => void> = []
   /** Survives Map deletion so a cancelled-while-queued task cannot start later. */
   private cancelledIds = new Set<string>()
 
-  private async acquireSlot(): Promise<void> {
+  /**
+   * 0.1.18 (WP7): the waiting queue is priority-ordered (higher first, FIFO
+   * within the same priority) instead of a blind FIFO resolver array.
+   */
+  private pendingStarts: Array<{
+    priority: number
+    seq: number
+    taskId: string
+    resolve: () => void
+  }> = []
+  private pendingSeq = 0
+
+  private async acquireSlot(priority = 0, taskId = ''): Promise<void> {
     if (this.runningCount < ModelService.MAX_CONCURRENT) {
       this.runningCount += 1
       return
     }
-    await new Promise<void>((resolve) => this.pendingStarts.push(resolve))
-    this.runningCount += 1
+    // The slot is TRANSFERRED by releaseSlot when it resolves us — do not
+    // increment here, or a second waiter could also start.
+    await new Promise<void>((resolve) =>
+      this.pendingStarts.push({ priority, seq: this.pendingSeq++, taskId, resolve })
+    )
   }
 
   private releaseSlot(): void {
+    if (this.pendingStarts.length) {
+      let best = 0
+      for (let i = 1; i < this.pendingStarts.length; i++) {
+        const a = this.pendingStarts[i]
+        const b = this.pendingStarts[best]
+        if (a.priority > b.priority || (a.priority === b.priority && a.seq < b.seq)) best = i
+      }
+      const [next] = this.pendingStarts.splice(best, 1)
+      next.resolve()
+      return
+    }
     this.runningCount = Math.max(0, this.runningCount - 1)
-    const next = this.pendingStarts.shift()
-    if (next) next()
   }
 
   /** Re-queue paused tasks after app restart (partial files are kept for Range resume). */
@@ -483,6 +512,9 @@ export class ModelService extends EventEmitter {
     let scanned = 0
     for (const file of files) {
       scanned += 1
+      // 0.1.18 (WP4): let timers/IPC run between files. A 705 GB library used
+      // to block the main process for the whole synchronous walk.
+      if (scanned % 25 === 0) await new Promise((resolve) => setImmediate(resolve))
       this.emit('progress', {
         scanned,
         total: files.length,
@@ -555,7 +587,9 @@ export class ModelService extends EventEmitter {
           baseModel,
           trainedWords,
           duplicateOf: existing?.duplicateOf,
-          pathRoot: allRoots.find((r) => file.startsWith(r.root))?.root || dirname(file)
+          // 0.1.18: containment, not a lexical prefix — `D:/models/lora` used
+          // to swallow `D:/models/lora-old`.
+          pathRoot: allRoots.find((r) => isPathInside(file, r.root))?.root || dirname(file)
         }
         updates.push(rec)
       } catch {
@@ -563,6 +597,20 @@ export class ModelService extends EventEmitter {
       }
     }
     upsertModels(updates)
+
+    // 0.1.18 (WP3 / L11): prune rows whose file vanished or moved outside the
+    // scanned roots. The index used to grow forever, polluting storage stats
+    // and duplicate detection with ghost entries.
+    const seen = new Set(files)
+    // Only roots that are actually reachable may prove a row is gone: an
+    // offline network share / unmounted drive must not delete its index rows.
+    const scopedRoots = allRoots.map((r) => r.root).filter((root) => existsSync(root))
+    const ghosts = listModels().filter((m) => {
+      if (seen.has(m.path)) return false
+      if (!scopedRoots.some((root) => isPathInside(m.path, root))) return false
+      return !existsSync(m.path)
+    })
+    for (const ghost of ghosts) dbDeleteModel(ghost.id)
 
     // mark duplicates
     if (opts?.hash !== false) {
@@ -912,7 +960,7 @@ export class ModelService extends EventEmitter {
         /* statfs unavailable — proceed */
       }
     }
-    await this.acquireSlot()
+    await this.acquireSlot(Number(task.priority) || 0, task.id)
     try {
       // Root-cause reliability: transient network failures should not force a
       // manual re-download. 3 attempts, exponential backoff, resume-aware.
@@ -931,7 +979,11 @@ export class ModelService extends EventEmitter {
         } catch (err) {
           lastErr = err
           const msg = err instanceof Error ? err.message : String(err)
-          if (/Insufficient disk|Blocked download|already exists|already in progress/i.test(msg)) {
+          if (
+            /Insufficient disk|Blocked download|already exists|already in progress|already using/i.test(
+              msg
+            )
+          ) {
             task.status = 'error'
             task.error = msg
             task.finishedAt = Date.now()
@@ -971,6 +1023,18 @@ export class ModelService extends EventEmitter {
     }
     if (this.abortControllers.has(task.id)) {
       throw new Error('Download already in progress')
+    }
+    // 0.1.18 (WP1): one active task per destination. Two tasks appending to the
+    // same `.part` interleave bytes and still satisfy the length gate, so the
+    // damage is a valid-looking but corrupt model file.
+    const sameDest = [...this.downloads.values()].find(
+      (t) =>
+        t.id !== task.id &&
+        t.destPath === task.destPath &&
+        (t.status === 'running' || t.status === 'queued' || t.status === 'paused')
+    )
+    if (sameDest) {
+      throw new Error(`Another download is already using ${task.fileName}`)
     }
     if (!resume && existsSync(task.destPath)) {
       throw new Error(`Target already exists: ${task.fileName}`)
@@ -1034,7 +1098,13 @@ export class ModelService extends EventEmitter {
       let startByte = 0
       if (resume && existsSync(task.destPath)) {
         startByte = statSync(task.destPath).size
-        if (startByte > 0) headers.Range = `bytes=${startByte}-`
+        if (startByte > 0) {
+          headers.Range = `bytes=${startByte}-`
+          // 0.1.18 (WP1): ask the server to ignore the range when the file it
+          // now serves differs from the one the partial bytes came from.
+          const validator = task.etag || task.lastModified
+          if (validator) headers['If-Range'] = validator
+        }
       }
 
       const res = useSessionProxy
@@ -1060,6 +1130,9 @@ export class ModelService extends EventEmitter {
           } catch {
             /* ignore */
           }
+          // The controller is registered under this task id; drop it before the
+          // recursive clean run or it rejects itself as "already in progress".
+          this.abortControllers.delete(task.id)
           return this.runDownload(task, false)
         }
         task.status = 'done'
@@ -1073,11 +1146,45 @@ export class ModelService extends EventEmitter {
       const isPartial = res.status === 206
       if (!res.ok && !isPartial) throw new Error(`HTTP ${res.status}`)
 
+      // 0.1.18 (WP1): a 206 is only meaningful when it starts exactly where the
+      // local partial ends. Proxies/CDNs and changed upstream files have been
+      // observed to answer `206` with a different window; appending it produced
+      // a file whose length matched and whose bytes were wrong.
+      if (isPartial && startByte > 0) {
+        const range = res.headers.get('content-range') || ''
+        const m = range.match(/bytes\s+(\d+)-(\d+)\/(\d+|\*)/i)
+        const rangeStart = m ? Number(m[1]) : -1
+        const rangeTotal = m && m[3] !== '*' ? Number(m[3]) : 0
+        const changedSource =
+          rangeTotal > 0 && task.totalBytes > 0 && rangeTotal !== task.totalBytes
+        if (rangeStart !== startByte || changedSource) {
+          // Cannot trust the partial bytes: drop them and take a clean 200.
+          try {
+            unlinkSync(task.destPath)
+          } catch {
+            /* ignore */
+          }
+          task.resumedFrom = undefined
+          task.etag = undefined
+          task.lastModified = undefined
+          console.warn(
+            `[model] resume rejected for ${task.fileName}: range=${range || 'missing'} expectedStart=${startByte}`
+          )
+          this.abortControllers.delete(task.id)
+          return this.runDownload(task, false)
+        }
+      }
+
       // If server ignored Range and returned 200, we must NOT append — rewrite from 0.
       const appendMode = resume && startByte > 0 && isPartial
       if (resume && startByte > 0 && !isPartial) {
         startByte = 0
       }
+      // Remember validators so a later resume can send If-Range.
+      const etag = res.headers.get('etag')
+      const lastModified = res.headers.get('last-modified')
+      if (etag) task.etag = etag
+      if (lastModified) task.lastModified = lastModified
 
       const contentLength = Number(res.headers.get('content-length') || 0)
       task.totalBytes = isPartial ? startByte + contentLength : contentLength || task.totalBytes
@@ -1212,6 +1319,25 @@ export class ModelService extends EventEmitter {
     return task
   }
 
+  /** Move a waiting download to the front of the queue (0.1.18 / WP7). */
+  prioritizeDownload(id: string): DownloadTask {
+    const task = this.downloads.get(id) || listDownloadTasks().find((t) => t.id === id)
+    if (!task) throw new Error('Download not found')
+    // A task that already holds a slot cannot be reordered (it is running).
+    // One that is parked in the waiter queue is promoted in place; the next
+    // releaseSlot() then hands it the freed slot before later arrivals.
+    const waiter = this.pendingStarts.find((w) => w.taskId === id)
+    if (waiter) {
+      waiter.priority = Math.max(...this.pendingStarts.map((w) => w.priority)) + 1
+      waiter.seq = 0
+    }
+    task.priority = waiter ? waiter.priority : 0
+    this.downloads.set(id, task)
+    upsertDownloadTask(task)
+    this.emit('download', { ...task })
+    return task
+  }
+
   cancelDownload(id: string): boolean {
     const task = this.downloads.get(id)
     // Persist cancel intent even if the task is still waiting for a concurrency slot.
@@ -1254,8 +1380,7 @@ export class ModelService extends EventEmitter {
    * canonical categories before comparison.
    */
   async reconcile(instanceId?: string): Promise<ModelReconcileResult> {
-    const configs = loadInstanceConfigsSafe()
-    const inst = instanceId ? configs.find((c) => c.id === instanceId) : configs[0]
+    const inst = resolveReadTarget(instanceId)
     if (!inst) {
       return {
         ok: false,

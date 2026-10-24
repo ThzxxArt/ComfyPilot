@@ -12,12 +12,22 @@ import { NButton, NIcon, NModal, NProgress, NScrollbar, NSpace, NTag } from 'nai
 import IndeterminateBar from '@/components/IndeterminateBar.vue'
 import type { InstallStepStatus, UpdateStep } from '@shared/types'
 import { updateDetailOf, updateStepTitle, useComfyUpdate } from '@/composables/useComfyUpdate'
+import { stepPercent } from '@/utils/progress'
 
 const props = defineProps<{ show: boolean; title?: string }>()
 const emit = defineEmits<{ (e: 'update:show', v: boolean): void }>()
 
 const { t } = useI18n()
-const { progress, updating, cancelling, cancelUpdate, hydrateActiveOp } = useComfyUpdate()
+const {
+  progress,
+  progressKind,
+  updating,
+  repairing,
+  cancelling,
+  cancelUpdate,
+  cancelRepair,
+  hydrateActiveOp
+} = useComfyUpdate()
 
 // 0.1.12: restore the live snapshot after a renderer reload (main process
 // keeps running; without this the modal showed an empty shell).
@@ -49,17 +59,38 @@ function toggleStepLog(id: string): void {
   expandedLogs.value = next
 }
 
-const percent = computed(() => Math.max(0, Math.min(100, Math.round(progress.value?.percent || 0))))
-const steps = computed<UpdateStep[]>(() => progress.value?.steps || [])
-/** 0.1.17 (WP2-4): indeterminate while the active step has no real fraction. */
-const runningStep = computed(() => steps.value.find((s) => s.status === 'running') || null)
-const indeterminate = computed(
-  () => updating.value && !failed.value && !done.value && !runningStep.value?.progress
+/**
+ * 0.1.18 (WP5 / U1): this modal renders ONLY its own stream. The shared
+ * `progress` object is reused by node ops, so a node update could previously
+ * appear here under a "ComfyUI update" title.
+ */
+const ownStream = computed(
+  () => progressKind.value === 'comfy-update' || progressKind.value === 'repair'
 )
-const failed = computed(() => progress.value?.status === 'failed')
-const done = computed(() => progress.value?.status === 'done' && progress.value?.step === 'done')
+const isRepair = computed(() => progressKind.value === 'repair')
+const progressActive = computed(() => updating.value || repairing.value)
+const steps = computed<UpdateStep[]>(() => (ownStream.value ? progress.value?.steps || [] : []))
+const runningStep = computed(() => steps.value.find((s) => s.status === 'running') || null)
+const failed = computed(() => ownStream.value && progress.value?.status === 'failed')
+const done = computed(
+  () => ownStream.value && progress.value?.status === 'done' && progress.value?.step === 'done'
+)
+/** Overall step-completion percent, used when the active step has no fraction. */
+const overallPercent = computed(() =>
+  Math.max(0, Math.min(100, Math.round(progress.value?.percent || 0)))
+)
+/**
+ * 0.1.18 (WP5 / U2): a real 0 is a real value. Determinate only when the
+ * running step exposes a true fraction (`progress`) or item counts
+ * (`workDone/workTotal`); otherwise the bar is honestly indeterminate.
+ */
+const workPercent = computed<number | null>(() => stepPercent(runningStep.value))
+const percent = computed(() => workPercent.value ?? overallPercent.value)
+const indeterminate = computed(
+  () => progressActive.value && !failed.value && !done.value && workPercent.value === null
+)
 /** Cancel button stays visible while cancelling (shows its loading state) — it must not vanish. */
-const cancelVisible = computed(() => updating.value && !failed.value && !done.value)
+const cancelVisible = computed(() => progressActive.value && !failed.value && !done.value)
 const cancelDisabled = computed(() => cancelling.value)
 
 function statusIcon(status: InstallStepStatus): Component {
@@ -104,7 +135,10 @@ function stepTitle(s: UpdateStep): string {
 }
 
 async function onCancel(): Promise<void> {
-  await cancelUpdate()
+  // Repair runs have their own abort path (pip tree kill) — calling the update
+  // cancel channel on a repair used to report success without stopping it.
+  if (isRepair.value) await cancelRepair()
+  else await cancelUpdate()
 }
 </script>
 
@@ -118,22 +152,22 @@ async function onCancel(): Promise<void> {
     closable
   >
     <div class="upd-head">
-      <IndeterminateBar v-if="indeterminate" :height="10" :label="runningStep?.detail || ''" />
+      <IndeterminateBar v-if="indeterminate" :height="10" :label="runningStep ? detail(runningStep) : ''" />
       <NProgress
         v-else
         type="line"
         :percentage="percent"
         :height="10"
         :status="failed ? 'error' : done ? 'success' : 'default'"
-        :processing="updating && !failed"
+        :processing="progressActive && !failed"
       />
       <div class="upd-msg">
         <NTag v-if="failed" size="small" type="error" round
           >{{ t('common.status') }}: {{ t('status.error') }}</NTag
         >
         <NTag v-else-if="done" size="small" type="success" round>{{ t('update.stepDone') }}</NTag>
-        <NTag v-else-if="updating" size="small" type="info" round>{{
-          t('instance.updating')
+        <NTag v-else-if="progressActive" size="small" type="info" round>{{
+          isRepair ? t('instance.repairEnv') : t('instance.updating')
         }}</NTag>
         <span class="upd-message-text">{{ progress?.message || '' }}</span>
       </div>
@@ -166,7 +200,10 @@ async function onCancel(): Promise<void> {
     <div v-if="progress?.backupPath" class="upd-backup mono">
       {{ t('instance.preserveNote') }} · {{ progress.backupPath }}
     </div>
-    <div v-if="progress?.error" class="upd-error">{{ progress.error }}</div>
+    <div v-if="progress?.error" class="upd-error">
+      <span v-if="progress?.errorCode" class="upd-code mono">{{ progress.errorCode }}</span>
+      {{ progress.error }}
+    </div>
 
     <template #footer>
       <NSpace justify="end">
@@ -190,6 +227,14 @@ async function onCancel(): Promise<void> {
 
 <style lang="scss" scoped>
 @use '@/styles/variables.scss' as *;
+.upd-code {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgba(239, 68, 68, 0.12);
+  font-size: 11px;
+}
 
 .upd-head {
   margin-bottom: 12px;

@@ -6,9 +6,44 @@ import type {
   SystemSnapshot,
   DoctorReport,
   AppNotification,
-  RemoteInstanceConfig
+  RemoteInstanceConfig,
+  TargetRef
 } from '@shared/types'
 import { ipc, onInstanceStatus, onMonitorTick, onNotification } from '@/composables/useIpc'
+
+/**
+ * 0.1.18 (regression): the notification center claimed to persist notices but
+ * only the read cursor was stored — the next launch started at seq 0, so the
+ * badge was suppressed for the first N notices. Persist seq + items together.
+ */
+const NOTICE_STORE_KEY = 'cp.notifications.v1'
+
+function loadNoticeStore(): { seq: number; items: AppNotification[] } {
+  try {
+    const raw = globalThis.localStorage?.getItem(NOTICE_STORE_KEY)
+    if (!raw) return { seq: 0, items: [] }
+    const parsed = JSON.parse(raw) as { seq?: unknown; items?: unknown }
+    const items = Array.isArray(parsed.items)
+      ? (parsed.items as AppNotification[])
+          .filter((n) => n && typeof n === 'object')
+          .slice(-200)
+      : []
+    const seq = Number.isFinite(Number(parsed.seq))
+      ? Math.max(0, Number(parsed.seq))
+      : items.length
+    return { seq, items }
+  } catch {
+    return { seq: 0, items: [] }
+  }
+}
+
+function persistNoticeStore(seq: number, items: AppNotification[]): void {
+  try {
+    globalThis.localStorage?.setItem(NOTICE_STORE_KEY, JSON.stringify({ seq, items }))
+  } catch {
+    /* storage may be unavailable (private mode / tests) */
+  }
+}
 
 export const useAppStore = defineStore('app', () => {
   const ready = ref(false)
@@ -30,22 +65,39 @@ export const useAppStore = defineStore('app', () => {
   /** Last doctor report — survives navigation from Dashboard "one-click check" into DoctorView. */
   const doctorReport = ref<DoctorReport | null>(null)
   /** Global notification queue pushed by the main process (long-running tasks). */
-  const notifications = ref<AppNotification[]>([])
+  const noticeInitial = loadNoticeStore()
+  const notifications = ref<AppNotification[]>(noticeInitial.items)
   /**
    * Monotonic counter — the ONLY reliable cursor for consumers.
    * `notifications.length` is capped at 20, so a length-based watcher
    * silently stops firing after the 20th toast. Watch this seq instead.
    */
-  const notificationSeq = ref(0)
+  const notificationSeq = ref(noticeInitial.seq)
 
+  /**
+   * 0.1.18 (WP2): exactly one place defines "the active target".
+   *
+   * The old computed fell back to `instances[0]` whenever `activeInstanceId`
+   * was null. Selecting a remote nulls the local id, so every `|| undefined`
+   * call site silently meant "the first local instance" — the root cause of
+   * P0-3. There is no fallback any more: no id means no active local instance.
+   */
   const activeInstance = computed(() => {
-    // 0.1.17 (WP9): with a remote selected, `activeInstance` must NOT fall back
-    // to instances[0] — callers saw a local instance while the header showed a
-    // remote, and local-only actions targeted the wrong machine.
     if (activeRemoteId.value) return null
-    return (
-      instances.value.find((i) => i.id === activeInstanceId.value) || instances.value[0] || null
-    )
+    if (!activeInstanceId.value) return null
+    return instances.value.find((i) => i.id === activeInstanceId.value) || null
+  })
+
+  /** Explicit target for destructive local operations (null in remote context). */
+  const localTargetId = computed<string | null>(() =>
+    activeRemoteId.value ? null : (activeInstance.value?.id ?? null)
+  )
+
+  /** Single cross-view target descriptor. */
+  const activeTarget = computed<TargetRef>(() => {
+    if (activeRemoteId.value) return { kind: 'remote', id: activeRemoteId.value }
+    if (activeInstance.value) return { kind: 'local', id: activeInstance.value.id }
+    return { kind: 'none' }
   })
 
   /** The selected remote (null when a local instance is active). */
@@ -70,8 +122,11 @@ export const useAppStore = defineStore('app', () => {
   })
 
   function pushNotification(n: AppNotification): void {
-    notifications.value = [...notifications.value.slice(-19), n]
+    // 0.1.18 (WP6): keep 200 for the notification center (toasts still only
+    // consume what is new via notificationSeq).
+    notifications.value = [...notifications.value.slice(-199), n]
     notificationSeq.value += 1
+    persistNoticeStore(notificationSeq.value, notifications.value)
   }
 
   /**
@@ -216,6 +271,8 @@ export const useAppStore = defineStore('app', () => {
     activeRemoteId,
     activeRemote,
     isRemoteActive,
+    localTargetId,
+    activeTarget,
     activeTargetUrl,
     system,
     doctorReport,

@@ -26,6 +26,7 @@ const props = withDefaults(defineProps<{ height?: number; label?: string }>(), {
 </template>
 
 <style lang="scss" scoped>
+@use '@/styles/variables.scss' as *;
 .indet {
   display: flex;
   align-items: center;
@@ -46,7 +47,7 @@ const props = withDefaults(defineProps<{ height?: number; label?: string }>(), {
   bottom: 0;
   width: 32%;
   border-radius: 999px;
-  background: var(--primary-color, #63e2b7);
+  background: $color-primary;
   animation: indet-slide 1.25s ease-in-out infinite;
 }
 .indet-label {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch, computed } from 'vue'
+import { onBeforeRouteLeave } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
   NButton,
@@ -11,6 +12,7 @@ import {
   NSwitch,
   NSpace,
   useMessage,
+  useDialog,
   NDivider,
   NSelect,
   NList,
@@ -82,6 +84,7 @@ function cloneSettings(s: Partial<AppSettings> | null | undefined): AppSettings 
 
 const store = useAppStore()
 const message = useMessage()
+const dialog = useDialog()
 const { t, locale } = useI18n()
 
 async function setLocale(loc: 'zh-CN' | 'en-US'): Promise<void> {
@@ -99,6 +102,11 @@ async function setLocale(loc: 'zh-CN' | 'en-US'): Promise<void> {
 const form = ref<AppSettings>(cloneSettings(store.settings))
 const saving = ref(false)
 const remotes = ref<RemoteInstanceConfig[]>([])
+/** 0.1.18 (WP1/S6): stored secrets that cannot be decrypted need re-entry. */
+const credStatus = ref<{ proxyPasswordUnreadable: boolean; lockedRemoteIds: string[] }>({
+  proxyPasswordUnreadable: false,
+  lockedRemoteIds: []
+})
 const showRemote = ref(false)
 const emptyRemote = (): RemoteInstanceConfig => ({
   id: '',
@@ -224,6 +232,26 @@ async function save(opts?: { silent?: boolean }): Promise<boolean> {
   }
 }
 
+// 0.1.18 (WP6 / U10): leaving with unsaved edits used to discard them without
+// a word. The guard only fires when something actually differs from disk.
+onBeforeRouteLeave(async () => {
+  if (!editedKeys.size || saving.value) return true
+  return await new Promise<boolean>((resolve) => {
+    dialog.warning({
+      title: t('settings.unsavedTitle'),
+      content: t('settings.unsavedBody', { n: editedKeys.size }),
+      positiveText: t('settings.saveAndLeave'),
+      negativeText: t('settings.leaveWithoutSaving'),
+      onPositiveClick: () => {
+        void save().then((ok) => resolve(ok))
+      },
+      onNegativeClick: () => resolve(true),
+      onClose: () => resolve(false),
+      onMaskClick: () => resolve(false)
+    })
+  })
+})
+
 async function testProxy(): Promise<void> {
   testingProxy.value = true
   try {
@@ -250,9 +278,85 @@ async function applyProxy(): Promise<void> {
   }
 }
 
+/** 0.1.18 (WP7): export a secret-free config snapshot. */
+async function exportConfig(): Promise<void> {
+  try {
+    const payload = await ipc('settings.exportConfig')
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const ANCHOR_TAG = 'a'
+    const a = document.createElement(ANCHOR_TAG)
+    a.href = url
+    a.download = `comfypilot-settings-${new Date().toISOString().slice(0, 10)}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+    message.success(t('settings.exportDone'))
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+const importInput = ref<HTMLInputElement | null>(null)
+
+function pickImportFile(): void {
+  importInput.value?.click()
+}
+
+async function onImportFile(e: Event): Promise<void> {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  try {
+    const text = await file.text()
+    const parsed = JSON.parse(text) as { settings?: Record<string, unknown> }
+    const incoming = parsed.settings || (parsed as Record<string, unknown>)
+    const current = (store.settings || {}) as Record<string, unknown>
+    const changed = Object.keys(incoming).filter(
+      (k) => k !== 'proxy' && JSON.stringify(incoming[k]) !== JSON.stringify(current[k])
+    )
+    const confirmed = await new Promise<boolean>((resolve) => {
+      dialog.warning({
+        title: t('settings.importPreviewTitle'),
+        content: changed.length
+          ? t('settings.importPreviewBody', {
+              n: changed.length,
+              list: changed.slice(0, 10).join(', ')
+            })
+          : t('settings.importNoChanges'),
+        positiveText: t('settings.importApply'),
+        negativeText: t('common.cancel'),
+        onPositiveClick: () => resolve(true),
+        onNegativeClick: () => resolve(false),
+        onClose: () => resolve(false),
+        onMaskClick: () => resolve(false)
+      })
+    })
+    if (!confirmed) return
+    const result = await ipc('settings.importConfig', parsed as Record<string, unknown>)
+    store.settings = result.settings
+    form.value = cloneSettings(result.settings)
+    editedKeys.clear()
+    message.success(t('settings.importDone', { n: result.applied.length }))
+  } catch (err) {
+    message.error(
+      t('settings.importInvalid', { error: err instanceof Error ? err.message : String(err) })
+    )
+  }
+}
+
+async function loadCredentialStatus(): Promise<void> {
+  try {
+    credStatus.value = await ipc('settings.credentialStatus')
+  } catch {
+    /* status is advisory */
+  }
+}
+
 async function loadRemotes(): Promise<void> {
   try {
     remotes.value = await ipc('remote.list')
+    void loadCredentialStatus()
     // 0.1.17 (WP10): the app-store copy feeds the global instance selector —
     // without this it kept showing the pre-edit remote list until restart.
     await store.refreshRemotes()
@@ -276,6 +380,15 @@ async function saveRemote(): Promise<void> {
 
 function openRemoteDialog(): void {
   remoteDraft.value = emptyRemote()
+  showRemote.value = true
+}
+
+/**
+ * 0.1.18 (regression): the "credential needs re-entry" tag had no edit path —
+ * delete + re-add was the only way, losing the whole configuration.
+ */
+function editRemote(r: RemoteInstanceConfig): void {
+  remoteDraft.value = { ...r, apiKey: r.apiKey || '' }
   showRemote.value = true
 }
 
@@ -556,6 +669,10 @@ onUnmounted(() => {
               <NSwitch v-model:value="form.allowPipInstall" />
               <div class="hint">{{ t('settings.allowPipHint') }}</div>
             </NFormItem>
+            <NFormItem :label="t('settings.allowUnverifiedRuntimeLabel')">
+              <NSwitch v-model:value="form.allowUnverifiedRuntime" />
+              <div class="hint">{{ t('settings.allowUnverifiedRuntimeHint') }}</div>
+            </NFormItem>
           </NForm>
         </NCard>
 
@@ -575,6 +692,10 @@ onUnmounted(() => {
             <NFormItem :label="t('settings.proxyEnabled')">
               <NSwitch v-model:value="form.proxy.enabled" />
             </NFormItem>
+            <div v-if="credStatus.proxyPasswordUnreadable" class="cred-warn">
+              <NTag size="tiny" type="warning">{{ t('settings.credNeedsReentry') }}</NTag>
+              <span class="hint">{{ t('settings.proxyPasswordLockedHint') }}</span>
+            </div>
             <div class="proxy-grid">
               <NFormItem :label="t('settings.proxyProtocol')">
                 <NSelect
@@ -699,6 +820,9 @@ onUnmounted(() => {
                 <div class="remote-main">
                   <div class="name" :title="r.name">{{ r.name }}</div>
                   <div class="meta mono">{{ r.baseUrl }}</div>
+                  <NTag v-if="r.apiKeyLocked" size="tiny" type="warning">
+                    {{ t('settings.credNeedsReentry') }}
+                  </NTag>
                   <div v-if="remoteStatusOf(r.id)" class="remote-status">
                     <NTag
                       size="tiny"
@@ -735,6 +859,9 @@ onUnmounted(() => {
                   <NButton size="tiny" secondary @click="testRemote(r.id)">{{
                     t('settings.test')
                   }}</NButton>
+                  <NButton size="tiny" secondary @click="editRemote(r)">
+                    {{ t('common.edit') }}
+                  </NButton>
                   <NButton size="tiny" secondary @click="openRemoteFrontend(r)">
                     {{ t('settings.remoteOpen') }}
                   </NButton>
@@ -788,6 +915,21 @@ onUnmounted(() => {
               <span class="shortcut-desc">{{ s.desc }}</span>
             </div>
           </div>
+        </NCard>
+
+        <NCard :title="t('settings.importExportTitle')" class="card" size="small">
+          <div class="meta">{{ t('settings.importExportHint') }}</div>
+          <NSpace style="margin-top: 10px">
+            <NButton secondary @click="exportConfig">{{ t('settings.exportConfig') }}</NButton>
+            <NButton secondary @click="pickImportFile">{{ t('settings.importConfig') }}</NButton>
+          </NSpace>
+          <input
+            ref="importInput"
+            type="file"
+            accept="application/json,.json"
+            style="display: none"
+            @change="onImportFile"
+          />
         </NCard>
 
         <NCard :title="t('settings.about')" class="card" size="small">
@@ -868,6 +1010,13 @@ onUnmounted(() => {
         <NInput v-model:value="remoteDraft.name" :placeholder="t('settings.remoteName')" />
         <NInput v-model:value="remoteDraft.baseUrl" placeholder="http://192.168.1.10:8188" />
         <NInput v-model:value="remoteDraft.label" :placeholder="t('settings.remoteLabel')" />
+        <NInput
+          v-model:value="remoteDraft.apiKey"
+          type="password"
+          show-password-on="click"
+          :placeholder="t('settings.remoteApiKeyPlaceholder')"
+        />
+        <div class="hint">{{ t('settings.remoteApiKeyHint') }}</div>
       </NSpace>
       <template #footer>
         <NSpace justify="end">

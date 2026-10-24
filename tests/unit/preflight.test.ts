@@ -1,6 +1,10 @@
 /** Workflow preflight pure helpers (0.1.12). */
 import { describe, it, expect } from 'vitest'
-import { collectPromptNodeTypes, missingNodeTypes } from '../../src/shared/preflight'
+import {
+  collectPromptModelRefs,
+  collectPromptNodeTypes,
+  missingNodeTypes
+} from '../../src/shared/preflight'
 
 const PROMPT = {
   '1': { class_type: 'CheckpointLoaderSimple', inputs: {} },
@@ -36,5 +40,40 @@ describe('missingNodeTypes', () => {
   it('is empty when everything is registered', () => {
     const available = ['CheckpointLoaderSimple', 'KSampler', 'PathchSageAttentionKJ']
     expect(missingNodeTypes(PROMPT, available)).toEqual([])
+  })
+})
+
+describe('collectPromptModelRefs (0.1.18 / WP7)', () => {
+  it('collects model filenames with their owning node type, de-duplicated', () => {
+    const prompt = {
+      '1': {
+        class_type: 'CheckpointLoaderSimple',
+        inputs: { ckpt_name: 'SDXL/base.safetensors' }
+      },
+      '2': { class_type: 'LoraLoader', inputs: { lora_name: 'style.safetensors' } },
+      '3': {
+        class_type: 'LoraLoader',
+        inputs: { lora_name: 'style.safetensors', strength_model: 0.8 }
+      },
+      '4': { class_type: 'CLIPTextEncode', inputs: { text: 'a cat, masterpiece.jpg' } }
+    }
+    const refs = collectPromptModelRefs(prompt)
+    expect(refs).toEqual([
+      { name: 'SDXL/base.safetensors', nodeType: 'CheckpointLoaderSimple' },
+      { name: 'style.safetensors', nodeType: 'LoraLoader' }
+    ])
+  })
+
+  it('ignores non-model strings and malformed prompts', () => {
+    expect(collectPromptModelRefs(null)).toEqual([])
+    expect(collectPromptModelRefs({})).toEqual([])
+    expect(
+      collectPromptModelRefs({
+        '1': { class_type: 'X', inputs: { text: 'hello.safetensors' } } // not an extension-only test
+      })
+    ).toEqual([{ name: 'hello.safetensors', nodeType: 'X' }])
+    expect(
+      collectPromptModelRefs({ '1': { class_type: 'X', inputs: { seed: 42, image: 'a.png' } } })
+    ).toEqual([])
   })
 })

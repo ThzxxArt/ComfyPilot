@@ -60,6 +60,16 @@ describe('bootstrap resumable download (0.1.13)', () => {
     vi.resetModules()
   })
 
+  /**
+   * 0.1.18 (WP1 / S3): runtime downloads with no published checksum are now
+   * refused unless the user opted in. These tests exercise resume mechanics
+   * with fake bytes, so they must opt in explicitly.
+   */
+  async function allowUnverified(): Promise<void> {
+    const db = await import('../../src/main/services/db')
+    db.saveSettings({ ...db.loadSettings(), allowUnverifiedRuntime: true })
+  }
+
   afterAll(() => {
     if (h.root) {
       try {
@@ -74,7 +84,28 @@ describe('bootstrap resumable download (0.1.13)', () => {
     return (await import('../../src/main/services/bootstrap')).bootstrapService
   }
 
+  /**
+   * Temporarily change the build-time pin. `vi.resetModules()` means the
+   * top-level import is a DIFFERENT module instance than the one bootstrap
+   * loads, so the mutation must be done on a freshly imported module.
+   */
+  async function withRuntimePin(pin: string | undefined, fn: () => Promise<void>): Promise<void> {
+    const mod = await import('../../src/shared/constants')
+    const key = platformUvKey() as keyof typeof mod.RUNTIME_SOURCES
+    const entry = mod.RUNTIME_SOURCES[key] as { sha256?: string }
+    const saved = entry.sha256
+    if (pin === undefined) delete entry.sha256
+    else entry.sha256 = pin
+    try {
+      await fn()
+    } finally {
+      if (saved === undefined) delete entry.sha256
+      else entry.sha256 = saved
+    }
+  }
+
   it('sends a Range request resuming from the .part bytes, then promotes it (0.1.13)', async () => {
+    await allowUnverified()
     const { sizeHint, dest, part } = uvPaths()
     const already = 1024
     writeFileSync(part, Buffer.alloc(already, 7))
@@ -106,7 +137,47 @@ describe('bootstrap resumable download (0.1.13)', () => {
     expect(existsSync(part)).toBe(false)
   })
 
+  it('refuses a runtime with no official checksum and no pin (S3)', async () => {
+    // Windows sources carry a build-time pin now; this test is about the
+    // no-evidence-at-all path, so drop the pin for the current platform.
+    await withRuntimePin(undefined, async () => {
+      const { sizeHint, dest } = uvPaths()
+      h.fetchImpl = async (url) => {
+        // Every checksum probe 404s; the archive itself looks well-formed.
+        if (/\.sha256|SHA256SUMS/.test(url)) return new Response('', { status: 404 })
+        const body = Buffer.alloc(sizeHint, 3)
+        return new Response(body, {
+          status: 200,
+          headers: { 'content-length': String(body.length) }
+        })
+      }
+      const svc = await freshService()
+      await expect(svc.download('uv')).rejects.toMatchObject({ code: 'RUNTIME_UNVERIFIED' })
+      // Fail-closed: the unverified bytes are not left behind for a later run.
+      expect(existsSync(dest)).toBe(false)
+    })
+  })
+
+  it('rejects a download that does not match the build-time pin', async () => {
+    // Simulate a compromised/mirrored asset: declared hash never matches.
+    await withRuntimePin('f'.repeat(64), async () => {
+      const { sizeHint, dest } = uvPaths()
+      h.fetchImpl = async (url) => {
+        if (/\.sha256|SHA256SUMS/.test(url)) return new Response('', { status: 404 })
+        const body = Buffer.alloc(sizeHint, 5)
+        return new Response(body, {
+          status: 200,
+          headers: { 'content-length': String(body.length) }
+        })
+      }
+      const svc = await freshService()
+      await expect(svc.download('uv')).rejects.toThrow(/checksum mismatch/i)
+      expect(existsSync(dest)).toBe(false)
+    })
+  })
+
   it('promotes a complete .part to dest on HTTP 416 (0.1.13)', async () => {
+    await allowUnverified()
     const { sizeHint, dest, part } = uvPaths()
     // A partial covering ≥ 90% of the hint is treated as the finished archive.
     const payload = Buffer.alloc(Math.ceil(sizeHint * 0.95), 1)

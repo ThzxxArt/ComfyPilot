@@ -24,6 +24,7 @@ import {
   mkdirSync,
   readdirSync,
   rmSync,
+  rmdirSync,
   statSync,
   writeFileSync,
   readFileSync,
@@ -31,7 +32,7 @@ import {
   cpSync,
   createWriteStream
 } from 'fs'
-import { join, resolve, dirname } from 'path'
+import { join, resolve, dirname, sep } from 'path'
 import { execFile, execFileSync, type ChildProcess } from 'child_process'
 import { randomUUID } from 'crypto'
 import type {
@@ -78,6 +79,31 @@ export const PRESERVE_ENTRIES = new Set([
   'python_embeded',
   'python_embedded'
 ])
+
+/** Number of files an overlay will copy — powers a real (not fake) progress bar. */
+function countTreeEntries(root: string, topLevel: boolean): number {
+  let n = 0
+  const walk = (dir: string, top: boolean): void => {
+    let names: string[] = []
+    try {
+      names = readdirSync(dir)
+    } catch {
+      return
+    }
+    for (const name of names) {
+      if (top && PRESERVE_ENTRIES.has(name)) continue
+      const abs = join(dir, name)
+      try {
+        if (statSync(abs).isDirectory()) walk(abs, false)
+        else n++
+      } catch {
+        /* unreadable → not counted, copy phase will report the error */
+      }
+    }
+  }
+  walk(root, topLevel)
+  return n
+}
 
 function nowStep(
   id: UpdateStepId,
@@ -395,6 +421,29 @@ export class ComfyUpdaterService extends EventEmitter {
     this.emitProgress(bytes?.label || '')
   }
 
+  /**
+   * 0.1.18 (WP3/F7): per-step monotonic work progress (`done/total` files or
+   * entries) for operations whose cost is not measured in bytes. A real 0 is
+   * valid — the UI no longer guesses "indeterminate" from a falsy percent.
+   */
+  private setWork(id: UpdateStepId, done: number, total: number, label?: string): void {
+    if (!this.progress) return
+    const step = this.progress.steps.find((s) => s.id === id)
+    if (!step) return
+    step.workDone = done
+    step.workTotal = total
+    if (label) step.detail = label
+    this.progress.step = id
+    this.emitProgress(label || '')
+  }
+
+  private clearWork(id: UpdateStepId): void {
+    const step = this.progress?.steps.find((s) => s.id === id)
+    if (!step) return
+    step.workDone = undefined
+    step.workTotal = undefined
+  }
+
   private setStep(
     id: UpdateStepId,
     status: InstallStepStatus,
@@ -508,7 +557,12 @@ export class ComfyUpdaterService extends EventEmitter {
     if (!existsSync(file)) return null
     try {
       const j = JSON.parse(readFileSync(file, 'utf-8')) as UpdateJournal
-      return j && j.backupPath ? j : null
+      if (!j || !j.backupPath) return null
+      // The journal lives next to the ComfyUI dir; two installs can share a
+      // parent. Never offer instance B a rollback that belongs to A.
+      if (j.instanceId !== instanceId) return null
+      if (resolve(normalizePathEverySegment(String(j.comfyDir || ''))) !== comfyDir) return null
+      return j
     } catch {
       return null
     }
@@ -519,6 +573,7 @@ export class ComfyUpdaterService extends EventEmitter {
    * backup directory is gone (nothing to restore) instead of pretending.
    */
   async rollbackFromJournal(instanceId: string): Promise<boolean> {
+    if (this.running) throw new Error('An update is running — wait for it to finish')
     const j = this.readJournal(instanceId)
     if (!j) throw new Error('No unfinished update to roll back')
     if (!existsSync(j.backupPath)) throw new Error(`Backup is missing: ${j.backupPath}`)
@@ -804,7 +859,10 @@ export class ComfyUpdaterService extends EventEmitter {
         this.log('backup', `git HEAD ${sha} recorded`)
       } else {
         // zip: copy core tree (everything except PRESERVE_ENTRIES and backups).
-        const copied = this.copyCoreTree(comfyDir, backupPath)
+        const copied = await this.copyCoreTree(comfyDir, backupPath, (done, total) =>
+          this.setWork('backup', done, total, `Backing up ${done}/${total}`)
+        )
+        this.clearWork('backup')
         // 0.1.17 (WP4): inventory of what the backup actually contains, so a
         // rollback can delete files the update ADDED (symmetric restore).
         const inventory = readdirSync(comfyDir).filter((n) => !n.startsWith('.cp-'))
@@ -1119,7 +1177,13 @@ export class ComfyUpdaterService extends EventEmitter {
         this.setStep('verify', 'done', 'Skipped (doctor unavailable)')
       }
 
-      // 7. done — cleanup backup only when everything succeeded
+      // A cancel that landed during the health check must still win over the
+      // success path (the old code overwrote it with status 'done').
+      this.assertNotCancelled()
+      // 7. done — cleanup backup only when everything succeeded.
+      // Clear the journal FIRST: it used to survive until after an awaited
+      // relaunch, so a crash in that window pointed at a deleted backup.
+      if (!verifyFailed) this.clearJournal(comfyDir)
       this.setStep('rollback', 'skipped', 'Not needed')
       if (backupPath && backupKind === 'files' && !verifyFailed) {
         // 0.1.17 (review fix): a failed health check means the update is NOT
@@ -1131,7 +1195,12 @@ export class ComfyUpdaterService extends EventEmitter {
           /* keep if cleanup fails */
         }
       }
-      if (opts.open && opts.open !== 'none') {
+      if (this.isCancelled) {
+        // 0.1.18 (review): a cancel landing after the source was replaced must
+        // not throw into the rollback path — that would undo a verified update.
+        // Finish as done and say so in the log.
+        this.log('done', 'Cancel arrived after the source update completed — finishing as done')
+      } else if (opts.open && opts.open !== 'none') {
         try {
           const { instanceService } = await import('./instance')
           const info = await instanceService.launch(config.id, { open: opts.open })
@@ -1151,13 +1220,25 @@ export class ComfyUpdaterService extends EventEmitter {
         this.progress.bytes = undefined
       }
       this.emitProgress(doneMessage)
-      // The update finished — the journal no longer describes a live state.
-      this.clearJournal(comfyDir)
+      // 0.1.18 (WP3): a failed health check is not proof of a good update —
+      // keep the journal so the rollback entry survives alongside the backup.
+      if (verifyFailed && backupPath) {
+        this.writeJournal({
+          instanceId: config.id,
+          comfyDir,
+          backupPath,
+          backupKind: backupKind || 'files',
+          startedAt: Date.now(),
+          status: 'verify-failed'
+        })
+      }
       // Post-update node compatibility check — a source update can break
       // custom_nodes. Surface a summary notification (non-blocking).
       void this.postUpdateNodeCheck(config.id).catch(() => undefined)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
+      // 0.1.18 (WP2): machine-readable cause for the renderer (localized hint).
+      const errorCode = (err as { code?: string })?.code
       const cancelled = this.isCancelled || /cancelled/i.test(message)
       const noTreeChange = err instanceof UpdateAbortedNoTreeChange
       const depsFailed = err instanceof UpdateDepsFailedAfterSourceOk
@@ -1206,6 +1287,18 @@ export class ComfyUpdaterService extends EventEmitter {
             this.log('done', 'Source kept — run Repair env to finish dependency install')
           }
         }
+        // 0.1.18 (regression): an untouched tree must not leave a rollback
+        // banner/backup behind — the journal was written before the fetch.
+        if (noTreeChange || !treeChanged) {
+          this.clearJournal(comfyDir)
+          if (backupPath) {
+            try {
+              rmSync(backupPath, { recursive: true, force: true })
+            } catch {
+              /* keep if cleanup fails */
+            }
+          }
+        }
         this.emitProgress(message)
         return
       }
@@ -1226,6 +1319,7 @@ export class ComfyUpdaterService extends EventEmitter {
         if (this.progress) {
           this.progress.status = cancelled ? 'cancelled' : 'failed'
           this.progress.error = `${cancelled ? 'Update cancelled' : message}; rollback FAILED (${rbMsg}) — backup at ${backupPath || 'n/a'}`
+          this.progress.errorCode = cancelled ? 'CANCELLED' : 'ROLLBACK_FAILED'
         }
         this.setStep('rollback', 'failed', rbMsg, undefined, 'update.msgRollbackFail', {
           path: backupPath || 'n/a'
@@ -1255,6 +1349,7 @@ export class ComfyUpdaterService extends EventEmitter {
       if (this.progress) {
         this.progress.status = cancelled ? 'cancelled' : 'failed'
         this.progress.error = cancelled ? 'Update cancelled' : message
+        this.progress.errorCode = cancelled ? 'CANCELLED' : errorCode
         this.progress.message = this.progress.error
         this.progress.bytes = undefined
         const running = this.progress.steps.find((s) => s.status === 'running')
@@ -1276,29 +1371,48 @@ export class ComfyUpdaterService extends EventEmitter {
    * A backup missing one locked file is exactly what makes a later rollback
    * "succeed" while leaving a half-updated tree behind.
    */
-  private copyCoreTree(src: string, dest: string): number {
-    let count = 0
-    for (const name of readdirSync(src)) {
-      if (PRESERVE_ENTRIES.has(name)) continue
-      if (name.startsWith('.cp-backup-')) continue
-      if (name === '.git') continue
-      const from = join(src, name)
-      const to = join(dest, name)
+  private async copyCoreTree(
+    src: string,
+    dest: string,
+    onProgress?: (done: number, total: number) => void
+  ): Promise<number> {
+    const entries = readdirSync(src).filter(
+      (name) => !PRESERVE_ENTRIES.has(name) && !name.startsWith('.cp-backup-') && name !== '.git'
+    )
+    // Count files (not top-level entries) so the progress bar moves smoothly;
+    // the return value stays "top-level entries copied" for existing callers.
+    const total = onProgress
+      ? entries.reduce((n, name) => n + countTreeEntries(join(src, name), false), 0)
+      : 0
+    let done = 0
+    const copyEntry = async (from: string, to: string, name: string): Promise<void> => {
       try {
         const st = statSync(from)
         if (st.isDirectory()) {
-          cpSync(from, to, { recursive: true })
+          if (!existsSync(to)) mkdirSync(to, { recursive: true })
+          for (const child of readdirSync(from)) {
+            await copyEntry(join(from, child), join(to, child), `${name}/${child}`)
+          }
         } else {
           copyFileSync(from, to)
+          done++
+          if (onProgress && (done % 25 === 0 || done === total)) onProgress(done, total)
+          // 0.1.18 (WP3/F7): yield so the renderer/IPC never freezes behind a
+          // multi-thousand-file backup, and cancel can be observed mid-copy.
+          if (done % 50 === 0) await new Promise<void>((r) => setImmediate(r))
         }
-        count++
       } catch (e) {
         throw new Error(
           `Backup failed at ${name}: ${e instanceof Error ? e.message : String(e)} — nothing was modified`
         )
       }
     }
-    return count
+    for (const name of entries) {
+      this.assertNotCancelled()
+      await copyEntry(join(src, name), join(dest, name), name)
+    }
+    if (onProgress) onProgress(total, total)
+    return entries.length
   }
 
   /**
@@ -1348,13 +1462,20 @@ export class ComfyUpdaterService extends EventEmitter {
       }
       throw e
     } finally {
-      await new Promise<void>((resolve) => {
-        try {
-          file.end(() => resolve())
-        } catch {
-          resolve()
-        }
-      })
+      // 0.1.18 (regression): end(cb) on a DESTROYED writable never fires its
+      // callback, so the old unconditional await hung every failed/cancelled
+      // archive download forever (update stuck "running" until restart).
+      if (!file.destroyed) {
+        await new Promise<void>((resolve) => {
+          const done = (): void => resolve()
+          file.once('error', done)
+          try {
+            file.end(done)
+          } catch {
+            done()
+          }
+        })
+      }
     }
     return received
   }
@@ -1419,13 +1540,26 @@ export class ComfyUpdaterService extends EventEmitter {
       }
       if (!existsSync(join(root, 'main.py'))) throw new Error('Staged archive missing main.py')
       this.assertNotCancelled()
-      const overlaid = this.overlayTree(
+      // 0.1.18 (WP3 / L6): remember exactly which core files this archive
+      // ships. Files that the PREVIOUS archive shipped but this one does not
+      // (upstream renamed/deleted them) are removed — otherwise zip installs
+      // accumulate dead modules forever and can shadow the new code.
+      const nextFiles = this.listArchiveFiles(root)
+      const previousFiles = this.readArchiveManifest(comfyDir)
+      const overlaid = await this.overlayTree(
         root,
         comfyDir,
         true,
-        () => this.running && this.isCancelled
+        () => this.running && this.isCancelled,
+        (done, total) => this.setWork('fetch', done, total, `Overlaying ${done}/${total}`)
       )
-      this.log('fetch', `overlaid ${overlaid} entries`)
+      const pruned = this.pruneRemovedArchiveFiles(comfyDir, previousFiles, nextFiles)
+      this.writeArchiveManifest(comfyDir, nextFiles)
+      this.clearWork('fetch')
+      this.log(
+        'fetch',
+        `overlaid ${overlaid} entries${pruned ? `, removed ${pruned} stale files` : ''}`
+      )
     } finally {
       try {
         rmSync(tmpZip, { force: true })
@@ -1446,38 +1580,168 @@ export class ComfyUpdaterService extends EventEmitter {
    * (`topLevel=true`) so nested core packages like `comfy/ldm/models/` are
    * still updated — those share a name with user-data dirs but are source code.
    */
-  private overlayTree(
+  private async overlayTree(
     src: string,
     dest: string,
     topLevel = true,
-    shouldStop?: () => boolean
-  ): number {
-    let count = 0
-    for (const name of readdirSync(src)) {
-      // 0.1.17 (review fix): cancel during a 3000-file overlay must stop the
-      // copy, not finish it and then roll back. Only the update run passes the
-      // predicate — direct callers (tests, tooling) are not tied to a run.
-      if (shouldStop?.()) throw new Error('Update cancelled')
-      if (topLevel && PRESERVE_ENTRIES.has(name)) continue
-      const from = join(src, name)
-      const to = join(dest, name)
-      try {
-        const st = statSync(from)
-        if (st.isDirectory()) {
-          // Recursively overlay directory contents; create if missing.
-          if (!existsSync(to)) mkdirSync(to, { recursive: true })
-          count += this.overlayTree(from, to, false, shouldStop)
-        } else {
-          copyFileSync(from, to)
-          count++
+    shouldStop?: () => boolean,
+    onProgress?: (done: number, total: number) => void
+  ): Promise<number> {
+    // Count first so progress has a real denominator; both walks are cheap
+    // (stat-free dirent reads) compared with the copy they drive.
+    const total = onProgress ? countTreeEntries(src, topLevel) : 0
+    let copied = 0
+    let visited = 0
+    const tick = (n: number): void => {
+      visited += n
+      if (onProgress && (visited % 25 === 0 || visited === total)) onProgress(visited, total)
+    }
+    const walk = async (from: string, to: string, top: boolean): Promise<void> => {
+      for (const name of readdirSync(from)) {
+        // 0.1.17 (review fix): cancel during a 3000-file overlay must stop the
+        // copy, not finish it and then roll back. Only the update run passes the
+        // predicate — direct callers (tests, tooling) are not tied to a run.
+        if (shouldStop?.()) throw new Error('Update cancelled')
+        if (top && PRESERVE_ENTRIES.has(name)) continue
+        const srcPath = join(from, name)
+        const dstPath = join(to, name)
+        try {
+          const st = statSync(srcPath)
+          if (st.isDirectory()) {
+            // Recursively overlay directory contents; create if missing.
+            if (!existsSync(dstPath)) mkdirSync(dstPath, { recursive: true })
+            await walk(srcPath, dstPath, false)
+          } else {
+            copyFileSync(srcPath, dstPath)
+            copied++
+            tick(1)
+          }
+          // 0.1.18 (WP3/F7): yield to the event loop every 50 files so IPC
+          // stays responsive and cancel is observed mid-tree, not after.
+          if (copied % 50 === 0) await new Promise<void>((r) => setImmediate(r))
+        } catch (e) {
+          // 0.1.17 (WP4): a partially overlaid tree must fail loudly — the caller
+          // still has the backup and will roll back.
+          throw new Error(
+            `Overlay failed at ${name}: ${e instanceof Error ? e.message : String(e)}`
+          )
         }
-      } catch (e) {
-        // 0.1.17 (WP4): a partially overlaid tree must fail loudly — the caller
-        // still has the backup and will roll back.
-        throw new Error(`Overlay failed at ${name}: ${e instanceof Error ? e.message : String(e)}`)
       }
     }
-    return count
+    await walk(src, dest, topLevel)
+    if (onProgress) onProgress(total, total)
+    return copied
+  }
+
+  /**
+   * Relative POSIX paths of every file in a staged archive, skipping the
+   * preserved user dirs at the top level. Used as the "what upstream ships"
+   * manifest for the next update.
+   */
+  private listArchiveFiles(root: string): string[] {
+    const out: string[] = []
+    const walk = (dir: string, prefix: string): void => {
+      let names: string[] = []
+      try {
+        names = readdirSync(dir)
+      } catch {
+        return
+      }
+      for (const name of names) {
+        if (prefix === '' && PRESERVE_ENTRIES.has(name)) continue
+        if (name === '.git') continue
+        const abs = join(dir, name)
+        const rel = prefix ? `${prefix}/${name}` : name
+        try {
+          const st = statSync(abs)
+          if (st.isDirectory()) walk(abs, rel)
+          else out.push(rel)
+        } catch {
+          /* unreadable entry → not part of the manifest */
+        }
+      }
+    }
+    walk(root, '')
+    out.sort()
+    return out
+  }
+
+  private archiveManifestPath(comfyDir: string): string {
+    return join(comfyDir, '.comfypilot-archive.json')
+  }
+
+  private readArchiveManifest(comfyDir: string): string[] {
+    try {
+      const file = this.archiveManifestPath(comfyDir)
+      if (!existsSync(file)) return []
+      const raw = JSON.parse(readFileSync(file, 'utf-8')) as unknown
+      if (!Array.isArray(raw)) return []
+      return raw.filter(
+        (p): p is string =>
+          typeof p === 'string' &&
+          p.length > 0 &&
+          !p.startsWith('/') &&
+          !p.startsWith('\\') &&
+          !p.includes('..') &&
+          !p.includes('\0')
+      )
+    } catch {
+      return []
+    }
+  }
+
+  private writeArchiveManifest(comfyDir: string, files: string[]): void {
+    try {
+      writeFileSync(this.archiveManifestPath(comfyDir), JSON.stringify(files), 'utf-8')
+    } catch (e) {
+      // The manifest only improves the NEXT update; never fail an applied
+      // update because the bookkeeping file could not be written.
+      this.log('fetch', `archive manifest write failed: ${e instanceof Error ? e.message : e}`)
+    }
+  }
+
+  /**
+   * Delete core files that the previous archive shipped and the new one does
+   * not. Only manifest-listed paths are ever touched, and only inside the
+   * install dir; empty parent dirs are pruned bottom-up.
+   */
+  private pruneRemovedArchiveFiles(comfyDir: string, previous: string[], next: string[]): number {
+    if (!previous.length) return 0
+    const keep = new Set(next)
+    const root = resolve(comfyDir)
+    const dirs = new Set<string>()
+    let removed = 0
+    for (const rel of previous) {
+      if (keep.has(rel)) continue
+      const abs = resolve(root, rel)
+      if (!abs.startsWith(root + sep)) continue
+      const top = rel.split('/')[0]
+      if (PRESERVE_ENTRIES.has(top) || top === '.git') continue
+      try {
+        if (!existsSync(abs)) continue
+        rmSync(abs, { force: true })
+        removed++
+        let dir = dirname(abs)
+        while (dir.startsWith(root + sep) && dir !== root) {
+          dirs.add(dir)
+          dir = dirname(dir)
+        }
+      } catch (e) {
+        this.log(
+          'fetch',
+          `stale file cleanup failed at ${rel}: ${e instanceof Error ? e.message : e}`
+        )
+      }
+    }
+    // Deepest-first so a directory emptied by this pass disappears.
+    for (const dir of [...dirs].sort((a, b) => b.length - a.length)) {
+      try {
+        if (existsSync(dir) && readdirSync(dir).length === 0) rmdirSync(dir)
+      } catch {
+        /* non-empty or busy → keep it */
+      }
+    }
+    return removed
   }
 
   /**

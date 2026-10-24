@@ -26,6 +26,7 @@ export const SLOW_OP_RING_SIZE = 50
 export const ARGS_DIGEST_MAX = 200
 
 const LOG_FILE = 'slow-ops.log'
+export const LONG_OPS_LOG = 'long-ops.log'
 const LOG_MAX_BYTES = 512 * 1024
 
 export interface SlowOpEntry {
@@ -35,6 +36,42 @@ export interface SlowOpEntry {
   args: string
   at: number
   freeze: boolean
+  /**
+   * 0.1.18 (WP5): this channel is a known long-running operation (launch,
+   * update, check-updates, scans…). It is logged to `long-ops.log` and never
+   * raises the "main process was busy" toast — waiting is not freezing.
+   */
+  long?: boolean
+}
+
+/**
+ * Channels whose normal execution legitimately takes tens of seconds. Their
+ * duration is still recorded (for support), but as a long operation.
+ */
+export const LONG_OP_CHANNELS: ReadonlySet<string> = new Set([
+  'instance.launch',
+  'instance.stop',
+  'instance.restart',
+  'instance.repairEnv',
+  'instance.updateComfy',
+  'node.checkUpdates',
+  'node.updateAll',
+  'node.install',
+  'node.update',
+  'node.smokeTest',
+  'output.scan',
+  'batch.wait',
+  'batch.start',
+  'model.scan',
+  'registry.ensureIndex',
+  'registry.refreshIndex',
+  'env.probe',
+  'env.createVenv',
+  'env.repair'
+])
+
+export function isLongOp(channel: string): boolean {
+  return LONG_OP_CHANNELS.has(String(channel || ''))
 }
 
 const ring: SlowOpEntry[] = []
@@ -95,6 +132,11 @@ function slowOpsLogPath(): string {
   return join(logsDir(), LOG_FILE)
 }
 
+/** Known long operations get their own log so freezes stay meaningful. */
+export function longOpsLogPath(): string {
+  return join(logsDir(), LONG_OPS_LOG)
+}
+
 /** Path of the slow-op log (exported for the diagnostics bundle + tests). */
 export function getSlowOpsLogPath(): string {
   return slowOpsLogPath()
@@ -123,9 +165,10 @@ function appendEntry(entry: SlowOpEntry): void {
   try {
     const dir = logsDir()
     mkdirSync(dir, { recursive: true })
-    const file = join(dir, LOG_FILE)
+    const file = entry.long ? longOpsLogPath() : join(dir, LOG_FILE)
+    // long-ops.log used to grow without bound (every launch/update/index line).
     rotateIfNeeded(file)
-    const marker = entry.freeze ? ' FREEZE' : ' slow'
+    const marker = entry.long ? ' LONG' : entry.freeze ? ' FREEZE' : ' slow'
     appendFileSync(
       file,
       `[${new Date(entry.at).toISOString()}]${marker}: ${entry.channel} ${entry.ms}ms ${entry.args}\n`,
@@ -153,15 +196,23 @@ export function recordSlowOp(
     ms: rounded,
     args: digestArgs(args),
     at: now,
-    freeze: rounded >= FREEZE_OP_MS
+    freeze: false
+  }
+  if (isLongOp(channel)) {
+    entry.long = true
+  } else {
+    entry.freeze = rounded >= FREEZE_OP_MS
   }
   ring.push(entry)
   while (ring.length > SLOW_OP_RING_SIZE) ring.shift()
   appendEntry(entry)
-  try {
-    listener?.(entry)
-  } catch {
-    /* a bad listener must not break IPC */
+  // Long operations are expected to take time; only real stalls notify.
+  if (!entry.long) {
+    try {
+      listener?.(entry)
+    } catch {
+      /* a bad listener must not break IPC */
+    }
   }
   return entry
 }

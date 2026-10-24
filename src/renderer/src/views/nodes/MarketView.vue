@@ -22,6 +22,7 @@ import {
   NTag,
   NEmpty,
   NProgress,
+  NAlert,
   useMessage,
   useDialog
 } from 'naive-ui'
@@ -34,6 +35,7 @@ import {
 import NodeOpProgressModal from '@/components/NodeOpProgressModal.vue'
 import ListSkeleton from '@/components/ListSkeleton.vue'
 import { useAppStore } from '@/stores/app'
+import TargetBanner from '@/components/TargetBanner.vue'
 import type {
   MarketItem,
   RegistryPageResult,
@@ -74,6 +76,8 @@ const loading = ref(false)
 const loadingMore = ref(false)
 const indexing = ref(false)
 const indexProgress = ref<{ done: number; total: number; count: number } | null>(null)
+/** 0.1.18 (WP4/F6): search needs the local index — never crawl implicitly. */
+const needsIndex = ref(false)
 const query = ref('')
 const activeQuery = ref('')
 const showOpModal = ref(false)
@@ -107,7 +111,7 @@ const localPackKeys = ref<Set<string>>(new Set())
 
 async function refreshLocalPackKeys(): Promise<void> {
   try {
-    const packs: NodePackRecord[] = await ipc('node.list', store.activeInstanceId || undefined)
+    const packs: NodePackRecord[] = await ipc('node.list', store.localTargetId || undefined)
     const keys = new Set<string>()
     for (const p of packs) {
       if (p.name) keys.add(p.name.toLowerCase())
@@ -265,6 +269,38 @@ async function loadIndexStatus(): Promise<void> {
   }
 }
 
+/** Build the full catalog only after the user asks (0.1.18 / F6). */
+async function buildIndex(): Promise<void> {
+  if (indexing.value) return
+  indexing.value = true
+  indexProgress.value = null
+  try {
+    const s = await ipc('registry.ensureIndex', { force: false })
+    indexCount.value = s.count
+    indexUpdatedAt.value = s.updatedAt
+    needsIndex.value = false
+    await load(true)
+  } catch (err) {
+    // Cancellation is a normal outcome, not an error banner.
+    if (err instanceof Error && /abort|cancel/i.test(err.message)) {
+      message.info(t('market.indexCancelled'))
+    } else {
+      message.error(err instanceof Error ? err.message : String(err))
+    }
+  } finally {
+    indexing.value = false
+    indexProgress.value = null
+  }
+}
+
+async function cancelIndexBuild(): Promise<void> {
+  try {
+    await ipc('registry.cancelIndex')
+  } catch {
+    /* best-effort */
+  }
+}
+
 async function refreshIndex(): Promise<void> {
   indexing.value = true
   indexProgress.value = null
@@ -275,7 +311,11 @@ async function refreshIndex(): Promise<void> {
     message.success(t('market.indexUpdated', { n: s.count }))
     if (activeQuery.value) await load(true)
   } catch (err) {
-    message.error(err instanceof Error ? err.message : String(err))
+    if (err instanceof Error && /abort|cancel/i.test(err.message)) {
+      message.info(t('market.indexCancelled'))
+    } else {
+      message.error(err instanceof Error ? err.message : String(err))
+    }
   } finally {
     indexing.value = false
     indexProgress.value = null
@@ -311,7 +351,7 @@ async function load(reset = true): Promise<void> {
       query: activeQuery.value || undefined,
       page: reset ? 1 : page.value + 1,
       limit: pageSize,
-      instanceId: store.activeInstanceId || undefined
+      instanceId: store.localTargetId || undefined
     })
     // Discard a response that no longer matches the visible tab/sequence.
     if (seq !== loadSeq || tab !== sourceTab.value) return
@@ -322,7 +362,8 @@ async function load(reset = true): Promise<void> {
     totalPages.value = res.totalPages
     scanned.value = res.scanned
     page.value = res.page
-    if (reset && !res.items.length) {
+    needsIndex.value = Boolean(res.needsIndex)
+    if (reset && !res.items.length && !res.needsIndex) {
       message.info(activeQuery.value ? t('market.noMatches') : t('market.registryEmpty'))
     }
     void loadIndexStatus()
@@ -358,7 +399,7 @@ async function loadCurrentPage(): Promise<void> {
       query: activeQuery.value || undefined,
       page: page.value,
       limit: pageSize,
-      instanceId: store.activeInstanceId || undefined
+      instanceId: store.localTargetId || undefined
     })
     const start = (page.value - 1) * pageSize
     const mapped = res.items.map(mapRegistryItem)
@@ -405,6 +446,11 @@ async function loadManager(): Promise<void> {
 // ---- unified install / update ----
 async function install(item: DisplayItem): Promise<void> {
   if (installingItem.value) return
+  // Installation is a local-only mutation: never start it from a remote view.
+  if (!store.localTargetId) {
+    message.warning(t('target.required'))
+    return
+  }
   // 0.1.17 (WP9): the click's own source decides the transport; switching tabs
   // while the dialog is open must not reroute the install.
   const source = item.source
@@ -418,14 +464,14 @@ async function install(item: DisplayItem): Promise<void> {
             id: item.id,
             version: item.version || undefined,
             repository: item.repository || undefined,
-            instanceId: store.activeInstanceId || undefined
+            instanceId: store.localTargetId || undefined
           })
         : await ipc('node.install', {
             id: item.id,
             version: item.version || undefined,
             source: 'manager',
             url: item.repository || undefined,
-            instanceId: store.activeInstanceId || undefined
+            instanceId: store.localTargetId || undefined
           })
     if (hasDepsSkippedIssue(rec?.issues)) {
       dialog.warning({
@@ -460,7 +506,7 @@ async function resolveLocalPack(
   item: DisplayItem
 ): Promise<{ id: string; name: string; locked?: boolean } | null> {
   try {
-    const packs = await ipc('node.list', store.activeInstanceId || undefined)
+    const packs = await ipc('node.list', store.localTargetId || undefined)
     const found = packs.find(
       (p) =>
         p.name === item.name ||
@@ -481,7 +527,7 @@ async function updateItem(item: DisplayItem): Promise<void> {
   updatingItem.value = item.id
   // Snapshot the target instance: resolveLocalPack and the update call must
   // act on the SAME instance even if the header selection changes mid-await.
-  const forInst = store.activeInstanceId || undefined
+  const forInst = store.localTargetId || undefined
   try {
     const local = await resolveLocalPack(item)
     if (!local) {
@@ -492,7 +538,7 @@ async function updateItem(item: DisplayItem): Promise<void> {
       message.warning(t('nodes.locked'))
       return
     }
-    if ((store.activeInstanceId || undefined) !== forInst) {
+    if ((store.localTargetId || undefined) !== forInst) {
       message.warning(t('nodes.opBusy'))
       return
     }
@@ -546,16 +592,6 @@ onMounted(() => {
   })
   void loadIndexStatus()
   if (!applyRouteQuery()) void load(true)
-  void ipc('registry.ensureIndex')
-    .then((s) => {
-      indexCount.value = s.count
-      indexUpdatedAt.value = s.updatedAt
-    })
-    .catch(() => undefined)
-    .finally(() => {
-      indexing.value = false
-      indexProgress.value = null
-    })
 })
 
 watch(sourceTab, () => {
@@ -604,6 +640,7 @@ onUnmounted(() => offProgress?.())
 
 <template>
   <div class="page">
+    <TargetBanner />
     <div class="page-header">
       <div>
         <h1 class="page-title">{{ $t('market.title') }}</h1>
@@ -682,16 +719,33 @@ onUnmounted(() => offProgress?.())
           :height="8"
           processing
         />
-        <div class="meta">
-          {{
-            $t('market.indexing', {
-              done: indexProgress.done,
-              total: indexProgress.total,
-              count: indexProgress.count
-            })
-          }}
+        <div class="index-banner-foot">
+          <span class="meta">
+            {{
+              $t('market.indexing', {
+                done: indexProgress.done,
+                total: indexProgress.total,
+                count: indexProgress.count
+              })
+            }}
+          </span>
+          <NButton size="tiny" secondary @click="cancelIndexBuild">
+            {{ $t('common.cancel') }}
+          </NButton>
         </div>
       </div>
+
+      <!-- 0.1.18 (WP4/F6): searching the full catalog requires a local index;
+           the app asks first instead of silently crawling ~58 pages. -->
+      <NAlert v-if="needsIndex && sourceTab === 'registry'" type="info" :show-icon="true">
+        <template #header>{{ $t('market.indexNeededTitle') }}</template>
+        <div class="index-needed">
+          <span>{{ $t('market.indexNeededBody') }}</span>
+          <NButton size="small" type="primary" :loading="indexing" @click="buildIndex">
+            {{ $t('market.indexBuild') }}
+          </NButton>
+        </div>
+      </NAlert>
 
       <!-- unified list -->
       <NSpin :show="loading && displayItems.length > 0">
@@ -847,6 +901,21 @@ onUnmounted(() => offProgress?.())
   display: flex;
   justify-content: center;
   padding: 16px 0;
+}
+.index-banner-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 6px;
+}
+.index-needed {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 6px;
 }
 .index-banner {
   margin-bottom: 12px;

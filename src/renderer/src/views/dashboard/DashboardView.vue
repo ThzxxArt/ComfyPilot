@@ -161,7 +161,7 @@ async function refreshTailLogs(): Promise<void> {
 /** Per-instance node/model counts — must follow the active instance. */
 async function refreshStats(): Promise<void> {
   try {
-    nodePacks.value = await ipc('node.list', store.activeInstanceId || undefined)
+    nodePacks.value = await ipc('node.list', store.localTargetId || undefined)
     models.value = await ipc('model.list')
     statsError.value = ''
   } catch (err) {
@@ -203,10 +203,20 @@ watch(
   { immediate: true }
 )
 
+/**
+ * 0.1.18 (WP6 / U5): the timer and the log subscription were created AFTER an
+ * await. Navigating away during that window left a 5 s poller and an event
+ * listener alive for the rest of the session.
+ */
+let disposed = false
+
 onMounted(async () => {
+  disposed = false
   await refreshStats()
+  if (disposed) return
   loading.value = false
   await refreshQueue()
+  if (disposed) return
   queueTimer = setInterval(() => void refreshQueue(), 5000)
   if (activeStatus.value === 'starting') void refreshTailLogs()
   offLog = onIpc(IPC_EVENTS.instanceLog, (payload) => {
@@ -228,9 +238,13 @@ watch(
 )
 
 onUnmounted(() => {
+  disposed = true
   if (queueTimer) clearInterval(queueTimer)
+  queueTimer = null
   if (startTimer) clearInterval(startTimer)
+  startTimer = null
   offLog?.()
+  offLog = null
 })
 
 async function runDoctor(): Promise<void> {

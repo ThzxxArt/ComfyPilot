@@ -238,6 +238,52 @@ async function settleJob(id: string, accepted: BatchJob): Promise<BatchJob> {
   return (await ipc('batch.wait', id)) || accepted
 }
 
+/** Toast for a terminal job (shared by start/resume/retry). */
+function reportJobResult(result: BatchJob): void {
+  if (result.status === 'done') {
+    message.success(
+      t('batch.jobDone', {
+        submitted: result.submitted ?? 0,
+        completed: result.completed,
+        produced: result.produced,
+        failed: result.failed
+      })
+    )
+  } else if (result.status === 'cancelled') {
+    message.warning(t('batch.jobCancelled'))
+  } else {
+    message.warning(
+      t('batch.jobFinishedPartial', {
+        submitted: result.submitted ?? 0,
+        completed: result.completed,
+        failed: result.failed
+      })
+    )
+  }
+}
+
+/**
+ * 0.1.18 (WP6 / U8): the accepted run settles in the background. The old code
+ * awaited `batch.wait` inside the click handler, so the submit button spun for
+ * the entire batch and resume/retry could not be started at all.
+ */
+const settling = ref<Set<string>>(new Set())
+
+function settleInBackground(id: string, accepted: BatchJob): void {
+  if (settling.value.has(id)) return
+  settling.value.add(id)
+  void (async () => {
+    try {
+      reportJobResult(await settleJob(id, accepted))
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      settling.value.delete(id)
+      await refresh()
+    }
+  })()
+}
+
 async function start(id: string): Promise<void> {
   if (startingId.value) return
   const job = jobs.value.find((j) => j.id === id)
@@ -280,31 +326,42 @@ async function start(id: string): Promise<void> {
       /* preflight is advisory — never blocks on its own failure */
     }
   }
-  startingId.value = id
-  try {
-    // Accepted immediately (0.1.17), then awaited via batch.wait.
-    const result = await settleJob(id, await ipc('batch.start', id))
-    if (result.status === 'done') {
-      message.success(
-        t('batch.jobDone', {
-          submitted: result.submitted ?? 0,
-          completed: result.completed,
-          produced: result.produced,
-          failed: result.failed
+  // 0.1.18 (WP7): missing model files are surfaced before submit. Like the
+  // node check above this never blocks — it requires an explicit confirmation.
+  if (job && !target.startsWith('remote:')) {
+    try {
+      const missing: string[] = []
+      for (const it of job.items) {
+        const m = await ipc('workflow.checkModels', it.workflowPath).catch(() => null)
+        if (m?.available) for (const r of m.missing) missing.push(r.name)
+      }
+      const unique = [...new Set(missing)]
+      if (unique.length) {
+        const confirmed = await new Promise<boolean>((resolve) => {
+          dialog.warning({
+            title: t('workflowDeps.title'),
+            content: t('workflowDeps.missingBody', {
+              n: unique.length,
+              list: unique.slice(0, 6).join(', ')
+            }),
+            positiveText: t('nodePreflight.startAnyway'),
+            negativeText: t('common.cancel'),
+            onPositiveClick: () => resolve(true),
+            onNegativeClick: () => resolve(false),
+            onClose: () => resolve(false),
+            onMaskClick: () => resolve(false)
+          })
         })
-      )
-    } else if (result.status === 'cancelled') {
-      message.warning(t('batch.jobCancelled'))
-    } else {
-      message.warning(
-        t('batch.jobFinishedPartial', {
-          submitted: result.submitted ?? 0,
-          completed: result.completed,
-          failed: result.failed
-        })
-      )
+        if (!confirmed) return
+      }
+    } catch {
+      /* model check is advisory */
     }
-    await refresh()
+  }
+  startingId.value = id
+  let accepted: BatchJob | null = null
+  try {
+    accepted = await ipc('batch.start', id)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     // Instance not running — offer a one-click start instead of a dead-end toast.
@@ -338,70 +395,35 @@ async function start(id: string): Promise<void> {
     await refresh()
   } finally {
     startingId.value = ''
+    if (accepted) settleInBackground(id, accepted)
   }
 }
 
 /** 0.1.17 (WP5): continue an interrupted job (only the missing legs). */
 async function resumeJob(id: string): Promise<void> {
+  let accepted: BatchJob | null = null
   startingId.value = id
   try {
-    const result = await settleJob(id, await ipc('batch.resume', id))
-    if (result.status === 'done') {
-      message.success(
-        t('batch.jobDone', {
-          submitted: result.submitted ?? 0,
-          completed: result.completed,
-          produced: result.produced,
-          failed: result.failed
-        })
-      )
-    } else if (result.status === 'cancelled') {
-      message.warning(t('batch.jobCancelled'))
-    } else {
-      message.warning(
-        t('batch.jobFinishedPartial', {
-          submitted: result.submitted ?? 0,
-          completed: result.completed,
-          failed: result.failed
-        })
-      )
-    }
-    await refresh()
+    accepted = await ipc('batch.resume', id)
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   } finally {
     startingId.value = ''
+    if (accepted) settleInBackground(id, accepted)
   }
 }
 
 /** 0.1.17 (WP5): re-submit only the legs that failed. */
 async function retryFailedJob(id: string): Promise<void> {
+  let accepted: BatchJob | null = null
   startingId.value = id
   try {
-    const result = await settleJob(id, await ipc('batch.retryFailed', id))
-    if (result.status === 'done') {
-      message.success(
-        t('batch.jobDone', {
-          submitted: result.submitted ?? 0,
-          completed: result.completed,
-          produced: result.produced,
-          failed: result.failed
-        })
-      )
-    } else {
-      message.warning(
-        t('batch.jobFinishedPartial', {
-          submitted: result.submitted ?? 0,
-          completed: result.completed,
-          failed: result.failed
-        })
-      )
-    }
-    await refresh()
+    accepted = await ipc('batch.retryFailed', id)
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
   } finally {
     startingId.value = ''
+    if (accepted) settleInBackground(id, accepted)
   }
 }
 

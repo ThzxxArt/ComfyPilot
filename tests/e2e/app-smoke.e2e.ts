@@ -136,6 +136,21 @@ describe.skipIf(skip)('electron app smoke (real bundle)', () => {
         }; output tail: ${result.text.slice(-400)}`
       )
     }
+    // 0.1.18 (WP8): the preload bridge and one real IPC round-trip must work —
+    // a renderer can mount perfectly while the bridge is broken.
+    if (!result.text.includes('[e2e] preload-bridge-ok')) {
+      throw new Error('preload bridge missing/broken — the renderer cannot call the main process')
+    }
+    if (!result.text.includes('[e2e] ipc-ok')) {
+      throw new Error('real IPC round-trip failed (app.previousExit / settings.get)')
+    }
+    // Any renderer console error is a red build: silent runtime failures used
+    // to leave a green smoke run.
+    const consoleErrors = result.text
+      .split('\n')
+      .filter((l) => l.includes('[e2e] console-error:'))
+    expect(consoleErrors, `renderer console errors:\n${consoleErrors.join('\n')}`).toEqual([])
+    expect(result.text).not.toContain('[e2e] preload-error:')
     expect(result.code === 0 || result.code === null).toBe(true)
   }, 20000)
 })

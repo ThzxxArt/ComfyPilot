@@ -203,6 +203,37 @@ vi.mock('fs', () => {
         throw new Error('EACCES (injected copy failure)')
       }
       copyPath(f, t)
+    },
+    createWriteStream: (p: unknown) => {
+      // Minimal in-memory Writable for the archive body download. `destroy()`
+      // must make `end(cb)` never fire its callback, like a real stream.
+      const s = fsKey(p)
+      let buf = Buffer.alloc(0)
+      const stream = {
+        destroyed: false,
+        write(chunk: Uint8Array, cb?: (err?: Error | null) => void) {
+          buf = Buffer.concat([buf, Buffer.from(chunk)])
+          cb?.()
+          return true
+        },
+        end(cb?: () => void) {
+          stream.destroyed = true
+          state.files.set(s, buf.toString('binary'))
+          state.exists.add(s)
+          attach(s)
+          cb?.()
+        },
+        destroy() {
+          stream.destroyed = true
+        },
+        on() {
+          return stream
+        },
+        once() {
+          return stream
+        }
+      }
+      return stream
     }
   }
 })
@@ -369,8 +400,8 @@ import type { UpdateProgress, ComfyUpdateOptions } from '../../src/shared/types'
 import { bootstrapService } from '../../src/main/services/bootstrap'
 
 const svc = comfyUpdaterService as unknown as {
-  copyCoreTree: (src: string, dest: string) => number
-  overlayTree: (src: string, dest: string) => number
+  copyCoreTree: (src: string, dest: string) => Promise<number>
+  overlayTree: (src: string, dest: string) => Promise<number>
   fetchAndOverlayZip: (comfyDir: string) => Promise<void>
   performRollback: (comfyDir: string, backupPath: string, kind: 'git' | 'files') => Promise<boolean>
   venvPython: (venvPath: string) => string
@@ -1406,6 +1437,27 @@ describe('runUpdate pipeline', () => {
     expect(p.status).toBe('failed')
     expect(p.error).toMatch(/HTTP 404/)
   })
+
+  it('settles when the archive body stream errors mid-download (regression)', async () => {
+    // 0.1.18: the old finally awaited file.end() after destroy(), whose
+    // callback never fires — the run stayed "running" forever.
+    seedZipInstall({ withVenv: true, withReq: false })
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2, 3]))
+        controller.error(new Error('network dropped'))
+      }
+    })
+    h.state.sessionFetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => '3' },
+      body
+    })
+    const p = await runUpdate({ updateDeps: false })
+    expect(p.status).toBe('failed')
+    expect(p.error).toMatch(/network dropped|failed/i)
+  })
 })
 
 // =====================================================================
@@ -1488,7 +1540,7 @@ describe('cancel()', () => {
 // copyCoreTree / overlayTree
 // =====================================================================
 describe('copyCoreTree / overlayTree', () => {
-  it('copyCoreTree copies core files and skips PRESERVE_ENTRIES + backups', () => {
+  it('copyCoreTree copies core files and skips PRESERVE_ENTRIES + backups', async () => {
     h.mkdirPath(join(COMFY, 'comfy'))
     h.writeFile(join(COMFY, 'main.py'), 'm')
     h.writeFile(join(COMFY, 'comfy', 'a.py'), 'a')
@@ -1501,7 +1553,7 @@ describe('copyCoreTree / overlayTree', () => {
     h.writeFile(join(COMFY, 'nested', 'b.py'), 'b')
     const dest = join(COMFY, '.cp-backup-test')
     h.mkdirPath(dest)
-    const count = svc.copyCoreTree(COMFY, dest)
+    const count = await svc.copyCoreTree(COMFY, dest)
     expect(count).toBe(3) // main.py, comfy/, nested/
     expect(fhas(join(dest, 'main.py'))).toBe(true)
     expect(fhas(join(dest, 'comfy', 'a.py'))).toBe(true)
@@ -1512,14 +1564,14 @@ describe('copyCoreTree / overlayTree', () => {
     expect(dhas(join(dest, '.git'))).toBe(false)
   })
 
-  it('copyCoreTree returns 0 for an empty source and tolerates unreadable entries', () => {
+  it('copyCoreTree returns 0 for an empty source and tolerates unreadable entries', async () => {
     h.mkdirPath(join(COMFY, 'empty'))
     const dest = join(COMFY, 'dest')
     h.mkdirPath(dest)
-    expect(svc.copyCoreTree(join(COMFY, 'empty'), dest)).toBe(0)
+    await expect(svc.copyCoreTree(join(COMFY, 'empty'), dest)).resolves.toBe(0)
   })
 
-  it('overlayTree overlays files, creates missing dirs and skips preserved names', () => {
+  it('overlayTree overlays files, creates missing dirs and skips preserved names', async () => {
     const src = join(COMFY, 'staging')
     const dest = join(COMFY, 'install')
     h.mkdirPath(join(src, 'comfy'))
@@ -1531,7 +1583,7 @@ describe('copyCoreTree / overlayTree', () => {
     h.writeFile(join(dest, 'main.py'), 'OLD')
     h.writeFile(join(dest, 'comfy', 'stale.py'), 'stale')
     h.writeFile(join(dest, 'user', 'mine.json'), 'mine')
-    const count = svc.overlayTree(src, dest)
+    const count = await svc.overlayTree(src, dest)
     expect(count).toBe(2) // main.py + comfy/x.py
     expect(fget(join(dest, 'main.py'))).toBe('NEW')
     expect(fget(join(dest, 'comfy', 'x.py'))).toBe('NEWX')
@@ -1540,13 +1592,13 @@ describe('copyCoreTree / overlayTree', () => {
     expect(dhas(join(dest, 'custom_nodes'))).toBe(false)
   })
 
-  it('overlayTree creates nested dest directories on demand', () => {
+  it('overlayTree creates nested dest directories on demand', async () => {
     const src = join(COMFY, 'src2')
     const dest = join(COMFY, 'dest2')
     h.mkdirPath(join(src, 'deep', 'er'))
     h.writeFile(join(src, 'deep', 'er', 'f.py'), 'F')
     h.mkdirPath(dest)
-    const count = svc.overlayTree(src, dest)
+    const count = await svc.overlayTree(src, dest)
     expect(count).toBe(1)
     expect(fget(join(dest, 'deep', 'er', 'f.py'))).toBe('F')
   })
@@ -1646,6 +1698,48 @@ describe('fetchAndOverlayZip', () => {
       'file:///etc/passwd'
     )
     await expect(svc.fetchAndOverlayZip(COMFY)).rejects.toThrow(/blocked/i)
+  })
+
+  it('prunes core files the previous archive shipped and the new one dropped (L6)', async () => {
+    h.mkdirPath(join(COMFY, 'comfy'))
+    h.writeFile(
+      join(COMFY, '.comfypilot-archive.json'),
+      JSON.stringify(['main.py', 'old_module.py', 'comfy/gone.py'])
+    )
+    h.writeFile(join(COMFY, 'old_module.py'), 'stale')
+    h.writeFile(join(COMFY, 'comfy', 'gone.py'), 'stale')
+    h.writeFile(join(COMFY, 'user_notes.txt'), 'mine')
+    h.state.sessionFetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => '3' },
+      arrayBuffer: async () => new TextEncoder().encode('z').buffer
+    })
+    h.state.unzipImpl = (zip, dest) => {
+      h.writeFile(join(dest, 'main.py'), 'new')
+    }
+    await svc.fetchAndOverlayZip(COMFY)
+    expect(fhas(join(COMFY, 'old_module.py'))).toBe(false)
+    expect(fhas(join(COMFY, 'comfy', 'gone.py'))).toBe(false)
+    // Untracked user files are never touched — only the recorded manifest.
+    expect(fget(join(COMFY, 'user_notes.txt'))).toBe('mine')
+    expect(JSON.parse(fget(join(COMFY, '.comfypilot-archive.json')) as string)).toEqual(['main.py'])
+  })
+
+  it('keeps stale files when no previous manifest exists (first overlay)', async () => {
+    h.mkdirPath(COMFY)
+    h.writeFile(join(COMFY, 'legacy.py'), 'keep')
+    h.state.sessionFetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => '3' },
+      arrayBuffer: async () => new TextEncoder().encode('z').buffer
+    })
+    h.state.unzipImpl = (zip, dest) => {
+      h.writeFile(join(dest, 'main.py'), 'new')
+    }
+    await svc.fetchAndOverlayZip(COMFY)
+    expect(fhas(join(COMFY, 'legacy.py'))).toBe(true)
   })
 })
 
@@ -1803,17 +1897,17 @@ describe('progress helpers', () => {
 describe('edge branches', () => {
   // 0.1.17 (WP4): a partial backup must fail loudly — a silent skip is what
   // makes a later rollback "succeed" on a half-updated tree.
-  it('copyCoreTree throws when an entry cannot be copied', () => {
+  it('copyCoreTree throws when an entry cannot be copied', async () => {
     h.mkdirPath(join(COMFY, 'comfy'))
     h.writeFile(join(COMFY, 'main.py'), 'm')
     h.writeFile(join(COMFY, 'bad.bin'), 'b')
     const dest = join(COMFY, '.cp-backup-ghost')
     h.mkdirPath(dest)
     h.state.failCopyOnce.add(h.fsKey(join(COMFY, 'bad.bin')))
-    expect(() => svc.copyCoreTree(COMFY, dest)).toThrow(/Backup failed at bad\.bin/)
+    await expect(svc.copyCoreTree(COMFY, dest)).rejects.toThrow(/Backup failed at bad\.bin/)
   })
 
-  it('overlayTree throws on a failed copy so the caller rolls back', () => {
+  it('overlayTree throws on a failed copy so the caller rolls back', async () => {
     const src = join(COMFY, 'st')
     const dest = join(COMFY, 'dt')
     h.mkdirPath(src)
@@ -1821,7 +1915,7 @@ describe('edge branches', () => {
     h.writeFile(join(src, 'ok.py'), 'ok')
     h.writeFile(join(src, 'bad.py'), 'bad')
     h.state.failCopyOnce.add(h.fsKey(join(src, 'bad.py')))
-    expect(() => svc.overlayTree(src, dest)).toThrow(/Overlay failed at bad\.py/)
+    await expect(svc.overlayTree(src, dest)).rejects.toThrow(/Overlay failed at bad\.py/)
     // Whatever was copied before the failure stays; the caller must roll back.
     expect(fget(join(dest, 'ok.py'))).toBe('ok')
   })

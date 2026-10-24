@@ -23,6 +23,7 @@ import type {
   NodeOpLogEvent,
   NodePackIssue,
   NodePackRecord,
+  NodeRecoveryEntry,
   NodeSnapshot,
   NodeUpdateAllResult,
   NodeUpdateAllOptions,
@@ -50,10 +51,10 @@ import {
   deleteSnapshot as dbDeleteSnapshot,
   getSnapshot,
   loadSettings,
-  loadInstanceConfigs,
   snapshotDir,
   upsertNodePack
 } from './db'
+import { resolveReadTarget } from './target'
 import { REGISTRY_API } from '@shared/constants'
 import { comfyChildEnv } from './childEnv'
 import { runStreaming } from './env'
@@ -208,7 +209,7 @@ export async function resolveRepoUrl(
   //    This is the most common source — the install endpoint often omits it.
   try {
     const { registryIndex } = await import('./registryIndex')
-    await registryIndex.ensure()
+    await registryIndex.ensure({ allowBuild: false })
     const hits = registryIndex.searchPacks(packId, 5)
     const exact = hits.find((h) => h.id === packId || h.name === packId)
     const repo = String(exact?.repository || '').trim()
@@ -363,28 +364,25 @@ function resolveInstancePython(instanceId?: string): string {
 export function resolveInstanceConfig(
   instanceId?: string
 ): import('@shared/types').ComfyInstanceConfig | undefined {
-  const configs = loadInstanceConfigs()
-  if (instanceId) {
-    return configs.find((c) => c.id === instanceId)
-  }
-  return configs.find((c) => c.enabled !== false) || configs[0]
+  // 0.1.18 (WP2): the fallback policy lives in services/target.ts only.
+  return resolveReadTarget(instanceId)
 }
 
 function detectCustomNodesRoot(instanceIdOrPath?: string): string {
-  let instancePath: string | undefined
+  // 0.1.18 (regression): an explicit but unresolvable target must NEVER fall
+  // back to $COMFYUI_PATH — that installed/toggled/deleted packs in a
+  // different ComfyUI than the one the user selected.
   if (instanceIdOrPath) {
     // Path form takes precedence — never resolve a filesystem path as an instance id.
-    if (instanceIdOrPath.includes('/') || instanceIdOrPath.includes('\\')) {
-      instancePath = instanceIdOrPath
-    } else {
-      instancePath = resolveInstanceConfig(instanceIdOrPath)?.path
-    }
+    const instancePath =
+      instanceIdOrPath.includes('/') || instanceIdOrPath.includes('\\')
+        ? instanceIdOrPath
+        : resolveInstanceConfig(instanceIdOrPath)?.path
+    if (!instancePath) return ''
+    return join(instancePath, 'custom_nodes')
   }
-  const candidates = [
-    instancePath && join(instancePath, 'custom_nodes'),
-    process.env.COMFYUI_PATH && join(process.env.COMFYUI_PATH, 'custom_nodes')
-  ].filter(Boolean) as string[]
-  return candidates.find((p) => existsSync(p)) || candidates[0] || ''
+  const envPath = process.env.COMFYUI_PATH && join(process.env.COMFYUI_PATH, 'custom_nodes')
+  return envPath && existsSync(envPath) ? envPath : ''
 }
 
 /**
@@ -873,10 +871,75 @@ export class NodePackService extends EventEmitter {
     return latest
   }
 
+  /**
+   * 0.1.18 (WP4): `list()` re-read pack metadata straight off disk for every
+   * caller (26 packs → 1.4 s), and it is called on refresh, check, update,
+   * toggle and snapshot. Cache the computed records against a directory+mtime
+   * signature; any add/remove/rename or pack edit invalidates it naturally.
+   */
+  private listCache = new Map<string, { sig: string; packs: NodePackRecord[] }>()
+
+  private listSignature(root: string, known: Map<string, NodePackRecord>): string {
+    const dirPart = (dir: string): string => {
+      let out = ''
+      for (const f of ['pyproject.toml', 'package.json', 'node_list.json']) {
+        try {
+          const st = statSync(join(dir, f))
+          out += `${f}:${st.size}:${st.mtimeMs};`
+        } catch {
+          out += `${f}:-;`
+        }
+      }
+      let git = 'none'
+      try {
+        const cfg = statSync(join(dir, '.git', 'config'))
+        git = `${cfg.size}:${cfg.mtimeMs}`
+      } catch {
+        git = existsSync(join(dir, '.git')) ? 'dir' : 'none'
+      }
+      return `${out}git:${git}`
+    }
+    let dirs = ''
+    try {
+      // Plain readdir (no Dirent) keeps this compatible with the fs surfaces
+      // nodePack already mocks in tests.
+      for (const name of readdirSync(root)) {
+        const dir = join(root, name)
+        let mtime = 0
+        try {
+          mtime = statSync(dir).mtimeMs
+        } catch {
+          continue
+        }
+        dirs += `${name}:${mtime}:${dirPart(dir)};`
+        if (name === '.disabled') {
+          try {
+            for (const child of readdirSync(dir)) {
+              dirs += `  ${child}:${dirPart(join(dir, child))};`
+            }
+          } catch {
+            /* locked holding dir */
+          }
+        }
+      }
+    } catch {
+      return ''
+    }
+    let records = ''
+    for (const p of known.values()) {
+      records += `${p.name}:${p.latestVersion || ''}:${p.pinnedVersion || ''}:${p.installSource || ''}:${p.registryId || ''}:${p.locked ? 1 : 0}:${p.repository || ''};`
+    }
+    return `${root}##${dirs}##${records}`
+  }
+
   list(instancePathOrId?: string): NodePackRecord[] {
     const root = detectCustomNodesRoot(instancePathOrId)
     if (!root || !existsSync(root)) return []
     const known = new Map(listNodePacks().map((p) => [p.name, p]))
+    const sig = this.listSignature(root, known)
+    const cached = this.listCache.get(root)
+    if (cached && cached.sig === sig) return cached.packs
+
     const packs: NodePackRecord[] = []
 
     const pushPack = (rawName: string, dir: string, disabled: boolean): void => {
@@ -990,6 +1053,7 @@ export class NodePackService extends EventEmitter {
       const legacyMarker = existsSync(join(dir, '.disabled'))
       pushPack(name, dir, legacyMarker || name.endsWith('.disabled'))
     }
+    this.listCache.set(root, { sig, packs })
     return packs
   }
 
@@ -2179,7 +2243,7 @@ export class NodePackService extends EventEmitter {
     // Peek at the local full-catalog index for anything not on page 1.
     try {
       const { registryIndex } = await import('./registryIndex')
-      await registryIndex.ensure()
+      await registryIndex.ensure({ allowBuild: false })
       for (const p of packs) {
         if (registryLatest.has(p.registryId || '') || registryLatest.has(p.name)) continue
         // 1) Exact repository URL match — survives renamed folders / local copies.
@@ -3379,6 +3443,140 @@ export class NodePackService extends EventEmitter {
       /* ignore */
     }
     return dbDeleteSnapshot(safe)
+  }
+
+  /**
+   * 0.1.18 (WP3 / L9): leftovers an interrupted update leaves behind.
+   *
+   * A registry reinstall renames the live pack to `<name>.bak-<ts>` and then
+   * unpacks the new version. If the process dies in that window, `list()`
+   * (deliberately) hides `.bak-` entries and the package simply disappears
+   * from the UI with no way back. This scan makes those leftovers visible and
+   * restorable; it never treats an arbitrary directory as recoverable.
+   */
+  scanRecovery(instanceId?: string): NodeRecoveryEntry[] {
+    return this.scanRecoveryAt(detectCustomNodesRoot(instanceId))
+  }
+
+  private scanRecoveryAt(root: string): NodeRecoveryEntry[] {
+    if (!root || !existsSync(root)) return []
+    const out: NodeRecoveryEntry[] = []
+    const info = (p: string): number => {
+      try {
+        return statSync(p).mtimeMs
+      } catch {
+        return 0
+      }
+    }
+    let names: string[] = []
+    try {
+      names = readdirSync(root)
+    } catch {
+      return []
+    }
+    for (const name of names) {
+      if (!name || name === '.' || name === '..') continue
+      const abs = join(root, name)
+      if (!isStrictInside(abs, root)) continue
+      if (name.startsWith('._unzip_tmp_')) {
+        out.push({
+          kind: 'temp',
+          name,
+          packName: '',
+          path: abs,
+          livePath: '',
+          liveExists: false,
+          mtimeMs: info(abs)
+        })
+        continue
+      }
+      const idx = name.lastIndexOf('.bak-')
+      if (idx > 0 && idx < name.length - 5) {
+        const packName = name.slice(0, idx)
+        const live = join(root, packName)
+        out.push({
+          kind: 'backup',
+          name,
+          packName,
+          path: abs,
+          livePath: live,
+          liveExists: existsSync(live),
+          mtimeMs: info(abs)
+        })
+      }
+    }
+    // A pack present both live and inside `.disabled/` is a half-applied
+    // toggle: the disabled copy is never loaded but keeps disk + confusion.
+    const disabledRoot = join(root, '.disabled')
+    if (existsSync(disabledRoot)) {
+      try {
+        for (const name of readdirSync(disabledRoot)) {
+          const live = join(root, name)
+          if (!existsSync(live)) continue
+          const abs = join(disabledRoot, name)
+          if (!isStrictInside(abs, disabledRoot)) continue
+          out.push({
+            kind: 'duplicate',
+            // POSIX separator on purpose: recoveryEntry only accepts the
+            // literal `.disabled/` prefix (join would emit a backslash on
+            // Windows and make the row un-cleanable).
+            name: `.disabled/${name}`,
+            packName: name,
+            path: abs,
+            livePath: live,
+            liveExists: true,
+            mtimeMs: info(abs)
+          })
+        }
+      } catch {
+        /* unreadable .disabled dir → nothing extra to report */
+      }
+    }
+    return out.sort((a, b) => b.mtimeMs - a.mtimeMs)
+  }
+
+  /** Restore one `.bak-<ts>` entry to its live path (never overwrites a pack). */
+  restoreRecovery(name: string, instanceId?: string): NodeRecoveryEntry {
+    const root = detectCustomNodesRoot(instanceId)
+    if (!root) throw new Error('No custom_nodes directory for this instance')
+    const entry = this.recoveryEntry(root, name)
+    if (!entry) throw new Error('Not a recoverable backup')
+    if (entry.kind !== 'backup') throw new Error('Only update backups can be restored')
+    if (existsSync(entry.livePath)) {
+      const e = new Error(`A pack already exists at ${entry.livePath}`) as Error & { code?: string }
+      e.code = 'RECOVERY_TARGET_EXISTS'
+      throw e
+    }
+    renameSync(entry.path, entry.livePath)
+    this.opLog?.(`restored ${entry.packName} from ${basename(entry.path)}`, instanceId)
+    return {
+      ...entry,
+      kind: 'backup',
+      name: entry.packName,
+      path: entry.livePath,
+      liveExists: true
+    }
+  }
+
+  /** Delete one leftover entry. Only entries the scan would report are allowed. */
+  cleanRecovery(name: string, instanceId?: string): boolean {
+    const root = detectCustomNodesRoot(instanceId)
+    if (!root) throw new Error('No custom_nodes directory for this instance')
+    const entry = this.recoveryEntry(root, name)
+    if (!entry) throw new Error('Not a recoverable entry')
+    rmSync(entry.path, { recursive: true, force: true })
+    this.opLog?.(`cleaned leftover ${entry.name}`, instanceId)
+    return true
+  }
+
+  /** Resolve one scanned entry by name, refusing path traversal. */
+  private recoveryEntry(root: string, name: string): NodeRecoveryEntry | undefined {
+    if (!name || name.includes('\\') || name.includes('\0')) return undefined
+    // The only slash we accept is the fixed `.disabled/` prefix produced by
+    // scanRecoveryAt for duplicate entries — never a caller-supplied path.
+    const bare = name.startsWith('.disabled/') ? name.slice('.disabled/'.length) : name
+    if (!bare || bare === '.' || bare === '..' || bare.includes('/')) return undefined
+    return this.scanRecoveryAt(root).find((e) => e.name === name)
   }
 }
 

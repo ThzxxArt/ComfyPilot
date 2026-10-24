@@ -57,7 +57,7 @@ async function isComfyListening(port: number): Promise<boolean> {
 }
 
 export class DoctorService extends EventEmitter {
-  async run(instanceId: string): Promise<DoctorReport> {
+  async run(instanceId: string, opts?: { signal?: AbortSignal }): Promise<DoctorReport> {
     const started = Date.now()
     const configs = loadInstanceConfigs()
     // Explicit id must resolve — never silently fall back to configs[0].
@@ -70,7 +70,15 @@ export class DoctorService extends EventEmitter {
     // Honest progress (0.1.15): the conditional check set (disk-*, cn-count,
     // requirements…) makes a fixed total a lie — report the checked COUNT with
     // the current phase title; the UI renders an indeterminate bar.
+    // 0.1.18 (WP6): progress boundaries double as cancellation checkpoints —
+    // every probe between two emits has its own short timeout, so cancel lands
+    // within a few seconds instead of after the whole 12-check run.
     const emitProgress = (done: number, title: string): void => {
+      if (opts?.signal?.aborted) {
+        const err = new Error('aborted')
+        err.name = 'AbortError'
+        throw err
+      }
       this.emit('progress', { done, title, ts: Date.now() })
     }
     emitProgress(0, 'Starting health check…')

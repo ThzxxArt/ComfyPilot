@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { AddOutline, TrashOutline, RefreshOutline, DownloadOutline } from '@vicons/ionicons5'
 import {
@@ -13,12 +13,15 @@ import {
   NModal,
   NPopconfirm,
   NList,
-  NListItem
+  NListItem,
+  NCheckbox,
+  NCheckboxGroup,
+  NAlert
 } from 'naive-ui'
 import { ipc } from '@/composables/useIpc'
 import { formatBytes } from '@/utils/format'
 import ListSkeleton from '@/components/ListSkeleton.vue'
-import type { BackupManifest } from '@shared/types'
+import type { BackupManifest, BackupRestorePreview, BackupRestoreSection } from '@shared/types'
 
 const { t } = useI18n()
 const message = useMessage()
@@ -28,6 +31,32 @@ const loadError = ref('')
 const showCreate = ref(false)
 const name = ref('')
 const notes = ref('')
+
+// 0.1.18 (WP7): restore is destructive, so it is previewed first. The modal
+// shows exactly what will change, which paths were remapped, and lets the user
+// apply only the sections they want.
+const preview = ref<BackupRestorePreview | null>(null)
+const previewId = ref('')
+const selectedSections = ref<BackupRestoreSection[]>([])
+const previewLoading = ref(false)
+const restoring = ref(false)
+const ALL_SECTIONS: BackupRestoreSection[] = [
+  'settings',
+  'instances',
+  'nodePacks',
+  'models',
+  'workflows',
+  'remotes',
+  'snapshots'
+]
+
+const visibleSections = computed(() =>
+  ALL_SECTIONS.filter((s) => (preview.value?.counts[s] || s === 'settings') ?? false)
+)
+
+function sectionLabel(section: BackupRestoreSection): string {
+  return t(`backup.section.${section}`)
+}
 
 async function refresh(): Promise<void> {
   loading.value = true
@@ -58,12 +87,56 @@ async function create(): Promise<void> {
   }
 }
 
-async function restore(id: string): Promise<void> {
+async function openRestore(id: string): Promise<void> {
+  previewId.value = id
+  previewLoading.value = true
   try {
-    await ipc('backup.restore', id)
-    message.success(t('backup.restored'))
+    const p = await ipc('backup.preview', id)
+    // A fast second click (another backup) used to apply A's preview to B —
+    // and restore B with A's section selection.
+    if (previewId.value !== id) return
+    preview.value = p
+    selectedSections.value = ALL_SECTIONS.filter((s) => s === 'settings' || (p.counts[s] || 0) > 0)
+    if (!p.canRestore) {
+      message.error(t('backup.previewInvalid'))
+    }
+  } catch (err) {
+    if (previewId.value !== id) return
+    preview.value = null
+    message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    if (previewId.value === id) previewLoading.value = false
+  }
+}
+
+async function applyRestore(): Promise<void> {
+  if (!preview.value) return
+  restoring.value = true
+  try {
+    const result = await ipc('backup.restore', previewId.value, {
+      sections: selectedSections.value
+    })
+    if (result.ok) {
+      message.success(t('backup.restored', { n: result.restored }))
+      if (result.preRestoreId) {
+        message.info(t('backup.preRestoreCreated', { id: result.preRestoreId }), {
+          duration: 8000
+        })
+      }
+    } else {
+      message.warning(
+        t('backup.restorePartial', { restored: result.restored, failed: result.failed })
+      )
+    }
+    if (result.warnings.length) {
+      message.warning(result.warnings.slice(0, 3).join('; '))
+    }
+    preview.value = null
+    await refresh()
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    restoring.value = false
   }
 }
 
@@ -118,15 +191,10 @@ onMounted(() => void refresh())
                 <div class="meta mono">{{ b.path }}</div>
               </div>
               <NSpace>
-                <NPopconfirm @positive-click="restore(b.id)">
-                  <template #trigger>
-                    <NButton size="small" type="primary" secondary>
-                      <template #icon><NIcon :component="DownloadOutline" /></template
-                      >{{ t('backup.restore') }}
-                    </NButton>
-                  </template>
-                  {{ t('backup.restoreConfirm') }}
-                </NPopconfirm>
+                <NButton size="small" type="primary" secondary @click="openRestore(b.id)">
+                  <template #icon><NIcon :component="DownloadOutline" /></template
+                  >{{ t('backup.restore') }}
+                </NButton>
                 <NButton size="small" secondary @click="openFolder(b.id)">{{
                   t('backup.openFolder')
                 }}</NButton>
@@ -172,6 +240,85 @@ onMounted(() => void refresh())
         </NSpace>
       </template>
     </NModal>
+
+    <NModal
+      :show="Boolean(preview) || previewLoading"
+      preset="card"
+      :title="t('backup.previewTitle')"
+      style="width: 620px; border-radius: 20px"
+      @update:show="
+        (v: boolean) => {
+          if (!v) preview = null
+        }
+      "
+    >
+      <NSpin :show="previewLoading">
+        <div v-if="preview" class="preview">
+          <p class="preview-name">{{ preview.name || preview.id }}</p>
+
+          <NAlert v-if="!preview.canRestore" type="error" :bordered="false">
+            {{ t('backup.previewInvalid') }}
+            <ul class="preview-list">
+              <li v-for="p in preview.invalidPaths" :key="p" class="mono">{{ p }}</li>
+            </ul>
+          </NAlert>
+
+          <div class="preview-block">
+            <div class="preview-label">{{ t('backup.previewSections') }}</div>
+            <NCheckboxGroup v-model:value="selectedSections">
+              <NSpace vertical>
+                <NCheckbox
+                  v-for="s in visibleSections"
+                  :key="s"
+                  :value="s"
+                  :label="`${sectionLabel(s)} (${preview.counts[s] || 0})`"
+                />
+              </NSpace>
+            </NCheckboxGroup>
+          </div>
+
+          <div v-if="preview.settingsChanged.length" class="preview-block">
+            <div class="preview-label">{{ t('backup.previewSettings') }}</div>
+            <div class="chips">
+              <span v-for="k in preview.settingsChanged" :key="k" class="chip">{{ k }}</span>
+            </div>
+          </div>
+
+          <div v-if="preview.workflowFiles.length" class="preview-block">
+            <div class="preview-label">{{ t('backup.previewFiles') }}</div>
+            <ul class="preview-list">
+              <li v-for="f in preview.workflowFiles" :key="f.id">
+                <span class="mono">{{ f.name }}</span>
+                <span v-if="f.missing" class="tag tag-warn">{{ t('backup.fileMissing') }}</span>
+                <span v-else-if="f.remapped" class="tag">{{ t('backup.fileRemapped') }}</span>
+              </li>
+            </ul>
+          </div>
+
+          <div v-if="preview.warnings.length" class="preview-block">
+            <div class="preview-label">{{ t('backup.previewWarnings') }}</div>
+            <ul class="preview-list">
+              <li v-for="w in preview.warnings" :key="w">{{ w }}</li>
+            </ul>
+          </div>
+
+          <p class="preview-note">{{ t('backup.previewNote') }}</p>
+        </div>
+      </NSpin>
+      <template #footer>
+        <NSpace justify="end">
+          <NButton @click="preview = null">{{ t('common.cancel') }}</NButton>
+          <NButton
+            type="primary"
+            :disabled="!preview?.canRestore || !selectedSections.length"
+            :loading="restoring"
+            @click="applyRestore"
+          >
+            {{ t('backup.restoreSelected') }}
+          </NButton>
+        </NSpace>
+      </template>
+    </NModal>
   </div>
 </template>
 
@@ -207,5 +354,60 @@ onMounted(() => void refresh())
 }
 .empty {
   padding: 64px 0;
+}
+.preview {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.preview-name {
+  margin: 0;
+  font-weight: 700;
+  font-size: 15px;
+}
+.preview-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.preview-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: $color-text-muted-ink;
+}
+.preview-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  word-break: break-all;
+}
+.preview-note {
+  margin: 0;
+  font-size: 12px;
+  color: $color-text-muted-ink;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chip {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: $color-bg-soft;
+}
+.tag {
+  margin-left: 8px;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: $color-bg-soft;
+}
+.tag-warn {
+  background: rgba(240, 160, 32, 0.15);
 }
 </style>

@@ -17,7 +17,11 @@ const PREFIX = 'enc:'
 
 export function encryptSecret(secret: string): string {
   if (!secret) return ''
-  if (secret.startsWith(PREFIX)) return secret // already encrypted (idempotent)
+  // Already ciphertext: pass through. Re-encrypting an UNREADABLE ciphertext
+  // (keychain moved) would destroy the only copy, so this must stay a simple
+  // prefix check; a plaintext secret that literally starts with "enc:" is
+  // documented as unsupported rather than risking the ciphertext case.
+  if (secret.startsWith(PREFIX)) return secret
   try {
     if (safeStorage?.isEncryptionAvailable?.()) {
       return PREFIX + safeStorage.encryptString(secret).toString('base64')

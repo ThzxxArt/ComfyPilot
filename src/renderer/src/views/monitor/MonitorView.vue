@@ -101,7 +101,13 @@ function onWsEvent(payload: unknown): void {
   }
 }
 
-const cpuHistory = computed(() => history.value.slice(-40))
+// Prefer the main-process 10-minute series (survives navigation); fall back to
+// the local rolling buffer when the series is empty (first tick).
+const cpuHistory = computed(() =>
+  series.value.length ? series.value.slice(-40).map((p) => p.cpu) : history.value.slice(-40)
+)
+const ramHistory = computed(() => series.value.slice(-40).map((p) => p.ram))
+const vramHistory = computed(() => series.value.slice(-40).map((p) => p.vram))
 
 function pct(used: number, total: number): number {
   if (!total) return 0
@@ -320,6 +326,21 @@ function formatHistoryTime(ts?: number): string {
   return new Date(ts).toLocaleString()
 }
 
+/** 0.1.18 (WP7): main keeps a 10-minute series; the page renders it. */
+const series = ref<Array<{ ts: number; cpu: number; ram: number; vram: number }>>([])
+async function refreshSeries(): Promise<void> {
+  try {
+    series.value = await ipc('monitor.series')
+  } catch {
+    /* series is advisory */
+  }
+}
+const gpuHigh = computed(() => {
+  const g = store.system?.gpus?.[0]
+  if (!g || !g.vramTotal) return false
+  return (g.vramUsed / g.vramTotal) * 100 >= 90
+})
+
 let off: (() => void) | null = null
 let offWs: (() => void) | null = null
 let queueTimer: ReturnType<typeof setInterval> | null = null
@@ -336,7 +357,9 @@ onMounted(async () => {
     store.system = snap
     history.value.push(snap.cpuUsage)
     if (history.value.length > 60) history.value.shift()
+    void refreshSeries()
   })
+  void refreshSeries()
   offWs = onIpc(IPC_EVENTS.monitorWs, onWsEvent)
   // WS is owned by the app store (bound to the active instance) — do not
   // connect/disconnect it here or leaving this page would kill other pages' streams.
@@ -348,7 +371,30 @@ onMounted(async () => {
     void refreshQueue()
     void refreshJobs()
   }, 3000)
+  document.addEventListener('visibilitychange', onVisibility)
 })
+
+/**
+ * 0.1.18 (WP6 / U15): a hidden window kept polling two endpoints every 3 s.
+ * Pause while hidden and refresh immediately when the user comes back.
+ */
+function onVisibility(): void {
+  if (document.hidden) {
+    if (queueTimer) {
+      clearInterval(queueTimer)
+      queueTimer = null
+    }
+    return
+  }
+  if (!queueTimer) {
+    void refreshQueue()
+    void refreshJobs()
+    queueTimer = setInterval(() => {
+      void refreshQueue()
+      void refreshJobs()
+    }, 3000)
+  }
+}
 
 // Re-poll when the user switches the active instance in the header.
 watch(
@@ -370,7 +416,9 @@ watch(
 onUnmounted(() => {
   off?.()
   offWs?.()
+  document.removeEventListener('visibilitychange', onVisibility)
   if (queueTimer) clearInterval(queueTimer)
+  queueTimer = null
 })
 </script>
 
@@ -442,21 +490,29 @@ onUnmounted(() => {
           :value="formatPercent(store.system?.cpuUsage ?? 0, 1)"
           :icon="PulseOutline"
           tone="primary"
-          :hint="$t('monitor.cpuHint')"
+          :hint="store.isRemoteActive ? $t('monitor.localMachineHint') : $t('monitor.cpuHint')"
         />
         <StatCard
           :label="$t('monitor.memory')"
           :value="formatBytes(store.system?.ramUsed || 0)"
           :icon="HardwareChipOutline"
           tone="success"
-          :hint="`/ ${formatBytes(store.system?.ramTotal || 0)}`"
+          :hint="
+            store.isRemoteActive
+              ? $t('monitor.localMachineHint')
+              : `/ ${formatBytes(store.system?.ramTotal || 0)}`
+          "
         />
         <StatCard
           :label="$t('monitor.diskFree')"
           :value="formatBytes(store.system?.diskFree || 0)"
           :icon="HardwareChipOutline"
           tone="warning"
-          :hint="$t('monitor.diskTotalHint', { n: formatBytes(store.system?.diskTotal || 0) })"
+          :hint="
+            store.isRemoteActive
+              ? $t('monitor.localMachineHint')
+              : $t('monitor.diskTotalHint', { n: formatBytes(store.system?.diskTotal || 0) })
+          "
         />
         <StatCard
           :label="$t('monitor.queueTasks')"
@@ -471,16 +527,38 @@ onUnmounted(() => {
         />
       </div>
 
+      <div v-if="gpuHigh" class="card gpu-alert">
+        <NTag type="warning" size="small">{{ $t('monitor.vramHigh') }}</NTag>
+        <span class="meta">{{ $t('monitor.vramHighHint') }}</span>
+      </div>
+
       <div class="grid lower">
         <section class="card panel">
           <div class="panel-title">{{ $t('monitor.cpuTrend') }}</div>
           <div class="chart">
             <div
               v-for="(v, i) in cpuHistory"
-              :key="i"
+              :key="`cpu-${i}`"
               class="bar"
               :style="{ height: `${Math.max(4, v)}%` }"
             />
+            <div
+              v-for="(v, i) in ramHistory"
+              :key="`ram-${i}`"
+              class="bar bar-ram"
+              :style="{ height: `${Math.max(2, v)}%` }"
+            />
+            <div
+              v-for="(v, i) in vramHistory"
+              :key="`vram-${i}`"
+              class="bar bar-vram"
+              :style="{ height: `${Math.max(1, v)}%` }"
+            />
+          </div>
+          <div class="chart-legend meta">
+            <span class="lg lg-cpu">{{ $t('monitor.cpuUsage') }}</span>
+            <span class="lg lg-ram">{{ $t('monitor.memory') }}</span>
+            <span class="lg lg-vram">{{ $t('monitor.vram') }}</span>
           </div>
         </section>
 
@@ -829,6 +907,42 @@ onUnmounted(() => {
   margin-top: 16px;
 }
 
+.bar-ram {
+  opacity: 0.55;
+}
+.bar-vram {
+  opacity: 0.35;
+}
+.chart-legend {
+  display: flex;
+  gap: 14px;
+  margin-top: 6px;
+}
+.lg::before {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 4px;
+  background: currentColor;
+}
+.lg-cpu {
+  color: $color-primary;
+}
+.lg-ram {
+  color: $color-primary-2;
+}
+.lg-vram {
+  color: $color-warning;
+}
+.gpu-alert {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 10px 14px;
+}
 .remote-note {
   margin-bottom: 14px;
   border-radius: 14px;

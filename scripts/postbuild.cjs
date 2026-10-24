@@ -17,3 +17,18 @@ for (const [from, to] of pairs) {
   fs.copyFileSync(from, to)
   console.log('[postbuild] copied', path.relative(root, from), '->', path.relative(root, to))
 }
+
+// 0.1.18 (WP0): after the copy, verify every artefact a packaged app needs.
+const required = [
+  'out/main/index.js',
+  'out/main/bootstrap.cjs',
+  'out/preload/index.js',
+  'out/renderer/index.html'
+]
+const missing = required.filter((rel) => !fs.existsSync(path.join(root, rel)))
+if (missing.length) {
+  console.error('[postbuild] missing build artefacts:', missing.join(', '))
+  process.exitCode = 1
+} else {
+  console.log('[postbuild] artefacts OK:', required.join(', '))
+}

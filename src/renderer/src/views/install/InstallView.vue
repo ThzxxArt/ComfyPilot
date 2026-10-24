@@ -122,6 +122,8 @@ const preflight = ref<PreflightResult | null>(null)
 const preflighting = ref(false)
 const installing = ref(false)
 const progress = ref<InstallProgress | null>(null)
+/** Identity of the install run this view is rendering (0.1.18). */
+const installRunId = ref('')
 const runtimeProg = ref<RuntimeDownloadProgress | null>(null)
 const fixingId = ref<string | null>(null)
 const expandedLogIds = ref<string[]>([])
@@ -480,7 +482,10 @@ async function startInstall(overrides: Partial<InstallPlan>): Promise<void> {
   const payload = buildPlan(overrides)
   installing.value = true
   try {
-    await ipc('installer.start', payload)
+    // 0.1.18 (WP2): remember the run identity — progress events from an older
+    // run must never repaint this one (the value used to be discarded).
+    const started = await ipc('installer.start', payload)
+    installRunId.value = started?.runId || ''
     if (!progress.value) {
       progress.value = {
         runId: 'pending',
@@ -523,6 +528,8 @@ async function cancelInstall(): Promise<void> {
 function onProgress(p: unknown): void {
   const next = p as InstallProgress
   if (!next) return
+  // Ignore another run's stream (0.1.18 / WP2 contract closure).
+  if (installRunId.value && next.runId && next.runId !== installRunId.value) return
   progress.value = next
 
   for (const s of next.steps) {
@@ -531,11 +538,13 @@ function onProgress(p: unknown): void {
     }
   }
 
-  if (next.status === 'done' && !next.error) {
+  // 0.1.18 (WP3): every terminal state releases the run, including cancel.
+  // Before this, a cancelled install left `installing=true` forever: the Cancel
+  // button stayed and the Reset escape hatch never appeared.
+  if (next.status === 'done' || next.status === 'cancelled' || next.status === 'failed') {
     installing.value = false
   }
   if (next.error) {
-    installing.value = false
     message.error(next.error)
   }
 }
@@ -649,6 +658,7 @@ onMounted(async () => {
   try {
     const existing = await ipc('installer.status')
     if (existing) {
+      installRunId.value = existing.runId || ''
       progress.value = existing
       installing.value = existing.status === 'running' && !existing.error
       for (const s of existing.steps) {

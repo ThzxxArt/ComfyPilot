@@ -19,6 +19,7 @@ import {
   listRemotes,
   upsertBatchJob,
   deleteOutputAsset,
+  outputAssetsRev,
   mergeUpsertOutputAsset,
   mergeUpsertOutputAssets,
   updateOutputAsset,
@@ -27,6 +28,7 @@ import {
   loadInstanceConfigs,
   loadSettings
 } from './db'
+import { resolveReadTarget } from './target'
 import { ComfyApiClient } from './comfyApi'
 import {
   readPngTextMetaFromFile,
@@ -193,11 +195,72 @@ export class BatchService extends EventEmitter {
    * prompts to submit this time.
    */
   private runPlans = new Map<string, Array<{ start: number; count: number }>>()
+  /**
+   * 0.1.18 (WP4 / F4): the run loop used to re-read and re-parse the whole
+   * `batch_jobs.jsonc` list before/after every prompt (O(prompts × jobs)).
+   * The authoritative copy now lives in memory; disk writes for live jobs are
+   * coalesced to one flush per 400 ms, while terminal states flush immediately
+   * so a crash can never leave "running" on disk.
+   */
+  private cache: BatchJob[] | null = null
+  private dirty = new Set<string>()
+  private flushTimer: ReturnType<typeof setTimeout> | null = null
+
+  private loadJobs(): BatchJob[] {
+    if (!this.cache) {
+      this.cache = listBatchJobs().map((j) =>
+        normalizeLegacyJob(j as unknown as Record<string, unknown>)
+      )
+    }
+    return this.cache
+  }
+
+  /** Persist one job: memory first, disk per the liveness rule above. */
+  private persist(job: BatchJob): void {
+    const arr = this.loadJobs()
+    const idx = arr.findIndex((j) => j.id === job.id)
+    const copy = { ...job }
+    if (idx >= 0) arr[idx] = copy
+    else arr.push(copy)
+    this.dirty.add(job.id)
+    const live = job.status === 'submitting' || job.status === 'running'
+    if (!live) {
+      this.flushBatchWrites()
+      return
+    }
+    if (!this.flushTimer) {
+      this.flushTimer = setTimeout(() => this.flushBatchWrites(), 400)
+      // Never keep the app alive just to flush progress.
+      this.flushTimer.unref?.()
+    }
+  }
+
+  /** Force every pending job write to disk (called before quit and by tests). */
+  flushBatchWrites(): void {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer)
+      this.flushTimer = null
+    }
+    if (!this.dirty.size) return
+    const arr = this.loadJobs()
+    for (const id of this.dirty) {
+      const job = arr.find((j) => j.id === id)
+      if (job) upsertBatchJob(job)
+    }
+    this.dirty.clear()
+  }
+
+  /** Drop a job from memory and disk (single owner of batch job state). */
+  private forget(jobId: string): boolean {
+    const arr = this.loadJobs()
+    const idx = arr.findIndex((j) => j.id === jobId)
+    if (idx >= 0) arr.splice(idx, 1)
+    this.dirty.delete(jobId)
+    return deleteBatchJob(jobId)
+  }
 
   list(): BatchJob[] {
-    const jobs = listBatchJobs().map((j) =>
-      normalizeLegacyJob(j as unknown as Record<string, unknown>)
-    )
+    const jobs = this.loadJobs()
     // 0.1.17 (WP5): self-heal — a persisted submitting/running job cannot be
     // live in this process, so it is `interrupted`, not "running forever".
     let changed = false
@@ -206,12 +269,14 @@ export class BatchService extends EventEmitter {
         j.status = 'interrupted'
         j.finishedAt = j.finishedAt || Date.now()
         j.errorSummary = j.errorSummary || 'Interrupted by app exit — resume or re-run'
-        upsertBatchJob(j)
+        this.persist(j)
         changed = true
       }
     }
     if (changed) this.emit('progress', jobs)
-    return jobs
+    // Callers receive copies: mutating a returned job must go through
+    // persist(), otherwise the in-memory truth and disk would diverge.
+    return jobs.map((j) => ({ ...j }))
   }
 
   create(input: {
@@ -256,7 +321,7 @@ export class BatchService extends EventEmitter {
       params: input.params || {},
       workflowPath: items[0].workflowPath
     }
-    upsertBatchJob(rec)
+    this.persist(rec)
     return rec
   }
 
@@ -313,7 +378,7 @@ export class BatchService extends EventEmitter {
     const note = `Lost ${lost} in-flight prompt(s) when the app exited — counted as failed; use "Retry failed" to re-run them`
     job.notes = [job.notes, note].filter(Boolean).join('; ')
     job.errorSummary = note
-    upsertBatchJob(job)
+    this.persist(job)
     this.emit('progress', job)
   }
 
@@ -458,11 +523,10 @@ export class BatchService extends EventEmitter {
     job.startedAt = Date.now()
     job.status = 'submitting'
     job.finishedAt = undefined
-    upsertBatchJob(job)
+    this.persist(job)
     this.emit('progress', job)
 
     // Local instance, or a configured remote (`remote:<id>` instanceId).
-    const instances = loadInstanceConfigs()
     const remoteId = job.instanceId.startsWith('remote:')
       ? job.instanceId.slice('remote:'.length)
       : ''
@@ -470,10 +534,7 @@ export class BatchService extends EventEmitter {
     // A recorded id that no longer resolves must FAIL the job — silently
     // falling back to instances[0] ran the batch on the wrong instance
     // (0.1.13).
-    const inst = remote
-      ? null
-      : instances.find((i) => i.id === job.instanceId) ||
-        (job.instanceId ? undefined : instances[0])
+    const inst = remote ? null : resolveReadTarget(job.instanceId)
     if (!inst && !remote) {
       const reason = job.instanceId
         ? `Instance not found: ${job.instanceId}`
@@ -482,7 +543,7 @@ export class BatchService extends EventEmitter {
       job.finishedAt = Date.now()
       job.notes = [job.notes, reason].filter(Boolean).join('; ')
       job.errorSummary = reason
-      upsertBatchJob(job)
+      this.persist(job)
       this.emit('progress', job)
       throw new Error(reason)
     }
@@ -502,20 +563,28 @@ export class BatchService extends EventEmitter {
 
       for (let li = 0; li < job.items.length; li++) {
         const item = job.items[li]
+        // 0.1.18 (review): retry/failed plans narrow how many attempts THIS run
+        // makes. Counting "remaining" from the cumulative item counters made a
+        // cancelled retry report every original prompt as failed.
+        const plan = this.runPlans.get(job.id)?.[li]
         // Per-item cancel — skip the rest of this leg entirely.
         if (item.cancelled) {
-          const skip = Math.max(0, item.count - item.submitted - item.failed)
+          const skip = plan
+            ? Math.max(0, plan.count)
+            : Math.max(0, item.count - item.submitted - item.failed)
           item.submitFailed += skip
           item.failed += skip
           job.submitFailed += skip
           job.failed += skip
-          upsertBatchJob(job)
+          this.persist(job)
           this.emit('progress', job)
           continue
         }
         const graph = readWorkflowGraph(item.workflowPath)
         if (!graph) {
-          const unparseable = Math.max(0, item.count - item.submitted)
+          const unparseable = plan
+            ? Math.max(0, plan.count)
+            : Math.max(0, item.count - item.submitted)
           item.submitFailed += unparseable
           item.failed += unparseable
           job.submitFailed += unparseable
@@ -524,7 +593,7 @@ export class BatchService extends EventEmitter {
             .filter(Boolean)
             .join('; ')
             .slice(-800)
-          upsertBatchJob(job)
+          this.persist(job)
           this.emit('progress', job)
           continue
         }
@@ -532,7 +601,6 @@ export class BatchService extends EventEmitter {
         // Independent loop counter — item.submitted does NOT advance on
         // submit failure, so reusing it would collide seeds in increment mode.
         // 0.1.17 (WP5): a resume/retry plan narrows which attempts this run makes.
-        const plan = this.runPlans.get(job.id)?.[li]
         // `start` is the ITERATION number (seed derivation), `count` how many
         // attempts this run makes. A retry starts past the attempts it already
         // made, so `start` may equal `item.count` — it must not clamp `count`.
@@ -545,12 +613,15 @@ export class BatchService extends EventEmitter {
             return this.finishCancel(job)
           }
           if (live?.items?.[li]?.cancelled) {
-            const skip = Math.max(0, item.count - item.submitted - item.failed)
+            // Only the attempts this run still owed are skipped.
+            const skip = plan
+              ? Math.max(0, runCount - i)
+              : Math.max(0, item.count - item.submitted - item.failed)
             item.submitFailed += skip
             item.failed += skip
             job.submitFailed += skip
             job.failed += skip
-            upsertBatchJob(job)
+            this.persist(job)
             this.emit('progress', job)
             break
           }
@@ -615,14 +686,14 @@ export class BatchService extends EventEmitter {
               .join('; ')
               .slice(-800)
           }
-          upsertBatchJob(job)
+          this.persist(job)
           this.emit('progress', job)
         }
       }
 
       // Wait for real image completion (or timeout) so the UI shows produced counts.
       job.status = 'running'
-      upsertBatchJob(job)
+      this.persist(job)
       this.emit('progress', job)
       const settledIds = await this.awaitOutputs(job.id, client, localInstancePath, localOutputDir)
 
@@ -668,7 +739,7 @@ export class BatchService extends EventEmitter {
         done.errorSummary = `${done.failed} failed · ${done.completed} ok · ${done.produced} produced`
       }
       done.finishedAt = Date.now()
-      upsertBatchJob(done)
+      this.persist(done)
       this.emit('progress', done)
       return done
     } catch (e) {
@@ -679,7 +750,7 @@ export class BatchService extends EventEmitter {
         const msg = e instanceof Error ? e.message : String(e)
         still.notes = [still.notes, msg].filter(Boolean).join('; ').slice(-800)
         still.errorSummary = msg.slice(0, 200)
-        upsertBatchJob(still)
+        this.persist(still)
         this.emit('progress', still)
       }
       throw e
@@ -695,7 +766,7 @@ export class BatchService extends EventEmitter {
     if (!live) return job
     live.status = 'cancelled'
     live.finishedAt = Date.now()
-    upsertBatchJob(live)
+    this.persist(live)
     this.emit('progress', live)
     return live
   }
@@ -717,12 +788,7 @@ export class BatchService extends EventEmitter {
           })
         : null
     }
-    const instances = loadInstanceConfigs()
-    // Same no-silent-fallback rule as run(): an unresolvable recorded id
-    // yields null (the caller reports it) instead of hitting another
-    // instance (0.1.13).
-    const inst =
-      instances.find((i) => i.id === job.instanceId) || (job.instanceId ? undefined : instances[0])
+    const inst = resolveReadTarget(job.instanceId)
     return inst ? new ComfyApiClient(instanceUrl(inst)) : null
   }
 
@@ -838,7 +904,7 @@ export class BatchService extends EventEmitter {
       }
       // A cancel during history() must not be clobbered by this stale snapshot.
       if (!this.runningIds.has(jobId)) return settled
-      upsertBatchJob(live)
+      this.persist(live)
       this.emit('progress', live)
 
       if (settled.size >= allIds.length) break
@@ -851,7 +917,7 @@ export class BatchService extends EventEmitter {
     // they are neither produced nor failed (history may still be writing).
     const live = this.list().find((j) => j.id === jobId)
     if (live && live.status !== 'cancelled') {
-      upsertBatchJob(live)
+      this.persist(live)
       this.emit('progress', live)
     }
     return settled
@@ -944,7 +1010,7 @@ export class BatchService extends EventEmitter {
     const item = job.items.find((it) => it.workflowPath === workflowPath)
     if (!item) throw new Error('Batch item not found')
     item.cancelled = true
-    upsertBatchJob(job)
+    this.persist(job)
     this.emit('progress', job)
 
     // Fire-and-forget cancel of this leg's prompts. ComfyUI 0.39+'s atomic
@@ -980,7 +1046,7 @@ export class BatchService extends EventEmitter {
     }
     job.status = 'cancelled'
     job.finishedAt = Date.now()
-    upsertBatchJob(job)
+    this.persist(job)
     this.emit('progress', job)
 
     // Fire-and-forget cancel: atomic jobs cancel on 0.39+, plain dequeue otherwise.
@@ -1011,7 +1077,7 @@ export class BatchService extends EventEmitter {
       throw new Error('Batch job is running — cancel it before removing')
     }
     this.runningIds.delete(id)
-    return deleteBatchJob(id)
+    return this.forget(id)
   }
 }
 
@@ -1020,6 +1086,12 @@ export const batchService = new BatchService()
 // ---------- Output ----------
 
 export class OutputService {
+  /**
+   * 0.1.18 (WP4/F5): sorted/filtered list cache. Keyed by the mutation
+   * revision exported by db, so it can never serve stale ordering — the entry
+   * is dropped the moment any writer bumps the revision.
+   */
+  private listCache: { rev: number; key: string; rows: OutputAsset[] } | null = null
   /**
    * Resident path→asset map used by walks: O(1) lookups instead of a per-file
    * scan of the whole index (the old `listOutputAssetsAll().find(...)`).
@@ -1086,6 +1158,29 @@ export class OutputService {
     // 0.1.17 (WP7): listing no longer walks the disk. Callers scan explicitly
     // via `output.scan` (page entry / manual refresh), so paging and filtering
     // are index-only. The old behaviour re-walked 13 GB on every page change.
+    const rev = outputAssetsRev()
+    const cacheKey = JSON.stringify({
+      root: opts?.root || '',
+      type: opts?.type || '',
+      favorite: Boolean(opts?.favorite),
+      batchJobId: opts?.batchJobId || '',
+      workflowId: opts?.workflowId || '',
+      workflowIds: opts?.workflowIds?.slice().sort() || [],
+      sort: opts?.sort || 'createdAt',
+      order: opts?.order || 'desc',
+      createdFrom: opts?.createdFrom ?? null,
+      createdTo: opts?.createdTo ?? null
+    })
+    if (this.listCache && this.listCache.rev === rev && this.listCache.key === cacheKey) {
+      const cached = this.listCache.rows
+      const limitC = Math.max(1, Math.min(Math.floor(Number(opts?.limit) || 200), 200))
+      const offsetC = Math.max(0, Math.floor(Number(opts?.offset) || 0))
+      return {
+        items: cached.slice(offsetC, offsetC + limitC),
+        total: cached.length,
+        truncated: offsetC + Math.min(limitC, Math.max(0, cached.length - offsetC)) < cached.length
+      }
+    }
     let all = listOutputAssetsAll()
     // When the caller scoped a root, only show files under it (the global index
     // also holds other instances / older roots).
@@ -1116,6 +1211,7 @@ export class OutputService {
       if (sort === 'size') return order * (a.size - b.size)
       return order * (a.createdAt - b.createdAt)
     })
+    this.listCache = { rev, key: cacheKey, rows: all }
 
     // 0.1.17 (WP7): clamp here as well as at the IPC edge — a page must never be
     // unbounded just because a caller forgot the limit.

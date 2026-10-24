@@ -100,6 +100,8 @@ const h = vi.hoisted(() => {
      * polite signal (SIGTERM→SIGKILL escalation tests).
      */
     childIgnoresKill: false,
+    /** Delay before a killed child emits 'exit' (models taskkill racing reaping). */
+    exitDelayMs: 0,
     spawnExitImmediate: null as null | { code: number | null; signal: string | null },
     saveDialogResult: { canceled: true, filePath: undefined } as {
       canceled: boolean
@@ -140,13 +142,18 @@ const h = vi.hoisted(() => {
         // A real process emits 'exit' shortly after a successful kill; stop()
         // awaits it (0.1.17 WP3). `childIgnoresKill` models a stuck process.
         if (!state.childIgnoresKill) {
-          queueMicrotask(() => {
+          const fire = (): void => {
             if (child.exitCode === null) {
               child.exitCode = 0
               child.signalCode = signal || 'SIGTERM'
               em.emit('exit', 0, signal || 'SIGTERM')
             }
-          })
+          }
+          // A delayed 'exit' models taskkill returning before libuv reaps the
+          // child — the window where the old race reported exited:false.
+          const delay = Number(state.exitDelayMs || 0)
+          if (delay > 0) setTimeout(fire, delay)
+          else queueMicrotask(fire)
         }
         return true
       },
@@ -570,7 +577,7 @@ describe('list()', () => {
     // adopt 'run' so its status becomes running
     h.state.fetchImpl = okStats
     h.state.portsInUse.add(8188)
-    await svc.start('run')
+    await svc.start('run', { adoptExternal: true })
     const infos = svc.list()
     expect(infos[0].id).toBe('run')
     expect(infos[0].status).toBe('running')
@@ -1347,11 +1354,20 @@ describe('start()', () => {
     await first
   })
 
-  it('adopts an already-running ComfyUI when /system_stats answers', async () => {
+  it('refuses to adopt an unowned ComfyUI without explicit consent (0.1.18 L5)', async () => {
     register(cfg({ id: 'adopt' }))
     h.state.portsInUse.add(8188)
     h.state.fetchImpl = okStats
-    const info = await svc.start('adopt')
+    await expect(svc.start('adopt')).rejects.toMatchObject({ code: 'ADOPT_CONFIRM_REQUIRED' })
+    expect(h.state.spawnCount).toBe(0)
+    expect(svc.list()[0].status).toBe('error')
+  })
+
+  it('adopts an already-running ComfyUI when the user confirms', async () => {
+    register(cfg({ id: 'adopt' }))
+    h.state.portsInUse.add(8188)
+    h.state.fetchImpl = okStats
+    const info = await svc.start('adopt', { adoptExternal: true })
     expect(info.status).toBe('running')
     // managed is an internal runtime flag, never serialised into the info DTO
     expect(info).not.toHaveProperty('managed')
@@ -1523,7 +1539,7 @@ describe('start()', () => {
     expect(info.pid).toBe(newChild.pid)
   })
 
-  it('startAll starts enabled instances and records failures', async () => {
+  it('startAll refuses to auto-adopt an unowned ComfyUI on a busy port', async () => {
     register(
       cfg({ id: 'a1', enabled: true }),
       cfg({ id: 'a2', enabled: true, port: 8188 }),
@@ -1532,10 +1548,11 @@ describe('start()', () => {
     // second instance on same port after first adopted/started → busy conflict
     h.state.portsInUse.add(8188)
     h.state.fetchImpl = okStats
-    // both enabled share port 8188; first adopts, second also adopts (same URL)
+    // Both enabled instances share a port that is served by an unowned
+    // ComfyUI. Auto-start must NOT adopt it on the user's behalf.
     const out = await svc.startAll()
     expect(out.length).toBe(2)
-    expect(out.every((i) => i.status === 'running')).toBe(true)
+    expect(out.every((i) => i.status === 'error')).toBe(true)
   })
 
   it('startAll logs errors from failing instances', async () => {
@@ -1634,7 +1651,7 @@ describe('waitReady()', () => {
     h.state.fetchImpl = okStats
     // start() path: adopt
     h.state.portsInUse.add(8188)
-    const info = await svc.launch('instant')
+    const info = await svc.launch('instant', { adoptExternal: true })
     expect(info.status).toBe('running')
     expect(h.state.spawnCount).toBe(0)
   })
@@ -1644,8 +1661,9 @@ describe('waitReady()', () => {
 // stop / restart / forceKill / killAllNow
 // ===========================================================================
 describe('stop()', () => {
-  it('awaits exit after SIGTERM and escalates to SIGKILL if still alive', async () => {
+  it('graceful mode asks SIGTERM first and escalates to SIGKILL if still alive', async () => {
     vi.useFakeTimers()
+    h.state.settings.stopMode = 'graceful'
     register(cfg({ id: 'stop' }))
     h.state.fetchImpl = okStats
     // Process that ignores the polite signal — the escalation path.
@@ -1662,6 +1680,26 @@ describe('stop()', () => {
     await vi.advanceTimersByTimeAsync(4600)
     const info = await stopP
     expect(child.killSignals).toContain('SIGKILL')
+    expect(info.exited).toBe(false)
+  })
+
+  it('fast mode (default) kills the tree immediately — no 3 s grace', async () => {
+    vi.useFakeTimers()
+    h.state.settings.stopMode = 'fast'
+    register(cfg({ id: 'stop-fast' }))
+    h.state.fetchImpl = okStats
+    h.state.childIgnoresKill = true
+    const startP = svc.start('stop-fast')
+    await vi.advanceTimersByTimeAsync(250)
+    await startP
+    const child = childOf(svc, 'stop-fast')
+    const stopP = svc.stop('stop-fast')
+    await vi.advanceTimersByTimeAsync(0)
+    // 0.1.18 (WP3): default is a real tree kill, not a 3 s wait that a console
+    // Python process would ignore anyway.
+    expect(child.killSignals).toContain('SIGKILL')
+    await vi.advanceTimersByTimeAsync(1800)
+    const info = await stopP
     expect(info.exited).toBe(false)
   })
 
@@ -1687,7 +1725,7 @@ describe('stop()', () => {
     register(cfg({ id: 'ext' }))
     h.state.portsInUse.add(8188)
     h.state.fetchImpl = okStats
-    await svc.start('ext')
+    await svc.start('ext', { adoptExternal: true })
     const info = await svc.stop('ext')
     expect(info.status).toBe('stopped')
     const messages = svc.getLogs('ext').map((l) => l.message)
@@ -1756,7 +1794,7 @@ describe('forceKill()', () => {
     register(cfg({ id: 'ext' }))
     h.state.portsInUse.add(8188)
     h.state.fetchImpl = okStats
-    await svc.start('ext')
+    await svc.start('ext', { adoptExternal: true })
     await svc.forceKill('ext')
     const messages = svc.getLogs('ext').map((l) => l.message)
     expect(messages.some((m) => m.includes('refusing to kill'))).toBe(true)
@@ -1919,7 +1957,7 @@ describe('branch coverage extras', () => {
       seen.push(String(url))
       return okStats(url)
     }
-    const info = await svc.start('v6')
+    const info = await svc.start('v6', { adoptExternal: true })
     expect(info.status).toBe('running')
     // adopt/ready probes must hit loopback, not the raw "::" wildcard
     expect(seen.some((u) => u.startsWith('http://127.0.0.1:8188/'))).toBe(true)
@@ -1933,7 +1971,7 @@ describe('branch coverage extras', () => {
       seen.push(String(url))
       return okStats(url)
     }
-    const info = await svc.start('v6b')
+    const info = await svc.start('v6b', { adoptExternal: true })
     expect(info.status).toBe('running')
     expect(seen.some((u) => u.startsWith('http://127.0.0.1:8188/'))).toBe(true)
   })
@@ -2221,6 +2259,17 @@ describe('lifecycle truth (0.1.17 WP3)', () => {
     await startAssertion
     expect(results.map((r) => r.status)).toEqual(['stopped'])
     expect(results[0].ok).toBe(true)
+  })
+
+  it('fast stop waits for a delayed exit instead of reporting false (regression)', async () => {
+    h.state.settings.stopMode = 'fast'
+    h.state.exitDelayMs = 40
+    register(cfg({ id: 'delayed-exit' }))
+    h.state.fetchImpl = okStats
+    await svc.start('delayed-exit')
+    const info = await svc.stop('delayed-exit')
+    expect(info.exited).toBe(true)
+    h.state.exitDelayMs = 0
   })
 
   it('awaited stop reports exited=true when the process went away', async () => {

@@ -72,7 +72,7 @@ const router = useRouter()
 const store = useAppStore()
 const message = useMessage()
 const dialog = useDialog()
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const { launch, stop, restart, busy } = useLaunch()
 const loading = ref(true)
 const logs = ref<ComfyLogLine[]>([])
@@ -591,7 +591,25 @@ async function refresh(): Promise<void> {
     }
     const logsResult = await ipc('instance.getLogs', forId, LOG_FETCH_LIMIT)
     if (seq !== refreshSeq || forId !== id.value) return
-    logs.value = logsResult
+    // 0.1.18 (WP6 / U4): a full overwrite discarded lines the WS had appended
+    // while getLogs was in flight. If the tail still matches, keep the live
+    // buffer; only replace when the file itself changed (rotation/clear).
+    const cur = logs.value
+    const lastFetched = logsResult[logsResult.length - 1]
+    const lastCurrent = cur[cur.length - 1]
+    const sameTail =
+      Boolean(cur.length && lastFetched && lastCurrent) &&
+      lastFetched.message === lastCurrent.message &&
+      lastFetched.ts === lastCurrent.ts
+    if (sameTail) {
+      // Live buffer already contains the fetched tail.
+    } else if (cur.length && lastFetched?.ts && lastCurrent && lastCurrent.ts > lastFetched.ts) {
+      // Lines were appended during the fetch: keep them instead of dropping
+      // them with a full overwrite (the old "guard" only helped when idle).
+      logs.value = [...logsResult, ...cur.filter((l) => l.ts > lastFetched.ts)]
+    } else {
+      logs.value = logsResult
+    }
     requestLogScroll()
     // 0.1.17 (WP4): surface an unfinished update (journal + backup) if one exists.
     try {
@@ -682,7 +700,7 @@ function sourceLabel(source: ComfyUpdateInfo['source']): string {
 
 /** ISO published_at → local short date ('' when absent/unparseable). */
 function releaseDate(iso?: string): string {
-  return formatDate(iso)
+  return formatDate(iso, locale.value)
 }
 
 /** Open the upstream releases page (changelog) in the system browser. */
@@ -921,7 +939,16 @@ let offLog: (() => void) | null = null
 
 onMounted(() => {
   void refresh()
-  off = onInstanceStatus(() => {
+  /**
+   * 0.1.18 (WP6 / U4): every instanceStatus event used to trigger a full
+   * refresh (8 IPC calls) and a getLogs overwrite. Only a real status
+   * transition refreshes now.
+   */
+  let lastStatus = ''
+  off = onInstanceStatus((info) => {
+    const next = String((info as { status?: string } | undefined)?.status || '')
+    if (next && next === lastStatus) return
+    lastStatus = next
     void refresh()
   })
   // Live log tail — append without full refresh (bounded, with auto-follow).
@@ -1554,7 +1581,15 @@ watch(
                 </div>
               </div>
               <div class="term-wrap">
-                <div ref="logBox" class="term" @scroll.passive="onLogScroll">
+                <div
+                  ref="logBox"
+                  class="term"
+                  tabindex="0"
+                  role="log"
+                  aria-live="polite"
+                  :aria-label="$t('instance.logAriaLabel')"
+                  @scroll.passive="onLogScroll"
+                >
                   <div v-if="!visibleLogs.length" class="term-empty">
                     {{ $t('instance.logEmptyHint') }}
                   </div>

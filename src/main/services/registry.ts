@@ -175,6 +175,7 @@ export async function searchRegistry(opts: SearchOpts = {}): Promise<{
   totalPages: number
   scanned: number
   clientFiltered: boolean
+  needsIndex?: boolean
 }> {
   const settings = loadSettings()
   const query = String(opts.query || '').trim()
@@ -188,7 +189,8 @@ export async function searchRegistry(opts: SearchOpts = {}): Promise<{
   // Search mode: full-catalog local index (all ~5.8k packs)
   if (query) {
     const { registryIndex } = await import('./registryIndex')
-    return registryIndex.search({ query, page, limit: pageSize })
+    // Never crawl the whole catalog as a side effect of typing a query.
+    return registryIndex.search({ query, page, limit: pageSize, allowBuild: false })
   }
 
   // Browse mode: a single remote page
@@ -220,6 +222,7 @@ export function toPageResult<T>(
     totalPages: number
     scanned: number
     clientFiltered: boolean
+    needsIndex?: boolean
   },
   map: (n: RawNode) => T
 ): RegistryPageResult<T> {
@@ -230,6 +233,7 @@ export function toPageResult<T>(
     pageSize: o.pageSize,
     totalPages: o.totalPages,
     scanned: o.scanned,
-    clientFiltered: o.clientFiltered
+    clientFiltered: o.clientFiltered,
+    ...(o.needsIndex ? { needsIndex: true } : {})
   }
 }

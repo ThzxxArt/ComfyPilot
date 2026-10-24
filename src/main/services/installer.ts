@@ -34,6 +34,7 @@ import {
   loadLatestInstallRun,
   clearInstallRuns
 } from './db'
+import { resolveReadTarget } from './target'
 import {
   hasParentHop,
   normalizePathEverySegment,
@@ -1532,9 +1533,8 @@ export class InstallerService extends EventEmitter {
   async installStarter(opts: { id: string; instanceId?: string }): Promise<unknown> {
     const starter = STARTER_MODELS.find((s) => s.id === opts.id)
     if (!starter) throw new Error(`Unknown starter model: ${opts.id}`)
-    const configs = loadInstanceConfigs()
-    // Explicit id wins; never silently fall back to configs[0] when an id was given.
-    const config = opts.instanceId ? configs.find((c) => c.id === opts.instanceId) : configs[0]
+    // Explicit id wins; never silently fall back when an id was given.
+    const config = resolveReadTarget(opts.instanceId)
     if (!config) {
       throw new Error(
         opts.instanceId

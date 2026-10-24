@@ -44,6 +44,7 @@ import {
 } from './db'
 import { resolveInsideAnyRoot } from './security'
 import { findInRuntimes } from './bootstrap'
+import { killProcessTree } from './processTree'
 import { COMFY_DEFAULT_PORTS, LAUNCH_TEMPLATES } from '@shared/constants'
 import { renderLaunchProfile, validateLaunchArgs, warnLaunchArgs } from '@shared/launchArgs'
 import { capabilityService } from './capabilities'
@@ -1291,12 +1292,29 @@ export class InstanceService extends EventEmitter {
           return
         }
         rt.status = 'error'
-        rt.lastError = `ComfyUI did not answer on ${base} within ${Math.round((now - started) / 1000)}s`
+        const timeoutMsg = `ComfyUI did not answer on ${base} within ${Math.round((now - started) / 1000)}s`
+        rt.lastError = timeoutMsg
         if (rt.readyPollTimer) {
           clearInterval(rt.readyPollTimer)
           rt.readyPollTimer = undefined
         }
         this.pushLog(rt, 'error', rt.lastError)
+        // 0.1.18 (WP3 / L4): an error status with a live child is a half-state
+        // — the next launch would race the old process for the port. Kill the
+        // tree we started and drop the handle only once it is gone.
+        const stuck = rt.process
+        if (stuck && stuck.exitCode === null) {
+          this.pushLog(rt, 'warn', 'Ready timeout — terminating the unresponsive process tree')
+          // Mark the kill as ours so the exit handler does not report a crash
+          // toast; the timeout reason stays visible instead.
+          rt.intentionalStop = true
+          void killProcessTree(stuck, { timeoutMs: 5000 }).then(() => {
+            if (rt.process === stuck) rt.process = undefined
+            if (stuck.exitCode !== null) this.forgetPid(rt.config.id)
+            if (rt.status === 'stopped') rt.status = 'error'
+            rt.intentionalStop = false
+          })
+        }
         this.settleReadyWaiters(rt, rt.lastError)
       }
     }
@@ -1357,6 +1375,26 @@ export class InstanceService extends EventEmitter {
       try {
         const res = await fetch(`${base}/system_stats`, { signal: AbortSignal.timeout(1500) })
         if (res.ok) {
+          // 0.1.18 (WP3 / L5): prove the process is OURS before adopting it.
+          // Any ComfyUI answering on the port used to be treated as this
+          // instance — batch runs and outputs then went to another machine's UI.
+          const ledger = this.readPids()[config.id]
+          let owned = Boolean(ledger?.pid && this.isPidAlive(ledger.pid))
+          // A live PID is not proof: PIDs get reused. Require the command line
+          // to still look like a ComfyUI (same reasoning as the startup sweep).
+          if (owned && ledger?.pid) {
+            const cmd = await this.processCommandLine(ledger.pid)
+            owned = Boolean(cmd && /main\.py|comfyui/i.test(cmd))
+          }
+          if (!owned && !opts?.adoptExternal) {
+            const e = new Error(
+              `Port ${effectivePort} is already serving a ComfyUI this app did not start`
+            ) as Error & { code?: string; suggestedPort?: number }
+            e.code = 'ADOPT_CONFIRM_REQUIRED'
+            e.suggestedPort = effectivePort
+            rt.expectingStop = false
+            throw e
+          }
           rt.status = 'running'
           rt.ready = true
           rt.managed = false
@@ -1369,7 +1407,14 @@ export class InstanceService extends EventEmitter {
           this.emitStatus(rt)
           return this.toInfo(rt)
         }
-      } catch {
+      } catch (adoptErr) {
+        // A coded adoption refusal is not "port not ComfyUI" — surface it.
+        if ((adoptErr as { code?: string })?.code === 'ADOPT_CONFIRM_REQUIRED') {
+          rt.status = 'error'
+          rt.lastError = (adoptErr as Error).message
+          this.emitStatus(rt)
+          throw adoptErr
+        }
         /* not ComfyUI — real conflict */
       }
       if (opts?.relocatePort) {
@@ -1765,6 +1810,35 @@ export class InstanceService extends EventEmitter {
     if (!child) return true
     if (child.exitCode !== null) return true
 
+    // 0.1.18 (WP3): the default is now a real tree kill. The old "graceful"
+    // path always waited the full 3 s on Windows because `taskkill /T` (no /F)
+    // does not close a console Python process.
+    let mode: 'fast' | 'graceful' = 'fast'
+    try {
+      mode = loadSettings().stopMode === 'graceful' ? 'graceful' : 'fast'
+    } catch {
+      /* defaults to fast */
+    }
+    if (mode === 'fast') {
+      const prefix = new Promise<boolean>((resolve) => {
+        if (child.exitCode !== null) return resolve(true)
+        let done = false
+        const finish = (v: boolean): void => {
+          if (done) return
+          done = true
+          resolve(v)
+        }
+        child.once('exit', () => finish(true))
+        setTimeout(() => finish(false), 1500)
+      })
+      await killProcessTree(child, { timeoutMs: 5000 })
+      // `Promise.resolve(child.exitCode !== null)` settled immediately, so the
+      // exit watcher was dead code and a successful kill was reported as
+      // "still running" (breaking update/rollback right after a stop).
+      if (child.exitCode !== null) return true
+      return prefix
+    }
+
     const exited = new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => resolve(false), graceMs)
       child.once('exit', () => {
@@ -2011,23 +2085,50 @@ export class InstanceService extends EventEmitter {
     return info
   }
 
-  /** Synchronous best-effort kill used on app quit. */
+  private quitting: Promise<void> = Promise.resolve()
+
+  /**
+   * Best-effort tree kill of every live child (0.1.18 WP3).
+   *
+   * The old version called `child.kill()` (which on Windows only terminates the
+   * direct process) and immediately forgot the PID — the grandchild ComfyUI
+   * kept the port and VRAM, and the next boot had no ledger entry to sweep.
+   * The ledger now survives until the process is confirmed gone; an unfinished
+   * kill stays for the startup sweep.
+   */
   killAllNow(): void {
+    const tasks: Array<Promise<void>> = []
     for (const rt of this.runtimes.values()) {
-      if (rt.process) {
-        rt.intentionalStop = true
-        rt.generation += 1
-        this.clearReadyProbe(rt)
-        try {
-          rt.process.kill()
-        } catch {
-          /* ignore */
-        }
-        rt.process = undefined
-        this.forgetPid(rt.config.id)
-        rt.status = 'stopped'
-      }
+      if (!rt.process) continue
+      rt.intentionalStop = true
+      rt.generation += 1
+      this.clearReadyProbe(rt)
+      const child = rt.process
+      const id = rt.config.id
+      rt.process = undefined
+      rt.status = 'stopped'
+      tasks.push(
+        killProcessTree(child, { timeoutMs: 5000 }).then(() => {
+          if (child.exitCode !== null) this.forgetPid(id)
+        })
+      )
     }
+    // 0.1.18 (regression): only replace the in-flight quit promise when this
+    // call actually had trees to kill. Tray Quit runs killAllNow() first; a
+    // second call from killAllForQuit() must wait for THAT work, not overwrite
+    // it with an already-resolved promise.
+    if (tasks.length) {
+      this.quitting = Promise.allSettled(tasks).then(() => undefined)
+    }
+  }
+
+  /** Await quit kills with a hard budget so the app always exits. */
+  async killAllForQuit(budgetMs = 5000): Promise<void> {
+    this.killAllNow()
+    await Promise.race([
+      this.quitting,
+      new Promise<void>((resolve) => setTimeout(resolve, budgetMs))
+    ])
   }
 }
 

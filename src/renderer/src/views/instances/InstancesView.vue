@@ -74,7 +74,7 @@ const route = useRoute()
 const store = useAppStore()
 const message = useMessage()
 const dialog = useDialog()
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const { launch, stop, restart, forceKill, busy } = useLaunch()
 
 const loading = ref(false)
@@ -431,7 +431,9 @@ async function exportLaunchScript(): Promise<void> {
     const { path } = await ipc('instance.exportLaunchScript', previewFor.value.id)
     message.success(t('instance.launchScriptExported', { path }))
   } catch (err) {
-    message.error(err instanceof Error ? err.message : String(err))
+    const msg = err instanceof Error ? err.message : String(err)
+    // The OS save dialog was cancelled — not an error worth a red toast.
+    if (!/^cancell?ed$/i.test(msg)) message.error(msg)
   }
 }
 
@@ -556,7 +558,7 @@ function updateInfoSummary(info: ComfyUpdateInfo): string {
     parts.push(
       t('instance.latestRelease', {
         tag: info.latestRelease.tag,
-        date: formatDate(info.latestRelease.publishedAt)
+        date: formatDate(info.latestRelease.publishedAt, locale.value)
       })
     )
   }

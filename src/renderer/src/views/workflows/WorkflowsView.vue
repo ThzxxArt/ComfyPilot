@@ -44,7 +44,13 @@ import { useAppStore } from '@/stores/app'
 import { ipc } from '@/composables/useIpc'
 import { COLORS } from '@/styles/tokens'
 import ListSkeleton from '@/components/ListSkeleton.vue'
-import type { WorkflowCompareResult, WorkflowRecord } from '@shared/types'
+import ListState from '@/components/ListState.vue'
+import type {
+  WorkflowCompareResult,
+  WorkflowModelPreflight,
+  WorkflowPreflight,
+  WorkflowRecord
+} from '@shared/types'
 
 const { t } = useI18n()
 const store = useAppStore()
@@ -104,6 +110,42 @@ const compareOptions = computed(() =>
   items.value.map((w) => ({ label: `${w.name} (${originLabel(w.origin)})`, value: w.id }))
 )
 
+// ---- 0.1.18 (WP7): missing-dependency precheck ----
+const depModal = ref(false)
+const depBusy = ref('')
+const depResult = ref<{
+  record: WorkflowRecord | null
+  models: WorkflowModelPreflight | null
+  nodes: WorkflowPreflight | null
+}>({ record: null, models: null, nodes: null })
+
+async function checkDeps(wf: WorkflowRecord): Promise<void> {
+  depBusy.value = wf.id
+  depResult.value = { record: wf, models: null, nodes: null }
+  depModal.value = true
+  try {
+    const [models, nodes] = await Promise.all([
+      ipc('workflow.checkModels', wf.path, store.activeInstanceId || undefined).catch(() => null),
+      store.activeInstanceId
+        ? ipc('workflow.preflight', wf.path, store.activeInstanceId).catch(() => null)
+        : Promise.resolve(null)
+    ])
+    depResult.value = { record: wf, models, nodes }
+  } finally {
+    depBusy.value = ''
+  }
+}
+
+function goMissingModel(name: string): void {
+  depModal.value = false
+  void router.push({ path: '/models', query: { q: name } })
+}
+
+function goMissingNodes(): void {
+  depModal.value = false
+  void router.push('/market')
+}
+
 function openCompare(pick?: WorkflowRecord): void {
   if (pick) compareA.value = pick.id
   if (compareB.value === compareA.value) compareB.value = null
@@ -136,6 +178,9 @@ const originLabel = (o: WorkflowRecord['origin']): string => {
   return t('workflows.originExternal')
 }
 
+/** 0.1.18 (WP6 / U7): failed load is not an empty library. */
+const loadError = ref('')
+
 async function refresh(): Promise<void> {
   loading.value = true
   try {
@@ -143,8 +188,10 @@ async function refresh(): Promise<void> {
     const info = await ipc('workflow.libraryInfo', store.activeInstanceId || undefined)
     libraryRoot.value = info.root
     missingCount.value = info.missing
+    loadError.value = ''
   } catch (err) {
-    message.error(err instanceof Error ? err.message : String(err))
+    loadError.value = err instanceof Error ? err.message : String(err)
+    message.error(loadError.value)
   } finally {
     loading.value = false
   }
@@ -370,10 +417,31 @@ function openQueue(row: WorkflowRecord): void {
   showQueue.value = true
 }
 
-/** Running state of the instance picked inside the queue modal. */
-const queueInstanceRunning = computed(
-  () => store.instances.find((i) => i.id === queueInstanceId.value)?.status === 'running'
-)
+/**
+ * 0.1.18 (WP6): queueing works on remotes too (the backend probes them), but
+ * the old dialog only listed local instances and disabled the button unless a
+ * LOCAL instance was running.
+ */
+const queueOptions = computed(() => [
+  ...store.instances.map((i) => ({
+    label:
+      i.status === 'running'
+        ? `${i.name} · ${t('common.running')}`
+        : `${i.name} · ${t('common.stopped')}`,
+    value: i.id,
+    disabled: i.status !== 'running'
+  })),
+  ...store.remotes.map((r) => ({
+    label: `${r.name} · ${t('target.remote')}`,
+    value: `remote:${r.id}`,
+    disabled: false
+  }))
+])
+
+const queueTargetReady = computed(() => {
+  if (queueInstanceId.value.startsWith('remote:')) return true
+  return Boolean(store.instances.find((i) => i.id === queueInstanceId.value)?.status === 'running')
+})
 
 function closeQueue(): void {
   showQueue.value = false
@@ -383,7 +451,7 @@ function closeQueue(): void {
 
 async function doQueue(): Promise<void> {
   if (!queueTarget.value || queuing.value) return
-  if (!queueInstanceRunning.value) {
+  if (!queueTargetReady.value) {
     message.warning(needInstanceHint.value)
     return
   }
@@ -681,6 +749,9 @@ onMounted(async () => {
               <NButton size="tiny" secondary :disabled="wf.missing" @click="sendToBatch(wf)">
                 {{ $t('workflows.toBatch') }}
               </NButton>
+              <NButton size="tiny" secondary :loading="depBusy === wf.id" @click="checkDeps(wf)">
+                {{ $t('workflows.checkDeps') }}
+              </NButton>
               <NButton size="tiny" secondary @click="openDetail(wf)">{{
                 $t('workflows.detail')
               }}</NButton>
@@ -751,6 +822,7 @@ onMounted(async () => {
             </div>
           </article>
         </div>
+        <ListState v-else-if="loadError" :error="loadError" :rows="6" @retry="refresh" />
         <NEmpty
           v-else
           :description="hasFilter ? $t('common.noMatch') : $t('workflows.empty')"
@@ -778,23 +850,26 @@ onMounted(async () => {
       <NSpace vertical>
         <div>{{ queueTarget?.name }}</div>
         <NSelect
-          :options="store.instances.map((i) => ({ label: i.name, value: i.id }))"
+          :options="queueOptions"
           :value="queueInstanceId"
           :placeholder="$t('workflows.instancePlaceholder')"
           @update:value="(v: string) => (queueInstanceId = v)"
         />
+        <div v-if="queueInstanceId.startsWith('remote:')" class="meta">
+          {{ $t('workflows.queueRemoteHint') }}
+        </div>
         <NInputNumber v-model:value="seed" :placeholder="$t('workflows.seedPlaceholder')" />
       </NSpace>
       <template #footer>
         <NSpace justify="end">
           <NButton @click="closeQueue">{{ $t('workflows.cancel') }}</NButton>
-          <NTooltip trigger="hover" :disabled="queueInstanceRunning">
+          <NTooltip trigger="hover" :disabled="queueTargetReady">
             <template #trigger>
               <span class="btn-wrap">
                 <NButton
                   type="primary"
                   :loading="queuing"
-                  :disabled="!queueInstanceRunning"
+                  :disabled="!queueTargetReady"
                   @click="doQueue"
                 >
                   {{ $t('workflows.enqueue') }}
@@ -846,6 +921,71 @@ onMounted(async () => {
     </NModal>
 
     <!-- Detail -->
+    <NModal
+      v-model:show="depModal"
+      preset="card"
+      :title="$t('workflows.depsTitle', { name: depResult.record?.name || '' })"
+      style="max-width: 680px"
+    >
+      <NSpin :show="Boolean(depBusy)">
+        <NSpace vertical :size="12">
+          <template v-if="depResult.models">
+            <div v-if="!depResult.models.available" class="meta">
+              {{ $t('workflows.depsUnavailable', { error: depResult.models.error || '' }) }}
+            </div>
+            <template v-else>
+              <div class="deps-line">
+                <NTag :type="depResult.models.missing.length ? 'warning' : 'success'" size="small">
+                  {{
+                    $t('workflows.depsModels', {
+                      ok: depResult.models.present,
+                      total: depResult.models.required
+                    })
+                  }}
+                </NTag>
+              </div>
+              <div v-for="m in depResult.models.missing" :key="m.name" class="deps-row">
+                <span class="mono">{{ m.name }}</span>
+                <span class="meta">{{ m.nodeType }}</span>
+                <NButton size="tiny" secondary @click="goMissingModel(m.name)">
+                  {{ $t('workflows.depsFindModel') }}
+                </NButton>
+              </div>
+            </template>
+          </template>
+          <div v-else class="meta">{{ $t('workflows.depsCheckFailed') }}</div>
+          <template v-if="depResult.nodes">
+            <div v-if="!depResult.nodes.available" class="meta">
+              {{ $t('workflows.depsNodesUnavailable') }}
+            </div>
+            <template v-else-if="depResult.nodes.missingTypes.length">
+              <NTag type="warning" size="small">
+                {{ $t('workflows.depsNodes', { n: depResult.nodes.missingTypes.length }) }}
+              </NTag>
+              <div
+                v-for="nodeType in depResult.nodes.missingTypes"
+                :key="nodeType"
+                class="deps-row"
+              >
+                <span class="mono">{{ nodeType }}</span>
+              </div>
+              <NButton size="tiny" secondary @click="goMissingNodes">
+                {{ $t('workflows.depsFindNodes') }}
+              </NButton>
+            </template>
+            <NTag v-else type="success" size="small">{{ $t('workflows.depsNodesOk') }}</NTag>
+          </template>
+          <div v-else class="meta">{{ $t('workflows.depsNoInstance') }}</div>
+          <div class="meta">{{ $t('workflows.depsHint') }}</div>
+        </NSpace>
+      </NSpin>
+      <template #footer>
+        <NSpace justify="end">
+          <NButton @click="depModal = false">{{ $t('common.close') }}</NButton>
+        </NSpace>
+      </template>
+    </NModal>
+
     <NModal
       v-model:show="showDetail"
       preset="card"
@@ -1111,6 +1251,20 @@ onMounted(async () => {
 }
 .btn-wrap {
   display: inline-flex;
+}
+.deps-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.deps-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid $color-border;
+  word-break: break-all;
 }
 .empty {
   padding: 64px 0;

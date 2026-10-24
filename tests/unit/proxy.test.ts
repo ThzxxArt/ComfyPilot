@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { proxyAuthFor } from '../../src/main/services/proxy'
 
 const { mockLoadSettings, sessionState } = vi.hoisted(() => {
   const sessionState = {
@@ -326,5 +327,34 @@ describe('applyProxyToElectron / testProxy / syncProxyFromSettings', () => {
     mockLoadSettings.mockReturnValue({ proxy: base } as never)
     const again = syncProxyFromSettings()
     expect(again.enabled).toBe(true)
+  })
+})
+
+describe('proxyAuthFor (0.1.18 / S2)', () => {
+  const base = {
+    enabled: true,
+    protocol: 'http' as const,
+    host: '127.0.0.1',
+    port: 7890,
+    username: 'alice',
+    password: 's3cret',
+    bypass: ''
+  }
+
+  it('answers a proxy challenge with the configured credentials', () => {
+    expect(proxyAuthFor({ isProxy: true }, { proxy: base })).toEqual({
+      username: 'alice',
+      password: 's3cret'
+    })
+  })
+
+  it('never answers a site challenge with the proxy password', () => {
+    expect(proxyAuthFor({ isProxy: false }, { proxy: base })).toBeNull()
+    expect(proxyAuthFor({}, { proxy: base })).toBeNull()
+  })
+
+  it('returns null when the proxy is off or has no username', () => {
+    expect(proxyAuthFor({ isProxy: true }, { proxy: { ...base, enabled: false } })).toBeNull()
+    expect(proxyAuthFor({ isProxy: true }, { proxy: { ...base, username: '' } })).toBeNull()
   })
 })

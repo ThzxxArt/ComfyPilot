@@ -9,12 +9,16 @@ import { app } from 'electron'
 import { join, basename, dirname } from 'path'
 import {
   appendFileSync,
+  closeSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
+  openSync,
   readFileSync,
   writeFileSync,
   renameSync,
   readdirSync,
+  rmSync,
   lstatSync,
   statSync
 } from 'fs'
@@ -271,11 +275,103 @@ function readJsonc<T>(name: string, fallback: T): T {
   }
 }
 
+/** Synchronous backoff used by the rename retry (no async context available). */
+function sleepSync(ms: number): void {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+  } catch {
+    const end = Date.now() + ms
+    while (Date.now() < end) {
+      /* spin — only reached on runtimes without SharedArrayBuffer */
+    }
+  }
+}
+
+function fsyncFile(path: string): void {
+  let fd: number | undefined
+  try {
+    fd = openSync(path, 'r+')
+    fsyncSync(fd)
+  } catch {
+    /* fsync is best-effort on filesystems that do not support it */
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd)
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
+/** Flush the directory entry so the rename itself survives a power cut (POSIX). */
+function fsyncDir(dir: string): void {
+  if (process.platform === 'win32') return
+  let fd: number | undefined
+  try {
+    fd = openSync(dir, 'r')
+    fsyncSync(fd)
+  } catch {
+    /* ignore */
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd)
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
+/**
+ * Windows can refuse `rename` while another process (antivirus, indexer, a
+ * just-closed reader) holds the target. 0.1.18 (WP1): retry with backoff instead
+ * of throwing a "failed to save settings" on the first EPERM.
+ */
+function renameWithRetry(from: string, to: string): void {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      renameSync(from, to)
+      return
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code
+      if (attempt < 3 && (code === 'EPERM' || code === 'EBUSY' || code === 'EACCES')) {
+        sleepSync(20 * (attempt + 1))
+        continue
+      }
+      throw e
+    }
+  }
+}
+
+let tmpSeq = 0
+
+/**
+ * 0.1.18 (WP1): durable atomic write.
+ * - unique tmp name (two app instances used to share `<file>.tmp` and clobber
+ *   each other's half-written snapshots),
+ * - fsync the tmp file and the directory so a crash/power cut cannot leave the
+ *   rename pointing at unwritten data,
+ * - retry the rename on Windows sharing violations.
+ */
 function writeJsonc(name: string, value: unknown, header?: string): void {
   const p = fileFor(name)
-  const tmp = p + '.tmp'
-  writeFileSync(tmp, stringifyJsonc(value, header), 'utf-8')
-  renameSync(tmp, p)
+  const tmp = `${p}.tmp-${process.pid}-${++tmpSeq}`
+  try {
+    writeFileSync(tmp, stringifyJsonc(value, header), 'utf-8')
+    fsyncFile(tmp)
+    renameWithRetry(tmp, p)
+    fsyncDir(dirname(p))
+  } catch (e) {
+    try {
+      rmSync(tmp, { force: true })
+    } catch {
+      /* ignore */
+    }
+    throw e
+  }
 }
 
 // ---------- Debounced persistence (0.1.16) ----------
@@ -384,6 +480,17 @@ export function flushPendingWrites(): { failed: string[] } {
       console.error(`[db] failed to persist ${name}:`, e instanceof Error ? e.message : e)
     }
   }
+  // 0.1.18 (regression): failures were re-queued but no timer was re-armed, so
+  // the data sat in memory until quit. Retry soon instead.
+  if (failed.length && !flushTimer) {
+    flushTimer = setTimeout(() => {
+      flushTimer = null
+      flushPendingWrites()
+    }, Math.max(FLUSH_MS, 2000))
+    if (typeof (flushTimer as { unref?: () => void }).unref === 'function') {
+      ;(flushTimer as unknown as { unref: () => void }).unref()
+    }
+  }
   return { failed }
 }
 
@@ -413,6 +520,27 @@ function persistList(name: string, next: unknown[]): void {
     return
   }
   writeJsonc(name, next)
+  fileCache.delete(name)
+  fileCacheStamp.delete(name)
+}
+
+/**
+ * Replace a whole collection (backup restore / migrations).
+ *
+ * 0.1.18 (WP1): `backup.ts` used to write `<name>.jsonc` itself. That made it a
+ * second writer next to the debounce queue: an upsert queued before the restore
+ * could flush afterwards with the *older* list and silently undo the restore.
+ * Funnelling every wholesale replacement through this function keeps a single
+ * owner: flush the queue first, then publish the new snapshot through the same
+ * cache/debounce path every other writer uses.
+ */
+export function replaceList(name: string, items: unknown[]): void {
+  flushPendingWrites()
+  if (DEBOUNCED_COLLECTIONS.has(name)) {
+    scheduleFileWrite(name, items)
+    return
+  }
+  writeJsonc(name, items)
   fileCache.delete(name)
   fileCacheStamp.delete(name)
 }
@@ -452,6 +580,11 @@ const SETTINGS_HEADER = `ComfyPilot settings (JSONC)
  */
 let proxyPasswordUnreadable = false
 
+/** 0.1.18 (WP1 / S6): surface "the stored proxy password cannot be decrypted". */
+export function isProxyPasswordUnreadable(): boolean {
+  return proxyPasswordUnreadable
+}
+
 export function loadSettings(): AppSettings {
   const stored = readJsonc<Partial<AppSettings>>('settings', {})
   const proxy = { ...DEFAULT_SETTINGS.proxy, ...(stored.proxy || {}) }
@@ -487,7 +620,9 @@ const KNOWN_SETTINGS_KEYS = new Set([
   'proxy',
   'pipIndex',
   'torchIndexMirror',
-  'outputScanDepth'
+  'outputScanDepth',
+  'stopMode',
+  'allowUnverifiedRuntime'
 ])
 
 export function saveSettings(patch: Partial<AppSettings>): AppSettings {
@@ -601,11 +736,13 @@ export function listNodePacks(): NodePack[] {
   const list = readJsoncCached<NodePack[]>('node_packs', [])
   const clean = list.filter((p) => !isJunkNodePack(p))
   if (clean.length !== list.length) {
-    // Self-heal once; a read must never fail because the cleanup write failed.
+    // Self-heal once through the single writer (0.1.18 WP1). Writing the file
+    // directly here bypassed the debounce queue, so a stale queued snapshot
+    // could resurrect the junk rows on the next flush.
     try {
-      writeJsonc('node_packs', clean)
+      persistList('node_packs', clean)
     } catch {
-      /* ignore */
+      /* a read must never fail because the cleanup write failed */
     }
   }
   return clean
@@ -750,6 +887,7 @@ export function deleteBackup(id: string): boolean {
 
 // ---------- Output ----------
 export function upsertOutputAsset(a: OutputAsset): void {
+  outputAssetsRevision++
   upsertInList('output_assets', a, (x, y) => x.path === y.path || x.id === y.id)
 }
 
@@ -757,6 +895,15 @@ export function upsertOutputAsset(a: OutputAsset): void {
  * Field-level merge upsert: a disk walk must never wipe linkage written by the
  * batch indexer (batchJobId / workflowId / thumbnail / size).
  */
+/**
+ * 0.1.18 (WP4/F5): monotonic revision for the output index. List-side caches
+ * (sort/filter results) can prove they are fresh instead of trusting a TTL.
+ */
+let outputAssetsRevision = 0
+export function outputAssetsRev(): number {
+  return outputAssetsRevision
+}
+
 export function mergeUpsertOutputAsset(a: OutputAsset): void {
   mergeUpsertOutputAssets([a])
 }
@@ -764,6 +911,7 @@ export function mergeUpsertOutputAsset(a: OutputAsset): void {
 /** Batch form of mergeUpsertOutputAsset — one read-modify-write for a whole walk. */
 export function mergeUpsertOutputAssets(items: OutputAsset[]): void {
   if (!items.length) return
+  outputAssetsRevision++
   mutateInList<OutputAsset>('output_assets', [], (list) => {
     for (const a of items) {
       const i = list.findIndex((x) => x.path === a.path || x.id === a.id)
@@ -819,6 +967,7 @@ export function listOutputAssetsAll(): OutputAsset[] {
 }
 
 export function deleteOutputAsset(id: string): boolean {
+  outputAssetsRevision++
   const before = readJsoncCached<OutputAsset[]>('output_assets', []).length
   const next = mutateInList<OutputAsset>('output_assets', [], (list) =>
     list.filter((a) => a.id !== id)
@@ -832,6 +981,7 @@ export function deleteOutputAsset(id: string): boolean {
  */
 export function clearOutputAssetThumbnails(ids: string[]): number {
   if (!ids.length) return 0
+  outputAssetsRevision++
   const wanted = new Set(ids)
   let cleared = 0
   mutateInList<OutputAsset>('output_assets', [], (list) =>
@@ -845,6 +995,7 @@ export function clearOutputAssetThumbnails(ids: string[]): number {
 }
 
 export function updateOutputAsset(id: string, patch: Partial<OutputAsset>): OutputAsset | null {
+  outputAssetsRevision++
   let result: OutputAsset | null = null
   mutateInList<OutputAsset>('output_assets', [], (list) => {
     const i = list.findIndex((a) => a.id === id)

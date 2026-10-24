@@ -21,7 +21,8 @@ async function safeExec(
   cmd: string,
   args: string[],
   cwd?: string,
-  timeoutMs = 20000
+  timeoutMs = 20000,
+  signal?: AbortSignal
 ): Promise<string> {
   try {
     // Must inherit app proxy settings — previously env-created venv/pip ignored them
@@ -31,6 +32,7 @@ async function safeExec(
       timeout: timeoutMs,
       windowsHide: true,
       maxBuffer: 20 * 1024 * 1024,
+      signal,
       env: comfyChildEnv(loadSettings())
     })
     return stdout.trim()
@@ -115,15 +117,22 @@ export async function runStreaming(
       env: comfyChildEnv(loadSettings())
     })
     let timer: ReturnType<typeof setTimeout> | null = null
+    const cleanup = (): void => {
+      if (opts.signal) opts.signal.removeEventListener('abort', onAbort)
+    }
     const onAbort = (): void => {
       if (!settle()) return
       if (timer) clearTimeout(timer)
-      // 0.1.17 (WP1-5): kill the whole tree — `child.kill()` alone leaves
-      // grandchildren (python subprocesses) running on Windows.
-      void killProcessTree(child)
-      const err = new Error('aborted')
-      err.name = 'AbortError'
-      reject(err)
+      cleanup()
+      // 0.1.18 (WP3 / L8): do NOT reject before the tree is actually gone.
+      // The caller treats an AbortError as "this venv is free now"; resolving
+      // early let the next operation race the still-dying python process and
+      // write into the same .venv concurrently.
+      void killProcessTree(child, { timeoutMs: 8000 }).then(() => {
+        const err = new Error('aborted')
+        err.name = 'AbortError'
+        reject(err)
+      })
     }
     if (opts.signal) {
       if (opts.signal.aborted) {
@@ -141,9 +150,6 @@ export async function runStreaming(
       },
       opts.timeout || 30 * 60 * 1000
     )
-    const cleanup = (): void => {
-      if (opts.signal) opts.signal.removeEventListener('abort', onAbort)
-    }
     /**
      * Line-split buffers (0.1.11): a line cut across chunks must not be emitted
      * in halves (git's `Receiving objects: N%` parsing depends on whole lines),
@@ -314,6 +320,28 @@ export async function installRequirements(
 
 export class EnvService extends EventEmitter {
   private repairProgress: UpdateProgress | null = null
+  /**
+   * 0.1.18 (WP5): the running repair owns its abort controller so cancel is a
+   * service concern, not an IPC-global. One repair at a time (same venv).
+   */
+  private repairAbort: AbortController | null = null
+
+  /** True while a repair is running. */
+  isRepairing(): boolean {
+    return this.repairAbort !== null
+  }
+
+  /** Abort the running repair; false when nothing is running. */
+  cancelRepair(): boolean {
+    if (!this.repairAbort) return false
+    this.repairAbort.abort()
+    // 0.1.18 (regression): a cancel during runtime download / venv creation
+    // used to be ignored until the next pip step. Abort both subsystems.
+    void import('./bootstrap')
+      .then((m) => m.bootstrapService.cancelAll())
+      .catch(() => undefined)
+    return true
+  }
 
   /**
    * Emit an UpdateProgress-shaped snapshot so the renderer can reuse the
@@ -357,7 +385,13 @@ export class EnvService extends EventEmitter {
     p.step = step
     p.message = message
     p.status =
-      status === 'done' && step === 'done' ? 'done' : status === 'failed' ? 'failed' : 'running'
+      status === 'done' && step === 'done'
+        ? 'done'
+        : status === 'failed'
+          ? 'failed'
+          : status === 'cancelled'
+            ? 'cancelled'
+            : 'running'
     const doneCount = p.steps.filter((x) => x.status === 'done' || x.status === 'skipped').length
     p.percent = Math.round((doneCount / p.steps.length) * 100)
     this.emit('progress', { ...p })
@@ -577,11 +611,33 @@ export class EnvService extends EventEmitter {
     instanceId: string
     torchChannel?: string
     recreateVenv?: boolean
+    /**
+     * 0.1.18 (WP3 / L7): a full repair can spend 30+ minutes in pip. It must
+     * be cancellable, and cancellation must terminate the pip tree before the
+     * promise rejects so the venv is not written by a second operation.
+     */
+    signal?: AbortSignal
   }): Promise<EnvProbe> {
     const { loadInstanceConfigs } = await import('./db')
     const { join } = await import('path')
     const { existsSync, mkdirSync, rmSync } = await import('fs')
     const id = opts.instanceId
+    const throwIfAborted = (): void => {
+      if (!signal?.aborted) return
+      const err = new Error('aborted')
+      err.name = 'AbortError'
+      throw err
+    }
+    if (this.repairAbort) {
+      const e = new Error('An environment repair is already running') as Error & { code?: string }
+      e.code = 'OP_IN_PROGRESS'
+      throw e
+    }
+    const ac = new AbortController()
+    this.repairAbort = ac
+    // Caller-supplied signal (tests/other callers) aborts this run too.
+    opts.signal?.addEventListener('abort', () => ac.abort(), { once: true })
+    const signal = ac.signal
     // Reset any stale run so the UI gets a fresh progress stream.
     this.repairProgress = null
     this.emitRepair(
@@ -594,6 +650,7 @@ export class EnvService extends EventEmitter {
     )
 
     try {
+      throwIfAborted()
       const config = loadInstanceConfigs().find((c) => c.id === id)
       if (!config) throw new Error(`Instance not found: ${id}`)
       const comfyDir = config.path
@@ -623,28 +680,32 @@ export class EnvService extends EventEmitter {
           kinds: ['uv', 'python'],
           downloadIfMissing: true
         })
+        throwIfAborted()
         const uvComp = bootstrap.components.find((c) => c.kind === 'uv' && c.installed)
         mkdirSync(venvPath, { recursive: true })
         mkdirSync(join(venvPath, '..'), { recursive: true })
         if (uvComp?.path) {
           try {
-            await safeExec(uvComp.path, ['python', 'install', '3.13'], undefined, 180000)
-          } catch {
+            await safeExec(uvComp.path, ['python', 'install', '3.13'], undefined, 180000, signal)
+          } catch (err) {
+            if (signal.aborted || (err as Error)?.name === 'AbortError') throw err
             /* interpreter may already be present */
           }
+          throwIfAborted()
           // --seed installs pip/setuptools/wheel — without it `python -m pip` dies.
           await safeExec(
             uvComp.path,
             ['venv', venvPath, '--python', '3.13', '--seed'],
             undefined,
-            180000
+            180000,
+            signal
           )
         } else {
           const basePython =
             bootstrap.pythonPath && bootstrap.pythonPath !== 'python'
               ? bootstrap.pythonPath
               : 'python'
-          await safeExec(basePython, ['-m', 'venv', venvPath], undefined, 180000)
+          await safeExec(basePython, ['-m', 'venv', venvPath], undefined, 180000, signal)
         }
         if (!existsSync(pythonInVenv)) {
           throw new Error(`venv creation failed — no interpreter at ${pythonInVenv}`)
@@ -707,7 +768,7 @@ export class EnvService extends EventEmitter {
                 '--index-url',
                 idx
               ],
-              { timeout: LONG_TIMEOUT_MS, onLine: sink },
+              { timeout: LONG_TIMEOUT_MS, onLine: sink, signal },
               async (c, a, o) => safeExec(c, a, o?.cwd, o?.timeout)
             )
           } else {
@@ -725,7 +786,7 @@ export class EnvService extends EventEmitter {
                 '--index-url',
                 idx
               ],
-              { timeout: LONG_TIMEOUT_MS, onLine: sink },
+              { timeout: LONG_TIMEOUT_MS, onLine: sink, signal },
               async (c, a, o) => safeExec(c, a, o?.cwd, o?.timeout)
             )
           }
@@ -764,7 +825,8 @@ export class EnvService extends EventEmitter {
           {
             uvPath: uvComp?.path,
             pipIndex: String(settings.pipIndex || '').trim(),
-            onLine: (line) => this.repairLog(line)
+            onLine: (line) => this.repairLog(line),
+            signal
           }
         )
         this.emitRepair(
@@ -790,9 +852,17 @@ export class EnvService extends EventEmitter {
       this.emitRepair(id, 'done', 'done', 'Environment ready', undefined, 'update.msgDone')
       return probe
     } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        this.emitRepair(id, 'done', 'cancelled', 'Cancelled by user')
+        throw err
+      }
       const msg = err instanceof Error ? err.message : String(err)
       this.emitRepair(id, 'done', 'failed', msg)
+      const rp = this.getRepairProgress()
+      if (rp) rp.errorCode = (err as { code?: string })?.code || 'REPAIR_FAILED'
       throw err
+    } finally {
+      if (this.repairAbort === ac) this.repairAbort = null
     }
   }
 }

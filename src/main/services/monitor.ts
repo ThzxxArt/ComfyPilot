@@ -203,18 +203,117 @@ export class MonitorService extends EventEmitter {
   /** Preview frame throttle (0.1.10): at most one emitted frame per 300ms. */
   private lastPreviewAt = 0
 
-  /** Never rejects: partial si failures degrade instead of blowing up the tick. */
-  async systemSnapshot(): Promise<SystemSnapshot> {
-    try {
-      const [cpu, mem, fsSize, graphics, adapters] = await Promise.all([
-        si.currentLoad().catch(() => null),
-        si.mem().catch(() => null),
-        si.fsSize().catch(() => null),
-        si.graphics().catch(() => null),
-        sampleWindowsGpuMemory().catch(() => [] as GpuMemAdapter[])
-      ])
+  /**
+   * 0.1.18 (WP4): sampling used to take 2.6–3.4 s per tick and ticks could
+   * overlap (a 2 s interval against a 3 s sample). Now:
+   * - single-flight: concurrent callers share one in-flight sample,
+   * - tiered cache: CPU/RAM 2 s, GPU 5 s, disk 10 s,
+   * - the renderer's 2 s tick and the `monitor.system` IPC both read the cache.
+   */
+  private snapshotAt = 0
+  private inflight: Promise<SystemSnapshot> | null = null
+  private cpuCache: {
+    at: number
+    cpu: Awaited<ReturnType<typeof si.currentLoad>> | null
+    mem: Awaited<ReturnType<typeof si.mem>> | null
+  } | null = null
+  private gpuCache: {
+    at: number
+    graphics: Awaited<ReturnType<typeof si.graphics>> | null
+    adapters: GpuMemAdapter[]
+  } | null = null
+  private diskCache: {
+    at: number
+    fsSize: Awaited<ReturnType<typeof si.fsSize>> | null
+  } | null = null
 
-      const controllers = (graphics && graphics.controllers) || []
+  /**
+   * 0.1.18 (WP7): bounded 10-minute series (2 s cadence → 300 points) for the
+   * monitor chart, plus threshold alerts. The renderer used to keep its own
+   * 60-point CPU array that died on navigation; history now survives the page.
+   */
+  private series: Array<{ ts: number; cpu: number; ram: number; vram: number }> = []
+  private thresholdAt: Record<string, number> = {}
+
+  seriesSnapshot(): Array<{ ts: number; cpu: number; ram: number; vram: number }> {
+    return [...this.series]
+  }
+
+  private recordSeries(s: SystemSnapshot): void {
+    const ram = s.ramTotal > 0 ? (s.ramUsed / s.ramTotal) * 100 : 0
+    const gpu = s.gpus[0]
+    const vram = gpu && gpu.vramTotal > 0 ? (gpu.vramUsed / gpu.vramTotal) * 100 : 0
+    this.series.push({
+      ts: s.timestamp,
+      cpu: s.cpuUsage,
+      ram: Math.round(ram),
+      vram: Math.round(vram)
+    })
+    if (this.series.length > 300) this.series.splice(0, this.series.length - 300)
+    this.checkThresholds(Math.round(ram), Math.round(vram))
+  }
+
+  /** At most one notice per metric per 5 minutes, never on every tick. */
+  private checkThresholds(ram: number, vram: number): void {
+    const now = Date.now()
+    const alerts: Array<{ key: string; titleKey: string; value: number }> = []
+    if (vram >= 90) alerts.push({ key: 'vram', titleKey: 'notify.vramHigh', value: vram })
+    if (ram >= 95) alerts.push({ key: 'ram', titleKey: 'notify.ramHigh', value: ram })
+    for (const a of alerts) {
+      if (now - (this.thresholdAt[a.key] || 0) < 5 * 60 * 1000) continue
+      this.thresholdAt[a.key] = now
+      void import('../ipc/handlers')
+        .then(({ broadcastNotification }) => {
+          broadcastNotification({
+            type: 'warning',
+            title: `${a.titleKey} ${a.value}%`,
+            titleKey: a.titleKey,
+            params: { value: a.value },
+            message: '',
+            duration: 8000
+          })
+        })
+        .catch(() => undefined)
+    }
+  }
+
+  /** Never rejects: partial si failures degrade instead of blowing up the tick. */
+  async systemSnapshot(opts: { force?: boolean } = {}): Promise<SystemSnapshot> {
+    const now = Date.now()
+    if (!opts.force && this.last && now - this.snapshotAt < 2000) return this.last
+    if (this.inflight) return this.inflight
+    this.inflight = this.sampleSnapshot(now).finally(() => {
+      this.inflight = null
+    })
+    return this.inflight
+  }
+
+  private async sampleSnapshot(now: number): Promise<SystemSnapshot> {
+    const cpuFresh = Boolean(this.cpuCache && now - this.cpuCache.at < 2000)
+    const gpuFresh = Boolean(this.gpuCache && now - this.gpuCache.at < 5000)
+    const diskFresh = Boolean(this.diskCache && now - this.diskCache.at < 10000)
+    try {
+      const [cpu, mem, fsSize, graphics] = await Promise.all([
+        cpuFresh ? Promise.resolve(this.cpuCache?.cpu) : si.currentLoad().catch(() => null),
+        cpuFresh ? Promise.resolve(this.cpuCache?.mem) : si.mem().catch(() => null),
+        diskFresh ? Promise.resolve(this.diskCache?.fsSize) : si.fsSize().catch(() => null),
+        gpuFresh
+          ? Promise.resolve(this.gpuCache?.graphics)
+          : Promise.all([
+              si.graphics().catch(() => null),
+              sampleWindowsGpuMemory().catch(() => [] as GpuMemAdapter[])
+            ]).then(([g, adapters]) => {
+              // A single failed si.graphics() must not replace the last good
+              // reading with "no GPU" for the next 5 s (and a 0% VRAM point).
+              if (g) this.gpuCache = { at: now, graphics: g, adapters }
+              return g ?? this.gpuCache?.graphics ?? null
+            })
+      ])
+      if (!cpuFresh) this.cpuCache = { at: now, cpu: cpu ?? null, mem: mem ?? null }
+      if (!diskFresh) this.diskCache = { at: now, fsSize: fsSize ?? null }
+      const adapters = this.gpuCache?.adapters || []
+
+      const controllers = graphics?.controllers || []
       const memPair = mergeGpuMemory(controllers, adapters)
       const gpus: GpuInfo[] = controllers.map((c, index) => ({
         index,
@@ -242,8 +341,13 @@ export class MonitorService extends EventEmitter {
         timestamp: Date.now()
       }
       this.last = snapshot
+      this.snapshotAt = Date.now()
+      this.recordSeries(snapshot)
       return snapshot
     } catch {
+      // Prefer the last good sample over fabricating 0% CPU / 0 GB free, which
+      // consumers render as real telemetry.
+      if (this.last) return this.last
       return {
         cpuUsage: 0,
         ramTotal: 0,

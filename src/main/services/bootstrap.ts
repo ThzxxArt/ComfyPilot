@@ -411,10 +411,7 @@ export class BootstrapService extends EventEmitter {
    * Download + extract a runtime into userData/runtimes/<kind>/.
    * Concurrent calls for the same kind share one promise.
    */
-  async download(
-    kind: RuntimeKind,
-    epochAtStart?: number
-  ): Promise<RuntimeComponentStatus> {
+  async download(kind: RuntimeKind, epochAtStart?: number): Promise<RuntimeComponentStatus> {
     const existing = this.installing.get(kind)
     if (existing) return existing
     const p = this.downloadInner(kind, epochAtStart).finally(() => this.installing.delete(kind))
@@ -422,7 +419,11 @@ export class BootstrapService extends EventEmitter {
     return p
   }
 
-  private runtimeSource(kind: RuntimeKind): { url: string; sizeHint: number } {
+  private runtimeSource(kind: RuntimeKind): {
+    url: string
+    sizeHint: number
+    sha256?: string
+  } {
     const keys = platformKey()
     const id =
       kind === 'uv'
@@ -471,27 +472,61 @@ export class BootstrapService extends EventEmitter {
 
     await this.downloadFile(url, cachePath, kind, src.sizeHint, epochAtStart)
 
-    // Integrity: prefer official checksum, else pin-on-first-use.
+    // Integrity: build-time pin → official checksum → a pin from a previous
+    // VERIFIED download. 0.1.18: with none of them, refuse and delete the
+    // download instead of silently pinning whatever arrived first. The
+    // build-time pin is what keeps Windows installs working behind a mirror
+    // (MinGit ships no sidecar at all).
     try {
       const actual = await sha256File(cachePath)
       const store = loadChecksumStore()
       const key = url
-      const official = await fetchOfficialSha256(url)
+      // A mirror may not proxy the `.sha256` sidecar; retry the canonical URL.
+      const official =
+        (await fetchOfficialSha256(url)) ||
+        (url !== src.url ? await fetchOfficialSha256(src.url) : null)
       const pinned = store[key]
-      const expected = official || pinned
+      const declared = src.sha256 ? String(src.sha256).toLowerCase() : ''
+      const expected = declared || official || pinned
       if (expected && expected.toLowerCase() !== actual.toLowerCase()) {
         rmSync(cachePath, { force: true })
         throw new Error(
           `Runtime checksum mismatch for ${kind} (expected ${expected.slice(0, 12)}…, got ${actual.slice(0, 12)}…)`
         )
       }
-      if (!pinned) {
+      if (!declared && !official && !pinned) {
+        const allow = loadSettings().allowUnverifiedRuntime === true
+        if (!allow) {
+          rmSync(cachePath, { force: true })
+          const e = new Error(
+            `No published checksum for ${kind} (${src.url}). Refusing to install an unverified runtime — ` +
+              `enable "allow unverified runtime" in Settings → Security if you accept the risk.`
+          ) as Error & { code?: string }
+          e.code = 'RUNTIME_UNVERIFIED'
+          throw e
+        }
+        // Explicit opt-in: record the hash the user accepted.
+        store[key] = actual
+        saveChecksumStore(store)
+      } else if (!pinned) {
+        // Declared/official checksum matched — this is a trustworthy pin.
         store[key] = actual
         saveChecksumStore(store)
       }
     } catch (err) {
-      if (err instanceof Error && err.message.includes('checksum mismatch')) throw err
-      // Non-fatal if hashing itself failed — length was already checked in downloadFile.
+      const coded = err as Error & { code?: string }
+      if (
+        coded.code === 'RUNTIME_UNVERIFIED' ||
+        (err instanceof Error && err.message.includes('checksum mismatch'))
+      ) {
+        throw err
+      }
+      // A hashing failure is still fatal: without a digest there is no
+      // integrity evidence at all. Length was only a transport check.
+      rmSync(cachePath, { force: true })
+      throw new Error(
+        `Runtime integrity check failed for ${kind}: ${err instanceof Error ? err.message : String(err)}`
+      )
     }
 
     this.emitProgress({
@@ -610,35 +645,55 @@ export class BootstrapService extends EventEmitter {
       // A 200 answer to a ranged request cannot be appended to a partial
       // file (it starts at 0) — restart the partial cleanly.
       const fileStream = createWriteStream(tmp, { flags: isAppend ? 'a' : 'w' })
+      // Disk-full / abort must not raise an unhandled 'error' event.
+      let streamError: Error | null = null
+      fileStream.on('error', (e) => {
+        streamError = e
+      })
       const reader = res.body?.getReader()
-      if (!reader) throw new Error('Runtime download: empty body')
+      if (!reader) {
+        fileStream.destroy()
+        throw new Error('Runtime download: empty body')
+      }
 
       let received = isAppend ? startByte : 0
       let lastTick = Date.now()
       let lastBytes = received
 
-      for (;;) {
-        const { done, value } = await reader.read()
-        if (done) break
-        if (value) {
-          fileStream.write(Buffer.from(value))
-          received += value.byteLength
-          const now = Date.now()
-          if (now - lastTick >= 500) {
-            const speedBps = ((received - lastBytes) / (now - lastTick)) * 1000
-            lastTick = now
-            lastBytes = received
-            this.emitProgress({
-              kind,
-              receivedBytes: received,
-              totalBytes,
-              speedBps,
-              phase: 'download'
-            })
+      try {
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          if (streamError) throw streamError
+          if (value) {
+            fileStream.write(Buffer.from(value))
+            received += value.byteLength
+            const now = Date.now()
+            if (now - lastTick >= 500) {
+              const speedBps = ((received - lastBytes) / (now - lastTick)) * 1000
+              lastTick = now
+              lastBytes = received
+              this.emitProgress({
+                kind,
+                receivedBytes: received,
+                totalBytes,
+                speedBps,
+                phase: 'download'
+              })
+            }
           }
         }
+      } catch (e) {
+        // Aborted/cancelled or write failure: release the fd instead of
+        // leaking it (on Windows the locked .part then breaks cleanup/retry).
+        try {
+          fileStream.destroy()
+        } catch {
+          /* ignore */
+        }
+        throw e
       }
-
+      if (streamError) throw streamError
       await new Promise<void>((resolveDone, reject) => {
         fileStream.end((err?: Error | null) => (err ? reject(err) : resolveDone()))
       })

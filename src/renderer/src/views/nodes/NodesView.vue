@@ -32,7 +32,8 @@ import {
   NCheckbox,
   NTabs,
   NTabPane,
-  NTooltip
+  NTooltip,
+  NAlert
 } from 'naive-ui'
 import { ipc } from '@/composables/useIpc'
 import {
@@ -57,9 +58,12 @@ import type {
   NodeNameConflict,
   NodePackIssue,
   NodePackRecord,
+  NodeRecoveryEntry,
   NodeSnapshot,
   NodeUpdateCheckResult
 } from '@shared/types'
+import TargetBanner from '@/components/TargetBanner.vue'
+import ListState from '@/components/ListState.vue'
 
 const { t } = useI18n()
 const store = useAppStore()
@@ -107,9 +111,15 @@ watch(
   }
 )
 const loading = ref(false)
+/** 0.1.18 (WP6 / U7): a failed load is not an empty library. */
+const loadError = ref('')
 const packs = ref<NodePackRecord[]>([])
 const conflicts = ref<NodeNameConflict[]>([])
 const snapshots = ref<NodeSnapshot[]>([])
+// 0.1.18 (WP3/L9): leftovers from an interrupted update (`.bak-`/tmp dirs).
+const recovery = ref<NodeRecoveryEntry[]>([])
+const showRecovery = ref(false)
+const recoveryBusy = ref('')
 const installedQuery = ref('')
 const showInstall = ref(false)
 const showOpModal = ref(false)
@@ -330,10 +340,12 @@ function describeUpdateError(err: unknown, _pack?: NodePackRecord): string {
 async function refresh(): Promise<void> {
   loading.value = true
   try {
-    const instId = store.activeInstanceId || undefined
+    const instId = store.localTargetId || undefined
     packs.value = await ipc('node.refresh', instId)
+    loadError.value = ''
     conflicts.value = await ipc('node.conflicts', instId)
     snapshots.value = await ipc('node.snapshots', instId)
+    void loadRecovery()
     try {
       loadReport.value = await ipc('node.loadReport', instId)
     } catch {
@@ -342,21 +354,84 @@ async function refresh(): Promise<void> {
     // Restore dependency-install banner/modal state (0.1.12).
     if (instId) void refreshPipStatus(instId)
   } catch (err) {
-    message.error(err instanceof Error ? err.message : String(err))
+    // Keep the failure: the ListState error branch must be reachable instead
+    // of rendering "no installed node packs" over a failed load.
+    loadError.value = err instanceof Error ? err.message : String(err)
+    message.error(loadError.value)
   } finally {
     loading.value = false
   }
 }
 
+/** 0.1.18 (WP3): leftover scan is advisory — never blocks the pack list. */
+async function loadRecovery(): Promise<void> {
+  const instId = store.localTargetId || undefined
+  if (!instId) {
+    recovery.value = []
+    return
+  }
+  try {
+    recovery.value = await ipc('node.recoveryScan', instId)
+  } catch {
+    recovery.value = []
+  }
+}
+
+// Literal keys (not a template string) so check-i18n can statically verify
+// both locales and flag genuinely unused entries.
+const RECOVERY_KIND_KEYS: Record<NodeRecoveryEntry['kind'], string> = {
+  backup: 'nodes.recoveryKind_backup',
+  temp: 'nodes.recoveryKind_temp',
+  duplicate: 'nodes.recoveryKind_duplicate'
+}
+function recoveryKindLabel(kind: NodeRecoveryEntry['kind']): string {
+  return t(RECOVERY_KIND_KEYS[kind])
+}
+
+async function restoreRecoveryEntry(name: string): Promise<void> {
+  const instId = store.localTargetId || undefined
+  if (!instId) return
+  recoveryBusy.value = name
+  try {
+    await ipc('node.recoveryRestore', name, instId)
+    message.success(t('nodes.recoveryRestored'))
+    await refresh()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    recoveryBusy.value = ''
+  }
+}
+
+async function cleanRecoveryEntry(name: string): Promise<void> {
+  const instId = store.localTargetId || undefined
+  if (!instId) return
+  recoveryBusy.value = name
+  try {
+    await ipc('node.recoveryClean', name, instId)
+    message.success(t('nodes.recoveryCleaned'))
+    await loadRecovery()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    recoveryBusy.value = ''
+  }
+}
+
 async function checkUpdates(): Promise<void> {
+  // 0.1.18 (WP2): never check a machine the header is not pointing at.
+  if (!store.localTargetId) {
+    message.warning(t('target.required'))
+    return
+  }
   checking.value = true
   nodeCheck.value = null
-  const forInst = store.activeInstanceId || undefined
+  const forInst = store.localTargetId || undefined
   try {
     const results = await ipc('node.checkUpdates', forInst)
     // The user may have switched instances while the pass ran — results belong
     // to the old instance and must not relabel/overwrite the new one's state.
-    if ((store.activeInstanceId || undefined) !== forInst) return
+    if ((store.localTargetId || undefined) !== forInst) return
     const map: Record<string, NodeUpdateCheckResult> = {}
     for (const r of results) {
       map[r.id] = r
@@ -440,7 +515,7 @@ async function updatePack(pack: NodePackRecord): Promise<void> {
   try {
     // Pass the unique id (not the name): duplicate names can exist on disk
     // (e.g. `Foo` + `.disabled/Foo`) and name lookup would be ambiguous.
-    await ipc('node.update', pack.id, undefined, store.activeInstanceId || undefined)
+    await ipc('node.update', pack.id, undefined, store.localTargetId || undefined)
     message.success(t('nodes.updateDone', { name: pack.displayName || pack.name }))
     await refresh()
     // The pack is now up to date — flip its check row (0.1.11.1). Prefer the
@@ -462,12 +537,16 @@ async function updatePack(pack: NodePackRecord): Promise<void> {
 }
 
 async function updateAllPacks(): Promise<void> {
+  if (!store.localTargetId) {
+    message.warning(t('target.required'))
+    return
+  }
   batchRunning.value = true
   opModalTitle.value = t('nodes.updateAll')
   opModalMode.value = 'batch'
   showOpModal.value = true
   try {
-    const results = await ipc('node.updateAll', store.activeInstanceId || undefined, {
+    const results = await ipc('node.updateAll', store.localTargetId || undefined, {
       includeCheckFailed: includeCheckFailed.value
     })
     const ok = results.filter((r) => r.ok && !r.skipped).length
@@ -518,7 +597,7 @@ async function installGit(): Promise<void> {
       source: 'git',
       url: installUrl.value.trim(),
       branch: branch || undefined,
-      instanceId: store.activeInstanceId || undefined
+      instanceId: store.localTargetId || undefined
     })
     showInstall.value = false
     installBranch.value = ''
@@ -542,7 +621,7 @@ async function installGit(): Promise<void> {
 
 async function toggle(pack: NodePackRecord, enabled: boolean): Promise<void> {
   try {
-    await ipc('node.toggle', pack.id, enabled, store.activeInstanceId || undefined)
+    await ipc('node.toggle', pack.id, enabled, store.localTargetId || undefined)
     await refresh()
     message.success(enabled ? t('nodes.enabled') : t('nodes.disabled'))
   } catch (err) {
@@ -556,7 +635,7 @@ async function lockPack(pack: NodePackRecord, locked: boolean): Promise<void> {
   if (lockingOne.value) return
   lockingOne.value = pack.name
   try {
-    await ipc('node.lock', pack.id, locked, store.activeInstanceId || undefined)
+    await ipc('node.lock', pack.id, locked, store.localTargetId || undefined)
     await refresh()
     message.success(locked ? t('nodes.locked') : t('nodes.unlocked'))
   } catch (err) {
@@ -568,7 +647,7 @@ async function lockPack(pack: NodePackRecord, locked: boolean): Promise<void> {
 
 async function smoke(pack: NodePackRecord): Promise<void> {
   try {
-    const issues = await ipc('node.smokeTest', pack.id, store.activeInstanceId || undefined)
+    const issues = await ipc('node.smokeTest', pack.id, store.localTargetId || undefined)
     if (!issues.length) {
       message.success(t('nodes.smokePassed'))
       return
@@ -591,7 +670,7 @@ async function checkIssues(pack: NodePackRecord): Promise<void> {
   showIssues.value = true
   issuesLoading.value = true
   try {
-    issuesList.value = await ipc('node.checkIssues', pack.id, store.activeInstanceId || undefined)
+    issuesList.value = await ipc('node.checkIssues', pack.id, store.localTargetId || undefined)
   } catch (err) {
     showIssues.value = false
     message.error(err instanceof Error ? err.message : String(err))
@@ -644,7 +723,7 @@ async function runDepsAudit(): Promise<void> {
   depsAuditLoading.value = true
   depsAudit.value = null
   try {
-    depsAudit.value = await ipc('node.depsAudit', store.activeInstanceId || undefined)
+    depsAudit.value = await ipc('node.depsAudit', store.localTargetId || undefined)
   } catch (err) {
     showDepsAudit.value = false
     message.error(err instanceof Error ? err.message : String(err))
@@ -695,7 +774,7 @@ function applyFocus(): void {
 
 async function createSnapshot(): Promise<void> {
   try {
-    const s = await ipc('node.createSnapshot', undefined, store.activeInstanceId || undefined)
+    const s = await ipc('node.createSnapshot', undefined, store.localTargetId || undefined)
     message.success(t('nodes.snapshotCreated', { name: s.name }))
     await refresh()
   } catch (err) {
@@ -705,7 +784,7 @@ async function createSnapshot(): Promise<void> {
 
 async function restoreSnapshot(id: string): Promise<void> {
   try {
-    await ipc('node.restoreSnapshot', id, store.activeInstanceId || undefined)
+    await ipc('node.restoreSnapshot', id, store.localTargetId || undefined)
     message.success(t('nodes.snapshotRestored'))
     await refresh()
   } catch (err) {
@@ -719,7 +798,7 @@ async function uninstall(pack: NodePackRecord): Promise<void> {
     // to removing them alongside the pack directory.
     let deps: string[] = []
     try {
-      deps = await ipc('node.uninstallDeps', pack.id, store.activeInstanceId || undefined)
+      deps = await ipc('node.uninstallDeps', pack.id, store.localTargetId || undefined)
     } catch {
       deps = []
     }
@@ -729,7 +808,7 @@ async function uninstall(pack: NodePackRecord): Promise<void> {
       opModalTitle.value = t('nodes.uninstalling', { name: pack.displayName || pack.name })
       opModalMode.value = 'single'
       showOpModal.value = true
-      return ipc('node.uninstall', pack.id, store.activeInstanceId || undefined, { removePipDeps })
+      return ipc('node.uninstall', pack.id, store.localTargetId || undefined, { removePipDeps })
         .then(async () => {
           message.success(
             removePipDeps && deps.length ? t('nodes.uninstalledWithDeps') : t('nodes.uninstalled')
@@ -761,7 +840,7 @@ async function uninstall(pack: NodePackRecord): Promise<void> {
 
 async function removeSnapshot(id: string): Promise<void> {
   try {
-    await ipc('node.deleteSnapshot', id, store.activeInstanceId || undefined)
+    await ipc('node.deleteSnapshot', id, store.localTargetId || undefined)
     message.success(t('nodes.snapshotDeleted'))
     await refresh()
   } catch (err) {
@@ -875,6 +954,70 @@ watch(
         <NButton type="primary" @click="showInstall = true">{{ $t('nodes.gitInstall') }}</NButton>
       </NSpace>
     </div>
+
+    <TargetBanner />
+
+    <!-- 0.1.18 (WP3/L9): an interrupted update used to make a pack vanish
+         (its .bak- dir is filtered from the list) with no way back. -->
+    <NAlert
+      v-if="recovery.length && store.localTargetId"
+      type="warning"
+      :show-icon="true"
+      style="margin-bottom: 12px"
+    >
+      <template #header>{{ $t('nodes.recoveryTitle', { n: recovery.length }) }}</template>
+      <div class="recovery-alert-body">
+        <span>{{ $t('nodes.recoveryHint') }}</span>
+        <NButton size="small" @click="showRecovery = true">
+          {{ $t('nodes.recoveryOpen') }}
+        </NButton>
+      </div>
+    </NAlert>
+
+    <NModal
+      v-model:show="showRecovery"
+      preset="card"
+      :title="$t('nodes.recoveryTitle', { n: recovery.length })"
+      style="max-width: 760px"
+    >
+      <div v-if="!recovery.length" class="meta">{{ $t('nodes.recoveryEmpty') }}</div>
+      <div v-for="entry in recovery" :key="entry.name" class="recovery-row">
+        <div class="recovery-info">
+          <NTag size="small" :type="entry.kind === 'backup' ? 'warning' : 'default'">
+            {{ recoveryKindLabel(entry.kind) }}
+          </NTag>
+          <code class="recovery-name">{{ entry.name }}</code>
+          <div class="meta">
+            {{
+              entry.kind === 'backup'
+                ? entry.liveExists
+                  ? $t('nodes.recoveryLiveExists', { name: entry.packName })
+                  : $t('nodes.recoveryRestorable', { name: entry.packName })
+                : $t('nodes.recoveryCleanable')
+            }}
+          </div>
+        </div>
+        <NSpace>
+          <NButton
+            v-if="entry.kind === 'backup' && !entry.liveExists"
+            size="small"
+            type="primary"
+            :loading="recoveryBusy === entry.name"
+            @click="restoreRecoveryEntry(entry.name)"
+          >
+            {{ $t('nodes.recoveryRestore') }}
+          </NButton>
+          <NPopconfirm @positive-click="cleanRecoveryEntry(entry.name)">
+            <template #trigger>
+              <NButton size="small" secondary :loading="recoveryBusy === entry.name">
+                {{ $t('nodes.recoveryClean') }}
+              </NButton>
+            </template>
+            {{ $t('nodes.recoveryCleanConfirm', { name: entry.name }) }}
+          </NPopconfirm>
+        </NSpace>
+      </div>
+    </NModal>
 
     <NTabs v-model:value="tab" type="line">
       <NTabPane
@@ -1195,6 +1338,7 @@ watch(
               </NCollapse>
             </article>
           </div>
+          <ListState v-else-if="loadError" :error="loadError" :rows="6" @retry="refresh" />
           <NEmpty
             v-else
             :description="installedQuery.trim() ? $t('common.noMatch') : $t('nodes.emptyInstalled')"
@@ -1616,6 +1760,33 @@ watch(
   font-size: 12px;
   color: $color-text-muted-ink;
   align-self: center;
+}
+.recovery-alert-body {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.recovery-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid $color-border;
+  &:last-child {
+    border-bottom: none;
+  }
+}
+.recovery-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.recovery-name {
+  font-size: 12px;
+  word-break: break-all;
 }
 .pass-ink {
   color: $color-success;

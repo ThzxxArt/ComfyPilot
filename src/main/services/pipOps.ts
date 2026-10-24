@@ -22,6 +22,7 @@ import type { PipOpResult, UpdateProgress, UpdateStep, UpdateStepId } from '@sha
 import { recipeById, recipeSupportsPlatform, type PipRecipe } from '@shared/pipRecipes'
 import { isValidPipSpec, parsePipRequirement, normalizePipName } from '@shared/pipVersion'
 import { loadInstanceConfigs, loadSettings } from './db'
+import { resolveReadTarget } from './target'
 import { resolveInstancePythonPath } from './instance'
 import { bootstrapService } from './bootstrap'
 import {
@@ -256,7 +257,7 @@ export class PipOpsService extends EventEmitter {
       if (!cfg) throw codedError('INSTANCE_NOT_FOUND', `Instance not found: ${instanceId}`)
       return cfg.id
     }
-    const first = configs.find((c) => c.enabled !== false) || configs[0]
+    const first = resolveReadTarget(undefined)
     if (!first) throw codedError('INSTANCE_NOT_FOUND', 'No instance configured')
     return first.id
   }

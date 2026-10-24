@@ -15,7 +15,10 @@ const h = vi.hoisted(() => {
     root: '',
     failPages: new Set<number>(),
     fetchCalls: [] as number[],
-    networkMode: 'public' as string
+    networkMode: 'public' as string,
+    /** When set, page fetches wait on it so cancellation can be observed. */
+    gate: null as Promise<void> | null,
+    releaseGate: null as (() => void) | null
   }
   return { state }
 })
@@ -28,6 +31,7 @@ vi.mock('../../src/main/services/db', () => ({
 vi.mock('../../src/main/services/registry', () => ({
   fetchRegistryPage: async (page: number, limit: number) => {
     h.state.fetchCalls.push(page)
+    if (h.state.gate) await h.state.gate
     if (h.state.failPages.has(page)) throw new Error(`page ${page} boom`)
     return {
       nodes: [
@@ -71,6 +75,8 @@ describe('RegistryIndexService (0.1.10 behaviour)', () => {
     h.state.failPages.clear()
     h.state.fetchCalls = []
     h.state.networkMode = 'public'
+    h.state.gate = null
+    h.state.releaseGate = null
     vi.resetModules()
   })
 
@@ -146,6 +152,36 @@ describe('RegistryIndexService (0.1.10 behaviour)', () => {
     const market = registryIndex.searchMarket('Pack1', new Set(['Pack1']))
     expect(market).toHaveLength(1)
     expect(market[0].installed).toBe(true)
+  })
+
+  it('never crawls when allowBuild=false and reports needsIndex (F6)', async () => {
+    const { registryIndex } = await import('../../src/main/services/registryIndex')
+    const status = await registryIndex.ensure({ allowBuild: false })
+    expect(status.ready).toBe(false)
+    expect(h.state.fetchCalls).toEqual([])
+    const res = await registryIndex.search({ query: 'Pack', allowBuild: false })
+    expect(res.needsIndex).toBe(true)
+    expect(res.raw).toEqual([])
+    expect(h.state.fetchCalls).toEqual([])
+  })
+
+  it('cancelBuild aborts an in-flight crawl at a page boundary', async () => {
+    h.state.gate = new Promise<void>((resolve) => {
+      h.state.releaseGate = resolve
+    })
+    const { registryIndex } = await import('../../src/main/services/registryIndex')
+    const building = registryIndex.ensure()
+    // Wait until the first page request is blocked on the gate.
+    await new Promise<void>((r) => setTimeout(r, 10))
+    expect(registryIndex.status().building).toBe(true)
+    expect(registryIndex.cancelBuild()).toBe(true)
+    // Exposed to the task center so an external cancel is not logged as failed.
+    expect(registryIndex.wasCancelledByUser()).toBe(true)
+    h.state.releaseGate?.()
+    await expect(building).rejects.toMatchObject({ name: 'AbortError' })
+    expect(registryIndex.status().building).toBe(false)
+    // A cancelled build must not be cached as complete.
+    expect(registryIndex.status().ready).toBe(false)
   })
 
   it('offline mode never fetches and degrades to the on-disk index', async () => {

@@ -45,6 +45,7 @@ import { useAppStore } from '@/stores/app'
 import { formatBytes } from '@/utils/format'
 import { COLORS } from '@/styles/tokens'
 import ListSkeleton from '@/components/ListSkeleton.vue'
+import ListState from '@/components/ListState.vue'
 import { viewersCloseAfterRemoval } from '@/utils/batchOps'
 import { isWebViewableImage, isRawImage } from '@shared/mediaTypes'
 import type { OutputAsset, OutputAssetMatch, WorkflowRecord } from '@shared/types'
@@ -199,6 +200,14 @@ function clearFilters(): void {
  * must not start a parallel walk (both would merge the same rows).
  */
 const scanning = ref(false)
+/** 0.1.18 (WP7): lightbox zoom/pan + keyboard navigation. */
+const lbZoom = ref(1)
+const lbPanX = ref(0)
+const lbPanY = ref(0)
+let lbDragging = false
+let lbDragFrom = { x: 0, y: 0 }
+/** 0.1.18 (WP6 / U7): a failed list must not look like an empty library. */
+const loadError = ref('')
 const scanProgress = ref<{ scanned: number; done: boolean; cancelled: boolean } | null>(null)
 
 async function scanOutputs(): Promise<void> {
@@ -250,8 +259,13 @@ async function refresh(): Promise<void> {
     })
     // Drop stale responses so a slow old page never overwrites the new one.
     if (seq !== reqSeq) return
+    loadError.value = ''
     assets.value = result.items
     total.value = result.total
+    // 0.1.18 (WP4): thumbnails are generated after the page paints, four at a
+    // time, and patched in as they arrive. The list IPC no longer blocks on
+    // decoding 60 images.
+    void fillThumbs(result.items, seq)
     // 0.1.17 (WP9): explicit cross-page policy — the selection is PER PAGE.
     // It used to be silently dropped here (half-kept: the count could still show
     // ids from the previous page while actions targeted the visible set).
@@ -266,7 +280,8 @@ async function refresh(): Promise<void> {
     }
   } catch (err) {
     if (seq === reqSeq) {
-      message.error(err instanceof Error ? err.message : String(err))
+      loadError.value = err instanceof Error ? err.message : String(err)
+      message.error(loadError.value)
     }
   } finally {
     if (seq === reqSeq) {
@@ -274,6 +289,34 @@ async function refresh(): Promise<void> {
       refreshing.value = false
     }
   }
+}
+
+/**
+ * Lazily fill missing thumbnails for the visible page. Bounded concurrency
+ * keeps a 200-item page from spawning 200 decodes; a stale response stops.
+ */
+async function fillThumbs(items: OutputAsset[], seq: number): Promise<void> {
+  const pending = items.filter(
+    (a) => a.thumbPending && a.type === 'image' && isWebViewableImage(a.fileName)
+  )
+  if (!pending.length) return
+  let cursor = 0
+  const worker = async (): Promise<void> => {
+    while (cursor < pending.length) {
+      const a = pending[cursor++]
+      try {
+        const res = await ipc('output.thumb', a.path)
+        if (seq !== reqSeq) return
+        if (res?.url) {
+          const live = assets.value.find((x) => x.id === a.id)
+          if (live) live.thumbnail = res.url
+        }
+      } catch {
+        /* keep the full-size fallback */
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(4, pending.length) }, worker))
 }
 
 /** Instance output dir incl. --output-directory overrides — mirrors the main
@@ -381,7 +424,9 @@ async function copyToClipboard(text: string): Promise<void> {
     await ipc('shell.writeClipboard', text)
     message.success(t('output.copied'))
   } catch {
-    /* clipboard failure is non-fatal */
+    // 0.1.18 (WP6 / U13): a failed copy must say so — silently doing nothing
+    // made users paste stale clipboard contents.
+    message.error(t('common.copyFailed'))
   }
 }
 
@@ -430,6 +475,44 @@ function lightboxIndex(): number {
   return assets.value.findIndex((x) => x.id === lightboxAsset.value!.id)
 }
 
+function resetLightboxView(): void {
+  lbZoom.value = 1
+  lbPanX.value = 0
+  lbPanY.value = 0
+}
+
+function zoomLightbox(delta: number): void {
+  const next = Math.max(0.25, Math.min(8, Number((lbZoom.value + delta).toFixed(2))))
+  lbZoom.value = next
+  if (next === 1) resetLightboxView()
+}
+
+function onLightboxWheel(e: WheelEvent): void {
+  e.preventDefault()
+  zoomLightbox(e.deltaY < 0 ? 0.25 : -0.25)
+}
+
+function onLightboxPointerDown(e: PointerEvent): void {
+  if (lbZoom.value <= 1) return
+  lbDragging = true
+  lbDragFrom = { x: e.clientX - lbPanX.value, y: e.clientY - lbPanY.value }
+  ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
+}
+
+function onLightboxPointerMove(e: PointerEvent): void {
+  if (!lbDragging) return
+  lbPanX.value = e.clientX - lbDragFrom.x
+  lbPanY.value = e.clientY - lbDragFrom.y
+}
+
+function onLightboxPointerUp(): void {
+  lbDragging = false
+}
+
+watch(lightbox, (open) => {
+  if (open) resetLightboxView()
+})
+
 function lightboxPrev(): void {
   const idx = lightboxIndex()
   if (idx < 0) return
@@ -443,6 +526,7 @@ function lightboxPrev(): void {
   // gallery into the fallback (the <img> never remounts to re-trigger @error).
   lightboxImageFailed.value = false
   lightboxVideoFailed.value = false
+  resetLightboxView()
   lightboxAudioFailed.value = false
 }
 
@@ -457,6 +541,7 @@ function lightboxNext(): void {
   lightboxSrc.value = lightboxUrl(next)
   lightboxImageFailed.value = false
   lightboxVideoFailed.value = false
+  resetLightboxView()
   lightboxAudioFailed.value = false
 }
 
@@ -464,6 +549,9 @@ function onLightboxKey(e: KeyboardEvent): void {
   if (!lightbox.value) return
   if (e.key === 'ArrowLeft') lightboxPrev()
   else if (e.key === 'ArrowRight') lightboxNext()
+  else if (e.key === '+' || e.key === '=') zoomLightbox(0.25)
+  else if (e.key === '-') zoomLightbox(-0.25)
+  else if (e.key === '0') resetLightboxView()
   else if (e.key === 'Escape') lightbox.value = false
 }
 
@@ -511,13 +599,31 @@ async function doDeleteAsset(id: string, deleteFile: boolean): Promise<void> {
 
 /** Two explicit outcomes (mirrors models): record-only vs delete file too. */
 function confirmDeleteAsset(a: OutputAsset): void {
-  dialog.warning({
+  // 0.1.18 (WP6 / S8): explicit cancel; record-only is a separate in-body action.
+  let dlg: ReturnType<typeof dialog.warning>
+  dlg = dialog.warning({
     title: t('output.deleteAction'),
-    content: t('output.deleteConfirm'),
+    content: () =>
+      h('div', [
+        h('div', t('output.deleteConfirm')),
+        h('div', { style: 'color:#8a8f99;font-size:12px;margin-top:6px' }, t('confirm.cannotUndo')),
+        h(
+          NButton,
+          {
+            size: 'small',
+            secondary: true,
+            style: 'margin-top:10px',
+            onClick: () => {
+              dlg.destroy()
+              void doDeleteAsset(a.id, false)
+            }
+          },
+          () => t('output.removeRecordOnly')
+        )
+      ]),
     positiveText: t('output.deleteFileToo'),
-    negativeText: t('output.removeRecordOnly'),
-    onPositiveClick: () => doDeleteAsset(a.id, true),
-    onNegativeClick: () => doDeleteAsset(a.id, false)
+    negativeText: t('common.cancel'),
+    onPositiveClick: () => doDeleteAsset(a.id, true)
   })
 }
 
@@ -526,13 +632,30 @@ function confirmDeleteAsset(a: OutputAsset): void {
 function confirmDeleteSelected(): void {
   const ids = [...selected.value]
   if (!ids.length) return
-  dialog.warning({
+  let dlg: ReturnType<typeof dialog.warning>
+  dlg = dialog.warning({
     title: t('output.deleteSelectedTitle'),
-    content: t('output.deleteSelectedConfirm', { n: ids.length }),
+    content: () =>
+      h('div', [
+        h('div', t('output.deleteSelectedConfirm', { n: ids.length })),
+        h('div', { style: 'color:#8a8f99;font-size:12px;margin-top:6px' }, t('confirm.cannotUndo')),
+        h(
+          NButton,
+          {
+            size: 'small',
+            secondary: true,
+            style: 'margin-top:10px',
+            onClick: () => {
+              dlg.destroy()
+              void doBatchDelete(ids, false)
+            }
+          },
+          () => t('output.removeRecordOnly')
+        )
+      ]),
     positiveText: t('output.deleteFileToo'),
-    negativeText: t('output.removeRecordOnly'),
-    onPositiveClick: () => void doBatchDelete(ids, true),
-    onNegativeClick: () => void doBatchDelete(ids, false)
+    negativeText: t('common.cancel'),
+    onPositiveClick: () => void doBatchDelete(ids, true)
   })
 }
 
@@ -827,14 +950,18 @@ onUnmounted(() => {
               <div
                 class="card card-interactive asset"
                 :class="{ selected: selected.has(a.id) }"
-                @click="openDetail(a)"
+                :title="$t('output.cardHint')"
+                @click="toggleSelect(a.id)"
+                @dblclick="openLightbox(a)"
               >
-                <div class="thumb" @dblclick="openLightbox(a)">
+                <div class="thumb">
                   <img
                     v-if="a.type === 'image' && isWebViewableImage(a.fileName) && thumbSrc(a)"
                     :src="thumbSrc(a)"
                     class="thumb-img"
                     :alt="a.fileName"
+                    loading="lazy"
+                    decoding="async"
                     @error="onThumbError(a)"
                   />
                   <video
@@ -910,6 +1037,7 @@ onUnmounted(() => {
             />
           </NSpace>
         </div>
+        <ListState v-else-if="loadError" :error="loadError" :rows="6" @retry="refresh" />
         <NEmpty
           v-else
           :description="hasFilter ? $t('common.noMatch') : $t('output.empty')"
@@ -999,7 +1127,13 @@ onUnmounted(() => {
             <div class="mono">ID: {{ m.id }}</div>
             <div v-if="m.jobId" class="mono">
               Prompt ID: {{ m.jobId }}
-              <NButton text size="tiny" type="primary" @click="copyToClipboard(m.jobId || '')">
+              <NButton
+                text
+                size="tiny"
+                type="primary"
+                :title="$t('common.copy')"
+                @click="copyToClipboard(m.jobId || '')"
+              >
                 {{ $t('output.copy') }}
               </NButton>
             </div>
@@ -1088,8 +1222,18 @@ onUnmounted(() => {
             !lightboxImageFailed
           "
           :src="lightboxSrc"
-          class="lightbox-img"
+          class="lightbox-img lb-zoomable"
+          :class="{ zoomed: lbZoom > 1, dragging: lbDragging }"
+          :style="{
+            transform: `translate(${lbPanX}px, ${lbPanY}px) scale(${lbZoom})`
+          }"
           :alt="lightboxAsset?.fileName || ''"
+          draggable="false"
+          @wheel.prevent="onLightboxWheel"
+          @pointerdown="onLightboxPointerDown"
+          @pointermove="onLightboxPointerMove"
+          @pointerup="onLightboxPointerUp"
+          @pointercancel="onLightboxPointerUp"
           @error="lightboxImageFailed = true"
         />
         <div v-if="lightboxImageFailed" class="lb-fallback">
@@ -1127,6 +1271,14 @@ onUnmounted(() => {
       <template #footer>
         <NSpace justify="space-between">
           <NSpace>
+            <template v-if="lightboxAsset?.type === 'image'">
+              <NButton size="small" secondary @click="zoomLightbox(-0.25)">−</NButton>
+              <NButton size="small" secondary @click="zoomLightbox(0.25)">+</NButton>
+              <NButton size="small" secondary @click="resetLightboxView">{{
+                $t('output.zoomReset')
+              }}</NButton>
+              <span class="meta lb-zoom-hint">{{ $t('output.zoomHint') }}</span>
+            </template>
             <NButton v-if="lightboxAsset?.type === 'image'" secondary @click="lightboxPrev">{{
               $t('output.prev')
             }}</NButton>
@@ -1325,6 +1477,22 @@ onUnmounted(() => {
   align-items: center;
   gap: 12px;
   min-height: 320px;
+}
+.lb-zoomable {
+  cursor: zoom-in;
+  user-select: none;
+  transition: transform 0.08s ease-out;
+  &.zoomed {
+    cursor: grab;
+  }
+  &.dragging {
+    cursor: grabbing;
+    transition: none;
+  }
+}
+.lb-zoom-hint {
+  align-self: center;
+  font-size: 11.5px;
 }
 .lightbox-img {
   max-width: 100%;

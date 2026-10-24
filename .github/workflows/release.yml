@@ -1,0 +1,103 @@
+name: Release
+
+# 0.1.18 (WP0): tag-driven release pipeline. The 0.1.17 release was built by hand
+# on one machine; this makes the artifact reproducible and attaches checksums.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # macOS / Linux are built best-effort: they are NOT verified products yet, so
+  # their failure must never block the Windows release.
+  build-other:
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm rebuild electron
+      - run: npm run build
+      - name: Package (no publish)
+        run: npx electron-builder --${{ runner.os == 'macOS' && 'mac' || 'linux' }} --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.os }}
+          path: |
+            release/*.dmg
+            release/*.AppImage
+            release/*.deb
+            release/latest*.yml
+          if-no-files-found: ignore
+
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm rebuild electron
+      - name: Version + tag agreement
+        shell: bash
+        run: |
+          node scripts/check-version.cjs
+          PKG=$(node -p "require('./package.json').version")
+          if [ "v$PKG" != "${GITHUB_REF_NAME}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match package version v$PKG"
+            exit 1
+          fi
+      - run: npm run build
+      - name: Package (NSIS, no publish)
+        run: npx electron-builder --win --publish never
+      - name: Post-build metadata agreement
+        shell: bash
+        # checks package.json / APP_VERSION / README / latest.yml AFTER packaging
+        env:
+          CHECK_RELEASE_META: '1'
+        run: node scripts/check-version.cjs
+      - name: Checksums
+        shell: bash
+        run: |
+          cd release
+          for f in *.exe *.blockmap latest.yml; do
+            [ -f "$f" ] && sha256sum "$f" >> SHA256SUMS.txt
+          done
+          cat SHA256SUMS.txt
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          name: ComfyPilot ${{ github.ref_name }}
+          files: |
+            release/*.exe
+            release/*.blockmap
+            release/latest.yml
+            release/SHA256SUMS.txt
+          body: |
+            ## 安装包
+
+            - `ComfyPilot-<version>-win-x64.exe`（NSIS，x64，version 见 latest.yml）
+            - `SHA256SUMS.txt` 含安装包与 `latest.yml` 的校验和
+
+            > 构建产物未签名：首次运行请按 SmartScreen 提示选择「更多信息 → 仍要运行」。
+            > 这是 CI 生成的草稿，确认安装/卸载无 Application Error 后再发布。

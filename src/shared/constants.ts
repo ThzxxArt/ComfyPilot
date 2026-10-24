@@ -6,7 +6,7 @@ export const APP_NAME = 'ComfyPilot'
  * Build injects __APP_VERSION__ from package.json; dev falls back to the literal.
  */
 declare const __APP_VERSION__: string | undefined
-export const APP_VERSION = (typeof __APP_VERSION__ !== 'undefined' && __APP_VERSION__) || '0.1.17'
+export const APP_VERSION = (typeof __APP_VERSION__ !== 'undefined' && __APP_VERSION__) || '0.1.18'
 
 export const DEFAULT_SETTINGS: AppSettings = {
   locale: 'zh-CN',
@@ -31,6 +31,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   pipIndex: '',
   torchIndexMirror: '',
   outputScanDepth: 4,
+  stopMode: 'fast',
   proxy: {
     enabled: false,
     protocol: 'http',
@@ -175,15 +176,22 @@ export const TORCH_DISK_GB: Record<TorchChannel, number> = {
  */
 export const RUNTIME_SOURCES: Record<
   string,
-  // 0.1.17 (WP10): the unused optional `sha256` field was removed — integrity
-  // is verified from the `<url>.sha256` sidecar in bootstrap.ts, never here.
-  { url: string; sizeHint: number; description: string }
+  /*
+   * 0.1.18 (regression fix): `sha256` is a build-time pin for assets whose
+   * upstream ships no `.sha256` sidecar (MinGit) or whose sidecar is not
+   * reachable through a mirror (China). It is the strongest check: a mismatch
+   * always copies nothing and deletes the download. The Windows pins were
+   * hashed from the exact release assets (uv/python cross-checked against the
+   * official manifests).
+   */
+  { url: string; sizeHint: number; description: string; sha256?: string }
 > = {
   // uv standalone — also bootstraps CPython via `uv python install`
   'uv-win-x64': {
     url: 'https://github.com/astral-sh/uv/releases/download/0.8.15/uv-x86_64-pc-windows-msvc.zip',
     sizeHint: 15 * 1024 * 1024,
-    description: 'uv package manager (Windows x64)'
+    description: 'uv package manager (Windows x64)',
+    sha256: '459d95892a5cc5c21779532f4f41b9238594b79e312a5142da2148ecfa10e705'
   },
   'uv-linux-x64': {
     url: 'https://github.com/astral-sh/uv/releases/download/0.8.15/uv-x86_64-unknown-linux-gnu.tar.gz',
@@ -209,13 +217,16 @@ export const RUNTIME_SOURCES: Record<
   'mingit-win-x64': {
     url: 'https://github.com/git-for-windows/git/releases/download/v2.47.1.windows.1/MinGit-2.47.1-64-bit.zip',
     sizeHint: 50 * 1024 * 1024,
-    description: 'MinGit portable (Windows x64)'
+    description: 'MinGit portable (Windows x64)',
+    // git-for-windows publishes no machine-readable sidecar for this release.
+    sha256: '50b04b55425b5c465d076cdb184f63a0cd0f86f6ec8bb4d5860114a713d2c29a'
   },
   // python-build-standalone fallback when uv is unavailable
   'python-win-x64': {
     url: 'https://github.com/astral-sh/python-build-standalone/releases/download/20250712/cpython-3.12.11+20250712-x86_64-pc-windows-msvc-install_only_stripped.tar.gz',
     sizeHint: 25 * 1024 * 1024,
-    description: 'Portable CPython 3.12 (Windows x64)'
+    description: 'Portable CPython 3.12 (Windows x64)',
+    sha256: '49911a479230f9a0ad33fc6742229128249f695502360dab3f5fd9096585e9a5'
   },
   'python-linux-x64': {
     url: 'https://github.com/astral-sh/python-build-standalone/releases/download/20250712/cpython-3.12.11+20250712-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz',

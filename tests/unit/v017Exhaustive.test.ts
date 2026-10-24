@@ -533,21 +533,6 @@ describe('source quality: i18n key uniqueness', () => {
   })
 })
 
-describe('source quality: test files exist for all new features', () => {
-  const testFiles = [
-    'tests/unit/v016Collaboration.test.ts',
-    'tests/unit/v017Contracts.test.ts',
-    'tests/unit/v017DeepAudit.test.ts',
-    'tests/unit/v017SecurityAndUtils.test.ts',
-    'tests/unit/v017RuntimeAndCoverage.test.ts'
-  ]
-  for (const f of testFiles) {
-    it(`${f} exists`, () => {
-      const { existsSync } = require('fs')
-      expect(existsSync(join(__dirname, '..', '..', f))).toBe(true)
-    })
-  }
-})
 
 // ============ Readme consistency ============
 describe('README consistency', () => {

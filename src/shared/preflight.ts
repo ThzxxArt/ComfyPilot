@@ -24,3 +24,30 @@ export function missingNodeTypes(prompt: unknown, availableTypes: Iterable<strin
   const available = new Set(availableTypes)
   return collectPromptNodeTypes(prompt).filter((t) => !available.has(t))
 }
+
+/**
+ * 0.1.18 (WP7): model files a workflow references. ComfyUI passes model names
+ * as plain string inputs (`ckpt_name`, `lora_name`, …); the extension is the
+ * only reliable signal, so anything else (positive prompts, filenames without
+ * a model extension) is deliberately ignored.
+ */
+const MODEL_FILE_RE = /\.(safetensors|ckpt|pt|pth|bin|gguf|onnx|sft)$/i
+
+export function collectPromptModelRefs(prompt: unknown): Array<{ name: string; nodeType: string }> {
+  if (!prompt || typeof prompt !== 'object') return []
+  const seen = new Map<string, { name: string; nodeType: string }>()
+  for (const node of Object.values(prompt as Record<string, unknown>)) {
+    if (!node || typeof node !== 'object') continue
+    const type = String((node as { class_type?: unknown }).class_type || '')
+    const inputs = (node as { inputs?: unknown }).inputs
+    if (!inputs || typeof inputs !== 'object') continue
+    for (const value of Object.values(inputs as Record<string, unknown>)) {
+      if (typeof value !== 'string') continue
+      if (!MODEL_FILE_RE.test(value)) continue
+      if (value.includes('\0')) continue
+      const key = value.toLowerCase()
+      if (!seen.has(key)) seen.set(key, { name: value, nodeType: type })
+    }
+  }
+  return [...seen.values()]
+}

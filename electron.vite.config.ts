@@ -58,7 +58,8 @@ export default defineConfig({
     css: {
       preprocessorOptions: {
         scss: {
-          api: 'modern-compiler',
+          // Vite 8 always uses Sass's modern compiler API; the old `api`
+          // option was removed (0.1.18 / WP0 toolchain upgrade).
           additionalData: `@use "@/styles/variables.scss" as *;`
         }
       }

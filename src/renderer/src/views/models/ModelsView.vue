@@ -32,6 +32,7 @@ import { formatBytes } from '@/utils/format'
 import { categoryVisual } from '@/utils/categoryIcons'
 import { runBatchOps, type BatchOpOutcome } from '@/utils/batchOps'
 import ListSkeleton from '@/components/ListSkeleton.vue'
+import ListState from '@/components/ListState.vue'
 import { MODEL_CATEGORY_LABELS, STARTER_MODELS } from '@shared/constants'
 import type {
   DownloadTask,
@@ -42,6 +43,7 @@ import type {
   StarterModel,
   ModelCategory
 } from '@shared/types'
+import TargetBanner from '@/components/TargetBanner.vue'
 
 const { t, te } = useI18n()
 const store = useAppStore()
@@ -273,15 +275,36 @@ async function doDelete(id: string, deleteFile: boolean): Promise<void> {
   }
 }
 
-/** Two explicit outcomes: record-only vs delete file too. Dismiss = cancel. */
+/**
+ * 0.1.18 (WP6 / S8): the old box offered "delete file too" and "remove record
+ * only" as BOTH buttons — dismissing by mask click was the only way to cancel.
+ * Now cancel is explicit and "record only" is a distinct in-body action.
+ */
 function confirmDelete(row: ModelRecord): void {
-  dialog.warning({
+  let dlg: ReturnType<typeof dialog.warning>
+  dlg = dialog.warning({
     title: t('models.deleteAction'),
-    content: t('models.deleteConfirm'),
+    content: () =>
+      h('div', [
+        h('div', t('models.deleteConfirm')),
+        h('div', { style: 'color:#8a8f99;font-size:12px;margin-top:6px' }, t('confirm.cannotUndo')),
+        h(
+          NButton,
+          {
+            size: 'small',
+            secondary: true,
+            style: 'margin-top:10px',
+            onClick: () => {
+              dlg.destroy()
+              void doDelete(row.id, false)
+            }
+          },
+          () => t('models.removeRecordOnly')
+        )
+      ]),
     positiveText: t('models.deleteFileToo'),
-    negativeText: t('models.removeRecordOnly'),
-    onPositiveClick: () => doDelete(row.id, true),
-    onNegativeClick: () => doDelete(row.id, false)
+    negativeText: t('common.cancel'),
+    onPositiveClick: () => doDelete(row.id, true)
   })
 }
 
@@ -373,16 +396,35 @@ function confirmBatchDelete(): void {
   const n = selectedModels.value.length
   if (!n || batchBusy.value) return
   const hidden = selection.hiddenCount.value
-  dialog.warning({
+  let dlg: ReturnType<typeof dialog.warning>
+  dlg = dialog.warning({
     title: t('models.batchDelete'),
-    content:
-      t('models.batchDeleteConfirm', { n }) +
-      ` (${batchTargetSummary()})` +
-      (hidden ? ` — ${t('models.batchHiddenSkipped', { n: hidden })}` : ''),
+    content: () =>
+      h('div', [
+        h(
+          'div',
+          t('models.batchDeleteConfirm', { n }) +
+            ` (${batchTargetSummary()})` +
+            (hidden ? ` — ${t('models.batchHiddenSkipped', { n: hidden })}` : '')
+        ),
+        h('div', { style: 'color:#8a8f99;font-size:12px;margin-top:6px' }, t('confirm.cannotUndo')),
+        h(
+          NButton,
+          {
+            size: 'small',
+            secondary: true,
+            style: 'margin-top:10px',
+            onClick: () => {
+              dlg.destroy()
+              void doBatchDelete(false)
+            }
+          },
+          () => t('models.removeRecordOnly')
+        )
+      ]),
     positiveText: t('models.deleteFileToo'),
-    negativeText: t('models.removeRecordOnly'),
-    onPositiveClick: () => void doBatchDelete(true),
-    onNegativeClick: () => void doBatchDelete(false)
+    negativeText: t('common.cancel'),
+    onPositiveClick: () => void doBatchDelete(true)
   })
 }
 
@@ -613,13 +655,18 @@ const columns = computed<DataTableColumns<ModelRecord>>(() => [
   }
 ])
 
+/** 0.1.18 (WP6 / U7): distinguish "no models" from "the list failed". */
+const loadError = ref('')
+
 async function refresh(): Promise<void> {
   loading.value = true
   try {
     models.value = await ipc('model.list')
     storage.value = await ipc('model.storageStats')
+    loadError.value = ''
   } catch (err) {
-    message.error(err instanceof Error ? err.message : String(err))
+    loadError.value = err instanceof Error ? err.message : String(err)
+    message.error(loadError.value)
   } finally {
     loading.value = false
   }
@@ -753,6 +800,75 @@ async function cancelDl(id: string): Promise<void> {
   }
 }
 
+/** 0.1.18 (WP7): remaining-time estimate, only when a real speed exists. */
+function etaOf(d: DownloadTask): string {
+  if (!d.speedBps || d.speedBps <= 0 || d.totalBytes <= 0) return ''
+  const secs = Math.max(0, Math.round((d.totalBytes - d.receivedBytes) / d.speedBps))
+  if (secs < 60) return `${secs}s`
+  const m = Math.floor(secs / 60)
+  const sec = secs % 60
+  if (m < 60) return `${m}m ${sec}s`
+  return `${Math.floor(m / 60)}h ${m % 60}m`
+}
+
+async function prioritizeDl(id: string): Promise<void> {
+  try {
+    await ipc('model.prioritizeDownload', id)
+    downloads.value = await ipc('model.downloads')
+    message.success(t('models.prioritized'))
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+/** Bulk queue controls (0.1.18 / WP7) — each action reports real outcomes. */
+/**
+ * Bulk actions report real outcomes: one failing item used to be swallowed and
+ * the list refresh made the whole batch look successful.
+ */
+async function bulkDl(
+  channel: 'model.pauseDownload' | 'model.resumeDownload' | 'model.cancelDownload',
+  items: DownloadTask[]
+): Promise<void> {
+  let failed = 0
+  for (const d of items) {
+    try {
+      await ipc(channel, d.id)
+    } catch {
+      failed += 1
+    }
+  }
+  if (failed) message.warning(t('models.bulkPartial', { failed, total: items.length }))
+  try {
+    downloads.value = await ipc('model.downloads')
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function pauseAllDl(): Promise<void> {
+  await bulkDl(
+    'model.pauseDownload',
+    downloads.value.filter((d) => d.status === 'running')
+  )
+}
+
+async function resumeAllDl(): Promise<void> {
+  await bulkDl(
+    'model.resumeDownload',
+    downloads.value.filter((d) => d.status === 'paused' || d.status === 'error')
+  )
+}
+
+async function cancelAllDl(): Promise<void> {
+  await bulkDl(
+    'model.cancelDownload',
+    downloads.value.filter(
+      (d) => d.status === 'running' || d.status === 'queued' || d.status === 'paused'
+    )
+  )
+}
+
 async function clearFinishedDl(): Promise<void> {
   try {
     await ipc('model.clearFinishedDownloads')
@@ -845,6 +961,7 @@ onUnmounted(() => {
       </NSpace>
     </div>
 
+    <TargetBanner />
     <div class="page-body">
       <div v-if="scanProgress" class="scan-banner card">{{ scanProgress }}</div>
 
@@ -867,9 +984,39 @@ onUnmounted(() => {
       <div v-if="downloads.length" class="dl-banner card">
         <div class="dl-head">
           <div class="panel-title">{{ $t('models.downloadsTitle') }}</div>
-          <NButton v-if="hasFinishedDownloads" size="tiny" secondary @click="clearFinishedDl">
-            {{ $t('models.clearFinished') }}
-          </NButton>
+          <NSpace :size="6">
+            <NButton
+              v-if="downloads.some((d) => d.status === 'running')"
+              size="tiny"
+              secondary
+              @click="pauseAllDl"
+            >
+              {{ $t('models.pauseAll') }}
+            </NButton>
+            <NButton
+              v-if="downloads.some((d) => d.status === 'paused' || d.status === 'error')"
+              size="tiny"
+              secondary
+              @click="resumeAllDl"
+            >
+              {{ $t('models.resumeAll') }}
+            </NButton>
+            <NButton
+              v-if="
+                downloads.some(
+                  (d) => d.status === 'running' || d.status === 'queued' || d.status === 'paused'
+                )
+              "
+              size="tiny"
+              secondary
+              @click="cancelAllDl"
+            >
+              {{ $t('models.cancelAll') }}
+            </NButton>
+            <NButton v-if="hasFinishedDownloads" size="tiny" secondary @click="clearFinishedDl">
+              {{ $t('models.clearFinished') }}
+            </NButton>
+          </NSpace>
         </div>
         <div v-for="d in downloads" :key="d.id" class="dl-row">
           <span class="dl-name" :title="d.fileName">{{ d.fileName }}</span>
@@ -888,6 +1035,8 @@ onUnmounted(() => {
             >{{ formatBytes(d.receivedBytes) }} / {{ formatBytes(d.totalBytes) }}</span
           >
           <span v-if="d.speedBps" class="mono">{{ formatBytes(d.speedBps) }}/s</span>
+          <span v-if="etaOf(d)" class="mono">{{ $t('models.eta', { t: etaOf(d) }) }}</span>
+          <span v-if="d.status === 'queued'" class="mono">{{ $t('models.queuedHint') }}</span>
           <span v-if="d.error" class="dl-error">{{ d.error }}</span>
           <NButton
             v-if="d.status === 'running' || d.status === 'queued' || d.status === 'paused'"
@@ -903,6 +1052,12 @@ onUnmounted(() => {
           <NButton v-if="d.status === 'paused'" size="tiny" secondary @click="resumeDl(d.id)">{{
             $t('models.resume')
           }}</NButton>
+          <NButton v-if="d.status === 'error'" size="tiny" secondary @click="resumeDl(d.id)">{{
+            $t('common.retry')
+          }}</NButton>
+          <NButton v-if="d.status === 'queued'" size="tiny" secondary @click="prioritizeDl(d.id)">
+            {{ $t('models.prioritize') }}
+          </NButton>
         </div>
       </div>
 
@@ -960,6 +1115,7 @@ onUnmounted(() => {
             max-height="480"
             virtual-scroll
           />
+          <ListState v-else-if="loadError" :error="loadError" :rows="6" @retry="refresh" />
           <NEmpty
             v-else
             :description="hasFilter ? $t('common.noMatch') : $t('models.empty')"

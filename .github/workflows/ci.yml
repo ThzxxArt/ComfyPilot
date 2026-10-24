@@ -5,8 +5,16 @@ on:
     branches: [master, main]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   test:
+    timeout-minutes: 30
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
@@ -16,11 +24,16 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Ensure the Electron binary is installed
+        # npm's script-approval policy can block package postinstall scripts;
+        # e2e/build need the real binary, so rebuild it explicitly.
+        run: npm rebuild electron
 
       - name: Typecheck (node)
         run: npx tsc --noEmit -p tsconfig.node.json
@@ -30,6 +43,9 @@ jobs:
 
       - name: Typecheck (tests)
         run: npx tsc --noEmit -p tsconfig.test.json
+
+      - name: Version consistency
+        run: node scripts/check-version.cjs
 
       - name: i18n key parity & dynamic domains
         run: node scripts/check-i18n.cjs
@@ -42,6 +58,12 @@ jobs:
 
       - name: Unit & integration tests
         run: npx vitest run --coverage
+
+      - name: Test-behaviour ratio gate
+        run: npm run test:behavior
+
+      - name: Coverage ratchet
+        run: node scripts/coverage-ratchet.cjs
 
       - name: Upload coverage report
         if: always()
@@ -59,8 +81,6 @@ jobs:
         if: runner.os == 'Windows'
         run: npx vitest run --config vitest.e2e.config.ts
 
-      - name: E2E smoke (Linux needs xvfb)
+      - name: E2E smoke (Linux under xvfb)
         if: runner.os == 'Linux'
-        env:
-          SKIP_E2E: "1"
-        run: npx vitest run --config vitest.e2e.config.ts
+        run: xvfb-run -a npx vitest run --config vitest.e2e.config.ts

@@ -339,6 +339,26 @@ describe('p1p2 services', () => {
       expect(job.items[0].workflowName).toBe('MyFlow')
       expect(job.count).toBe(502)
     })
+
+    it('serves list() from memory and hands out copies (F4)', async () => {
+      const { batchService } = await freshP1p2()
+      const p = join(ROOT, 'wf', 'cache.json')
+      writeFileSync(p, uiGraph())
+      const job = batchService.create({
+        name: 'Cached',
+        instanceId: 'i',
+        items: [{ workflowPath: p, count: 1 }]
+      })
+      const first = batchService.list()
+      const second = batchService.list()
+      expect(first.find((j) => j.id === job.id)?.name).toBe('Cached')
+      // Copies: a caller mutating its view must not corrupt the in-memory truth.
+      first[0].name = 'mutated'
+      expect(second.find((j) => j.id === job.id)?.name).toBe('Cached')
+      expect(batchService.list().find((j) => j.id === job.id)?.name).toBe('Cached')
+      // Flushing with nothing dirty is a no-op, never a throw.
+      batchService.flushBatchWrites()
+    })
   })
 
   // ========== BatchService.start ==========

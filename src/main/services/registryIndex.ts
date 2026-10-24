@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { EventEmitter } from 'events'
-import type { MarketItem, RegistryNodePack } from '@shared/types'
+import type { MarketItem, RegistryIndexStatus, RegistryNodePack } from '@shared/types'
 import { cacheDir, loadSettings } from './db'
 import { fetchRegistryPage, mapMarketItem, mapRegistryPack, matchesQuery } from './registry'
 
@@ -59,6 +59,10 @@ export class RegistryIndexService extends EventEmitter {
   private items: Array<Record<string, unknown>> | null = null
   private meta: RegistryIndexMeta | null = null
   private building: Promise<void> | null = null
+  private abort: AbortController | null = null
+  private cancelRequested = false
+  private buildDone = 0
+  private buildPages = 0
 
   private loadFromDisk(): boolean {
     try {
@@ -105,19 +109,46 @@ export class RegistryIndexService extends EventEmitter {
     }
   }
 
-  status(): RegistryIndexMeta & { ready: boolean } {
+  status(): RegistryIndexStatus {
     return {
       ready: Boolean(this.items),
       updatedAt: this.meta?.updatedAt || 0,
       total: this.meta?.total || 0,
       pages: this.meta?.pages || 0,
       count: this.items?.length || 0,
-      skippedPages: this.meta?.skippedPages || 0
+      skippedPages: this.meta?.skippedPages || 0,
+      building: Boolean(this.building),
+      done: this.buildDone,
+      totalPages: this.buildPages
     }
   }
 
+  /**
+   * 0.1.18 (WP4/F6): a 58-page crawl must be refusable and cancellable. The
+   * UI asks before building; cancel aborts the workers at a page boundary.
+   */
+  cancelBuild(): boolean {
+    if (!this.building || !this.abort) return false
+    this.cancelRequested = true
+    this.abort.abort()
+    return true
+  }
+
+  /** True while the latest build was cancelled by the user (task-center hint). */
+  wasCancelledByUser(): boolean {
+    return this.cancelRequested
+  }
+
   /** Ensure a full-catalog index exists. Rebuilds when missing/stale or force=true. */
-  async ensure(opts?: { force?: boolean }): Promise<RegistryIndexMeta & { ready: boolean }> {
+  async ensure(opts?: {
+    force?: boolean
+    /**
+     * 0.1.18: callers that only want a cheap hint (check-updates, repository
+     * resolution) must pass false — they used to trigger a full crawl as a
+     * side effect of opening a page.
+     */
+    allowBuild?: boolean
+  }): Promise<RegistryIndexStatus> {
     const settings = loadSettings()
     if (settings.networkMode === 'offline') {
       if (!this.items) this.loadFromDisk()
@@ -136,12 +167,18 @@ export class RegistryIndexService extends EventEmitter {
     ) {
       return this.status()
     }
+    if (opts?.allowBuild === false) return this.status()
     if (this.building) {
       await this.building
       return this.status()
     }
 
-    this.building = this.buildFull()
+    const ac = new AbortController()
+    this.abort = ac
+    this.cancelRequested = false
+    this.buildDone = 0
+    this.buildPages = 0
+    this.building = this.buildFull(ac.signal)
       .catch((err) => {
         // keep any previous index on failure
         if (!this.items) this.loadFromDisk()
@@ -149,12 +186,22 @@ export class RegistryIndexService extends EventEmitter {
       })
       .finally(() => {
         this.building = null
+        this.abort = null
+        this.buildDone = 0
+        this.buildPages = 0
+        this.emit('idle', this.status())
       })
     await this.building
     return this.status()
   }
 
-  private async buildFull(): Promise<void> {
+  private async buildFull(signal: AbortSignal): Promise<void> {
+    const checkAbort = (): void => {
+      if (!signal.aborted) return
+      const err = new Error('index build cancelled')
+      err.name = 'AbortError'
+      throw err
+    }
     // Discover size first
     const first = await fetchRegistryPage(1, 100)
     const pageSize = first.limit || 100
@@ -163,25 +210,35 @@ export class RegistryIndexService extends EventEmitter {
     // `done` is a high-water mark: 6 workers report page numbers out of order.
     let maxDone = 1
     let skippedPages = 0
+    this.buildPages = totalPages
+    this.buildDone = maxDone
     this.emit('progress', { done: maxDone, total: totalPages, count: collected.length })
 
     const concurrency = 6
     let next = 2
     const workers = Array.from({ length: concurrency }, async () => {
       while (true) {
+        checkAbort()
         const pg = next++
         if (pg > totalPages) break
         try {
           const p = await fetchRegistryPage(pg, pageSize)
+          // Abort can arrive while a page is in flight; without this the
+          // worker emitted `progress` after the finally had already emitted
+          // idle, spawning a phantom "building" task that never finished.
+          checkAbort()
           for (const n of p.nodes) collected.push(slimNode(n))
-        } catch {
+        } catch (e) {
+          if (signal.aborted || (e as Error)?.name === 'AbortError') checkAbort()
           skippedPages++
         }
         if (pg > maxDone) maxDone = pg
+        this.buildDone = maxDone
         this.emit('progress', { done: maxDone, total: totalPages, count: collected.length })
       }
     })
     await Promise.all(workers)
+    checkAbort()
 
     // de-dupe by id/name
     const seen = new Set<string>()
@@ -222,7 +279,14 @@ export class RegistryIndexService extends EventEmitter {
   }
 
   /** Search the FULL catalog (not a single page). */
-  async search(opts: { query: string; page?: number; limit?: number }): Promise<{
+  async search(opts: {
+    query: string
+    page?: number
+    limit?: number
+    /** Never crawl as a side effect; return `needsIndex` instead (0.1.18). */
+    allowBuild?: boolean
+  }): Promise<{
+    needsIndex?: boolean
     raw: Array<Record<string, unknown>>
     total: number
     page: number
@@ -231,7 +295,20 @@ export class RegistryIndexService extends EventEmitter {
     scanned: number
     clientFiltered: boolean
   }> {
-    await this.ensure()
+    const status = await this.ensure({ allowBuild: opts.allowBuild === true })
+    if (!status.ready) {
+      const pageSize = Math.min(100, Math.max(1, Math.floor(opts.limit || 50)))
+      return {
+        raw: [],
+        total: 0,
+        page: Math.max(1, Math.floor(opts.page || 1)),
+        pageSize,
+        totalPages: 0,
+        scanned: 0,
+        clientFiltered: true,
+        needsIndex: true
+      }
+    }
     const all = this.items || []
     const query = String(opts.query || '').trim()
     const pageSize = Math.min(100, Math.max(1, Math.floor(opts.limit || 50)))

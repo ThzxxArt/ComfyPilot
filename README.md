@@ -1,7 +1,7 @@
 # ComfyPilot
 
 > **ComfyUI 全能管理器** — 本机 ComfyUI 生产线的控制塔  
-> TypeScript · Vue 3 · Electron · Naive UI · MIT · v0.1.17
+> TypeScript · Vue 3 · Electron 45 · Naive UI · MIT · v0.1.18
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-4f6ef7)](./LICENSE)
 
@@ -42,7 +42,7 @@ ComfyPilot **不替代** ComfyUI 节点工作台，而是管理它的整套生�
 | **工作流 Workflows** | **真·工作流库**：JSON / PNG 元数据解析（PNG 抽出 .json）、导入拷贝入库、**一键导入引擎默认工作流（ComfyUI v0.41+，探测式）**、来源徽章、标签/收藏/改名/删除、ZIP 导出、同步到实例、Frontend 打开、按实例排队 |
 | **批跑 Batch**       | 从工作流库**多选**多工作流 × 次数；种子策略（随机/递增/固定）+ 尺寸/steps/cfg 矩阵；入队后跟踪真实出图；取消可撤队；产物关联批次                                               |
 | **产物 Output**      | output 目录索引、真缩略图、**全类型覆盖（图像 / 视频 / 音频 / 3D 模型 / EXR 原始图——索引、筛选与交互降级）**、**视频首帧卡片 + 灯箱内嵌播放（mp4/webm；mkv/mov 优雅降级系统播放器）**、**音频灯箱内嵌播放**、时间/大小/名称排序 + 分页、收藏、多选导出 + **多选批量删除（文件/仅记录双态）**、PNG 参数还原、**还原为工作流真正入库**、批次/工作流回溯、**实例资产库只读增强（0.40 assets：job_id 溯源 / 标签 / EXR 预览）** |
-| **监控 Monitor**     | CPU / 内存 / 磁盘 / GPU（显存真实采样）、队列、WebSocket 实时进度、**实时采样预览（两代预览帧解码）**、**节点级进度（progress_state）**、**作业列表（/api/jobs）**、**运行操作（清空待执行队列 / 中断当前任务 / 释放显存内存——本地与远程统一）**、**远程实例只读监控** |
+| **监控 Monitor**     | CPU / 内存 / 磁盘 / GPU（显存真实采样）、队列、WebSocket 实时进度、**实时采样预览（两代预览帧解码）**、**节点级进度（progress_state）**、**作业列表（/api/jobs）**、**运行操作（清空待执行队列 / 中断当前任务 / 释放显存内存——本地与远程统一）**、**远程实例监控**（运行操作 + 批跑；节点/模型安装仅本地） |
 | **诊断 Doctor**      | 一键体检（Python / **pip 可用性** / torch·CUDA / 端口 / 节点 / 路径 / 磁盘 / 网络）+ 可修复项（含 **ensurepip 一键补 pip**）                                                                                                   |
 | **备份 Backup**      | 配置 / 实例 / 节点清单 / 模型清单快照，原子恢复                                                                                                                                |
 | **远程 Remote**      | 局域网 / 云端 ComfyUI 实例注册、连通测试、在线状态                                                                                                                             |
@@ -109,7 +109,7 @@ ComfyPilot **不替代** ComfyUI 节点工作台，而是管理它的整套生�
 
 | 项                    | 要求                                                                   |
 | --------------------- | ---------------------------------------------------------------------- |
-| 操作系统              | Windows 10+ / macOS / Linux                                            |
+| 操作系统              | Windows 10+（发布与验证）；macOS / Linux 仅有构建配置，未验证          |
 | 磁盘                  | ≥ 20GB 可用（含 torch 与推荐模型）                                     |
 | GPU 驱动              | 使用 N 卡 GPU 加速需自行安装 NVIDIA 驱动（应用可检测并提示，无法代装） |
 | VC++ Redistributable  | Windows 运行 Electron 需要；缺失时启动会提示                           |
@@ -117,11 +117,13 @@ ComfyPilot **不替代** ComfyUI 节点工作台，而是管理它的整套生�
 
 下载安装包后：打开应用 → 空态三步引导 →「全自动安装」→ 完成后「立即启动并打开 Frontend」→ 下载基础模型 → 出图。
 
+**安装包与签名（0.1.18）：** 目前发布产物**未做代码签名**。首次运行 Windows 会弹 SmartScreen，选择“更多信息 → 仍要运行”即可；发布页同时附 `SHA256SUMS.txt`，可用 `Get-FileHash` 或 `sha256sum` 核对后再安装。tag 触发的 release 流水线（`.github/workflows/release.yml`）会生成草稿 Release，人工确认安装/卸载无 Application Error 后再发布。
+
 ### 开发环境
 
 | 依赖    | 版本 |
 | ------- | ---- |
-| Node.js | ≥ 20 |
+| Node.js | ≥ 22（开发/构建；发布不要求用户安装） |
 | npm     | ≥ 10 |
 
 ```bash
@@ -132,7 +134,7 @@ node node_modules/electron/install.js
 npm run dev          # 开发模式
 npm run typecheck    # vue-tsc + tsc
 npm run typecheck:test # 测试源码 tsc（CI 门禁）
-npm run test         # 单元 + 集成（2670 tests）
+npm run test         # 单元 + 集成（1725 tests）
 npm run test:coverage
 npm run lint         # ESLint（含 --fix）
 npm run lint:check   # ESLint 只检查（CI 门禁）
@@ -250,7 +252,7 @@ Python 版本、Torch / CUDA、`extra_model_paths.yaml`、端口、磁盘、Regi
 | Zip 解压       | zip-slip、符号链接、自引用环、保留名一并拒绝                                  |
 | Git            | 拦截 `ext::`、注入型主机/分支；argv 数组，无 shell                            |
 | 启动脚本导出   | `.bat` / `.sh` 平台正确转义（防命令注入）                                     |
-| 媒体 URL       | `comfy-pilot-media:` 仅放行 thumbs / output 根 + 图片扩展名                   |
+| 媒体 URL       | `comfy-pilot-media:` 仅放行 thumbs / output 根 + 图片/视频/音频扩展名         |
 | URL / 打开文件 | 仅 http(s)/mailto；禁止打开可执行/脚本类扩展名                                |
 | 网络请求       | 监控与内嵌页限制在 localhost 或已注册实例/远程                                |
 | 删除保护       | 含 `models/` `custom_nodes/` `user/` `output/` 的旧目录**只归档不删除**（0.1.17）；装机清理仅删 ComfyPilot 痕迹或空残骸 |
@@ -267,9 +269,9 @@ Python 版本、Torch / CUDA、`extra_model_paths.yaml`、端口、磁盘、Regi
 
 ```text
 ComfyPilot/
-├── package.json                 # v0.1.17 · MIT · ThzxxArt
+├── package.json                 # v0.1.18 · MIT · ThzxxArt
 ├── electron.vite.config.ts
-├── electron-builder.yml         # Win NSIS / macOS DMG / Linux AppImage·deb + GitHub publish
+├── electron-builder.yml         # Win NSIS（已发布）；macOS/Linux 目标存在但未验证
 ├── vitest.config.ts             # 覆盖率门禁（0.1.8 按实测定档，见文件内说明）
 ├── scripts/
 │   ├── postbuild.cjs
@@ -297,7 +299,7 @@ ComfyPilot/
 │           ├── styles/tokens.ts # JS 侧设计 token
 │           └── views/           # dashboard/instances/install/models/…
 ├── tests/
-│   ├── unit/                    # 117 文件（+3 集成 = 120）· 2670 用例全绿 · 行为测试为主
+│   ├── unit/                    # 121 文件 · 1725 用例 · 含 DOM 组件测试
 │   ├── integration/
 │   └── e2e/
 └── .github/workflows/ci.yml
@@ -309,9 +311,12 @@ ComfyPilot/
 
 ```bash
 npm run dev / typecheck / test / test:coverage / test:e2e / test:all
+node scripts/check-version.cjs   # 版本号五处一致（CI + release 必跑）
 ```
 
-**测试：** 2670 用例（120 文件）+ e2e 冒烟（含渲染挂载断言）。覆盖率门禁在 `vitest.config.ts` 内 **按实测定档（实测 − 2pp）**；测试源码纳入 tsc 门禁（`typecheck:test`）。测试临时目录全量自清（tmpfs 卫生）+ 磁盘门控与真实文件系统解耦（0.1.15）；0.1.16 新增稳定性/日志/性能模块各有独立测试与覆盖率档位。
+**测试：** 1725 用例（121 文件，含 `@vue/test-utils` 组件测试；0.1.18 删除了约 1,050 条纯源码文本断言，行为占比从脚本口径 85% 提升到 97%）+ e2e 冒烟（真实 Electron 启动、preload 桥、一次真实 IPC、渲染层 console 错误置红）。覆盖率门禁分三层：**全局下限**（statements 82 / branches 74 / functions 83 / lines 84，实测值 −2pp）、**测试行为占比**（`npm run test:behavior`，纯源码文本断言占比 >40% 直接失败）与 **每文件下限**（`coverage-baseline.json` 的实测 −2pp，`scripts/coverage-ratchet.cjs` 对任一文件掉 >1pp 失败）；`handlers.ts`/`index.ts` 等装配层仍未纳入 include（覆盖率数字不代表全仓）。测试源码纳入 tsc 门禁（`typecheck:test`）。
+
+**技术栈（0.1.18 升级）：** Electron **45** · electron-vite **6** · Vite **8** · Vitest **5** · Node **24**（CI/构建）。TypeScript 保持 **5.9**：TS 7（native）与 `vue-tsc` 2.x/3.x 均不兼容（`ERR_PACKAGE_PATH_NOT_EXPORTED`），已实测并记录，待 vue-tsc 支持后再升。
 
 **门禁脚本：**
 
@@ -424,7 +429,7 @@ ComfyUI 本身采用 GPL-3.0；本项目独立发布，采用 **MIT**。
 - [x] **0.1.11 关联闭环**：工作流→产物**内容指纹反向匹配**（ComfyUI 前端执行的产物同样可关联）+ batch sidecar + 多 id 筛选 + 空态解释与重扫
 - [x] **0.1.11 事实精修**：节点「全部更新」完整性（可选重试检查失败项）+ 版本方向修复（1.0 不再谎报高于 1.2）+ git 落后提交数徽标 + 0.39 `[INFO]` 前缀加载报告修复；最大信息量卡片 + 批量启停防护；实例详情三页签 + 终端日志（自动跟随/2000 行）；调优面板平铺去嵌套；模型库类别下拉+架构筛选+类别图标；Dashboard 内存已用/总值
 - [x] **0.1.11 能力补齐**：远程实例批跑（远程历史产物语义诚实）+ 释放显存；运行中启动自检（独立端口）；工作流对比（字段差异+单侧节点类型）；GPU 多卡索引 + Windows 共享显存；应用自动更新检查可见化（设置页按钮+状态）
-- [x] 自动更新通道（GitHub Releases）：electron-builder.yml 配置 GitHub publish，NSIS 产物含 `latest.yml` + `app-update.yml`；应用内手动检查入口（Settings → 关于）
+- [x] **0.1.18 发布工程**：tag 触发的 `.github/workflows/release.yml`（Windows 必跑、mac/linux 非阻断、draft + SHA256SUMS）；`scripts/check-version.cjs` 校验五处版本一致；AUMID；asar 去冗余并排除 `out/tsc-*`/`*.tsbuildinfo`。**代码签名仍未配置**（需要证书），发布说明明确告知 SmartScreen 处理方式
 - [x] **0.1.12 运行可诊**：运行失败结构化诊断（WS `execution_error` 全载荷 + 日志 traceback 解析双通道；节点→包归属映射 object_info `python_module`；失败卡一键安装缺失包 / 配方修复 / 复制报告 / 跳转节点包）；失败通知（系统通知 + 站内）
 - [x] **0.1.12 依赖可修**：实例 venv 通用 pip 安装通道（uv 优先 / ensurepip 兜底 / 镜像重试 / 流式日志 / 可取消）；Doctor pip 体检 + ensure-pip 一键修复；repairEnv/卸载链补 pip；节点依赖体检（requirements vs venv 对账 + 单包补装）；修复配方（triton-windows / SageAttention wheel / onnx，SHA256 钉验）
 - [x] **0.1.12 预检与收口**：工作流/批跑提交前 object_info 节点预检（缺节点警告不阻断）；日志搜索与级别过滤；进度弹窗刷新后状态恢复（comfy-update/repair/node-op/pip 四路快照）；0.1.12 全量死代码清理（wsEvents、objectInfo、getLastSnapshot、isWsConnected、hashId）

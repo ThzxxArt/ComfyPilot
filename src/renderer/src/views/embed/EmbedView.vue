@@ -64,6 +64,14 @@ function onLayout(e: Event): void {
   applyResize()
 }
 
+/**
+ * 0.1.18 (WP6 / U6): `embedded` used to flip true only AFTER `embed.open`
+ * resolved. Unmounting (or switching URL) during that window let the view's
+ * `embed.close` run first and the late `open` then attach a view nobody owns.
+ * The flag is now optimistic and every async continuation checks its epoch.
+ */
+let embedEpoch = 0
+
 async function embed(): Promise<void> {
   if (!displayUrl.value) return
   if (!embedEnabled()) {
@@ -72,14 +80,23 @@ async function embed(): Promise<void> {
     await openExternal()
     return
   }
+  const epoch = ++embedEpoch
+  embedded.value = true
+  showFallback.value = false
+  embedError.value = ''
   try {
-    embedError.value = ''
     await ipc('embed.open', { url: displayUrl.value, title: 'ComfyUI' })
-    embedded.value = true
-    showFallback.value = false
+    if (epoch !== embedEpoch) {
+      // A close/newer open won the race — close what we just opened.
+      await ipc('embed.close').catch(() => undefined)
+      return
+    }
     await ipc('embed.resize', currentRect())
   } catch (err) {
+    if (epoch !== embedEpoch) return
+    embedded.value = false
     showFallback.value = true
+    embedError.value = err instanceof Error ? err.message : String(err)
     message.warning(t('embed.embedUnavailable'))
     console.error(err)
   }
@@ -90,6 +107,7 @@ async function openExternal(): Promise<void> {
 }
 
 async function closeEmbed(): Promise<void> {
+  embedEpoch += 1
   await ipc('embed.close')
   embedded.value = false
   showFallback.value = true
@@ -127,6 +145,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  embedEpoch += 1
   offEmbedState?.()
   offEmbedState = null
   window.removeEventListener('resize', onResize)

@@ -15,11 +15,14 @@ files:
   - '!src/**'
   - '!tests/**'
   - '!docs/**'
+  # 0.1.18 (WP0): typecheck artefacts must never ship — 620 KB of dev-only
+  # absolute paths, and their presence made the asar look complete when it was not.
+  - '!out/tsc-*/**'
+  - '!**/*.tsbuildinfo'
 asar: true
-asarUnpack:
-  - '**/out/preload/**'
-  - 'out/preload/**'
-  - '**/preload/index.js'
+# Preload ships through extraResources (the runtime loader wants a real file
+# path); unpacking the asar copy too produced a third identical file.
+asarUnpack: []
 extraResources:
   - from: out/preload
     to: preload
@@ -32,6 +35,8 @@ extraResources:
       - '**/*.icns'
       - '**/*.png'
 win:
+  # electron-builder 26 rejects `publisherName` here (it is sign-tool config,
+  # not a win target field) — identity comes from appId + setAppUserModelId.
   target:
     - target: nsis
       arch: [x64]

@@ -30,17 +30,21 @@ import {
   NDialogProvider,
   NConfigProvider,
   NSelect,
-  NTag
+  NTag,
+  NAlert
 } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 import { ipc } from '@/composables/useIpc'
 import { useLaunch } from '@/composables/useLaunch'
 import { usePipOps } from '@/composables/usePipOps'
-import { createDiscreteApi } from 'naive-ui'
+import { createDiscreteApi, dateEnUS, dateZhCN, enUS, zhCN } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { APP_VERSION } from '@shared/constants'
 import { COLORS } from '@/styles/tokens'
 import PipOpModal from '@/components/PipOpModal.vue'
+import TaskCenter from '@/components/TaskCenter.vue'
+import NotificationCenter from '@/components/NotificationCenter.vue'
+import CommandPalette from '@/components/CommandPalette.vue'
 
 // App.vue sits outside NMessageProvider — use discrete message/dialog APIs.
 const discreteApi = createDiscreteApi(['message', 'dialog'])
@@ -53,6 +57,10 @@ const route = useRoute()
 const store = useAppStore()
 const collapsed = ref(false)
 const { t, locale } = useI18n()
+/** 0.1.18 (WP6 / U11): Naive's own strings (pickers, dialogs, empty states)
+ *  must follow the app language instead of staying on its default. */
+const naiveLocale = computed(() => (locale.value === 'en-US' ? enUS : zhCN))
+const naiveDateLocale = computed(() => (locale.value === 'en-US' ? dateEnUS : dateZhCN))
 const { launch, stop, busy } = useLaunch()
 // 0.1.12: restore pip-op state after a renderer reload so the banner/modal
 // stop being invisible while main is still installing.
@@ -227,7 +235,9 @@ const instanceOptions = computed(() => {
 const selectedInstanceId = computed({
   get: () => {
     if (store.activeRemoteId) return `remote:${store.activeRemoteId}`
-    return store.activeInstanceId || store.instances[0]?.id || null
+    // No instances[0] fallback: the store deliberately treats "no id" as no
+    // local target (0.1.18 WP2). Showing one here made the header lie.
+    return store.activeInstanceId || null
   },
   set: (v: string | null) => {
     if (v && v.startsWith('remote:')) {
@@ -320,6 +330,20 @@ watch(
  * likely ended unexpectedly. Surface it and offer a diagnostics export — this
  * is the only reliable way to prove a "silent crash" actually happened.
  */
+async function retryBootstrap(): Promise<void> {
+  store.bootstrapError = ''
+  await store.bootstrap({ keepSelection: true })
+}
+
+async function openLogsDir(): Promise<void> {
+  try {
+    const dir = await ipc('settings.logsDir')
+    if (dir) await ipc('shell.openPath', dir)
+  } catch {
+    /* best-effort */
+  }
+}
+
 async function checkPreviousExit(): Promise<void> {
   try {
     const info = await ipc('app.previousExit')
@@ -452,7 +476,11 @@ async function toggleInstanceRun(): Promise<void> {
 </script>
 
 <template>
-  <NConfigProvider :theme-overrides="themeOverrides">
+  <NConfigProvider
+    :theme-overrides="themeOverrides"
+    :locale="naiveLocale"
+    :date-locale="naiveDateLocale"
+  >
     <NMessageProvider>
       <NDialogProvider>
         <div class="shell" :class="{ collapsed }">
@@ -519,6 +547,10 @@ async function toggleInstanceRun(): Promise<void> {
                 <div class="header-crumb">{{ t('header.crumb') }}</div>
               </div>
               <NSpace align="center" :size="10">
+                <!-- 0.1.18 (WP5/WP6): task center + notification center,
+                     reachable from every view. -->
+                <TaskCenter />
+                <NotificationCenter />
                 <!-- Active instance context — used by nodes/models/batch/monitor -->
                 <div class="instance-pick">
                   <NSelect
@@ -549,7 +581,11 @@ async function toggleInstanceRun(): Promise<void> {
                           secondary
                           :type="activeStatus === 'running' ? 'warning' : 'primary'"
                           :disabled="!store.activeInstance || store.isRemoteActive"
-                          :loading="store.activeInstance ? busy[store.activeInstance.id] : false"
+                          :loading="
+      store.activeInstance
+        ? Boolean(busy[store.activeInstance.id] || busy['stop:' + store.activeInstance.id])
+        : false
+    "
                           @click="toggleInstanceRun"
                         >
                           <template #icon>
@@ -597,6 +633,28 @@ async function toggleInstanceRun(): Promise<void> {
             </header>
 
             <main class="content">
+              <!-- 0.1.18 (WP6): a failed bootstrap is a page-level state, not a
+                   toast that disappears before the user can read it. -->
+              <NAlert
+                v-if="store.bootstrapError"
+                type="error"
+                closable
+                class="bootstrap-alert"
+                @close="store.bootstrapError = ''"
+              >
+                <template #header>{{ t('notify.bootstrapFailed') }}</template>
+                <div class="bootstrap-alert-body">
+                  <span class="mono">{{ store.bootstrapError }}</span>
+                  <NSpace>
+                    <NButton size="tiny" secondary @click="retryBootstrap">
+                      {{ t('common.retry') }}
+                    </NButton>
+                    <NButton size="tiny" secondary @click="openLogsDir">
+                      {{ t('palette.openLogs') }}
+                    </NButton>
+                  </NSpace>
+                </div>
+              </NAlert>
               <router-view v-slot="{ Component }">
                 <transition name="page-fade" mode="out-in">
                   <component :is="Component" />
@@ -607,6 +665,8 @@ async function toggleInstanceRun(): Promise<void> {
         </div>
         <!-- Global pip-op modal (0.1.12): missing-package fix / recipes / pack deps -->
         <PipOpModal />
+        <!-- Inside NMessageProvider: the palette reports open-log failures. -->
+        <CommandPalette />
       </NDialogProvider>
     </NMessageProvider>
   </NConfigProvider>
@@ -855,6 +915,17 @@ async function toggleInstanceRun(): Promise<void> {
   height: 100%;
 }
 
+.bootstrap-alert {
+  margin: 12px 24px 0;
+}
+.bootstrap-alert-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  word-break: break-all;
+}
 .header {
   height: $header-height;
   display: flex;
