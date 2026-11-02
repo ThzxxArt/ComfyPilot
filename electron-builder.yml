@@ -64,6 +64,9 @@ mac:
   artifactName: ${productName}-${version}-mac-${arch}.${ext}
   darkModeSupport: true
 linux:
+  # Debian packaging refuses to build without a maintainer. This is required
+  # for the best-effort Ubuntu artifact in the release workflow.
+  maintainer: ThzxxArt <noreply@github.com>
   target:
     - target: AppImage
       arch: [x64]

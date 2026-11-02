@@ -38,15 +38,17 @@ jobs:
       - run: node scripts/check-hardcoded-zh.cjs
       - run: node scripts/check-version.cjs
 
-  # macOS / Linux are built best-effort: they are NOT verified products yet, so
-  # their failure must never block the Windows release.
+  # Linux is built best-effort: it is NOT a verified product yet, so its
+  # failure must never block the Windows release. macOS is intentionally not
+  # packaged here (no signing/notarization or real-device verification in
+  # 0.2.0); the builder config stays for a future signed release.
   build-other:
     needs: gate
     continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest]
+        os: [ubuntu-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:
