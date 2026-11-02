@@ -396,9 +396,8 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle(
     'settings.importConfig',
     wrap(async (raw: Record<string, unknown>) => {
-      const { assertSafeSettingsPatch, stripImportedSettingsSecrets } = await import(
-        '../services/security'
-      )
+      const { assertSafeSettingsPatch, stripImportedSettingsSecrets } =
+        await import('../services/security')
       const incoming =
         raw && typeof raw === 'object' && 'settings' in raw
           ? ((raw as { settings?: unknown }).settings as Record<string, unknown>)

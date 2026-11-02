@@ -24,13 +24,9 @@ function loadNoticeStore(): { seq: number; items: AppNotification[] } {
     if (!raw) return { seq: 0, items: [] }
     const parsed = JSON.parse(raw) as { seq?: unknown; items?: unknown }
     const items = Array.isArray(parsed.items)
-      ? (parsed.items as AppNotification[])
-          .filter((n) => n && typeof n === 'object')
-          .slice(-200)
+      ? (parsed.items as AppNotification[]).filter((n) => n && typeof n === 'object').slice(-200)
       : []
-    const seq = Number.isFinite(Number(parsed.seq))
-      ? Math.max(0, Number(parsed.seq))
-      : items.length
+    const seq = Number.isFinite(Number(parsed.seq)) ? Math.max(0, Number(parsed.seq)) : items.length
     return { seq, items }
   } catch {
     return { seq: 0, items: [] }

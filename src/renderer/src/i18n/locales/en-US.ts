@@ -1230,7 +1230,8 @@ export default {
     cmpFieldOrigin: 'Origin',
     cmpFieldTags: 'Tags',
     cmpFieldUpdatedAt: 'Updated',
-    queueRemoteHint: 'The remote is probed for reachability first; offline remotes fail without submitting.',
+    queueRemoteHint:
+      'The remote is probed for reachability first; offline remotes fail without submitting.'
   },
   monitor: {
     title: 'Monitor',
@@ -1342,7 +1343,8 @@ export default {
     created: 'Backup {name} created',
     restore: 'Restore',
     restored: 'Backup restored — {n} workflow file(s) written',
-    preRestoreCreated: 'Automatic snapshot {id} was created before restoring; roll back to it if needed',
+    preRestoreCreated:
+      'Automatic snapshot {id} was created before restoring; roll back to it if needed',
     restorePartial: 'Restore finished with failures: {restored} restored, {failed} failed',
     restoreSelected: 'Restore selected',
     previewTitle: 'Confirm restore',

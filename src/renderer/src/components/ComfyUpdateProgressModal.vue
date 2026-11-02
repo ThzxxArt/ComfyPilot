@@ -152,7 +152,11 @@ async function onCancel(): Promise<void> {
     closable
   >
     <div class="upd-head">
-      <IndeterminateBar v-if="indeterminate" :height="10" :label="runningStep ? detail(runningStep) : ''" />
+      <IndeterminateBar
+        v-if="indeterminate"
+        :height="10"
+        :label="runningStep ? detail(runningStep) : ''"
+      />
       <NProgress
         v-else
         type="line"

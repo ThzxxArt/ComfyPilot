@@ -337,9 +337,7 @@ export class EnvService extends EventEmitter {
     this.repairAbort.abort()
     // 0.1.18 (regression): a cancel during runtime download / venv creation
     // used to be ignored until the next pip step. Abort both subsystems.
-    void import('./bootstrap')
-      .then((m) => m.bootstrapService.cancelAll())
-      .catch(() => undefined)
+    void import('./bootstrap').then((m) => m.bootstrapService.cancelAll()).catch(() => undefined)
     return true
   }
 

@@ -90,9 +90,7 @@ if (byFile.length) {
     .sort((a, b) => b.textOnly + b.tautology - (a.textOnly + a.tautology))
     .slice(0, 15)
     .forEach((f) =>
-      console.log(
-        `  ${f.file}: ${f.cases} cases (${f.textOnly} text, ${f.tautology} tautology)`
-      )
+      console.log(`  ${f.file}: ${f.cases} cases (${f.textOnly} text, ${f.tautology} tautology)`)
     )
 }
 if (process.argv.includes('--fail') && ratio < TARGET) process.exit(1)

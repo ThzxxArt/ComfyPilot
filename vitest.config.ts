@@ -24,7 +24,8 @@ function perFileThresholds(): Record<
       { lines?: number; branches?: number; functions?: number }
     >
     for (const [path, m] of Object.entries(baseline)) {
-      const floor = (v?: number): number => (typeof v === 'number' ? Math.max(0, Math.floor(v - 2)) : 0)
+      const floor = (v?: number): number =>
+        typeof v === 'number' ? Math.max(0, Math.floor(v - 2)) : 0
       // Statements are gated globally: lcov has no per-statement metric, so a
       // per-file statement floor would be invented rather than measured.
       out[path] = {

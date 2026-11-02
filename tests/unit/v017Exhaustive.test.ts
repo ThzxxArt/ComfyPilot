@@ -533,7 +533,6 @@ describe('source quality: i18n key uniqueness', () => {
   })
 })
 
-
 // ============ Readme consistency ============
 describe('README consistency', () => {
   it('README mentions the current package version', () => {

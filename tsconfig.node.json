@@ -14,10 +14,9 @@
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "baseUrl": ".",
     "paths": {
-      "@main/*": ["src/main/*"],
-      "@shared/*": ["src/shared/*"]
+      "@main/*": ["./src/main/*"],
+      "@shared/*": ["./src/shared/*"]
     },
     "outDir": "out/tsc-node",
     "tsBuildInfoFile": "out/tsc-node/tsconfig.node.tsbuildinfo"

@@ -30,7 +30,10 @@ const value = (line) => Number(line.slice(line.indexOf(':') + 1))
 for (const raw of fs.readFileSync(lcovPath, 'utf-8').split('\n')) {
   const line = raw.trim()
   if (line.startsWith('SF:')) {
-    current = line.slice(3).replace(root + path.sep, '').replace(/\\/g, '/')
+    current = line
+      .slice(3)
+      .replace(root + path.sep, '')
+      .replace(/\\/g, '/')
     acc = { lh: 0, lf: 0, brh: 0, brf: 0, fnh: 0, fnf: 0 }
   } else if (line.startsWith('LH:') && acc) acc.lh = value(line)
   else if (line.startsWith('LF:') && acc) acc.lf = value(line)
@@ -112,5 +115,6 @@ if (drops.length) {
   )
   process.exit(1)
 }
-if (gains.length) console.log(`[ratchet] ${gains.length} new file(s) not in baseline (informational)`)
+if (gains.length)
+  console.log(`[ratchet] ${gains.length} new file(s) not in baseline (informational)`)
 console.log(`[ratchet] OK — ${results.size} files compared`)

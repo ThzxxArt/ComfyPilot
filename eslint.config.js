@@ -65,6 +65,11 @@ export default [
       'vue/multi-word-component-names': 'off',
       '@typescript-eslint/no-explicit-any': 'warn',
       'no-console': 'off',
+      // ESLint 10 新增的 recommended 规则：现有代码大量使用“先赋值再分支覆盖”的
+      // 防御式初始化，并在错误包装时保留原始消息。两条规则不改变运行时行为，
+      // 0.2.0 不把它们作为门禁条件；后续单独做代码风格清理时再启用。
+      'no-useless-assignment': 'off',
+      'preserve-caught-error': 'off',
       // typescript-eslint 官方建议：TS 代码由编译器负责未定义标识符检查
       'no-undef': 'off',
       // 基础 no-unused-vars 对 TS 误报；交给 typescript-eslint 版本

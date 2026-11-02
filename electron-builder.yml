@@ -15,6 +15,11 @@ files:
   - '!src/**'
   - '!tests/**'
   - '!docs/**'
+  # 0.2.0: preload/renderer are shipped through extraResources below. Keeping
+  # them inside the asar as well produced three identical copies and made the
+  # asar look complete even when the runtime copy was stale.
+  - '!out/preload/**'
+  - '!out/renderer/**'
   # 0.1.18 (WP0): typecheck artefacts must never ship — 620 KB of dev-only
   # absolute paths, and their presence made the asar look complete when it was not.
   - '!out/tsc-*/**'

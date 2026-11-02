@@ -582,10 +582,13 @@ async function toggleInstanceRun(): Promise<void> {
                           :type="activeStatus === 'running' ? 'warning' : 'primary'"
                           :disabled="!store.activeInstance || store.isRemoteActive"
                           :loading="
-      store.activeInstance
-        ? Boolean(busy[store.activeInstance.id] || busy['stop:' + store.activeInstance.id])
-        : false
-    "
+                            store.activeInstance
+                              ? Boolean(
+                                  busy[store.activeInstance.id] ||
+                                  busy['stop:' + store.activeInstance.id]
+                                )
+                              : false
+                          "
                           @click="toggleInstanceRun"
                         >
                           <template #icon>

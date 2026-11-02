@@ -483,10 +483,13 @@ export function flushPendingWrites(): { failed: string[] } {
   // 0.1.18 (regression): failures were re-queued but no timer was re-armed, so
   // the data sat in memory until quit. Retry soon instead.
   if (failed.length && !flushTimer) {
-    flushTimer = setTimeout(() => {
-      flushTimer = null
-      flushPendingWrites()
-    }, Math.max(FLUSH_MS, 2000))
+    flushTimer = setTimeout(
+      () => {
+        flushTimer = null
+        flushPendingWrites()
+      },
+      Math.max(FLUSH_MS, 2000)
+    )
     if (typeof (flushTimer as { unref?: () => void }).unref === 'function') {
       ;(flushTimer as unknown as { unref: () => void }).unref()
     }
