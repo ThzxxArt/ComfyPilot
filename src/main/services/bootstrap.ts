@@ -34,7 +34,7 @@ import type {
   RuntimeDownloadProgress,
   RuntimeKind
 } from '@shared/types'
-import { RUNTIME_SOURCES } from '@shared/constants'
+import { PYTHON_RUNTIME_VERSION, RUNTIME_SOURCES } from '@shared/constants'
 import { loadSettings } from './db'
 import { comfyChildEnv } from './childEnv'
 import { isPathInside, normalizePathEverySegment } from './security'
@@ -184,6 +184,54 @@ async function which(cmd: string): Promise<string | null> {
   }
 }
 
+/** Versioned directory for a runtime. Never overwrites a legacy install. */
+function runtimeFolder(kind: RuntimeKind): string {
+  if (kind === 'python') return `python-${PYTHON_RUNTIME_VERSION}`
+  if (kind === 'uv') return 'uv-0.13.6'
+  if (kind === 'mingit') return 'mingit-2.56.0.4'
+  return kind
+}
+
+/**
+ * 0.2.0: move legacy `runtimes/python` / `python-3.12.*` into
+ * `runtimes/legacy/`. Archived runtimes are never resolved by 0.2.0; they only
+ * remain so the user can reinstall 0.1.18 and point it back at them.
+ */
+export function archiveLegacyPythonRuntimes(): { archived: string[] } {
+  const root = runtimesDir()
+  const legacyRoot = join(root, 'legacy')
+  const archived: string[] = []
+  let entries: string[] = []
+  try {
+    entries = readdirSync(root)
+  } catch {
+    return { archived }
+  }
+  for (const entry of entries) {
+    if (entry === 'legacy' || !/^python($|-3\.(?:1[0-2]|14))/.test(entry)) continue
+    const from = join(root, entry)
+    try {
+      if (!statSync(from).isDirectory()) continue
+      mkdirSync(legacyRoot, { recursive: true })
+      const target = join(legacyRoot, entry)
+      if (existsSync(target)) rmSync(target, { recursive: true, force: true })
+      renameSync(from, target)
+      writeFileSync(
+        join(legacyRoot, 'legacy.json'),
+        JSON.stringify(
+          { archivedAt: Date.now(), entries: [...archived, entry], note: 'Not used by 0.2.0' },
+          null,
+          2
+        )
+      )
+      archived.push(entry)
+    } catch {
+      /* a locked runtime stays in place but is still invisible to the resolver */
+    }
+  }
+  return { archived }
+}
+
 function runtimeBinName(kind: RuntimeKind): string {
   if (kind === 'mingit') return 'git'
   if (kind === 'aria2') return 'aria2c'
@@ -196,7 +244,7 @@ export function findInRuntimes(name: string): string | null {
   const wanted = exeName(name)
   const altNames =
     name === 'python'
-      ? [wanted, process.platform === 'win32' ? 'python.exe' : 'python3', 'python3', 'python3.12']
+      ? [wanted, process.platform === 'win32' ? 'python.exe' : 'python3.13', 'python3', 'python']
       : [wanted]
   const seen = new Set<string>()
   // Depth-limited walk — install_only archives nest a top-level `python/` dir,
@@ -238,6 +286,31 @@ export function findInRuntimes(name: string): string | null {
       if (found) return found
     }
     return null
+  }
+  if (name === 'python') {
+    // 0.2.0 only resolves a versioned 3.13 runtime. Legacy `python/` and
+    // `python-3.12.*` are archived and intentionally invisible here.
+    let entries: string[] = []
+    try {
+      entries = readdirSync(root)
+    } catch {
+      return null
+    }
+    const candidates = entries
+      .filter((e) => /^python-3\.13\b/.test(e) || /^python-3\.13\./.test(e))
+      .sort()
+      .reverse()
+    for (const entry of candidates) {
+      const found = walk(join(root, entry), 0)
+      if (found) return found
+    }
+    return null
+  }
+  if (name === 'uv' || name === 'mingit') {
+    // Prefer the pinned versioned directory; fall back to legacy `uv/`.
+    const preferred = name === 'uv' ? 'uv-0.13.6' : 'mingit-2.56.0.4'
+    const direct = walk(join(root, preferred), 0)
+    if (direct) return direct
   }
   return walk(root, 0)
 }
@@ -292,11 +365,15 @@ export class BootstrapService extends EventEmitter {
     }
 
     const python = this.resolveBestPython(components)
+    const py = components.find((c) => c.kind === 'python')
     return {
       runtimesDir: runtimesDir(),
       components,
       pythonPath: python.path,
       pythonOrigin: python.origin,
+      pythonVersion: PYTHON_RUNTIME_VERSION,
+      supportedPython: '3.13',
+      legacyPython: py?.legacyVersion,
       zipInstallReady: true // zip fetch needs no Git — always ready
     }
   }
@@ -328,17 +405,38 @@ export class BootstrapService extends EventEmitter {
         origin: 'system'
       }
     }
-    // 3) common Windows python installs (so we don't needlessly download)
+    // 3) common Windows python installs (so we don't needlessly download).
+    // 0.2.0 only accepts 3.13.x; finding a 3.12 install is reported as legacy
+    // and never returned as a usable runtime.
     if (kind === 'python') {
-      for (const p of [
-        join(process.env.LOCALAPPDATA || '', 'Programs', 'Python', 'Python312', 'python.exe'),
-        join(process.env.LOCALAPPDATA || '', 'Programs', 'Python', 'Python311', 'python.exe'),
+      const candidates = [
         join(process.env.LOCALAPPDATA || '', 'Programs', 'Python', 'Python313', 'python.exe'),
-        'C:\\Python312\\python.exe',
-        'C:\\Python311\\python.exe'
-      ]) {
+        'C:\\Python313\\python.exe'
+      ]
+      for (const p of candidates) {
         if (p && existsSync(p)) {
-          return { kind, path: p, installed: true, version: await safeVersion(p), origin: 'system' }
+          const version = await safeVersion(p)
+          if (version && /Python\s+3\.13(\.|$)/i.test(version)) {
+            return { kind, path: p, installed: true, version, origin: 'system' }
+          }
+        }
+      }
+      const legacyCandidates = [
+        join(process.env.LOCALAPPDATA || '', 'Programs', 'Python', 'Python312', 'python.exe'),
+        'C:\\Python312\\python.exe',
+        join(process.env.LOCALAPPDATA || '', 'Programs', 'Python', 'Python311', 'python.exe'),
+        'C:\\Python311\\python.exe'
+      ]
+      for (const p of legacyCandidates) {
+        if (p && existsSync(p)) {
+          return {
+            kind,
+            path: '',
+            installed: false,
+            origin: 'missing',
+            version: undefined,
+            legacyVersion: (await safeVersion(p)) || '3.12'
+          }
         }
       }
     }
@@ -357,7 +455,9 @@ export class BootstrapService extends EventEmitter {
   } {
     const py = components.find((c) => c.kind === 'python' && c.installed)
     if (py?.path) return { path: py.path, origin: py.origin }
-    return { path: 'python', origin: 'missing' }
+    // Never fall back to a bare `python` on PATH: it may be 3.12/3.14 and
+    // would silently violate the single-runtime policy.
+    return { path: '', origin: 'missing' }
   }
 
   /**
@@ -458,7 +558,9 @@ export class BootstrapService extends EventEmitter {
     const url = this.applyGithubMirror(src.url)
     const fileName = basename(new URL(url).pathname) || `${kind}.bin`
     const cachePath = join(downloadCacheDir(), fileName)
-    const destRoot = join(runtimesDir(), normalizePathEverySegment(kind))
+    // 0.2.0: versioned runtime directories. Overwriting `runtimes/python`
+    // would replace the base interpreter a legacy 0.1.18 venv points at.
+    const destRoot = join(runtimesDir(), normalizePathEverySegment(runtimeFolder(kind)))
     if (!existsSync(destRoot)) mkdirSync(destRoot, { recursive: true })
 
     this.emitProgress({
@@ -760,7 +862,7 @@ export class BootstrapService extends EventEmitter {
 
   /** Wipe a half-extracted runtime directory (install rollback). */
   cleanupRuntime(kind: RuntimeKind): void {
-    const destRoot = join(runtimesDir(), normalizePathEverySegment(kind))
+    const destRoot = join(runtimesDir(), normalizePathEverySegment(runtimeFolder(kind)))
     if (isPathInside(destRoot, runtimesDir())) {
       try {
         rmSync(destRoot, { recursive: true, force: true })

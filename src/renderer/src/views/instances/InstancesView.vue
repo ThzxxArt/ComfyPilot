@@ -842,8 +842,8 @@ function onMoreSelect(key: string | number, item: ComfyInstanceInfo): void {
 
 function statusClass(s: string): string {
   if (s === 'running') return 'chip-success'
-  if (s === 'error') return 'chip-danger'
-  if (s === 'starting') return 'chip-warning'
+  if (s === 'error' || s === 'migration-failed') return 'chip-danger'
+  if (s === 'starting' || s === 'migration-required') return 'chip-warning'
   return 'chip-muted'
 }
 </script>
@@ -995,8 +995,20 @@ function statusClass(s: string): string {
             </div>
 
             <div class="actions" @click.stop>
+              <NButton
+                v-if="item.status === 'migration-required' || item.status === 'migration-failed'"
+                size="small"
+                type="warning"
+                secondary
+                @click="router.push(`/instances/${item.id}`)"
+              >
+                {{ $t('instance.migrationStart') }}
+              </NButton>
               <!-- Primary: launch & open, or stop when running/starting -->
-              <NTooltip trigger="hover">
+              <NTooltip
+                v-if="item.status !== 'migration-required' && item.status !== 'migration-failed'"
+                trigger="hover"
+              >
                 <template #trigger>
                   <NButton
                     v-if="item.status !== 'running' && item.status !== 'starting'"

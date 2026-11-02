@@ -9,6 +9,7 @@ import { monitorService } from './services/monitor'
 import { batchService } from './services/p1p2'
 import { installerService } from './services/installer'
 import { backupService } from './services/backup'
+import { archiveLegacyPythonRuntimes } from './services/bootstrap'
 import { execDiagnosticsService } from './services/execDiagnostics'
 import { proxyAuthFor, syncProxyFromSettings } from './services/proxy'
 import { createTray, destroyTray, refreshTray, hasTray } from './services/tray'
@@ -454,6 +455,14 @@ app.whenReady().then(async () => {
   } catch {
     /* best effort */
   }
+  try {
+    const archived = archiveLegacyPythonRuntimes()
+    if (archived.archived.length)
+      crashLog('archived legacy Python runtimes: ' + archived.archived.join(', '))
+  } catch (err) {
+    crashLog('legacy runtime archive failed: ' + (err instanceof Error ? err.message : String(err)))
+  }
+
   // 0.2.0: a restore interrupted by a crash is rolled back before anyone reads
   // the profile. The pre-restore backup remains if rollback itself fails.
   try {

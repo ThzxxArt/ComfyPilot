@@ -227,15 +227,7 @@ async function ensureMissingRuntimes(): Promise<void> {
   }
 }
 
-const TORCH_CHANNEL_VALUES: TorchChannel[] = [
-  'cu130',
-  'cu126',
-  'cu124',
-  'rocm',
-  'xpu',
-  'mps',
-  'cpu'
-]
+const TORCH_CHANNEL_VALUES: TorchChannel[] = ['cu130', 'cu126', 'rocm', 'xpu', 'mps', 'cpu']
 
 const FIX_KIND: Record<string, RuntimeKind> = {
   'bootstrap-python': 'python',

@@ -356,24 +356,32 @@ vi.mock('../../src/main/services/bootstrap', () => ({
   }
 }))
 
-vi.mock('../../src/main/services/instance', () => ({
-  instanceService: {
-    list: () => h.state.instanceList,
-    stop: vi.fn(async (id: string) => {
-      h.state.stopCalls.push(id)
-      if (h.state.instanceStopErr) throw h.state.instanceStopErr
-      return { id, status: 'stopped', ...(h.state.instanceStopResult || {}) }
-    }),
-    checkPort: vi.fn(async () => {
-      const available = h.state.checkPortQueue.length ? h.state.checkPortQueue.shift()! : true
-      return { port: 8188, available }
-    }),
-    launch: vi.fn(async (id: string, opts: unknown) => {
-      h.state.launchCalls.push({ id, opts })
-      return { id, url: 'http://127.0.0.1:8188', status: 'running' }
-    })
+vi.mock('../../src/main/services/instance', async () => {
+  const { existsSync } = await import('fs')
+  return {
+    resolveInstancePythonPath: (config: { venvPath?: string }) => {
+      if (!config.venvPath) return 'python'
+      const win = `${config.venvPath}/Scripts/python.exe`
+      return existsSync(win) ? win : `${config.venvPath}/bin/python`
+    },
+    instanceService: {
+      list: () => h.state.instanceList,
+      stop: vi.fn(async (id: string) => {
+        h.state.stopCalls.push(id)
+        if (h.state.instanceStopErr) throw h.state.instanceStopErr
+        return { id, status: 'stopped', ...(h.state.instanceStopResult || {}) }
+      }),
+      checkPort: vi.fn(async () => {
+        const available = h.state.checkPortQueue.length ? h.state.checkPortQueue.shift()! : true
+        return { port: 8188, available }
+      }),
+      launch: vi.fn(async (id: string, opts: unknown) => {
+        h.state.launchCalls.push({ id, opts })
+        return { id, url: 'http://127.0.0.1:8188', status: 'running' }
+      })
+    }
   }
-}))
+})
 
 vi.mock('../../src/main/services/doctor', () => ({
   doctorService: {
@@ -936,7 +944,7 @@ describe('runUpdate pipeline', () => {
     const p = await runUpdate({ updateDeps: false })
     expect(p.status).toBe('done')
     const preflight = p.steps.find((s) => s.id === 'preflight')
-    expect(preflight?.log.join('\n')).toMatch(/venv python missing/i)
+    expect(preflight?.log.join('\n')).toMatch(/python missing/i)
   })
 
   it('stops a running instance and waits for the port to free', async () => {

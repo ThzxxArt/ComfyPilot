@@ -143,7 +143,15 @@ export interface AppSettings {
 }
 
 // ---------- Instance ----------
-export type InstanceStatus = 'stopped' | 'starting' | 'running' | 'error' | 'unknown'
+export type InstanceStatus =
+  | 'stopped'
+  | 'starting'
+  | 'running'
+  | 'error'
+  | 'unknown'
+  /** 0.2.0: the instance's venv is not Python 3.13 and must be migrated. */
+  | 'migration-required'
+  | 'migration-failed'
 
 export interface LaunchArgTemplate {
   id: string
@@ -237,6 +245,11 @@ export interface ComfyInstanceConfig {
   pinned: boolean
   /** Structured launch tuning (0.1.9) — absent for pre-0.1.9 records. */
   launchProfile?: LaunchProfile
+  /** 0.2.0: Python version detected for the resolved interpreter (e.g. 3.13.18). */
+  pythonVersion?: string
+  /** 0.2.0: one-way migration state; 3.12 instances cannot start until migrated. */
+  migrationState?: 'none' | 'required' | 'migrating' | 'failed'
+  migrationError?: string
 }
 
 export interface ComfyInstanceInfo extends ComfyInstanceConfig {
@@ -828,6 +841,8 @@ export interface PipOpResult {
   requested: string[]
   /** Package names verified installed afterwards (pip show). */
   installed: string[]
+  /** Requested names still not present after the install (0.2.0 receipt). */
+  unresolved?: string[]
   cancelled?: boolean
   error?: string
   /** Non-fatal caveat (e.g. installed but not listed by pip show). */
@@ -1231,7 +1246,7 @@ export interface InstallStep {
   detailParams?: Record<string, string | number>
 }
 
-export type TorchChannel = 'cu130' | 'cu126' | 'cu124' | 'rocm' | 'xpu' | 'mps' | 'cpu'
+export type TorchChannel = 'cu130' | 'cu126' | 'rocm' | 'xpu' | 'mps' | 'cpu'
 
 export interface InstallPlan {
   installRoot: string
@@ -1294,6 +1309,8 @@ export interface RuntimeComponentStatus {
   version?: string
   /** Source used: system PATH vs downloaded into userData/runtimes. */
   origin: 'system' | 'runtimes' | 'missing'
+  /** Legacy Python found but not usable by 0.2.0 (archived, never resolved). */
+  legacyVersion?: string
 }
 
 export interface BootstrapStatus {
@@ -1302,6 +1319,10 @@ export interface BootstrapStatus {
   /** Best resolved python for creating venvs (system or portable). */
   pythonPath: string
   pythonOrigin: RuntimeComponentStatus['origin']
+  /** 0.2.0: exactly one supported Python runtime. */
+  pythonVersion: string
+  supportedPython: '3.13'
+  legacyPython?: string
   /** True when zip-based ComfyUI fetch is available (no Git needed). */
   zipInstallReady: boolean
 }
@@ -1633,6 +1654,19 @@ export type IpcChannelMap = {
   'instance.list': { args: []; result: ComfyInstanceInfo[] }
   'instance.discover': { args: [string?]; result: InstanceDiscoveryCandidate[] }
   'instance.save': { args: [ComfyInstanceConfig]; result: ComfyInstanceInfo }
+  'instance.migratePython': {
+    args: [string]
+    result: {
+      ok: boolean
+      instanceId: string
+      venvPath: string
+      fromVersion: string
+      toVersion: string
+      channel: string
+      archivedVenv?: string
+      warnings: string[]
+    }
+  }
   'instance.remove': { args: [string]; result: boolean }
   'instance.launch': { args: [string, LaunchOptions?]; result: ComfyInstanceInfo }
   'instance.previewLaunch': { args: [string]; result: LaunchCommandPreview }
@@ -2158,6 +2192,7 @@ export const IPC_CHANNELS = [
   'instance.repairStatus',
   'instance.restart',
   'instance.runStartupSelfCheck',
+  'instance.migratePython',
   'instance.save',
   'instance.startAll',
   'instance.startupIssues',

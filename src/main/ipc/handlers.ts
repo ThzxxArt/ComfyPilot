@@ -678,6 +678,19 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     })
   )
   ipcMain.handle(
+    'instance.migratePython',
+    wrap(async (id: string) => {
+      const safeId = sanitizeId(id)
+      const info = instanceService.list().find((i) => i.id === safeId)
+      if (!info) throw new Error(`Instance not found: ${safeId}`)
+      if (info.status === 'running' || info.status === 'starting') {
+        await instanceService.stop(safeId)
+      }
+      const { migrateInstancePython } = await import('../services/pythonMigration')
+      return migrateInstancePython(safeId)
+    })
+  )
+  ipcMain.handle(
     'instance.remove',
     wrap((id: string) => instanceService.remove(sanitizeId(id)))
   )
@@ -2471,14 +2484,9 @@ function notifyPipResult(result: {
       params: { names },
       duration: 6000
     })
-    if (result.warning) {
-      broadcastNotification({
-        type: 'warning',
-        title: 'Package verification note',
-        message: result.warning,
-        duration: 8000
-      })
-    }
+    // 0.2.0: a successful receipt is verified per requirement. There is no
+    // generic "verify with the dependency audit" caveat any more; if something
+    // is unresolved, `ok` is false and the failure branch reports it.
   } else {
     const message = (result.error || 'unknown error').slice(0, 220)
     broadcastNotification({

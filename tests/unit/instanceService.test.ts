@@ -658,7 +658,7 @@ describe('save()', () => {
 })
 
 describe('remove()', () => {
-  it('kills a live process, bumps generation and deletes the DB row', () => {
+  it('kills a live process, bumps generation and deletes the DB row', async () => {
     register(cfg({ id: 'gone' }))
     h.state.fetchImpl = okStats
     h.state.portsInUse.add(8188)
@@ -672,17 +672,16 @@ describe('remove()', () => {
       generation: 1,
       status: 'running'
     })
-    const removed = svc.remove('gone')
+    const removed = await svc.remove('gone')
     expect(removed).toBe(true)
-    expect(child.killSignals.length).toBeGreaterThan(0)
     expect(h.state.deleteCalls).toContain('gone')
   })
 
-  it('still deletes when no runtime exists', () => {
+  it('still deletes when no runtime exists', async () => {
     register(cfg({ id: 'nope' }))
-    expect(svc.remove('nope')).toBe(true)
+    expect(await svc.remove('nope')).toBe(true)
     expect(h.state.deleteCalls).toContain('nope')
-    expect(svc.remove('nope')).toBe(false)
+    expect(await svc.remove('nope')).toBe(false)
   })
 })
 

@@ -245,6 +245,41 @@ function statusLabel(s: string | undefined): string {
   return t(`status.${s || 'unknown'}`)
 }
 
+const migratingPython = ref(false)
+const needsPythonMigration = computed(
+  () =>
+    instance.value?.migrationState === 'required' ||
+    instance.value?.migrationState === 'failed' ||
+    instance.value?.status === 'migration-required' ||
+    instance.value?.status === 'migration-failed'
+)
+
+async function migratePython(): Promise<void> {
+  if (!id.value || migratingPython.value) return
+  migratingPython.value = true
+  try {
+    const result = await ipc('instance.migratePython', id.value)
+    message.success(
+      t('instance.migrationDone', {
+        from: result.fromVersion,
+        to: result.toVersion,
+        channel: result.channel
+      })
+    )
+    await refresh()
+    await store.refreshInstances()
+  } catch (err) {
+    message.error(
+      t('instance.migrationFailed', {
+        error: err instanceof Error ? err.message : String(err)
+      })
+    )
+    await refresh()
+  } finally {
+    migratingPython.value = false
+  }
+}
+
 function goEdit(): void {
   // Deep-link into the instances list so its edit modal opens for this id.
   void router.push({ path: '/instances', query: { edit: id.value } })
@@ -850,7 +885,6 @@ const torchIndexChoice = ref<string>('https://download.pytorch.org/whl/cpu/')
 const TORCH_INDEX_OPTIONS = [
   { labelKey: 'install.torchChannels.cu130', value: 'https://download.pytorch.org/whl/cu130/' },
   { labelKey: 'install.torchChannels.cu126', value: 'https://download.pytorch.org/whl/cu126/' },
-  { labelKey: 'install.torchChannels.cu124', value: 'https://download.pytorch.org/whl/cu124/' },
   { labelKey: 'install.torchChannels.rocm', value: 'https://download.pytorch.org/whl/rocm6.2/' },
   { labelKey: 'install.torchChannels.xpu', value: 'https://download.pytorch.org/whl/xpu/' },
   { labelKey: 'install.torchChannels.mps', value: 'https://download.pytorch.org/whl/cpu/' },
@@ -1109,6 +1143,21 @@ watch(
         </div>
         <NTabs v-else v-model:value="tab" type="line" class="detail-tabs">
           <NTabPane key="basic" name="basic" :tab="$t('instance.tabBasic')">
+            <section v-if="needsPythonMigration" class="card migration-banner">
+              <div class="migration-copy">
+                <div class="migration-title">{{ $t('instance.migrationTitle') }}</div>
+                <div class="migration-body">{{ $t('instance.migrationBody') }}</div>
+                <div v-if="instance?.migrationError" class="migration-error">
+                  {{ instance.migrationError }}
+                </div>
+                <div class="migration-hint">{{ $t('instance.migrationLegacyHint') }}</div>
+              </div>
+              <NButton type="warning" :loading="migratingPython" @click="migratePython">
+                {{
+                  migratingPython ? $t('instance.migrationRunning') : $t('instance.migrationStart')
+                }}
+              </NButton>
+            </section>
             <section class="card panel">
               <NDescriptions bordered size="small" :column="2" label-placement="left" class="desc">
                 <NDescriptionsItem :label="$t('common.status')" :span="2">
@@ -1117,9 +1166,11 @@ watch(
                       :type="
                         instance?.status === 'running'
                           ? 'success'
-                          : instance?.status === 'error'
+                          : instance?.status === 'error' || instance?.status === 'migration-failed'
                             ? 'error'
-                            : 'default'
+                            : instance?.status === 'migration-required'
+                              ? 'warning'
+                              : 'default'
                       "
                       round
                     >
@@ -1830,6 +1881,35 @@ watch(
   margin-top: 6px;
 }
 
+.migration-banner {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 16px 18px;
+  margin-bottom: 14px;
+  border-left: 4px solid #d97706;
+  background: #fffbeb;
+}
+.migration-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.migration-title {
+  font-weight: 600;
+}
+.migration-body,
+.migration-hint {
+  font-size: 12px;
+  line-height: 1.6;
+  opacity: 0.82;
+}
+.migration-error {
+  font-size: 12px;
+  color: #b91c1c;
+  white-space: pre-wrap;
+}
 .env-probe-result {
   margin-top: 8px;
 }

@@ -77,6 +77,8 @@ export default {
     running: 'Running',
     error: 'Error',
     unknown: 'Unknown',
+    'migration-required': 'Python migration required',
+    'migration-failed': 'Python migration failed',
     remote: 'Remote'
   },
   dashboard: {
@@ -427,6 +429,15 @@ export default {
     updating: 'Updating…',
     updateComfy: 'Update ComfyUI',
     repairEnv: 'Repair environment',
+    migrationTitle: 'This instance must migrate to Python 3.13',
+    migrationBody:
+      '0.2.0 supports Python 3.13 only, and this instance uses a different interpreter. Migration archives the old venv, creates a 3.13 environment, then installs PyTorch and requirements. The instance cannot start until migration completes.',
+    migrationStart: 'Start migration',
+    migrationRunning: 'Migrating the Python environment…',
+    migrationDone: 'Migration complete ({from} → {to}, channel {channel})',
+    migrationFailed: 'Migration failed: {error}',
+    migrationLegacyHint:
+      'You can also uninstall 0.2.0 and reinstall 0.1.18 to roll back (the old venv is kept as an archive).',
     updateAvailable: 'Update available {latest} (current {current})',
     updateNone: 'Already up to date',
     updateUnknown: 'Unknown (check failed)',
@@ -559,7 +570,6 @@ export default {
     torchChannels: {
       cu130: 'cu130 — NVIDIA latest recommended',
       cu126: 'cu126 — older NVIDIA GPUs',
-      cu124: 'cu124 — legacy NVIDIA GPUs',
       rocm: 'rocm — AMD (Linux)',
       xpu: 'xpu — Intel Arc',
       mps: 'mps — Apple Silicon',

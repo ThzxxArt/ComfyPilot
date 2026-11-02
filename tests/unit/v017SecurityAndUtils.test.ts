@@ -186,7 +186,7 @@ describe('constants', () => {
 
   it('TORCH_DISK_GB has all channels', async () => {
     const { TORCH_DISK_GB } = await import('@shared/constants')
-    const channels = ['cu130', 'cu126', 'cu124', 'rocm', 'xpu', 'mps', 'cpu']
+    const channels = ['cu130', 'cu126', 'rocm', 'xpu', 'mps', 'cpu']
     for (const ch of channels) {
       expect(TORCH_DISK_GB[ch as keyof typeof TORCH_DISK_GB]).toBeGreaterThan(0)
     }

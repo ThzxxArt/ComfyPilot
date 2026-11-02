@@ -76,6 +76,8 @@ export default {
     running: '运行中',
     error: '错误',
     unknown: '未知',
+    'migration-required': '需要迁移 Python',
+    'migration-failed': 'Python 迁移失败',
     remote: '远程'
   },
   dashboard: {
@@ -414,6 +416,14 @@ export default {
     updating: '更新中…',
     updateComfy: '更新 ComfyUI',
     repairEnv: '修复环境',
+    migrationTitle: '此实例需要迁移到 Python 3.13',
+    migrationBody:
+      '0.2.0 只支持 Python 3.13，当前实例的虚拟环境不是 3.13。迁移会先归档旧 venv，再创建 3.13 环境并安装 PyTorch 与依赖；迁移完成前实例无法启动。',
+    migrationStart: '开始迁移',
+    migrationRunning: '正在迁移 Python 环境…',
+    migrationDone: '迁移完成（{from} → {to}，通道 {channel}）',
+    migrationFailed: '迁移失败：{error}',
+    migrationLegacyHint: '也可以卸载 0.2.0 并重装 0.1.18 回退（旧 venv 已保留为归档）。',
     updateAvailable: '有新版本 {latest}（当前 {current}）',
     updateNone: '当前已是最新版本',
     updateUnknown: '无法确定（检查失败）',
@@ -542,7 +552,6 @@ export default {
     torchChannels: {
       cu130: 'cu130 — NVIDIA 最新推荐',
       cu126: 'cu126 — NVIDIA 较旧卡',
-      cu124: 'cu124 — NVIDIA 老卡',
       rocm: 'rocm — AMD（Linux）',
       xpu: 'xpu — Intel Arc',
       mps: 'mps — Apple Silicon',

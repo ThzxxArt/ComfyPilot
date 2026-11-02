@@ -81,14 +81,15 @@ type LineSink = (line: string) => void
  */
 export function outputIndicatesFailure(out: string): boolean {
   const text = String(out || '')
-  if (
-    /Successfully installed|Requirement already satisfied|Installed \d+ packages?|Audited \d+ packages?|Resolved \d+ packages?/i.test(
-      text
-    )
-  ) {
-    return false
-  }
-  return /^\s*ERROR:/m.test(text) || /^\s*error:\s/m.test(text)
+  // 0.2.0: failure markers WIN. The old implementation returned false as soon
+  // as any "Successfully installed" line appeared, so a partial install
+  // (`Successfully installed A` + `ERROR: No matching distribution for B`)
+  // was reported as a complete success and the audit kept showing B.
+  if (/^\s*ERROR:/m.test(text)) return true
+  if (/^\s*error:\s/m.test(text)) return true
+  // uv sometimes prints `error: ...` in lowercase without a colon-space.
+  if (/^\s*error:/m.test(text)) return true
+  return false
 }
 
 /**
@@ -568,11 +569,9 @@ export class EnvService extends EventEmitter {
     } catch {
       /* ignore */
     }
-    // Common Windows installs
+    // Common Windows 3.13 installs (0.2.0 has no 3.12/3.11 runtime option)
     for (const p of [
       'C:\\Python313\\python.exe',
-      'C:\\Python312\\python.exe',
-      'C:\\Python311\\python.exe',
       process.env.LOCALAPPDATA &&
         join(process.env.LOCALAPPDATA, 'Programs', 'Python', 'Python313', 'python.exe')
     ]) {
@@ -658,6 +657,19 @@ export class EnvService extends EventEmitter {
 
       let venvPath = config.venvPath || ''
       if (!venvPath) {
+        // 0.2.0: prefer a venv that already lives inside the instance; only
+        // then fall back to the historical sibling `.venv`.
+        for (const candidate of [join(comfyDir, '.venv'), join(comfyDir, 'venv')]) {
+          if (
+            existsSync(join(candidate, 'Scripts', 'python.exe')) ||
+            existsSync(join(candidate, 'bin', 'python'))
+          ) {
+            venvPath = candidate
+            break
+          }
+        }
+      }
+      if (!venvPath) {
         const { dirname } = await import('path')
         venvPath = join(dirname(comfyDir), '.venv')
       }
@@ -684,7 +696,7 @@ export class EnvService extends EventEmitter {
         mkdirSync(join(venvPath, '..'), { recursive: true })
         if (uvComp?.path) {
           try {
-            await safeExec(uvComp.path, ['python', 'install', '3.13'], undefined, 180000, signal)
+            await safeExec(uvComp.path, ['python', 'install', '3.13.18'], undefined, 180000, signal)
           } catch (err) {
             if (signal.aborted || (err as Error)?.name === 'AbortError') throw err
             /* interpreter may already be present */
@@ -693,20 +705,28 @@ export class EnvService extends EventEmitter {
           // --seed installs pip/setuptools/wheel — without it `python -m pip` dies.
           await safeExec(
             uvComp.path,
-            ['venv', venvPath, '--python', '3.13', '--seed'],
+            ['venv', venvPath, '--python', '3.13.18', '--seed'],
             undefined,
             180000,
             signal
           )
         } else {
           const basePython =
-            bootstrap.pythonPath && bootstrap.pythonPath !== 'python'
-              ? bootstrap.pythonPath
-              : 'python'
+            bootstrap.pythonPath && bootstrap.pythonPath !== 'python' ? bootstrap.pythonPath : ''
+          if (!basePython) {
+            throw new Error('PYTHON_UNSUPPORTED: no Python 3.13 runtime — download it first')
+          }
           await safeExec(basePython, ['-m', 'venv', venvPath], undefined, 180000, signal)
         }
         if (!existsSync(pythonInVenv)) {
           throw new Error(`venv creation failed — no interpreter at ${pythonInVenv}`)
+        }
+        // 0.2.0: the venv must be exactly 3.13.x before any package is written.
+        const venvVersion = await safeExec(pythonInVenv, ['--version'], undefined, 8000)
+        if (!/Python\s+3\.13(\.|$)/i.test(venvVersion)) {
+          throw new Error(
+            `PYTHON_UNSUPPORTED: venv reports ${venvVersion.trim() || 'unknown'} — 0.2.0 requires Python 3.13.x`
+          )
         }
       } else {
         this.emitRepair(id, 'venv', 'running', 'venv already present — checking pip…')
@@ -847,6 +867,19 @@ export class EnvService extends EventEmitter {
       }
 
       const probe = await this.probe({ pythonPath: pythonInVenv, venvPath })
+      // 0.2.0: persist the venv we actually used. Before this, a repaired
+      // instance kept an empty venvPath and later launch/pip fell back to
+      // `dirname(comfyDir)/.venv` — a different environment.
+      const { upsertInstanceConfig } = await import('./db')
+      if (config.venvPath !== venvPath || config.pythonVersion !== '3.13.18') {
+        upsertInstanceConfig({
+          ...config,
+          venvPath,
+          pythonVersion: '3.13.18',
+          migrationState: 'none',
+          migrationError: undefined
+        })
+      }
       this.emitRepair(id, 'done', 'done', 'Environment ready', undefined, 'update.msgDone')
       return probe
     } catch (err) {

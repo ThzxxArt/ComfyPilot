@@ -21,6 +21,8 @@ export interface PipRequirement {
   extras: string[]
   /** Comma-joined specifier clauses WITHOUT the package name (`>=1,<2`). */
   specifier: string
+  /** Environment marker (`; python_version < "3.12"`), when present. */
+  marker?: string
   /** Original (trimmed) line. */
   raw: string
 }
@@ -63,9 +65,15 @@ export function parsePipRequirement(line: string): PipRequirement | null {
   const hash = raw.indexOf(' #')
   if (hash >= 0) raw = raw.slice(0, hash).trim()
   if (!raw || raw.includes('://') || raw.startsWith('.') || raw.startsWith('/')) return null
-  // Drop environment marker.
+  // 0.2.0: keep the environment marker for evaluation by the target
+  // interpreter. Dropping it made every platform-specific requirement look
+  // missing forever.
+  let marker: string | undefined
   const semi = raw.indexOf(';')
-  if (semi >= 0) raw = raw.slice(0, semi).trim()
+  if (semi >= 0) {
+    marker = raw.slice(semi + 1).trim() || undefined
+    raw = raw.slice(0, semi).trim()
+  }
 
   const nameMatch = raw.match(NAME_RE)
   if (!nameMatch) return null
@@ -92,6 +100,7 @@ export function parsePipRequirement(line: string): PipRequirement | null {
     name: normalizePipName(name),
     extras,
     specifier: clauses.join(','),
+    marker,
     raw: raw
   }
 }
@@ -111,77 +120,68 @@ function tokenizeVersion(v: string): VersionToken[] {
   return out
 }
 
-/** Strip epoch (`1!`) and local (`+cu130`) segments; keep them for compare. */
-function splitVersion(v: string): { epoch: number; main: string; local: string } {
-  let s = String(v || '').trim()
+interface ParsedVersion {
+  epoch: number
+  release: number[]
+  /** 0=dev, 1=a, 2=b, 3=rc, 4=release, 5=post */
+  phase: number
+  phaseNum: number
+  local: string
+}
+
+/**
+ * PEP 440 parser for the subset that appears in ComfyUI custom-node
+ * requirements. It is deliberately small but gets the ordering rules right:
+ * dev < a < b < rc < release < post, trailing zeros are insignificant
+ * (`1.0 == 1.0.0`), and local segments compare last.
+ */
+function parseVersion(v: string): ParsedVersion {
+  let s = String(v || '')
+    .trim()
+    .toLowerCase()
   let epoch = 0
   const bang = s.indexOf('!')
   if (bang > 0 && /^\d+$/.test(s.slice(0, bang))) {
     epoch = Number(s.slice(0, bang))
     s = s.slice(bang + 1)
   }
+  let local = ''
   const plus = s.indexOf('+')
-  const local = plus >= 0 ? s.slice(plus + 1) : ''
-  if (plus >= 0) s = s.slice(0, plus)
-  return { epoch, main: s, local }
+  if (plus >= 0) {
+    local = s.slice(plus + 1)
+    s = s.slice(0, plus)
+  }
+  const m = s.match(
+    /^(\d+(?:\.\d+)*)(?:(a|alpha|b|beta|c|rc|pre|preview)(\d*))?(?:\.?(post|rev|r)(\d*))?(?:\.?(dev)(\d*))?/
+  )
+  const release = (m?.[1] || '0').split('.').map((n) => Number(n) || 0)
+  while (release.length > 1 && release[release.length - 1] === 0) release.pop()
+  let phase = 4
+  let phaseNum = 0
+  if (m?.[6] === 'dev') {
+    phase = 0
+    phaseNum = Number(m[7] || 0)
+  } else if (m?.[2]) {
+    const pre = m[2]
+    phase = pre === 'a' || pre === 'alpha' ? 1 : pre === 'b' || pre === 'beta' ? 2 : 3
+    phaseNum = Number(m[3] || 0)
+  } else if (m?.[4]) {
+    phase = 5
+    phaseNum = Number(m[5] || 0)
+  }
+  return { epoch, release, phase, phaseNum, local }
 }
 
-/**
- * Compare two version strings. Returns -1 / 0 / 1.
- * Ordering notes: numeric > alpha at the same position (1.0 > 1.0rc1);
- * a trailing pre-release token (`rc1`, `b2`, `a1`) sorts BELOW the bare
- * release (1.0rc1 < 1.0), matching PEP 440.
- */
-export function comparePipVersions(a: string, b: string): number {
-  const va = splitVersion(a)
-  const vb = splitVersion(b)
-  if (va.epoch !== vb.epoch) return va.epoch < vb.epoch ? -1 : 1
-  const ta = tokenizeVersion(va.main)
-  const tb = tokenizeVersion(vb.main)
+function compareLocal(a: string, b: string): number {
+  if (a === b) return 0
+  if (!a) return -1
+  if (!b) return 1
+  const ta = tokenizeVersion(a)
+  const tb = tokenizeVersion(b)
   const max = Math.max(ta.length, tb.length)
   for (let i = 0; i < max; i++) {
     const x = ta[i]
     const y = tb[i]
-    if (!x && !y) break
-    if (!x) {
-      // a ran out of tokens: if the remaining b token is a pre-release marker,
-      // a is the bare release and wins; otherwise the shorter one is smaller.
-      if (
-        y &&
-        y.kind === 'alpha' &&
-        /^(a|b|c|rc|alpha|beta|pre|preview|post|dev)/.test(y.text || '')
-      )
-        return 1
-      return -1
-    }
-    if (!y) {
-      if (x.kind === 'alpha' && /^(a|b|c|rc|alpha|beta|pre|preview|post|dev)/.test(x.text || ''))
-        return -1
-      return 1
-    }
-    if (x.kind === 'num' && y.kind === 'num') {
-      if (x.num !== y.num) return (x.num as number) < (y.num as number) ? -1 : 1
-    } else if (x.kind === 'alpha' && y.kind === 'alpha') {
-      const xs = x.text || ''
-      const ys = y.text || ''
-      if (xs !== ys) return xs < ys ? -1 : 1
-    } else if (x.kind === 'num') {
-      // numeric vs alpha: numeric wins (release > pre-release marker)
-      return 1
-    } else {
-      return -1
-    }
-  }
-  // Main parts equal — local version ordering: presence sorts after absence.
-  if (va.local === vb.local) return 0
-  if (!va.local) return -1
-  if (!vb.local) return 1
-  const la = tokenizeVersion(va.local)
-  const lb = tokenizeVersion(vb.local)
-  const lmax = Math.max(la.length, lb.length)
-  for (let i = 0; i < lmax; i++) {
-    const x = la[i]
-    const y = lb[i]
     if (!x && !y) break
     if (!x) return -1
     if (!y) return 1
@@ -198,6 +198,117 @@ export function comparePipVersions(a: string, b: string): number {
     }
   }
   return 0
+}
+
+/**
+ * Compare two version strings. Returns -1 / 0 / 1.
+ * `1.0 == 1.0.0`, `1.0rc1 < 1.0`, `1.0 < 1.0.post1`, `1.0.dev1 < 1.0a1`.
+ */
+export function comparePipVersions(a: string, b: string): number {
+  const va = parseVersion(a)
+  const vb = parseVersion(b)
+  if (va.epoch !== vb.epoch) return va.epoch < vb.epoch ? -1 : 1
+  const max = Math.max(va.release.length, vb.release.length)
+  for (let i = 0; i < max; i++) {
+    const x = va.release[i] ?? 0
+    const y = vb.release[i] ?? 0
+    if (x !== y) return x < y ? -1 : 1
+  }
+  if (va.phase !== vb.phase) return va.phase < vb.phase ? -1 : 1
+  if (va.phaseNum !== vb.phaseNum) return va.phaseNum < vb.phaseNum ? -1 : 1
+  return compareLocal(va.local, vb.local)
+}
+
+export interface MarkerEnv {
+  pythonVersion?: string
+  sysPlatform?: string
+  platformSystem?: string
+  osName?: string
+}
+
+function markerValue(name: string, env: MarkerEnv): string | null {
+  switch (name) {
+    case 'python_version':
+    case 'python_full_version':
+      return env.pythonVersion || '3.13.18'
+    case 'sys_platform':
+      return (
+        env.sysPlatform ||
+        (process.platform === 'win32'
+          ? 'win32'
+          : process.platform === 'darwin'
+            ? 'darwin'
+            : 'linux')
+      )
+    case 'platform_system':
+      return (
+        env.platformSystem ||
+        (process.platform === 'win32'
+          ? 'Windows'
+          : process.platform === 'darwin'
+            ? 'Darwin'
+            : 'Linux')
+      )
+    case 'os_name':
+      return env.osName || (process.platform === 'win32' ? 'nt' : 'posix')
+    default:
+      // `extra` and implementation-specific markers are not decidable here.
+      return null
+  }
+}
+
+/**
+ * Evaluate a PEP 508 environment marker. Returns null when the marker uses a
+ * variable/operator this lightweight evaluator does not understand — callers
+ * must treat null as "unknown", never as "missing".
+ */
+export function evaluateMarker(marker: string, env: MarkerEnv = {}): boolean | null {
+  const text = String(marker || '').trim()
+  if (!text) return true
+  // Split only on top-level and/or (markers here are flat; parentheses are
+  // handled by the conservative unknown fallback below).
+  const parts = text.split(/\s+(and|or)\s+/i)
+  if (parts.length > 1) {
+    let result: boolean | null = evaluateMarker(parts[0], env)
+    for (let i = 1; i < parts.length; i += 2) {
+      const op = parts[i].toLowerCase()
+      const rhs = evaluateMarker(parts[i + 1], env)
+      if (op === 'and') {
+        if (result === false || rhs === false) result = false
+        else if (result === null || rhs === null) result = null
+        else result = true
+      } else {
+        if (result === true || rhs === true) result = true
+        else if (result === null || rhs === null) result = null
+        else result = false
+      }
+    }
+    return result
+  }
+  const m = text.match(
+    /^([a-zA-Z_][a-zA-Z0-9_]*)\s*(===|==|!=|<=|>=|<|>|~=|not\s+in|in)\s*["']([^"']*)["']$/
+  )
+  if (!m) return null
+  const value = markerValue(m[1].toLowerCase(), env)
+  if (value === null) return null
+  const op = m[2].replace(/\s+/g, ' ').toLowerCase()
+  const want = m[3]
+  if (op === 'in') return value.includes(want)
+  if (op === 'not in') return !value.includes(want)
+  if (op === '===') return value === want
+  if (op === '==') return comparePipVersions(value, want) === 0
+  if (op === '!=') return comparePipVersions(value, want) !== 0
+  if (op === '<') return comparePipVersions(value, want) < 0
+  if (op === '<=') return comparePipVersions(value, want) <= 0
+  if (op === '>') return comparePipVersions(value, want) > 0
+  if (op === '>=') return comparePipVersions(value, want) >= 0
+  if (op === '~=') {
+    if (comparePipVersions(value, want) < 0) return false
+    const partsWant = want.split('.')
+    const prefix = partsWant.slice(0, Math.max(1, partsWant.length - 1)).join('.')
+    return value === prefix || value.startsWith(prefix + '.')
+  }
+  return null
 }
 
 function satisfiesClause(installed: string, op: string, want: string): boolean {

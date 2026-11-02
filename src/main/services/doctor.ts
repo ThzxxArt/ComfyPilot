@@ -106,9 +106,9 @@ export class DoctorService extends EventEmitter {
     const pyOut = await safeExec(python, ['--version'])
     const pyMatch = pyOut.match(/python\s+3\.(\d+)/i)
     const pyMinor = pyMatch ? Number(pyMatch[1]) : null
-    // 3.10+ pass; 3.9 warns; anything older (or unparseable) fails.
-    const pySeverity: DoctorSeverity =
-      pyMinor == null ? 'fail' : pyMinor >= 10 ? 'pass' : pyMinor >= 9 ? 'warn' : 'fail'
+    // 0.2.0 supports exactly 3.13.x. Anything else is a blocking failure —
+    // there is no 3.12 compatibility mode and 3.14+ has no torch wheels.
+    const pySeverity: DoctorSeverity = pyMinor === 13 ? 'pass' : 'fail'
     checks.push({
       id: 'python',
       group: 'Environment',
@@ -118,9 +118,9 @@ export class DoctorService extends EventEmitter {
       suggestion:
         pySeverity === 'pass'
           ? undefined
-          : pyMinor != null && pyMinor >= 9
-            ? 'Python 3.9 works but 3.10+ is recommended for current ComfyUI.'
-            : 'Install Python 3.12/3.13 and point the instance to it.',
+          : pyMinor === 12
+            ? 'Python 3.12 is no longer supported. Run “Migrate Python” on the instance detail page.'
+            : '0.2.0 requires Python 3.13.x. Install/migrate the instance environment.',
       fixable: false
     })
 

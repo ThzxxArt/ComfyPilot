@@ -59,7 +59,12 @@ describe('comparePipVersions', () => {
 
   it('orders multi-segment releases correctly', () => {
     expect(comparePipVersions('2.9.0', '2.10.0')).toBe(-1)
-    expect(comparePipVersions('0.39.0', '0.39')).toBe(1)
+    // 0.2.0: trailing zero segments are insignificant (PEP 440).
+    expect(comparePipVersions('0.39.0', '0.39')).toBe(0)
+    expect(comparePipVersions('1.0', '1.0.0')).toBe(0)
+    expect(comparePipVersions('1.0rc1', '1.0')).toBe(-1)
+    expect(comparePipVersions('1.0', '1.0.post1')).toBe(-1)
+    expect(comparePipVersions('1.0.dev1', '1.0a1')).toBe(-1)
   })
 
   it('handles token-count mismatch, alpha-vs-numeric and local ordering', () => {

@@ -41,8 +41,10 @@ import {
   parsePipRequirement,
   versionSatisfies,
   normalizePipName,
+  evaluateMarker,
   type PipRequirement
 } from '@shared/pipVersion'
+import { pipAliasCandidates } from '@shared/pipAliases'
 import {
   deleteNodePack,
   listNodePacks,
@@ -112,8 +114,15 @@ export function parseRequirementNames(text: string): string[] {
 
 /** Parse `uv pip list --format json` / `python -m pip list --format=json`. */
 function parsePipListJson(text: string): Map<string, string> | null {
+  // pip writes deprecation/build noise to stderr; the combined stream may not
+  // start at `[`. Extract the JSON array instead of declaring the environment
+  // unavailable.
+  const source = String(text || '')
+  const start = source.indexOf('[')
+  const end = source.lastIndexOf(']')
+  const json = start >= 0 && end > start ? source.slice(start, end + 1) : source.trim() || '[]'
   try {
-    const raw = JSON.parse(String(text || '').trim() || '[]') as Array<{
+    const raw = JSON.parse(json) as Array<{
       name?: unknown
       version?: unknown
     }>
@@ -993,7 +1002,9 @@ export class NodePackService extends EventEmitter {
             : hasUpdate
               ? 'update-available'
               : 'installed',
-        path: dir,
+        // 0.2.0: `path` is the real pack root (inner dir for registry zips).
+        // Requirements/audit/uninstall all use it; no shellPath compatibility.
+        path: packed,
         repository,
         registryId: prev?.registryId,
         nodeCount: meta.nodeList?.length || 0,
@@ -3180,7 +3191,19 @@ export class NodePackService extends EventEmitter {
       const missing: string[] = []
       const mismatched: NodeDepsAuditPack['mismatched'] = []
       for (const r of reqs) {
-        const have = installed.get(r.name)
+        // 0.2.0: evaluate the marker for the TARGET environment. A Windows-only
+        // or `python_version < "3.12"` requirement is not missing on 3.13; an
+        // unknown marker is skipped (unknown ≠ missing) until a richer
+        // evaluator can decide it.
+        if (r.marker) {
+          const applies = evaluateMarker(r.marker)
+          if (applies !== true) continue
+        }
+        let have: string | undefined
+        for (const candidate of pipAliasCandidates(r.name)) {
+          have = installed.get(candidate)
+          if (have) break
+        }
         if (!have) {
           missing.push(r.specifier ? `${r.name}${r.specifier}` : r.name)
           continue
@@ -3208,6 +3231,14 @@ export class NodePackService extends EventEmitter {
    * guard, streaming log and cancellation semantics apply.
    */
   async installDeps(idOrName: string, instanceId?: string): Promise<PipOpResult> {
+    // 0.2.0: the dependency-fix action must obey the same allow-pip gate as
+    // a pack install. It previously bypassed it entirely.
+    if (loadSettings().allowPipInstall === false) {
+      throw codedError(
+        'PIP_DISABLED',
+        'pip installs are disabled in Settings — enable allow_pip_install first'
+      )
+    }
     const pack = this.list(instanceId).find((p) => p.id === idOrName || p.name === idOrName)
     if (!pack?.path) throw codedError('PACK_NOT_FOUND', `Node pack not found: ${idOrName}`)
     const reqFile = join(pack.path, 'requirements.txt')

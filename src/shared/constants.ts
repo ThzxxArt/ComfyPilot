@@ -162,7 +162,6 @@ export const TORCH_INDEX_PRESETS: Array<{ label: string; value: string }> = [
 export const TORCH_DISK_GB: Record<TorchChannel, number> = {
   cu130: 12,
   cu126: 12,
-  cu124: 11,
   rocm: 14,
   xpu: 8,
   mps: 4,
@@ -188,67 +187,78 @@ export const RUNTIME_SOURCES: Record<
 > = {
   // uv standalone — also bootstraps CPython via `uv python install`
   'uv-win-x64': {
-    url: 'https://github.com/astral-sh/uv/releases/download/0.8.15/uv-x86_64-pc-windows-msvc.zip',
-    sizeHint: 15 * 1024 * 1024,
+    url: 'https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-pc-windows-msvc.zip',
+    sizeHint: 18 * 1024 * 1024,
     description: 'uv package manager (Windows x64)',
-    sha256: '459d95892a5cc5c21779532f4f41b9238594b79e312a5142da2148ecfa10e705'
+    sha256: 'a2a8820d5eea32f08ef467ef3b7f66883a9b076d5737a2fc2fbb5f458d1bb50f'
   },
   'uv-linux-x64': {
-    url: 'https://github.com/astral-sh/uv/releases/download/0.8.15/uv-x86_64-unknown-linux-gnu.tar.gz',
-    sizeHint: 15 * 1024 * 1024,
-    description: 'uv package manager (Linux x64)'
+    url: 'https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-unknown-linux-gnu.tar.gz',
+    sizeHint: 18 * 1024 * 1024,
+    description: 'uv package manager (Linux x64)',
+    sha256: 'f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645'
   },
   'uv-darwin-arm64': {
-    url: 'https://github.com/astral-sh/uv/releases/download/0.8.15/uv-aarch64-apple-darwin.tar.gz',
-    sizeHint: 15 * 1024 * 1024,
-    description: 'uv package manager (macOS arm64)'
+    url: 'https://github.com/astral-sh/uv/releases/download/0.13.6/uv-aarch64-apple-darwin.tar.gz',
+    sizeHint: 18 * 1024 * 1024,
+    description: 'uv package manager (macOS arm64)',
+    sha256: '60fbd5c8a1ed681845eea28d9d622fcde03c51e91a43465b64a1e17db1ed3472'
   },
   'uv-darwin-x64': {
-    url: 'https://github.com/astral-sh/uv/releases/download/0.8.15/uv-x86_64-apple-darwin.tar.gz',
-    sizeHint: 15 * 1024 * 1024,
-    description: 'uv package manager (macOS x64)'
+    url: 'https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-apple-darwin.tar.gz',
+    sizeHint: 18 * 1024 * 1024,
+    description: 'uv package manager (macOS x64)',
+    sha256: '63ba17fdda55ad1a230d4b37fc6017ffa10c23688c83818bd3bfdf914c652a02'
   },
   'uv-linux-arm64': {
-    url: 'https://github.com/astral-sh/uv/releases/download/0.8.15/uv-aarch64-unknown-linux-gnu.tar.gz',
-    sizeHint: 15 * 1024 * 1024,
-    description: 'uv package manager (Linux arm64)'
+    url: 'https://github.com/astral-sh/uv/releases/download/0.13.6/uv-aarch64-unknown-linux-gnu.tar.gz',
+    sizeHint: 18 * 1024 * 1024,
+    description: 'uv package manager (Linux arm64)',
+    sha256: '229e194255c7958d86d56e8790d969a6f74736592133f0dfd0076f754c642c1d'
   },
   // MinGit portable — only needed for git-based node installs / clone mode
   'mingit-win-x64': {
-    url: 'https://github.com/git-for-windows/git/releases/download/v2.47.1.windows.1/MinGit-2.47.1-64-bit.zip',
-    sizeHint: 50 * 1024 * 1024,
+    url: 'https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.4/MinGit-2.56.0.4-64-bit.zip',
+    sizeHint: 55 * 1024 * 1024,
     description: 'MinGit portable (Windows x64)',
-    // git-for-windows publishes no machine-readable sidecar for this release.
-    sha256: '50b04b55425b5c465d076cdb184f63a0cd0f86f6ec8bb4d5860114a713d2c29a'
+    sha256: 'e3bf78351fe777fba47ddee5950082f8a98bb0f02604fdc7ba3ee2cb68ffa877'
   },
-  // python-build-standalone fallback when uv is unavailable
+  // python-build-standalone fallback when uv is unavailable (0.2.0: 3.13 only)
   'python-win-x64': {
-    url: 'https://github.com/astral-sh/python-build-standalone/releases/download/20250712/cpython-3.12.11+20250712-x86_64-pc-windows-msvc-install_only_stripped.tar.gz',
-    sizeHint: 25 * 1024 * 1024,
-    description: 'Portable CPython 3.12 (Windows x64)',
-    sha256: '49911a479230f9a0ad33fc6742229128249f695502360dab3f5fd9096585e9a5'
+    url: 'https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.13.18+20261026-x86_64-pc-windows-msvc-install_only_stripped.tar.gz',
+    sizeHint: 22 * 1024 * 1024,
+    description: 'Portable CPython 3.13.18 (Windows x64)',
+    sha256: '7369f7a35f261222a6ac8b3a87c1c88eeebee8af945d85346202591a64038dd3'
   },
   'python-linux-x64': {
-    url: 'https://github.com/astral-sh/python-build-standalone/releases/download/20250712/cpython-3.12.11+20250712-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz',
-    sizeHint: 25 * 1024 * 1024,
-    description: 'Portable CPython 3.12 (Linux x64)'
+    url: 'https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.13.18+20261026-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz',
+    sizeHint: 36 * 1024 * 1024,
+    description: 'Portable CPython 3.13.18 (Linux x64)',
+    sha256: 'df15fe60d3ff55bf9dcf25824b5572756bb8816ff93865a273d3301d7066a8b7'
   },
   'python-darwin-arm64': {
-    url: 'https://github.com/astral-sh/python-build-standalone/releases/download/20250712/cpython-3.12.11+20250712-aarch64-apple-darwin-install_only_stripped.tar.gz',
-    sizeHint: 25 * 1024 * 1024,
-    description: 'Portable CPython 3.12 (macOS arm64)'
+    url: 'https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.13.18+20261026-aarch64-apple-darwin-install_only_stripped.tar.gz',
+    sizeHint: 26 * 1024 * 1024,
+    description: 'Portable CPython 3.13.18 (macOS arm64)',
+    sha256: '8392b6ea51d94391befb2c31ebe75463f045d0b69dfcf5e1bb3234e1f5fa3405'
   },
   'python-darwin-x64': {
-    url: 'https://github.com/astral-sh/python-build-standalone/releases/download/20250712/cpython-3.12.11+20250712-x86_64-apple-darwin-install_only_stripped.tar.gz',
-    sizeHint: 25 * 1024 * 1024,
-    description: 'Portable CPython 3.12 (macOS x64)'
+    url: 'https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.13.18+20261026-x86_64-apple-darwin-install_only_stripped.tar.gz',
+    sizeHint: 26 * 1024 * 1024,
+    description: 'Portable CPython 3.13.18 (macOS x64)',
+    sha256: '7412c19d896c99431b74a18a5643e110449a7f9590fbab179c3e5ab27b9aa9e3'
   },
   'python-linux-arm64': {
-    url: 'https://github.com/astral-sh/python-build-standalone/releases/download/20250712/cpython-3.12.11+20250712-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz',
-    sizeHint: 25 * 1024 * 1024,
-    description: 'Portable CPython 3.12 (Linux arm64)'
+    url: 'https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.13.18+20261026-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz',
+    sizeHint: 30 * 1024 * 1024,
+    description: 'Portable CPython 3.13.18 (Linux arm64)',
+    sha256: '578d9da1983463ffb0c8c98ab0da2f18177f44069328eb0af847860c1eb05c3e'
   }
 }
+
+/** 0.2.0: the only supported Python runtime. */
+export const PYTHON_RUNTIME_VERSION = '3.13.18'
+export const PYTHON_RUNTIME_MINOR = '3.13'
 
 /** ComfyUI source archive (zip) — default install path, no Git required. */
 // Official repository: Comfy-Org/ComfyUI (0.1.14 switched off the old

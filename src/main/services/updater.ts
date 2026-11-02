@@ -127,12 +127,6 @@ function defaultSteps(): UpdateStep[] {
   ]
 }
 
-function venvPython(venvPath: string): string {
-  const win = join(venvPath, 'Scripts', 'python.exe')
-  const unix = join(venvPath, 'bin', 'python')
-  return existsSync(win) ? win : unix
-}
-
 /**
  * Thrown when the update aborted BEFORE rewriting the tree (e.g. git pull
  * failed because of local changes). Rollback must NOT run — `reset --hard`
@@ -784,10 +778,13 @@ export class ComfyUpdaterService extends EventEmitter {
       }
       const source = detectComfySource(comfyDir)
       if (source === 'unknown') throw new Error('Cannot determine ComfyUI source kind')
-      const venvPath = config.venvPath || join(dirname(comfyDir), '.venv')
-      const vpy = venvPython(venvPath)
+      // 0.2.0: one interpreter resolver for update/pip/launch. The old
+      // `venvPath || sibling .venv` missed an instance-local .venv and
+      // embedded Python entirely.
+      const { resolveInstancePythonPath } = await import('./instance')
+      const vpy = resolveInstancePythonPath(config)
       if (!existsSync(vpy)) {
-        this.log('preflight', `Warning: venv python missing at ${vpy} — dependency steps will fail`)
+        this.log('preflight', `Warning: python missing at ${vpy} — dependency steps will fail`)
       }
       this.log('preflight', `source=${source} dir=${comfyDir}`)
       this.setStep('preflight', 'done', `Source: ${source}`, undefined, 'update.msgPreflightDone', {
@@ -800,6 +797,17 @@ export class ComfyUpdaterService extends EventEmitter {
       try {
         const { instanceService } = await import('./instance')
         const info = instanceService.list().find((i) => i.id === config.id)
+        const port = config.port || 8188
+        // 0.2.0: an external ComfyUI can hold the port without appearing in
+        // our in-memory status. Refuse to overwrite its files.
+        if (!info || (info.status !== 'running' && info.status !== 'starting')) {
+          const pre = await instanceService.checkPort(port)
+          if (!pre.available) {
+            throw new Error(
+              'A ComfyUI is already running on this instance port but was not started by ComfyPilot — stop it before updating'
+            )
+          }
+        }
         if (info && (info.status === 'running' || info.status === 'starting')) {
           const stopInfo = await instanceService.stop(config.id)
           // 0.1.17 (WP4): never overwrite files under a live external process.
@@ -816,7 +824,6 @@ export class ComfyUpdaterService extends EventEmitter {
             )
           }
           // wait for port to free (same pattern as instance.restart)
-          const port = config.port || 8188
           for (let i = 0; i < 20; i++) {
             const check = await instanceService.checkPort(port)
             if (check.available) break
@@ -949,7 +956,7 @@ export class ComfyUpdaterService extends EventEmitter {
           undefined,
           'update.msgReqRun'
         )
-        const vpy2 = venvPython(config.venvPath || join(dirname(comfyDir), '.venv'))
+        const vpy2 = resolveInstancePythonPath(config)
         const reqFile = join(comfyDir, 'requirements.txt')
         if (!existsSync(reqFile)) {
           this.setStep(
@@ -1070,7 +1077,7 @@ export class ComfyUpdaterService extends EventEmitter {
         // 5. optional torch
         if (opts.torchChannel) {
           this.setStep('torch', 'running', opts.torchChannel, undefined, 'update.msgTorchRun')
-          const vpy3 = venvPython(config.venvPath || join(dirname(comfyDir), '.venv'))
+          const vpy3 = resolveInstancePythonPath(config)
           const index = resolveTorchIndex(opts.torchChannel)
           const official = officialTorchIndex(opts.torchChannel)
           const installTorchWith = async (idx: string): Promise<void> => {

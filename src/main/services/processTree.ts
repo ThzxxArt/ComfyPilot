@@ -72,6 +72,7 @@ export function killProcessTree(
       return
     }
     if (process.platform === 'win32') {
+      const waitMs = opts?.waitMs ?? 3000
       execFile(
         'taskkill',
         ['/PID', String(pid), '/T', '/F'],
@@ -82,7 +83,9 @@ export function killProcessTree(
           } catch {
             /* ignore */
           }
-          resolve()
+          // 0.2.0: taskkill returning does not prove the tree is gone. Wait
+          // for the child/pid to disappear before a caller deletes the venv.
+          void waitForGone(child, pid, waitMs).then(resolve)
         }
       )
       return

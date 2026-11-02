@@ -698,7 +698,7 @@ describe('resolveRemovalTargets branches via uninstall', () => {
     // list() finds 'Shell' (the direct child)
     const listed = nodePackService.list('inst-1')
     expect(listed.length).toBeGreaterThan(0)
-    const shellPack = listed.find((p) => h.norm(p.path) === h.norm(shell))
+    const shellPack = listed.find((p) => h.norm(p.path) === h.norm(pack))
     expect(shellPack).toBeTruthy()
     h.state.nodePacks = [
       {
@@ -706,14 +706,15 @@ describe('resolveRemovalTargets branches via uninstall', () => {
         name: shellPack!.name,
         version: '1.0.0',
         installSource: 'registry',
-        path: shell,
+        path: pack,
         locked: false
       }
     ]
     const ok = await nodePackService.uninstall(shellPack!.name, 'inst-1')
     expect(ok).toBe(true)
-    // shell removed (direct child of custom_nodes)
-    expect(h.state.dirs.has(h.norm(shell))).toBe(false)
+    // 0.2.0: the record path is the real pack root. A shell with sibling
+    // content (.git here) is user data and must survive.
+    expect(h.state.dirs.has(h.norm(shell))).toBe(true)
     expect(h.state.dirs.has(h.norm(pack))).toBe(false)
   })
 

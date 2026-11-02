@@ -15,12 +15,18 @@
  */
 import { EventEmitter } from 'events'
 import { createHash, randomUUID } from 'crypto'
-import { mkdtempSync, writeFileSync, rmSync } from 'fs'
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { PipOpResult, UpdateProgress, UpdateStep, UpdateStepId } from '@shared/types'
 import { recipeById, recipeSupportsPlatform, type PipRecipe } from '@shared/pipRecipes'
-import { isValidPipSpec, parsePipRequirement, normalizePipName } from '@shared/pipVersion'
+import {
+  evaluateMarker,
+  isValidPipSpec,
+  parsePipRequirement,
+  normalizePipName
+} from '@shared/pipVersion'
+import { pipAliasCandidates } from '@shared/pipAliases'
 import { loadInstanceConfigs, loadSettings } from './db'
 import { resolveReadTarget } from './target'
 import { resolveInstancePythonPath } from './instance'
@@ -218,34 +224,57 @@ export class PipOpsService extends EventEmitter {
   ): Promise<PipOpResult> {
     const target = this.resolveInstanceId(instanceId)
     const settings = loadSettings()
-    return this.execute(
-      target,
-      [`-r ${label || reqFile}`],
-      'Installing pack dependencies…',
-      async (ctx) => {
-        await ctx.resolve()
-        ctx.step('download', 'skipped', 'No download step')
-        ctx.step('requirements', 'running', `Installing requirements for ${label || reqFile}…`)
-        // 0.1.17 (WP2-4): pip output is not a progress source. The line-count
-        // fraction (pipLines / 40) was invented progress — the step is now
-        // genuinely indeterminate and only the stage text changes.
-        await installRequirements(ctx.python, reqFile, throwingExec, {
-          uvPath: ctx.uvPath,
-          pipIndex: String(settings.pipIndex || '').trim(),
-          onLine: (line) => {
-            ctx.log(line)
-            const stage = pipStageFromLine(line)
-            if (stage) ctx.step('requirements', 'running', stage)
-          },
-          signal: ctx.signal
-        })
-        ctx.step('requirements', 'done', 'Dependencies installed')
+    let reqs: Array<NonNullable<ReturnType<typeof parsePipRequirement>>> = []
+    try {
+      reqs = readFileSync(reqFile, 'utf-8')
+        .split(/\r?\n/)
+        .map((line) => parsePipRequirement(line))
+        .filter((r): r is NonNullable<typeof r> => Boolean(r))
+    } catch {
+      // The caller normally checks existence; keep the install command working
+      // for a path that disappears between the check and this call.
+    }
+    const requested = reqs.map((r) => (r.specifier ? `${r.name}${r.specifier}` : r.name))
+    // Unknown markers are deliberately not verified (unknown ≠ missing).
+    const applicable = reqs.filter((r) => !r.marker || evaluateMarker(r.marker) === true)
+    return this.execute(target, requested, 'Installing pack dependencies…', async (ctx) => {
+      await ctx.resolve()
+      ctx.step('download', 'skipped', 'No download step')
+      ctx.step('requirements', 'running', `Installing requirements for ${label || reqFile}…`)
+      // 0.1.17 (WP2-4): pip output is not a progress source. The line-count
+      // fraction (pipLines / 40) was invented progress — the step is now
+      // genuinely indeterminate and only the stage text changes.
+      await installRequirements(ctx.python, reqFile, throwingExec, {
+        uvPath: ctx.uvPath,
+        pipIndex: String(settings.pipIndex || '').trim(),
+        onLine: (line) => {
+          ctx.log(line)
+          const stage = pipStageFromLine(line)
+          if (stage) ctx.step('requirements', 'running', stage)
+        },
+        signal: ctx.signal
+      })
+      ctx.step('requirements', 'done', 'Dependency install command finished')
+      // 0.2.0 receipt: prove each applicable requirement is now installed.
+      // The old code returned `installed: []` + a generic warning, which the
+      // UI surfaced as the meaningless "Package verification note".
+      const verified = await this.verifyAndFinalize(
+        ctx,
+        applicable.map((r) => (r.specifier ? `${r.name}${r.specifier}` : r.name))
+      )
+      const unresolved = applicable
+        .filter((r) => !verified.installed.includes(r.name))
+        .map((r) => (r.specifier ? `${r.name}${r.specifier}` : r.name))
+      if (unresolved.length) {
         return {
-          installed: [],
-          warning: 'requirements.txt installed — verify with the dependency audit'
+          ok: false,
+          installed: verified.installed,
+          unresolved,
+          error: `Still missing after install: ${unresolved.join(', ')}`
         }
       }
-    )
+      return { ok: true, installed: verified.installed }
+    })
   }
 
   // ---------------------------------------------------------------- internals
@@ -355,9 +384,13 @@ export class PipOpsService extends EventEmitter {
     instanceId: string,
     requested: string[],
     label: string,
-    task: (
-      ctx: OpContext & { resolve: () => Promise<void> }
-    ) => Promise<{ installed: string[]; warning?: string }>
+    task: (ctx: OpContext & { resolve: () => Promise<void> }) => Promise<{
+      installed: string[]
+      warning?: string
+      ok?: boolean
+      unresolved?: string[]
+      error?: string
+    }>
   ): Promise<PipOpResult> {
     if (this.ops.has(instanceId)) {
       throw codedError('OP_BUSY', 'Another package operation is already running for this instance')
@@ -435,13 +468,15 @@ export class PipOpsService extends EventEmitter {
     this.emit('progress', { ...op.progress, steps: op.progress.steps.map((x) => ({ ...x })) })
     try {
       const result = await task(ctx)
-      this.emitStep(op, 'done', 'done', 'Done')
+      this.emitStep(op, 'done', result.ok === false ? 'failed' : 'done', result.error || 'Done')
       return {
-        ok: true,
+        ok: result.ok !== false,
         instanceId,
         requested,
         installed: result.installed,
-        warning: result.warning
+        unresolved: result.unresolved,
+        warning: result.warning,
+        error: result.error
       }
     } catch (err) {
       if (op.abort.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
@@ -474,15 +509,24 @@ export class PipOpsService extends EventEmitter {
       .filter(Boolean)
     const found: string[] = []
     for (const name of names) {
-      try {
-        const out = ctx.uvPath
-          ? await throwingExec(ctx.uvPath, ['pip', 'show', '--python', ctx.python, name], {
-              timeout: 30000
-            })
-          : await throwingExec(ctx.python, ['-m', 'pip', 'show', name], { timeout: 30000 })
-        if (/\bName:\s*\S+/i.test(out)) found.push(name)
-      } catch {
-        /* not listed under this name */
+      // Try aliases too: a requirements line may name the import (`cv2`), not
+      // the distribution (`opencv-python`).
+      for (const candidate of pipAliasCandidates(name)) {
+        try {
+          const out = ctx.uvPath
+            ? await throwingExec(ctx.uvPath, ['pip', 'show', '--python', ctx.python, candidate], {
+                timeout: 30000
+              })
+            : await throwingExec(ctx.python, ['-m', 'pip', 'show', candidate], {
+                timeout: 30000
+              })
+          if (/\bName:\s*\S+/i.test(out)) {
+            found.push(name)
+            break
+          }
+        } catch {
+          /* not listed under this candidate */
+        }
       }
     }
     return found

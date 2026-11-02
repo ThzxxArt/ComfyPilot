@@ -259,11 +259,11 @@ describe('installer service internals', () => {
   // ---------- preflight ----------
 
   describe('preflight matrix', () => {
-    it('root ok, disk ok, git ok, python 3.12 ok', async () => {
+    it('root ok, disk ok, git ok, python 3.13 ok', async () => {
       h.execImpl = (cmd, args, _o, cb) => {
         if (args[0] === '--version') {
           if (String(cmd).includes('git')) queueMicrotask(() => cb(null, 'git version 2.44.0', ''))
-          else queueMicrotask(() => cb(null, 'Python 3.12.1', ''))
+          else queueMicrotask(() => cb(null, 'Python 3.13.1', ''))
         }
         return { pid: 1, exitCode: null, kill: () => undefined }
       }
@@ -769,7 +769,6 @@ describe('installer service internals', () => {
     it('maps channels to the CUDA tag torch must report', async () => {
       const { expectedCudaForChannel } = await import('../../src/main/services/installer')
       expect(expectedCudaForChannel('cu126')).toBe('12.6')
-      expect(expectedCudaForChannel('cu124')).toBe('12.4')
       expect(expectedCudaForChannel('cu130')).toBe('13.0')
       expect(expectedCudaForChannel('cpu')).toBeNull()
       expect(expectedCudaForChannel('rocm')).toBeNull()
@@ -784,7 +783,7 @@ describe('installer service internals', () => {
         verifyTorchChannel: (vpy: string, channel: string) => Promise<void>
       }
       h.execImpl = (_cmd, _args, _o, cb) => {
-        queueMicrotask(() => cb(null, '{"cuda": "12.4", "hip": null, "torch": "2.6.0+cu124"}', ''))
+        queueMicrotask(() => cb(null, '{"cuda": "12.4", "hip": null, "torch": "2.9.0+cu124"}', ''))
         return { pid: 1, exitCode: null, kill: () => undefined }
       }
       await expect(anySvc.verifyTorchChannel('/venv/python', 'cu126')).rejects.toThrow(
@@ -803,12 +802,12 @@ describe('installer service internals', () => {
         verifyTorchChannel: (vpy: string, channel: string) => Promise<void>
       }
       h.execImpl = (_cmd, _args, _o, cb) => {
-        queueMicrotask(() => cb(null, '{"cuda": "12.6", "hip": null, "torch": "2.6.0"}', ''))
+        queueMicrotask(() => cb(null, '{"cuda": "12.6", "hip": null, "torch": "2.9.0"}', ''))
         return { pid: 1, exitCode: null, kill: () => undefined }
       }
       await expect(anySvc.verifyTorchChannel('/venv/python', 'cu126')).resolves.toBeUndefined()
       h.execImpl = (_cmd, _args, _o, cb) => {
-        queueMicrotask(() => cb(null, '{"cuda": null, "hip": null, "torch": "2.6.0+cpu"}', ''))
+        queueMicrotask(() => cb(null, '{"cuda": null, "hip": null, "torch": "2.9.0+cpu"}', ''))
         return { pid: 1, exitCode: null, kill: () => undefined }
       }
       await expect(anySvc.verifyTorchChannel('/venv/python', 'cpu')).resolves.toBeUndefined()
@@ -905,7 +904,7 @@ describe('installer service internals', () => {
         if (args[0] === '--version') {
           if (String(cmd).includes('git')) queueMicrotask(() => cb(null, 'git version 2.44.0', ''))
           else if (String(cmd).includes('uv')) queueMicrotask(() => cb(null, 'uv 0.8.15', ''))
-          else queueMicrotask(() => cb(null, 'Python 3.12.1', ''))
+          else queueMicrotask(() => cb(null, 'Python 3.13.1', ''))
         }
         return { pid: 1, exitCode: null, kill: () => undefined }
       }

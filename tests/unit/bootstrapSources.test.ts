@@ -7,7 +7,7 @@ vi.mock('electron', async () => {
   const os = await import('os')
   const path = await import('path')
   return {
-    app: { getPath: () => path.join(os.tmpdir(), 'cp-boot-test') },
+    app: { getPath: () => path.join(os.tmpdir(), 'cp-boot-test-sources') },
     session: { defaultSession: { fetch: globalThis.fetch, setProxy: async () => undefined } }
   }
 })
@@ -69,31 +69,42 @@ describe('findInRuntimes nested install_only layout', () => {
     vi.resetModules()
   })
 
-  it('finds python under runtimes/python/python/python.exe and mingit cmd/git.exe', async () => {
+  it('finds versioned Python 3.13 and mingit cmd/git.exe', async () => {
     const fs = await import('fs')
     const path = await import('path')
     const { app } = await import('electron')
     const { findInRuntimes } = await import('../../src/main/services/bootstrap')
     const root = path.join(app.getPath('userData'), 'runtimes')
-    // python-build-standalone install_only extracts a top-level python/ dir
-    const pyDir = path.join(root, 'python', 'python')
+    // 0.2.0 only resolves versioned 3.13 runtimes; legacy `python/` is ignored.
+    const legacyDir = path.join(root, 'python', 'python')
+    fs.mkdirSync(legacyDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(legacyDir, process.platform === 'win32' ? 'python.exe' : 'python3'),
+      ''
+    )
+    expect(findInRuntimes('python')).toBeNull()
+
+    const pyDir = path.join(root, 'python-3.13.18', 'python')
     fs.mkdirSync(pyDir, { recursive: true })
     const pyExe = path.join(pyDir, process.platform === 'win32' ? 'python.exe' : 'python3')
     fs.writeFileSync(pyExe, '')
     // MinGit extracts cmd/git.exe (sometimes under mingit64/)
-    const gitDir = path.join(root, 'mingit', 'mingit64', 'cmd')
+    const gitDir = path.join(root, 'mingit-2.56.0.4', 'mingit64', 'cmd')
     fs.mkdirSync(gitDir, { recursive: true })
     fs.writeFileSync(path.join(gitDir, process.platform === 'win32' ? 'git.exe' : 'git'), '')
 
     const foundPy = findInRuntimes('python')
     expect(foundPy).toBeTruthy()
-    expect(foundPy!.replace(/\\/g, '/')).toContain('python/python/')
+    expect(foundPy!.replace(/\\/g, '/')).toContain('python-3.13.18/python/')
     const foundGit = findInRuntimes('git')
     expect(foundGit).toBeTruthy()
     expect(foundGit!.replace(/\\/g, '/')).toContain('mingit64/cmd/')
     // uv direct layout
-    fs.mkdirSync(path.join(root, 'uv'), { recursive: true })
-    fs.writeFileSync(path.join(root, 'uv', process.platform === 'win32' ? 'uv.exe' : 'uv'), '')
+    fs.mkdirSync(path.join(root, 'uv-0.13.6'), { recursive: true })
+    fs.writeFileSync(
+      path.join(root, 'uv-0.13.6', process.platform === 'win32' ? 'uv.exe' : 'uv'),
+      ''
+    )
     expect(findInRuntimes('uv')).toBeTruthy()
     expect(findInRuntimes('definitely-missing-binary-xyz')).toBeNull()
   })

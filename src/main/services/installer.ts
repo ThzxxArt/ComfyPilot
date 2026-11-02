@@ -55,7 +55,6 @@ const EXEC_OPTS = {
 const TORCH_INDEX: Record<TorchChannel, string> = {
   cu130: 'https://download.pytorch.org/whl/cu130/',
   cu126: 'https://download.pytorch.org/whl/cu126/',
-  cu124: 'https://download.pytorch.org/whl/cu124/',
   rocm: 'https://download.pytorch.org/whl/rocm6.2/',
   xpu: 'https://download.pytorch.org/whl/xpu/',
   mps: 'https://download.pytorch.org/whl/cpu/',
@@ -182,8 +181,6 @@ export function expectedCudaForChannel(channel: TorchChannel): string | null {
   switch (channel) {
     case 'cu126':
       return '12.6'
-    case 'cu124':
-      return '12.4'
     case 'cu130':
       return '13.0'
     default:
@@ -307,6 +304,12 @@ export class InstallerService extends EventEmitter {
   private cancelledEpoch = -1
   private running = false
   private children = new Set<ChildProcess>()
+  /**
+   * 0.2.0: identity of the live run. reset() invalidates the token so an old
+   * run unwinding after a reset can never write into the new run's progress,
+   * children or target directory.
+   */
+  private runToken: object | null = null
   private runRejects = new Set<(err: Error) => void>()
 
   private get isCancelled(): boolean {
@@ -358,6 +361,15 @@ export class InstallerService extends EventEmitter {
     // run's child set. Refuse until the previous run is really gone.
     if (this.children.size > 0) {
       throw new Error('Installation is still running — wait for it to stop before resetting')
+    }
+    // Invalidate the run before clearing state. A download-only run has no
+    // child process, so this token is the only thing stopping it from
+    // continuing to write after the user pressed Reset.
+    this.runToken = null
+    try {
+      bootstrapService.cancelAll()
+    } catch {
+      /* ignore */
     }
     this.runEpoch += 1
     this.cancelledEpoch = -1
@@ -752,7 +764,9 @@ export class InstallerService extends EventEmitter {
       const m = out.match(/Python\s+(3)\.(\d+)/i)
       const major = m ? Number(m[1]) : 0
       const minor = m ? Number(m[2]) : -1
-      const ok = major === 3 && minor >= 10
+      // 0.2.0 supports exactly CPython 3.13.x. 3.12 has no cu126/cu130
+      // cp313 wheel coverage and 3.14+ has no torch wheels yet.
+      const ok = major === 3 && minor === 13
       checks.push({
         id: 'python',
         ok,
@@ -864,6 +878,8 @@ export class InstallerService extends EventEmitter {
     this.runEpoch += 1
     this.cancelledEpoch = -1
     const runId = randomUUID()
+    const token = {}
+    this.runToken = token
     this.progress = {
       runId,
       step: 'bootstrap',
@@ -876,8 +892,11 @@ export class InstallerService extends EventEmitter {
     // Only the run that owns the current epoch may clear the flag — a reset()
     // followed by a new start must not be clobbered by the old run's finally.
     const myEpoch = this.runEpoch
-    void this.runPlan(plan).finally(() => {
-      if (this.runEpoch === myEpoch) this.running = false
+    void this.runPlan(plan, token).finally(() => {
+      if (this.runEpoch === myEpoch && this.runToken === token) {
+        this.running = false
+        this.runToken = null
+      }
     })
     return { runId }
   }
@@ -916,6 +935,17 @@ export class InstallerService extends EventEmitter {
     } catch {
       throw new Error(`Could not read torch build info (got: ${line.slice(0, 120)})`)
     }
+    // 0.2.0: ComfyUI requires PyTorch >= 2.7. A stale cu124 wheel (2.6.0) must
+    // fail here rather than at the first prompt.
+    const versionText = String(info.torch || '').split('+')[0]
+    const vm = versionText.match(/^(\d+)\.(\d+)/)
+    const major = vm ? Number(vm[1]) : 0
+    const minor = vm ? Number(vm[2]) : 0
+    if (major < 2 || (major === 2 && minor < 7)) {
+      throw new Error(
+        `torch ${info.torch || '?'} is below ComfyUI's minimum 2.7 — choose cu126/cu130`
+      )
+    }
     const want = expectedCudaForChannel(channel)
     const got = info.cuda ?? null
     const matches = want === null ? got === null : String(got).startsWith(want)
@@ -945,7 +975,12 @@ export class InstallerService extends EventEmitter {
     return args
   }
 
-  private async runPlan(plan: InstallPlan): Promise<void> {
+  private assertRunLive(token: object): void {
+    if (this.runToken !== token) throw new Error('Installation reset')
+  }
+
+  private async runPlan(plan: InstallPlan, token: object): Promise<void> {
+    this.assertRunLive(token)
     try {
       const installRoot = resolve(normalizePathEverySegment(plan.installRoot))
       if (hasParentHop(plan.installRoot)) throw new Error('Invalid install root')
@@ -971,6 +1006,7 @@ export class InstallerService extends EventEmitter {
       )
       this.setStep('bootstrap', 'done', 'Runtimes ready', undefined, 'stepMsg.bootstrapDone')
       this.assertNotCancelled()
+      this.assertRunLive(token)
 
       // 1. preflight (soft on python/git — bootstrap already ran)
       this.setStep(
@@ -1000,12 +1036,13 @@ export class InstallerService extends EventEmitter {
       }
       this.setStep('preflight', 'done', 'Preflight passed', undefined, 'stepMsg.preflightDone')
       this.assertNotCancelled()
+      this.assertRunLive(token)
 
       // 2. python
       this.setStep('python', 'running', 'Locating Python…', undefined, 'stepMsg.pythonRun')
       let python = pythonForPlan
       const pyVer = await this.run(python, ['--version'], { timeout: 8000 }).catch(() => '')
-      const pythonOk = /Python\s+3\.\d+/i.test(pyVer)
+      const pythonOk = /Python\s+3\.13(\.|$)/i.test(pyVer)
       if (pythonOk) {
         this.setStep('python', 'done', pyVer.trim() || python)
       } else if (
@@ -1015,7 +1052,7 @@ export class InstallerService extends EventEmitter {
       ) {
         python = bootstrap.pythonPath
         const retryVer = await this.run(python, ['--version'], { timeout: 8000 }).catch(() => '')
-        if (/Python\s+3\.\d+/i.test(retryVer)) {
+        if (/Python\s+3\.13(\.|$)/i.test(retryVer)) {
           this.setStep('python', 'done', retryVer.trim() || python)
         } else if (useUv && uvComp?.path) {
           // uv can fetch/manange its own interpreter; keep going with uv venv.
@@ -1023,16 +1060,21 @@ export class InstallerService extends EventEmitter {
           this.setStep('python', 'done', `via uv (${uvComp.path})`)
           python = bootstrap.pythonPath
         } else {
-          throw new Error('Cannot locate Python 3.10+ (bootstrap should have provided one)')
+          throw new Error(
+            'PYTHON_UNSUPPORTED: 0.2.0 requires Python 3.13 (bootstrap should have provided one)'
+          )
         }
       } else if (useUv && uvComp?.path) {
         this.log('python', 'System Python unavailable — using uv-managed Python')
         this.setStep('python', 'done', `via uv (${uvComp.path})`)
         python = 'python' // uv venv --python can resolve/install a default
       } else {
-        throw new Error('Cannot locate Python 3.10+ (bootstrap should have provided one)')
+        throw new Error(
+          'PYTHON_UNSUPPORTED: 0.2.0 requires Python 3.13 (bootstrap should have provided one)'
+        )
       }
       this.assertNotCancelled()
+      this.assertRunLive(token)
 
       // 3. venv isolated — PIN to CPython 3.13.
       // A system 3.14+ interpreter has no torch wheels yet; 3.13 is the current sweet spot.
@@ -1048,31 +1090,30 @@ export class InstallerService extends EventEmitter {
       if (useUv && uvComp?.path) {
         // Ensure uv has a 3.13 interpreter, then build the venv from it.
         try {
-          await this.run(uvComp.path, ['python', 'install', '3.13'], { timeout: 180000 })
-          this.log('venv', 'uv python 3.13 ready')
+          await this.run(uvComp.path, ['python', 'install', '3.13.18'], { timeout: 180000 })
+          this.log('venv', 'uv python 3.13.18 ready')
         } catch (e) {
           this.log('venv', `uv python install 3.13: ${e instanceof Error ? e.message : String(e)}`)
         }
-        await this.run(uvComp.path, ['venv', venvPath, '--python', '3.13', '--seed'], {
+        await this.run(uvComp.path, ['venv', venvPath, '--python', '3.13.18', '--seed'], {
           timeout: 180000
         })
       } else {
-        // Prefer an explicit 3.10–3.13 interpreter; reject nothing here but log.
+        // The portable/system interpreter was already checked for 3.13.x; the
+        // venv must also report exactly 3.13.x or the install stops here.
         await this.run(python, ['-m', 'venv', venvPath], { timeout: 180000 })
-        const verOut = await this.run(this.venvPython(venvPath), ['--version'], {
-          timeout: 8000
-        }).catch(() => '')
-        if (/Python\s+3\.(1[4-9]|\d{2,})/i.test(verOut)) {
-          this.log(
-            'venv',
-            `Warning: ${verOut.trim()} may not have torch wheels — prefer Python 3.13. Re-run with uv enabled.`
-          )
-        }
       }
       const vpy = this.venvPython(venvPath)
       if (!existsSync(vpy)) throw new Error(`venv creation failed — missing ${vpy}`)
+      const venvVer = await this.run(vpy, ['--version'], { timeout: 8000 }).catch(() => '')
+      if (!/Python\s+3\.13(\.|$)/i.test(venvVer)) {
+        throw new Error(
+          `PYTHON_UNSUPPORTED: venv reports ${venvVer.trim() || 'unknown'} — 0.2.0 requires Python 3.13.x`
+        )
+      }
       this.setStep('venv', 'done', venvPath, undefined, 'stepMsg.venvDone', { path: venvPath })
       this.assertNotCancelled()
+      this.assertRunLive(token)
 
       // 4. ComfyUI source — zip (default, no Git) or git clone
       const comfyDir = join(installRoot, 'ComfyUI')
@@ -1120,7 +1161,7 @@ export class InstallerService extends EventEmitter {
           const gitBin = resolveGitBinary()
           await this.run(gitBin, args, { timeout: 300000 })
         } else {
-          await this.fetchComfyZip(comfyDir)
+          await this.fetchComfyZip(comfyDir, token)
         }
         if (!existsSync(join(comfyDir, 'main.py'))) {
           // zip extracts to ComfyUI-master/ — flatten if needed
@@ -1137,6 +1178,7 @@ export class InstallerService extends EventEmitter {
         )
       }
       this.assertNotCancelled()
+      this.assertRunLive(token)
 
       // 5. torch — try configured index, fall back to official on "not found"
       this.setStep('torch', 'running', plan.torchChannel, undefined, 'stepMsg.torchRun', {
@@ -1205,6 +1247,7 @@ export class InstallerService extends EventEmitter {
       await this.verifyTorchChannel(vpy, plan.torchChannel)
       this.setStep('torch', 'done', plan.torchChannel)
       this.assertNotCancelled()
+      this.assertRunLive(token)
 
       // 6. requirements
       this.setStep(
@@ -1228,6 +1271,7 @@ export class InstallerService extends EventEmitter {
         this.setStep('requirements', 'skipped', 'No requirements.txt', undefined, 'stepMsg.reqSkip')
       }
       this.assertNotCancelled()
+      this.assertRunLive(token)
 
       // 7. register instance
       this.setStep('register', 'running', 'Writing instance config…', undefined, 'stepMsg.regRun')
@@ -1236,20 +1280,25 @@ export class InstallerService extends EventEmitter {
         (c) => normalizeForCompare(c.path) === normalizeForCompare(comfyDir)
       )
       const config: ComfyInstanceConfig = {
+        ...(samePath || {}),
         id: samePath?.id || randomUUID(),
-        name: plan.instanceName || 'ComfyUI',
+        name: plan.instanceName || samePath?.name || 'ComfyUI',
         path: comfyDir,
         pythonPath: '',
         venvPath,
         port: samePath?.port || (await this.pickPort()),
-        listen: '127.0.0.1',
-        extraArgs: [],
-        argTemplateId: 'default',
-        enabled: true,
-        notes: 'Created by ComfyPilot one-click installer (isolated venv)',
-        autoStart: Boolean(plan.autoStart),
-        frontendVersion: '',
-        pinned: false
+        listen: samePath?.listen || '127.0.0.1',
+        // A re-install at the same path must not wipe the user's tuning.
+        extraArgs: samePath?.extraArgs || [],
+        argTemplateId: samePath?.argTemplateId || 'default',
+        launchProfile: samePath?.launchProfile,
+        enabled: samePath?.enabled !== false,
+        notes: samePath?.notes || 'Created by ComfyPilot one-click installer (isolated venv)',
+        autoStart: samePath ? Boolean(samePath.autoStart) : Boolean(plan.autoStart),
+        frontendVersion: samePath?.frontendVersion || '',
+        pinned: Boolean(samePath?.pinned),
+        pythonVersion: '3.13.18',
+        migrationState: 'none'
       }
       upsertInstanceConfig(config)
       if (this.progress) {
@@ -1423,7 +1472,7 @@ export class InstallerService extends EventEmitter {
   }
 
   /** Download ComfyUI GitHub archive zip into comfyDir (extracted + flattened). */
-  private async fetchComfyZip(comfyDir: string): Promise<void> {
+  private async fetchComfyZip(comfyDir: string, token?: object): Promise<void> {
     const url = applyGithubMirror(COMFY_ZIP_URL)
     if (!isSafeExternalUrl(url)) throw new Error('Blocked ComfyUI archive URL')
     const { session } = await import('electron')
@@ -1435,6 +1484,16 @@ export class InstallerService extends EventEmitter {
     if (!res.ok) throw new Error(`ComfyUI archive download failed: HTTP ${res.status}`)
     const total = Number(res.headers.get('content-length') || 0)
     const received = await this.streamBodyToFile(res, tmpZip)
+    // A reset/failed run must not extract an archive into the target after the
+    // user already started a different run.
+    if (token && this.runToken !== token) {
+      try {
+        rmSync(tmpZip, { force: true })
+      } catch {
+        /* ignore */
+      }
+      throw new Error('Installation reset')
+    }
     this.setBytes({
       receivedBytes: received,
       totalBytes: total || received,

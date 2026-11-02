@@ -113,6 +113,15 @@ export function resolveInstancePythonPath(config: ComfyInstanceConfig): string {
     if (existsSync(win)) return win
     if (existsSync(unix)) return unix
   }
+  // 0.2.0: instances created outside ComfyPilot often have their venv inside
+  // the ComfyUI directory. Ignoring it made launch/pip/audit use a completely
+  // different interpreter than the user's environment.
+  for (const local of [join(config.path, '.venv'), join(config.path, 'venv')]) {
+    const win = join(local, 'Scripts', 'python.exe')
+    const unix = join(local, 'bin', 'python')
+    if (existsSync(win)) return win
+    if (existsSync(unix)) return unix
+  }
   if (config.pythonPath) return config.pythonPath
   const parent = dirname(config.path)
   const candidates = [
@@ -337,7 +346,12 @@ export class InstanceService extends EventEmitter {
       pinned: Boolean(rt.config.pinned),
       autoStart: Boolean(rt.config.autoStart),
       extraArgs: Array.isArray(rt.config.extraArgs) ? rt.config.extraArgs : [],
-      status: rt.status,
+      status:
+        rt.status === 'stopped' && rt.config.migrationState === 'failed'
+          ? 'migration-failed'
+          : rt.status === 'stopped' && rt.config.migrationState === 'required'
+            ? 'migration-required'
+            : rt.status,
       pid: rt.pid,
       // Same host normalization as probes/launch (0.0.0.0 / :: / [::] → 127.0.0.1)
       url: this.baseUrlOf(rt.config),
@@ -529,24 +543,26 @@ export class InstanceService extends EventEmitter {
       autoStart: Boolean(config.autoStart),
       frontendVersion: config.frontendVersion || '',
       pinned: Boolean(config.pinned),
-      launchProfile: normalizeLaunchProfile(config.launchProfile)
+      launchProfile: normalizeLaunchProfile(config.launchProfile),
+      pythonVersion: config.pythonVersion,
+      migrationState: config.migrationState,
+      migrationError: config.migrationError
     }
     upsertInstanceConfig(next)
     return this.toInfo(this.ensureRuntime(next))
   }
 
-  remove(id: string): boolean {
+  async remove(id: string): Promise<boolean> {
     const rt = this.runtimes.get(id)
     if (rt?.process) {
       rt.intentionalStop = true
       rt.generation += 1
       this.clearReadyProbe(rt)
-      try {
-        rt.process.kill()
-      } catch {
-        /* ignore */
-      }
+      // 0.2.0: same tree-kill guarantee as stop() — a launcher's children must
+      // be gone before the runtime directory is deleted.
+      await killProcessTree(rt.process, { timeoutMs: 5000 })
       rt.process = undefined
+      rt.pid = undefined
     }
     // A removed instance must not keep a stale online version around.
     capabilityService.invalidate(id)
@@ -1059,6 +1075,18 @@ export class InstanceService extends EventEmitter {
    * Resolve the interpreter for an instance (shared implementation —
    * instance launch / env probe / node-pack pip all use the same rules).
    */
+  private async pythonVersionText(python: string): Promise<string> {
+    try {
+      const { stdout } = await execFileAsync(python, ['--version'], {
+        timeout: 8000,
+        windowsHide: true
+      })
+      return String(stdout || '').trim()
+    } catch {
+      return ''
+    }
+  }
+
   private resolvePython(config: ComfyInstanceConfig): string {
     return resolveInstancePythonPath(config)
   }
@@ -1455,6 +1483,26 @@ export class InstanceService extends EventEmitter {
     this.emitStatus(rt)
 
     const python = this.resolvePython(rt.config)
+    // 0.2.0: refuse to spawn a non-3.13 interpreter. A Python 3.12 venv is a
+    // one-way migration, not a supported runtime; 3.14+ is plainly unsupported.
+    const pythonVersionText = await this.pythonVersionText(python)
+    const pyMatch = pythonVersionText.match(/Python\s+(\d+)\.(\d+)/i)
+    if (pyMatch && !(Number(pyMatch[1]) === 3 && Number(pyMatch[2]) === 13)) {
+      const legacy = Number(pyMatch[1]) === 3 && Number(pyMatch[2]) === 12
+      rt.config = {
+        ...rt.config,
+        migrationState: legacy ? 'required' : 'failed',
+        migrationError: `Unsupported Python ${pyMatch[1]}.${pyMatch[2]} — 0.2.0 requires Python 3.13`
+      }
+      upsertInstanceConfig(rt.config)
+      rt.status = 'error'
+      rt.lastError = rt.config.migrationError
+      this.pushLog(rt, 'error', rt.lastError || 'Unsupported Python version')
+      this.emitStatus(rt)
+      const e = new Error(rt.lastError) as Error & { code?: string }
+      e.code = legacy ? 'PYTHON_MIGRATION_REQUIRED' : 'PYTHON_UNSUPPORTED'
+      throw e
+    }
     const args = this.buildArgs(rt.config)
     // Refuse argparse-fatal combos (mutually exclusive groups) BEFORE spawn —
     // ComfyUI would otherwise exit instantly with an opaque usage error.
@@ -2054,15 +2102,18 @@ export class InstanceService extends EventEmitter {
     capabilityService.invalidate(id)
     let adopted = false
     if (child) {
-      try {
-        child.kill('SIGKILL')
-      } catch {
-        /* ignore */
-      }
+      await killProcessTree(child, { timeoutMs: 5000 })
     } else if (pid && wasManaged) {
       // Only kill PID if we spawned it and no longer own a live child handle (avoid PID reuse races).
       try {
-        process.kill(pid, 'SIGKILL')
+        if (process.platform === 'win32') {
+          await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F'], {
+            windowsHide: true,
+            timeout: 5000
+          }).catch(() => undefined)
+        } else {
+          process.kill(pid, 'SIGKILL')
+        }
       } catch {
         /* ignore */
       }

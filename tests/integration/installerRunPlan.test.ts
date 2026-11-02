@@ -125,7 +125,7 @@ vi.mock('child_process', () => ({
         const c = String(cmd).toLowerCase()
         if (c.includes('git')) cb(null, 'git version 2.44.0.windows.1', '')
         else if (c.includes('uv')) cb(null, 'uv 0.5.1', '')
-        else cb(null, 'Python 3.12.1', '')
+        else cb(null, 'Python 3.13.1', '')
         return
       }
       if ((args[0] === '-m' && args[1] === 'venv') || args[0] === 'venv') {
@@ -145,7 +145,7 @@ vi.mock('child_process', () => ({
       // 0.1.17 (WP2): the installer verifies the torch channel after install.
       // Answer the CPU build (this suite only plans torchChannel 'cpu').
       if (args[0] === '-c' && String(args[1] || '').includes('torch.version.cuda')) {
-        cb(null, '{"cuda": null, "hip": null, "torch": "2.6.0+cpu"}', '')
+        cb(null, '{"cuda": null, "hip": null, "torch": "2.9.0+cpu"}', '')
         return
       }
       cb(null, 'ok', '')
@@ -318,7 +318,7 @@ describe('installer runPlan (integration)', () => {
       if (args[0] === '--version') {
         const c = cmd.toLowerCase()
         if (c.includes('git')) return queueMicrotask(() => cb(null, 'git version 2.44', ''))
-        return queueMicrotask(() => cb(null, 'Python 3.12.1', ''))
+        return queueMicrotask(() => cb(null, 'Python 3.13.1', ''))
       }
       if ((args[0] === '-m' && args[1] === 'venv') || args[0] === 'venv') {
         const venvPath = args[0] === 'venv' ? args[1] : args[2]
@@ -336,7 +336,7 @@ describe('installer runPlan (integration)', () => {
       // 0.1.17 (WP2): torch channel verification runs after the install.
       if (args[0] === '-c' && String(args[1] || '').includes('torch.version.cuda')) {
         return queueMicrotask(() =>
-          cb(null, '{"cuda": null, "hip": null, "torch": "2.6.0+cpu"}', '')
+          cb(null, '{"cuda": null, "hip": null, "torch": "2.9.0+cpu"}', '')
         )
       }
       queueMicrotask(() => cb(null, 'ok', ''))
@@ -440,7 +440,9 @@ describe('installer runPlan (integration)', () => {
     h.bootstrap.pythonOrigin = 'runtimes'
     h.execImpl = (cmd, args, cb) => {
       if (args[0] === '--version') {
-        if (String(cmd).includes('boot')) return queueMicrotask(() => cb(null, 'Python 3.11.2', ''))
+        if (String(cmd).includes('boot') || String(cmd).includes('Scripts')) {
+          return queueMicrotask(() => cb(null, 'Python 3.13.2', ''))
+        }
         return queueMicrotask(() => cb(new Error('not found'), '', ''))
       }
       if ((args[0] === '-m' && args[1] === 'venv') || args[0] === 'venv') {
@@ -452,7 +454,7 @@ describe('installer runPlan (integration)', () => {
       // 0.1.17 (WP2): torch channel verification runs after the install.
       if (args[0] === '-c' && String(args[1] || '').includes('torch.version.cuda')) {
         return queueMicrotask(() =>
-          cb(null, '{"cuda": null, "hip": null, "torch": "2.6.0+cpu"}', '')
+          cb(null, '{"cuda": null, "hip": null, "torch": "2.9.0+cpu"}', '')
         )
       }
       queueMicrotask(() => cb(null, 'ok', ''))
@@ -468,7 +470,10 @@ describe('installer runPlan (integration)', () => {
     h.bootstrap.pythonOrigin = 'runtimes'
     h.execImpl = (cmd, args, cb) => {
       if (args[0] === '--version') {
-        // both plan python and bootstrap python report garbage
+        // The venv created by uv is 3.13; the plan/bootstrap probes are junk.
+        if (String(cmd).includes('Scripts') || String(cmd).includes('bin')) {
+          return queueMicrotask(() => cb(null, 'Python 3.13.2', ''))
+        }
         return queueMicrotask(() => cb(null, 'not-a-version', ''))
       }
       if ((args[0] === '-m' && args[1] === 'venv') || args[0] === 'venv') {
@@ -480,7 +485,7 @@ describe('installer runPlan (integration)', () => {
       // 0.1.17 (WP2): torch channel verification runs after the install.
       if (args[0] === '-c' && String(args[1] || '').includes('torch.version.cuda')) {
         return queueMicrotask(() =>
-          cb(null, '{"cuda": null, "hip": null, "torch": "2.6.0+cpu"}', '')
+          cb(null, '{"cuda": null, "hip": null, "torch": "2.9.0+cpu"}', '')
         )
       }
       queueMicrotask(() => cb(null, 'ok', ''))
@@ -506,7 +511,7 @@ describe('installer runPlan (integration)', () => {
       // 0.1.17 (WP2): torch channel verification runs after the install.
       if (args[0] === '-c' && String(args[1] || '').includes('torch.version.cuda')) {
         return queueMicrotask(() =>
-          cb(null, '{"cuda": null, "hip": null, "torch": "2.6.0+cpu"}', '')
+          cb(null, '{"cuda": null, "hip": null, "torch": "2.9.0+cpu"}', '')
         )
       }
       queueMicrotask(() => cb(null, 'ok', ''))
@@ -514,7 +519,7 @@ describe('installer runPlan (integration)', () => {
     const svc = await freshService()
     await svc.start(plan())
     const p = await waitStatus(svc, (s) => s.status === 'failed')
-    expect(p.error).toMatch(/Cannot locate Python/i)
+    expect(p.error).toMatch(/PYTHON_UNSUPPORTED/i)
   })
 
   it('preflight hard-fail (disk) aborts and marks the running step failed', async () => {
@@ -526,14 +531,14 @@ describe('installer runPlan (integration)', () => {
     // hard fail via a fake disk failure: monkey-patch preflight result is not possible —
     // simplest reliable hard fail is a venv python file that never appears.
     h.execImpl = (cmd, args, cb) => {
-      if (args[0] === '--version') return queueMicrotask(() => cb(null, 'Python 3.12.0', ''))
+      if (args[0] === '--version') return queueMicrotask(() => cb(null, 'Python 3.13.0', ''))
       if ((args[0] === '-m' && args[1] === 'venv') || args[0] === 'venv') {
         return queueMicrotask(() => cb(null, '', '')) // no python.exe created
       }
       // 0.1.17 (WP2): torch channel verification runs after the install.
       if (args[0] === '-c' && String(args[1] || '').includes('torch.version.cuda')) {
         return queueMicrotask(() =>
-          cb(null, '{"cuda": null, "hip": null, "torch": "2.6.0+cpu"}', '')
+          cb(null, '{"cuda": null, "hip": null, "torch": "2.9.0+cpu"}', '')
         )
       }
       queueMicrotask(() => cb(null, 'ok', ''))
@@ -548,7 +553,7 @@ describe('installer runPlan (integration)', () => {
 
   it('cleans up half-created ComfyUI dir after fetch failure', async () => {
     h.execImpl = (cmd, args, cb) => {
-      if (args[0] === '--version') return queueMicrotask(() => cb(null, 'Python 3.12.0', ''))
+      if (args[0] === '--version') return queueMicrotask(() => cb(null, 'Python 3.13.0', ''))
       if ((args[0] === '-m' && args[1] === 'venv') || args[0] === 'venv') {
         const venvPath = args[0] === 'venv' ? args[1] : args[2]
         mkdirSync(join(venvPath, 'Scripts'), { recursive: true })
@@ -558,7 +563,7 @@ describe('installer runPlan (integration)', () => {
       // 0.1.17 (WP2): torch channel verification runs after the install.
       if (args[0] === '-c' && String(args[1] || '').includes('torch.version.cuda')) {
         return queueMicrotask(() =>
-          cb(null, '{"cuda": null, "hip": null, "torch": "2.6.0+cpu"}', '')
+          cb(null, '{"cuda": null, "hip": null, "torch": "2.9.0+cpu"}', '')
         )
       }
       queueMicrotask(() => cb(null, 'ok', ''))
@@ -591,7 +596,7 @@ describe('installer runPlan (integration)', () => {
         writeFileSync(join(dest, 'ComfyUI-master', 'README.md'), '')
       }
       h.execImpl = (cmd, args, cb) => {
-        if (args[0] === '--version') return queueMicrotask(() => cb(null, 'Python 3.12.0', ''))
+        if (args[0] === '--version') return queueMicrotask(() => cb(null, 'Python 3.13.0', ''))
         if ((args[0] === '-m' && args[1] === 'venv') || args[0] === 'venv') {
           const venvPath = args[0] === 'venv' ? args[1] : args[2]
           mkdirSync(join(venvPath, 'Scripts'), { recursive: true })
@@ -601,7 +606,7 @@ describe('installer runPlan (integration)', () => {
         // 0.1.17 (WP2): torch channel verification runs after the install.
         if (args[0] === '-c' && String(args[1] || '').includes('torch.version.cuda')) {
           return queueMicrotask(() =>
-            cb(null, '{"cuda": null, "hip": null, "torch": "2.6.0+cpu"}', '')
+            cb(null, '{"cuda": null, "hip": null, "torch": "2.9.0+cpu"}', '')
           )
         }
         queueMicrotask(() => cb(null, 'ok', ''))
