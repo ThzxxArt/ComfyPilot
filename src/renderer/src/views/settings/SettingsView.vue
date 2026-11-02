@@ -28,6 +28,7 @@ import type {
   AppSettings,
   AppSettingsView,
   AppUpdateStatus,
+  BootstrapStatus,
   RemoteInstanceConfig,
   RemoteInstanceSummary,
   RemoteInstanceStatus,
@@ -131,6 +132,7 @@ const emptyRemote = (): RemoteInstanceConfig => ({
 })
 const remoteDraft = ref<RemoteInstanceConfig>(emptyRemote())
 const envProbe = ref<EnvProbe | null>(null)
+const runtimeStatus = ref<BootstrapStatus | null>(null)
 const pythons = ref<Array<{ path: string; version: string }>>([])
 const testingProxy = ref(false)
 const proxyTestResult = ref<{ ok: boolean; via: string; ms: number; error?: string } | null>(null)
@@ -600,6 +602,11 @@ onMounted(async () => {
   await store.bootstrap({ keepSelection: true })
   await loadRemotes()
   try {
+    runtimeStatus.value = await ipc('bootstrap.status')
+  } catch {
+    /* runtime status is advisory */
+  }
+  try {
     configPath.value = await ipc('settings.dataDir')
   } catch {
     /* ignore */
@@ -755,6 +762,9 @@ onUnmounted(() => {
             <NFormItem :label="t('settings.proxyEnabled')">
               <NSwitch v-model:value="form.proxy.enabled" />
             </NFormItem>
+            <div v-if="credStatus.proxyCredentialBackend !== 'os-keychain'" class="cred-warn">
+              <span class="hint">{{ t('settings.credentialBackendWarn') }}</span>
+            </div>
             <div v-if="credStatus.proxyPasswordUnreadable" class="cred-warn">
               <NTag size="tiny" type="warning">{{ t('settings.credNeedsReentry') }}</NTag>
               <span class="hint">{{ t('settings.proxyPasswordLockedHint') }}</span>
@@ -974,6 +984,19 @@ onUnmounted(() => {
           <NButton style="margin-top: 12px" secondary @click="openRemoteDialog">{{
             t('settings.addRemote')
           }}</NButton>
+        </NCard>
+
+        <NCard :title="t('settings.runtimeTitle')" class="card" size="small">
+          <template v-if="runtimeStatus">
+            <div class="meta">
+              {{ t('settings.runtimeSupported', { version: runtimeStatus.pythonVersion }) }}
+            </div>
+            <div v-if="runtimeStatus.legacyPython" class="meta cred-warn">
+              {{ t('settings.runtimeLegacy', { version: runtimeStatus.legacyPython }) }}
+            </div>
+            <div class="meta mono">{{ runtimeStatus.runtimesDir }}</div>
+          </template>
+          <div v-else class="meta">{{ t('settings.runtimeUnknown') }}</div>
         </NCard>
 
         <NCard :title="t('settings.pythonEnv')" class="card" size="small">

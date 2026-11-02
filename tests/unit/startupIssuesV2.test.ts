@@ -22,14 +22,14 @@ describe('parseStartupIssues (0.2.0 boot session)', () => {
     expect(result.hasIssues).toBe(false)
   })
 
-  it('keeps optional imports out of the hard-missing list', () => {
+  it('drops a pack whose only missing import is optional', () => {
     const result = parseStartupIssues('i1', [
       'Traceback (most recent call last):',
       '  File "C:/ComfyUI/custom_nodes/Foo/__init__.py", line 1, in <module>',
       "ModuleNotFoundError: No module named 'torch_npu'"
     ])
-    expect(result.issues[0].missingModules).toEqual([])
-    expect(result.issues[0].optionalModules).toEqual(['torch_npu'])
+    expect(result.issues).toEqual([])
+    expect(result.hasIssues).toBe(false)
   })
 
   it('recognises PRESTARTUP FAILED and resets attribution at a new section', () => {

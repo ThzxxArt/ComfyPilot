@@ -187,6 +187,8 @@ export default {
     allowUnverifiedRuntimeHint:
       'By default a runtime download with no published checksum and no prior verified hash is refused (so one bad download is never trusted forever). Enable only if you can verify the source yourself.',
     credNeedsReentry: 'Needs re-entry',
+    credentialBackendWarn:
+      'The OS credential store is unavailable, so credentials can only be stored in plaintext. Repair the system keychain/credential service, then re-enter the password.',
     proxyPasswordLockedHint:
       'The saved proxy password cannot be decrypted (key changed or config migrated). Re-enter it and save — leaving it blank does not erase the stored ciphertext.',
     remoteApiKeyPlaceholder: 'API key (optional, encrypted locally)',
@@ -239,6 +241,11 @@ export default {
     remoteStatusVersion: 'Version {version}',
     remoteErrorLabel: 'Error',
     pythonEnv: 'Python environment',
+    runtimeTitle: 'Runtime',
+    runtimeSupported: '0.2.0 supports Python {version} only (cp313)',
+    runtimeLegacy:
+      'Legacy Python {version} detected: archived and never used at runtime; 3.12 instances must migrate before they can start',
+    runtimeUnknown: 'Runtime status is unavailable',
     probeEnv: 'Probe environment',
     envProbeDone: 'Environment probe complete',
     availablePythons: 'Available interpreters: {n}',

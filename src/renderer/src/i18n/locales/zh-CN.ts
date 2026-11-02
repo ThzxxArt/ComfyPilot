@@ -179,6 +179,8 @@ export default {
     allowUnverifiedRuntimeHint:
       '默认拒绝下载没有官方校验和、也没有历史校验记录的运行时（避免一次坏下载被永久信任）。仅在你能自行核对来源时开启。',
     credNeedsReentry: '需要重新录入',
+    credentialBackendWarn:
+      '系统安全存储当前不可用：凭据只能以明文保存。建议先修复系统钥匙串/凭据服务，再重新录入密码。',
     proxyPasswordLockedHint:
       '已保存的代理密码无法解密（系统密钥变化或迁移过配置）。请重新输入密码并保存——留空不会清空原有密文。',
     remoteApiKeyPlaceholder: 'API Key（可选，仅在本机加密保存）',
@@ -230,6 +232,11 @@ export default {
     remoteStatusVersion: '版本 {version}',
     remoteErrorLabel: '错误',
     pythonEnv: 'Python 环境',
+    runtimeTitle: '运行时',
+    runtimeSupported: '0.2.0 只支持 Python {version}（cp313）',
+    runtimeLegacy:
+      '检测到旧 Python {version}：已归档、不参与运行；旧 3.12 实例需完成迁移后才能启动',
+    runtimeUnknown: '运行时状态暂不可用',
     probeEnv: '探测环境',
     envProbeDone: '环境探测完成',
     availablePythons: '可用解释器：{n} 个',

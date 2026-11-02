@@ -107,6 +107,11 @@ export function parseStartupIssues(
     }
   }
 
-  const issues = order.map((p) => byPack.get(p) as InstanceStartupIssue)
+  const issues = order
+    .map((p) => byPack.get(p) as InstanceStartupIssue)
+    // 0.2.0: a pack whose only missing imports are platform/accelerator
+    // optional (`torch_npu` on non-Ascend, `OpenGL_accelerate`) is healthy.
+    // Drop it instead of showing "节点加载失败" forever.
+    .filter((issue) => !(issue.missingModules.length === 0 && issue.optionalModules?.length))
   return { instanceId, hasIssues: issues.length > 0, issues, scannedAt }
 }

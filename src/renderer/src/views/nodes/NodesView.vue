@@ -753,7 +753,14 @@ async function runDepsAudit(): Promise<void> {
  *  invisible and the modal stuck as an empty 0% shell). */
 async function fixPackDeps(p: NodeDepsAuditPack): Promise<void> {
   try {
-    const r = await startPackDeps(store.activeInstanceId || '', p.id)
+    const target = store.localTargetId
+    if (!target) {
+      message.warning(t('target.required'))
+      return
+    }
+    // 0.2.0: the audit runs against localTargetId; installing via
+    // activeInstanceId could target a different instance.
+    const r = await startPackDeps(target, p.id)
     if (r.ok) {
       // Refresh the audit so the just-installed pack leaves the missing list
       // immediately instead of still showing its removed entries.
@@ -762,12 +769,16 @@ async function fixPackDeps(p: NodeDepsAuditPack): Promise<void> {
       return
     }
     if (r.cancelled) return
-    if (r.error) message.error(r.error)
+    if (r.error) {
+      message.error(r.error)
+      // Show the verified "still missing" list instead of leaving the old one.
+      await runDepsAudit()
+    }
   } catch (err) {
     const code = (err as { code?: string })?.code
     if (code === 'OP_BUSY') {
       // A dependency install is already running — open its live progress.
-      if (store.activeInstanceId) void openPipFor(store.activeInstanceId)
+      if (store.localTargetId) void openPipFor(store.localTargetId)
       message.warning(t('deps.opBusy'))
       return
     }

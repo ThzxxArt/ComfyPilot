@@ -316,9 +316,9 @@ npm run dev / typecheck / test / test:coverage / test:e2e / test:all
 node scripts/check-version.cjs   # 版本号五处一致（CI + release 必跑）
 ```
 
-**测试：** 1725 用例（121 文件，含 `@vue/test-utils` 组件测试；0.1.18 删除了约 1,050 条纯源码文本断言，行为占比从脚本口径 85% 提升到 97%）+ e2e 冒烟（真实 Electron 启动、preload 桥、一次真实 IPC、渲染层 console 错误置红）。覆盖率门禁分三层：**全局下限**（statements 82 / branches 74 / functions 83 / lines 84，实测值 −2pp）、**测试行为占比**（`npm run test:behavior`，纯源码文本断言占比 >40% 直接失败）与 **每文件下限**（`coverage-baseline.json` 的实测 −2pp，`scripts/coverage-ratchet.cjs` 对任一文件掉 >1pp 失败）；`handlers.ts`/`index.ts` 等装配层仍未纳入 include（覆盖率数字不代表全仓）。测试源码纳入 tsc 门禁（`typecheck:test`）。
+**测试：** 1744 用例（126 文件，含 `@vue/test-utils` 组件测试；0.2.0 新增 argv、数据迁移、环境标记、凭据端点绑定与启动问题回归测试）+ e2e 冒烟（真实 Electron 启动、preload 桥、一次真实 IPC、渲染层 console 错误置红）。覆盖率门禁分三层：**全局下限**（statements 82 / branches 74 / functions 83 / lines 84，实测值 −2pp）、**测试行为占比**（`npm run test:behavior`，纯源码文本断言占比 >40% 直接失败）与 **每文件下限**（`coverage-baseline.json` 的实测 −2pp，`scripts/coverage-ratchet.cjs` 对任一文件掉 >1pp 失败）；`handlers.ts`/`index.ts` 等装配层仍未纳入 include（覆盖率数字不代表全仓）。测试源码纳入 tsc 门禁（`typecheck:test`）。
 
-**技术栈（0.1.18 升级）：** Electron **45** · electron-vite **6** · Vite **8** · Vitest **5** · Node **24**（CI/构建）。TypeScript 保持 **5.9**：TS 7（native）与 `vue-tsc` 2.x/3.x 均不兼容（`ERR_PACKAGE_PATH_NOT_EXPORTED`），已实测并记录，待 vue-tsc 支持后再升。
+**技术栈（0.2.0 升级）：** Electron **45.2.1** · electron-vite **6** · Vite **8** · Vitest **5** · Node **24**（CI/构建）· TypeScript **6.0.3** · Pinia **4** · Vue Router **5** · vue-i18n **11** · ESLint **10**。TypeScript 7（native）与 vue-tsc 3.x 仍报 `ERR_PACKAGE_PATH_NOT_EXPORTED`，已实测并记录，0.2.0 固定 TS 6.0.3。
 
 **门禁脚本：**
 
