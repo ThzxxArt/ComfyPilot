@@ -713,6 +713,13 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     })
   )
   ipcMain.handle(
+    'instance.launchArgCatalog',
+    wrap(async (instanceId?: string) => {
+      const { launchArgCatalog } = await import('../services/launchArgCatalog')
+      return launchArgCatalog(safeInstanceId(instanceId))
+    })
+  )
+  ipcMain.handle(
     'instance.previewLaunch',
     wrap((id: string) => instanceService.previewLaunch(sanitizeId(id)))
   )
@@ -1291,9 +1298,64 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   )
   ipcMain.handle(
     'node.updateAll',
-    wrap((instanceId?: string, opts?: import('@shared/types').NodeUpdateAllOptions) =>
-      nodePackService.updateAll(requireLocalTarget(instanceId), opts)
-    )
+    wrap(async (instanceId?: string, opts?: import('@shared/types').NodeUpdateAllOptions) => {
+      const target = requireLocalTarget(instanceId)
+      const results = await nodePackService.updateAll(target, opts)
+      if (results.length) {
+        const ok = results.filter((r) => r.ok && !r.skipped).length
+        const fail = results.filter((r) => !r.ok && !r.skipped).length
+        broadcastNotification({
+          type: fail ? 'warning' : 'success',
+          title: fail ? 'Node updates finished with errors' : 'Node updates complete',
+          titleKey: fail ? 'notify.nodeBatchPartial' : 'notify.nodeBatchDone',
+          message: `${ok} updated, ${fail} failed`,
+          messageKey: 'notify.nodeBatchMsg',
+          params: { ok, fail },
+          duration: 7000,
+          // One summary for the whole batch — the per-pack notifications were
+          // the source of the "all unread popped at once" storm.
+          dedupeKey: `node-update-all:${target}`
+        })
+      }
+      return results
+    })
+  )
+
+  // issues (0.2.0 IssueCenter)
+  ipcMain.handle(
+    'issue.list',
+    wrap(async (includeResolved?: boolean) => {
+      const { issueHubService } = await import('../services/issueHub')
+      return issueHubService.list(Boolean(includeResolved))
+    })
+  )
+  ipcMain.handle(
+    'issue.scan',
+    wrap(async (instanceId?: string) => {
+      const { issueHubService } = await import('../services/issueHub')
+      return issueHubService.scan(instanceId ? sanitizeId(instanceId) : undefined)
+    })
+  )
+  ipcMain.handle(
+    'issue.dismiss',
+    wrap(async (id: string) => {
+      const { issueHubService } = await import('../services/issueHub')
+      return issueHubService.dismiss(String(id))
+    })
+  )
+  ipcMain.handle(
+    'issue.restore',
+    wrap(async (id: string) => {
+      const { issueHubService } = await import('../services/issueHub')
+      return issueHubService.restore(String(id))
+    })
+  )
+  ipcMain.handle(
+    'issue.resolve',
+    wrap(async (id: string) => {
+      const { issueHubService } = await import('../services/issueHub')
+      return issueHubService.resolve(String(id))
+    })
   )
 
   // workflows
@@ -2459,6 +2521,8 @@ export function broadcastNotification(n: {
   titleKey?: string
   messageKey?: string
   params?: Record<string, string | number>
+  dedupeKey?: string
+  action?: import('@shared/types').NotificationAction
 }): void {
   broadcast(IPC_EVENTS.notification, n)
 }

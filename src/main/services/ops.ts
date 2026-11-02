@@ -319,33 +319,44 @@ export class OperationRegistry extends EventEmitter {
     )
 
     // ---- node "update all" queue ----
-    nodePackService.on(
-      'update-batch',
-      (b: {
-        instanceId?: string
-        done?: number
-        total?: number
-        running?: boolean
-        message?: string
-        cancelled?: boolean
-      }) => {
-        const target = b.instanceId || 'default'
-        const id = `node-batch:${target}`
-        const percent = b.total ? Math.round(((b.done || 0) / b.total) * 100) : null
-        if (!this.isRunning(id)) {
-          this.begin({
-            id,
-            kind: 'node-batch',
-            target,
-            percent,
-            detail: b.message || '',
-            cancel: () => nodePackService.cancelUpdateBatch(target)
-          })
-        }
-        this.update(id, { percent, detail: b.message || '' })
-        if (!b.running) this.finish(id, b.cancelled ? 'cancelled' : 'done')
+    nodePackService.on('update-batch', (b: import('@shared/types').NodeUpdateBatchEvent) => {
+      const target = b.instanceId || 'default'
+      const id = `node-batch:${target}`
+      const percent =
+        b.phase === 'checking' || !b.total
+          ? null
+          : Math.round((Math.max(0, b.index) / b.total) * 100)
+      const detail =
+        b.phase === 'checking'
+          ? 'Checking for updates…'
+          : b.packName
+            ? `${b.index}/${b.total} · ${b.packName}`
+            : b.phase === 'start'
+              ? 'Starting updates…'
+              : ''
+      if (!this.isRunning(id)) {
+        this.begin({
+          id,
+          kind: 'node-batch',
+          target,
+          percent,
+          detail,
+          cancel: () => nodePackService.cancelUpdateBatch(target)
+        })
       }
-    )
+      this.update(id, { percent, detail })
+      // 0.2.0: the batch protocol is phase/index/total. The old code read
+      // done/running (which it never emitted), so the first `checking` event
+      // finished the task and the UI showed a completed batch immediately.
+      if (b.phase === 'batch-done') {
+        if (b.summary?.cancelled) this.finish(id, 'cancelled')
+        else if (b.ok === false)
+          this.finish(id, 'failed', b.summary?.fail ? `${b.summary.fail} failed` : '')
+        else this.finish(id, 'done')
+      } else if (b.phase === 'batch-error') {
+        this.finish(id, 'failed', b.error || 'Batch update failed')
+      }
+    })
 
     // ---- batch runs (one op per job) ----
     batchService.on(

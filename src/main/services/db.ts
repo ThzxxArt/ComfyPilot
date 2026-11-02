@@ -1193,6 +1193,15 @@ export function updateOutputAsset(id: string, patch: Partial<OutputAsset>): Outp
   return result
 }
 
+// ---------- Issues (0.2.0 IssueCenter) ----------
+export function listIssues(): import('@shared/types').AppIssue[] {
+  return readJsonc<import('@shared/types').AppIssue[]>('issues', [])
+}
+
+export function replaceIssues(items: import('@shared/types').AppIssue[]): void {
+  writeJsonc('issues', items, 'ComfyPilot issues (v2)')
+}
+
 // ---------- Remote ----------
 /** Remote ids whose stored apiKey could not be decrypted in this process. */
 const lockedRemoteApiKeys = new Set<string>()

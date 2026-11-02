@@ -1854,8 +1854,9 @@ describe('getLogs / clearLogs', () => {
     }
     // getLogs merges logs/<id>.log with the in-memory ring, so history is not lost.
     const logs = svc.getLogs('cap', 10000)
-    expect(logs.length).toBe(5001)
-    expect(logs[0].message).toContain('line 0')
+    // 5001 emitted lines + the 0.2.0 boot-session marker.
+    expect(logs.length).toBe(5002)
+    expect(logs.some((l) => l.message.includes('line 0'))).toBe(true)
     expect(logs[logs.length - 1].message).toContain('line 5000')
     // The in-memory ring itself still drops the oldest line.
     const rt = svc as unknown as { runtimes: Map<string, { logs: Array<{ message: string }> }> }

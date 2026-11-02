@@ -61,11 +61,26 @@ function remoteAuthHeaders(remote?: { apiKey?: string }): Record<string, string>
  * ComfyUI allows `--output-directory <path>` in extraArgs — when present,
  * the output scanner MUST use that directory instead of the default `path/output`.
  */
-export function resolveOutputDir(inst: { path: string; extraArgs?: string[] }): string {
-  const args = inst.extraArgs || []
+export function resolveOutputDir(inst: {
+  path: string
+  extraArgs?: string[]
+  launchProfile?: { outputDirectory?: string }
+}): string {
+  // 0.2.0: structured outputDirectory and free-form args are equally real.
+  // Reading only extraArgs made the output library scan the wrong folder.
+  const args = [
+    ...(inst.extraArgs || []),
+    ...(inst.launchProfile?.outputDirectory
+      ? ['--output-directory', inst.launchProfile.outputDirectory]
+      : [])
+  ]
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--output-directory' && args[i + 1]) {
-      const custom = args[i + 1]
+    const token = args[i]
+    const eq = token.indexOf('=')
+    let custom: string | undefined
+    if (token === '--output-directory') custom = args[i + 1]
+    else if (eq > 0 && token.slice(0, eq) === '--output-directory') custom = token.slice(eq + 1)
+    if (custom) {
       // Relative paths resolve against the instance root.
       return custom.match(/^[a-zA-Z]:[\\/]|^\//) ? custom : join(inst.path, custom)
     }

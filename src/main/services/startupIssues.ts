@@ -11,9 +11,14 @@ import type { InstanceStartupIssue, InstanceStartupIssues } from '@shared/types'
 
 /** Pull the custom-node pack folder out of any path mentioning `custom_nodes`. */
 export function packFromCustomNodesPath(text: string): string | null {
-  const m = text.match(/custom_nodes[\\/]([^\\/\s"']+)/i)
-  return m ? m[1] : null
+  // 0.2.0: allow spaces in pack names. The old `[^\\/\s"']+` truncated
+  // `custom_nodes/My Pack/...` to `My`, so the UI linked to a non-existent pack.
+  const m = String(text || '').match(/custom_nodes[\\/]([^\\/"'\r\n]+)/i)
+  return m ? m[1].trim() : null
 }
+
+/** Modules that are platform/accelerator optional and never block a pack. */
+const OPTIONAL_MODULES = new Set(['torch_npu', 'OpenGL_accelerate', 'torch_npu.utils'])
 
 /**
  * Parse recent instance-log lines for custom-node import failures.
@@ -29,6 +34,12 @@ export function parseStartupIssues(
   const order: string[] = []
   const byPack = new Map<string, InstanceStartupIssue>()
   let lastPack: string | null = null
+  /**
+   * A bare `No module named` is only a failure when a traceback/IMPORT FAILED
+   * line opened a failure context. Manager probes print the same words for
+   * optional accelerators on platforms that do not have them.
+   */
+  let failureContext = false
 
   const ensure = (pack: string, summary?: string): InstanceStartupIssue => {
     let rec = byPack.get(pack)
@@ -46,17 +57,30 @@ export function parseStartupIssues(
     const text = stripAnsi(raw).trim()
     if (!text) continue
 
+    // A new Import-times/prestartup section is a fresh attribution boundary.
+    if (/^(Import|Prestartup) times for custom nodes:/i.test(text)) {
+      lastPack = null
+      failureContext = false
+      continue
+    }
+
     // Any traceback file path mentioning a custom-node pack anchors attribution.
     const pathPack = packFromCustomNodesPath(text)
-    if (pathPack) lastPack = pathPack
+    if (pathPack) {
+      lastPack = pathPack
+      // A custom_nodes path in a line that also looks like a traceback/file
+      // reference is enough to attribute following errors.
+      if (/traceback|file\s+"/i.test(text) || /\.py["':,]/i.test(text)) failureContext = true
+    }
 
-    const failed = text.match(/\(IMPORT FAILED\):\s*(.+?)\s*$/i)
+    const failed = text.match(/\((IMPORT|PRESTARTUP) FAILED\):\s*(.+?)\s*$/i)
     if (failed) {
-      const pack: string = packFromCustomNodesPath(failed[1]) || lastPack || 'unknown'
+      const pack: string = packFromCustomNodesPath(failed[2]) || lastPack || 'unknown'
       // No summary here — keep a richer reason if a `Cannot import …` line
       // already supplied one (the IMPORT FAILED line often comes after it).
       ensure(pack)
       lastPack = pack
+      failureContext = true
       continue
     }
     const cannot = text.match(/Cannot import\s+(.+?)\s+module for custom nodes:?\s*(.*)$/i)
@@ -64,16 +88,22 @@ export function parseStartupIssues(
       const pack: string = packFromCustomNodesPath(cannot[1]) || lastPack || 'unknown'
       ensure(pack, cannot[2].trim() || 'Import failed')
       lastPack = pack
+      failureContext = true
       continue
     }
     if (/Nodes have been temporarily disabled due to the error/i.test(text)) {
       ensure(lastPack || 'unknown', 'Dependency install or init failed at runtime')
+      failureContext = true
       continue
     }
     const missing = text.match(/No module named '([^']+)'/)
-    if (missing) {
-      const rec = ensure(lastPack || 'unknown', 'Missing dependency')
-      if (!rec.missingModules.includes(missing[1])) rec.missingModules.push(missing[1])
+    if (missing && lastPack && failureContext) {
+      const rec = ensure(lastPack, 'Missing dependency')
+      if (OPTIONAL_MODULES.has(missing[1])) {
+        rec.optionalModules = [...new Set([...(rec.optionalModules || []), missing[1]])]
+      } else if (!rec.missingModules.includes(missing[1])) {
+        rec.missingModules.push(missing[1])
+      }
     }
   }
 

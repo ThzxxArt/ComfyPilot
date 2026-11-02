@@ -47,6 +47,7 @@ import { findInRuntimes } from './bootstrap'
 import { killProcessTree } from './processTree'
 import { COMFY_DEFAULT_PORTS, LAUNCH_TEMPLATES } from '@shared/constants'
 import { renderLaunchProfile, validateLaunchArgs, warnLaunchArgs } from '@shared/launchArgs'
+import { parseArgv, splitFlagArg } from '@shared/argv'
 import { capabilityService } from './capabilities'
 
 const execFileAsync = promisify(execFile)
@@ -470,6 +471,7 @@ export class InstanceService extends EventEmitter {
       const port = await this.pickEphemeralPort(config.port || 8188)
       args.push('--port', String(port))
     }
+    this.pushLog(rt, 'info', '=== ComfyPilot selfcheck start ===')
     this.pushLog(
       rt,
       'info',
@@ -509,6 +511,7 @@ export class InstanceService extends EventEmitter {
         ? 'Startup self-check passed'
         : `Startup self-check failed (exit ${result.exitCode})`
     )
+    this.pushLog(rt, 'info', '=== ComfyPilot selfcheck end ===')
     return result
   }
 
@@ -728,11 +731,35 @@ export class InstanceService extends EventEmitter {
    * (0.1.16). Read-only — the UI decides whether to offer a dependency fix.
    */
   analyzeStartupIssues(id: string): InstanceStartupIssues {
-    const lines = this.getLogs(id, 3000)
-    return parseStartupIssues(
-      id,
-      lines.map((l) => l.message)
-    )
+    const all = this.getLogs(id, 3000).map((l) => l.message)
+    // 0.2.0: only the LAST real boot counts. Without this, an old
+    // `IMPORT FAILED` stayed visible forever across restarts and app launches.
+    let bootAt = -1
+    for (let i = all.length - 1; i >= 0; i--) {
+      if (all[i].includes('=== ComfyPilot boot ')) {
+        bootAt = i
+        break
+      }
+    }
+    if (bootAt < 0) {
+      return { instanceId: id, hasIssues: false, issues: [], scannedAt: Date.now() }
+    }
+    // Self-check emits its own Import-times block; it must not be attributed to
+    // the running instance.
+    const lines: string[] = []
+    let inSelfCheck = false
+    for (const line of all.slice(bootAt + 1)) {
+      if (line.includes('=== ComfyPilot selfcheck start ===')) {
+        inSelfCheck = true
+        continue
+      }
+      if (line.includes('=== ComfyPilot selfcheck end ===')) {
+        inSelfCheck = false
+        continue
+      }
+      if (!inSelfCheck) lines.push(line)
+    }
+    return parseStartupIssues(id, lines)
   }
 
   async checkPort(port: number): Promise<PortCheckResult> {
@@ -1126,25 +1153,21 @@ export class InstanceService extends EventEmitter {
     args.push(...profileArgs)
     const extra = Array.isArray(config.extraArgs)
       ? config.extraArgs
-      : String(config.extraArgs || '')
-          .split(/\s+/)
-          .filter(Boolean)
+      : parseArgv(String(config.extraArgs || '')).tokens
+    const allDeclared = [...templateArgs, ...profileArgs, ...extra]
+    const hasFlag = (flag: string): boolean =>
+      allDeclared.some((a) => splitFlagArg(a).flag === flag)
     // Explicitly load the instance's extra_model_paths.yaml when it exists, so
     // a custom cwd / --base-directory can never silently lose the model paths.
     const yamlPath = join(config.path, 'extra_model_paths.yaml')
-    const declared = [...templateArgs, ...profileArgs, ...extra].includes(
-      '--extra-model-paths-config'
-    )
-    if (!declared && existsSync(yamlPath)) {
+    if (!hasFlag('--extra-model-paths-config') && existsSync(yamlPath)) {
       args.push('--extra-model-paths-config', yamlPath)
     }
     // Default: ComfyUI must not open a browser tab on its own — ComfyPilot owns
     // window/browser opening. Skipped when the user declared either side of the
     // flag explicitly (template / profile / free text) and when the profile
     // explicitly opted out (disableAutoLaunch=false keeps ComfyUI's own default).
-    const autoLaunchDeclared = [...templateArgs, ...profileArgs, ...extra].some(
-      (a) => a === '--auto-launch' || a === '--disable-auto-launch'
-    )
+    const autoLaunchDeclared = hasFlag('--auto-launch') || hasFlag('--disable-auto-launch')
     if (!autoLaunchDeclared && config.launchProfile?.disableAutoLaunch !== false) {
       args.push('--disable-auto-launch')
     }
@@ -1482,6 +1505,18 @@ export class InstanceService extends EventEmitter {
     rt.startedAt = undefined
     this.emitStatus(rt)
 
+    // 0.2.0: boot-session boundary for startup diagnostics.
+    this.pushLog(rt, 'info', `=== ComfyPilot boot ${Date.now()} ${new Date().toISOString()} ===`)
+    // Quarantine `.trash-*`/`.bak-*`/`._*` BEFORE ComfyUI scans custom_nodes.
+    try {
+      const { nodePackService } = await import('./nodePack')
+      const moved = nodePackService.quarantineTransients(rt.config.id)
+      if (moved.length) {
+        this.pushLog(rt, 'warn', `Quarantined startup leftovers: ${moved.join(', ')}`)
+      }
+    } catch {
+      /* quarantine is best-effort; ComfyUI still starts */
+    }
     const python = this.resolvePython(rt.config)
     // 0.2.0: refuse to spawn a non-3.13 interpreter. A Python 3.12 venv is a
     // one-way migration, not a supported runtime; 3.14+ is plainly unsupported.
@@ -1972,7 +2007,12 @@ export class InstanceService extends EventEmitter {
       const id = rt.config.id
       try {
         const info = await this.stop(id)
-        out.push({ ...info, ok: true })
+        // 0.2.0: a process that ignored the grace window is not a success.
+        out.push({
+          ...info,
+          ok: info.exited !== false,
+          error: info.exited === false ? 'Process did not exit within the grace window' : undefined
+        })
       } catch (err) {
         out.push({
           ...this.toInfo(rt),

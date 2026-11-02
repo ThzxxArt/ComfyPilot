@@ -12,6 +12,7 @@
  *      0.1 seconds (PRESTARTUP FAILED): C:\...\custom_nodes\Baz
  */
 import type { NodeLoadEntry, NodeLoadReport } from './types'
+import { stripAnsi } from './logLine'
 
 const IMPORT_HEADER = 'Import times for custom nodes:'
 const PRESTARTUP_HEADER = 'Prestartup times for custom nodes:'
@@ -93,12 +94,13 @@ export function parseNodeLoadReport(
   // Failure reasons: module path → message.
   const reasons = new Map<string, string>()
   for (const line of lines) {
-    const imp = line.message.match(/Cannot import (.+?) module for custom nodes:\s*(.*)$/)
+    const clean = stripAnsi(line.message)
+    const imp = clean.match(/Cannot import (.+?) module for custom nodes:\s*(.*)$/)
     if (imp) {
-      reasons.set(imp[1].trim(), imp[2].trim() || 'Import failed')
+      reasons.set(imp[1].trim(), stripAnsi(imp[2]).trim() || 'Import failed')
       continue
     }
-    const skip = line.message.match(
+    const skip = clean.match(
       /Skip (.+?) module for custom nodes due to the lack of NODE_CLASS_MAPPINGS/
     )
     if (skip) {

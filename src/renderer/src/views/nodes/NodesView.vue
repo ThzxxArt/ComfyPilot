@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
@@ -119,6 +119,10 @@ const snapshots = ref<NodeSnapshot[]>([])
 // 0.1.18 (WP3/L9): leftovers from an interrupted update (`.bak-`/tmp dirs).
 const recovery = ref<NodeRecoveryEntry[]>([])
 const showRecovery = ref(false)
+/** IssueCenter/deep-link focus (0.2.0): highlights the exact pack or explains absence. */
+const focusedPackId = ref('')
+const focusMissing = ref(false)
+const focusTerm = ref('')
 const recoveryBusy = ref('')
 const installedQuery = ref('')
 const showInstall = ref(false)
@@ -271,7 +275,10 @@ const filteredPacks = computed(() => {
   const q = installedQuery.value.trim().toLowerCase()
   if (!q) return list
   return list.filter((p) =>
-    [p.name, p.displayName, p.description, ...(p.tags || [])].join(' ').toLowerCase().includes(q)
+    [p.name, p.displayName, p.description, p.path, ...(p.tags || [])]
+      .join(' ')
+      .toLowerCase()
+      .includes(q)
   )
 })
 
@@ -337,7 +344,7 @@ function describeUpdateError(err: unknown, _pack?: NodePackRecord): string {
 // it open with the final log; the user closes it manually (ComfyUI-Manager
 // terminal behaviour). The banner below can reopen it while an op runs.
 
-async function refresh(): Promise<void> {
+async function refresh(): Promise<boolean> {
   loading.value = true
   try {
     const instId = store.localTargetId || undefined
@@ -353,11 +360,13 @@ async function refresh(): Promise<void> {
     }
     // Restore dependency-install banner/modal state (0.1.12).
     if (instId) void refreshPipStatus(instId)
+    return true
   } catch (err) {
     // Keep the failure: the ListState error branch must be reachable instead
     // of rendering "no installed node packs" over a failed load.
     loadError.value = err instanceof Error ? err.message : String(err)
     message.error(loadError.value)
+    return false
   } finally {
     loading.value = false
   }
@@ -382,7 +391,8 @@ async function loadRecovery(): Promise<void> {
 const RECOVERY_KIND_KEYS: Record<NodeRecoveryEntry['kind'], string> = {
   backup: 'nodes.recoveryKind_backup',
   temp: 'nodes.recoveryKind_temp',
-  duplicate: 'nodes.recoveryKind_duplicate'
+  duplicate: 'nodes.recoveryKind_duplicate',
+  trash: 'nodes.recoveryKind_trash'
 }
 function recoveryKindLabel(kind: NodeRecoveryEntry['kind']): string {
   return t(RECOVERY_KIND_KEYS[kind])
@@ -516,11 +526,17 @@ async function updatePack(pack: NodePackRecord): Promise<void> {
     // Pass the unique id (not the name): duplicate names can exist on disk
     // (e.g. `Foo` + `.disabled/Foo`) and name lookup would be ambiguous.
     await ipc('node.update', pack.id, undefined, store.localTargetId || undefined)
+    // 0.2.0: only claim success after the refreshed list proves it. The old
+    // order showed "updated" then refreshed; a failed refresh left stale rows
+    // that looked updated but still carried the old version.
+    const refreshedOk = await refresh()
+    if (!refreshedOk) {
+      message.warning(t('nodes.updateRefreshFailed', { name: pack.displayName || pack.name }))
+      return
+    }
     message.success(t('nodes.updateDone', { name: pack.displayName || pack.name }))
-    await refresh()
-    // The pack is now up to date — flip its check row (0.1.11.1). Prefer the
-    // stable path-derived id; a registry reinstall may have renamed the folder,
-    // so fall back to the (usually stable) pack name.
+    // Prefer the stable path-derived id; a registry reinstall may have renamed
+    // the folder, so fall back to the (usually stable) pack name.
     const refreshed =
       packs.value.find((p) => p.id === pack.id) || packs.value.find((p) => p.name === pack.name)
     if (refreshed) markPackUpdated(refreshed)
@@ -763,13 +779,63 @@ async function fixPackDeps(p: NodeDepsAuditPack): Promise<void> {
   }
 }
 
-/** ?focus=<folder> from the failure-diagnosis card pre-filters the list. */
-function applyFocus(): void {
+/**
+ * ?instanceId&focus=&source=&showRecovery= deep link (0.2.0).
+ * Switches to the right instance, clears conflicting filters, matches by
+ * name/displayName/path/folder, highlights + scrolls to the pack, and opens the
+ * recovery center when the target is a leftover.
+ */
+async function applyFocus(): Promise<void> {
   const f = String(route.query.focus || '').trim()
-  if (f) {
-    installedQuery.value = f
-    tab.value = 'installed'
+  const requestedInstance = String(route.query.instanceId || '').trim()
+  if (!f && !requestedInstance) return
+  tab.value = 'installed'
+  if (requestedInstance && requestedInstance !== store.activeInstanceId) {
+    store.activeInstanceId = requestedInstance
+    await store.refreshInstances()
+    await refresh()
   }
+  if (String(route.query.showRecovery || '') === '1') {
+    showRecovery.value = true
+  }
+  if (!f) return
+  loadFailedOnly.value = false
+  focusTerm.value = f
+  const needle = f.toLowerCase()
+  const base = needle.split(/[\\/]/).pop() || needle
+  const hit = packs.value.find((p) => {
+    const path = String(p.path || '')
+      .replace(/\\/g, '/')
+      .toLowerCase()
+    return (
+      p.name.toLowerCase() === needle ||
+      (p.displayName || '').toLowerCase() === needle ||
+      path === needle ||
+      path.endsWith(`/${needle}`) ||
+      path.includes(needle) ||
+      p.name.toLowerCase() === base ||
+      path.endsWith(`/${base}`)
+    )
+  })
+  if (hit) {
+    focusedPackId.value = hit.id
+    focusMissing.value = false
+    installedQuery.value = ''
+    await nextTick()
+    const el = document.querySelector(`[data-pack-id="${hit.id}"]`)
+    el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  } else {
+    focusedPackId.value = ''
+    focusMissing.value = true
+    installedQuery.value = f
+    // Show the recovery list so a `.trash-*` target has a visible action.
+    if (/\.trash-|\.bak-|\._/.test(f)) {
+      showRecovery.value = true
+      await loadRecovery()
+    }
+  }
+  // Consume the query so a later mount/refresh does not re-apply stale focus.
+  void router.replace({ path: '/nodes' })
 }
 
 async function createSnapshot(): Promise<void> {
@@ -871,8 +937,10 @@ watch(
 
 // Deep links (e.g. from the failure-diagnosis card) may arrive while mounted.
 watch(
-  () => route.query.focus,
-  () => applyFocus()
+  () => [route.query.focus, route.query.instanceId, route.query.showRecovery],
+  () => {
+    void applyFocus()
+  }
 )
 </script>
 
@@ -1147,6 +1215,8 @@ watch(
               v-for="pack in filteredPacks"
               :key="pack.id"
               class="card card-interactive pack"
+              :class="{ 'pack-focused': focusedPackId === pack.id }"
+              :data-pack-id="pack.id"
             >
               <div class="pack-head">
                 <div class="pack-icon">
@@ -1341,16 +1411,40 @@ watch(
           <ListState v-else-if="loadError" :error="loadError" :rows="6" @retry="refresh" />
           <NEmpty
             v-else
-            :description="installedQuery.trim() ? $t('common.noMatch') : $t('nodes.emptyInstalled')"
+            :description="
+              focusMissing
+                ? $t('nodes.focusMissing', { name: focusTerm })
+                : installedQuery.trim()
+                  ? $t('common.noMatch')
+                  : $t('nodes.emptyInstalled')
+            "
             class="empty"
           >
             <template #extra>
-              <NButton v-if="installedQuery.trim()" secondary @click="clearSearch">{{
-                $t('common.clearFilters')
-              }}</NButton>
-              <NButton v-else type="primary" @click="router.push('/market')">{{
-                $t('nav.market')
-              }}</NButton>
+              <NSpace vertical align="center">
+                <NButton
+                  v-if="installedQuery.trim() || focusMissing"
+                  secondary
+                  @click="
+                    () => {
+                      clearSearch()
+                      focusMissing = false
+                    }
+                  "
+                >
+                  {{ $t('nodes.focusShowAll') }}
+                </NButton>
+                <NButton v-if="focusMissing" secondary @click="showRecovery = true">
+                  {{ $t('nodes.recoveryOpen') }}
+                </NButton>
+                <NButton
+                  v-if="!installedQuery.trim() && !focusMissing"
+                  type="primary"
+                  @click="router.push('/market')"
+                >
+                  {{ $t('nav.market') }}
+                </NButton>
+              </NSpace>
             </template>
           </NEmpty>
         </NSpin>
@@ -1611,6 +1705,11 @@ watch(
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+.pack-focused {
+  outline: 2px solid var(--n-primary-color, #2563eb);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.14);
 }
 .pack-head {
   display: flex;

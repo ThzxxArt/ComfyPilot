@@ -93,7 +93,7 @@ const previewFor = ref<ComfyInstanceInfo | null>(null)
 const showPreviewModal = ref(false)
 const editing = ref<ComfyInstanceInfo | null>(null)
 const showEditModal = ref(false)
-const editExtraArgs = ref('')
+
 const editSaving = ref(false)
 /** 0.1.9 structured launch tuning buffers (edit + create). */
 const editProfile = ref<LaunchProfile>({})
@@ -114,11 +114,6 @@ const draft = ref<ComfyInstanceConfig>({
   autoStart: false,
   frontendVersion: '',
   pinned: false
-})
-const extraArgsText = ref('')
-
-watch(extraArgsText, (v) => {
-  draft.value.extraArgs = v.split(/\s+/).filter(Boolean)
 })
 
 /** Pinned first, then running, then name — mirrors instanceService.list. */
@@ -370,7 +365,6 @@ async function createInstance(): Promise<void> {
   }
   saving.value = true
   try {
-    draft.value.extraArgs = extraArgsText.value.split(/\s+/).filter(Boolean)
     draft.value.launchProfile = Object.keys(draftProfile.value).length
       ? { ...draftProfile.value }
       : undefined
@@ -395,7 +389,7 @@ async function createInstance(): Promise<void> {
       frontendVersion: '',
       pinned: false
     }
-    extraArgsText.value = ''
+    draft.value.extraArgs = []
     draftProfile.value = {}
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
@@ -439,7 +433,7 @@ async function exportLaunchScript(): Promise<void> {
 
 function openEdit(item: ComfyInstanceInfo): void {
   editing.value = { ...item }
-  editExtraArgs.value = (item.extraArgs || []).join(' ')
+
   editProfile.value = { ...(item.launchProfile || {}) }
   showEditModal.value = true
 }
@@ -448,7 +442,6 @@ async function saveEdit(): Promise<void> {
   if (!editing.value) return
   editSaving.value = true
   try {
-    editing.value.extraArgs = editExtraArgs.value.split(/\s+/).filter(Boolean)
     editing.value.launchProfile = Object.keys(editProfile.value).length
       ? { ...editProfile.value }
       : undefined
@@ -1277,14 +1270,12 @@ function statusClass(s: string): string {
         </NFormItem>
         <LaunchProfileEditor
           v-model="editProfile"
-          :extra-args="editExtraArgs.split(/\s+/).filter(Boolean)"
+          v-model:extra-args="editing.extraArgs"
+          :instance-id="editing.id"
           :gpus="store.system?.gpus"
           :version="editing?.onlineVersion || ''"
           :baseline="editing?.launchProfile"
         />
-        <NFormItem :label="$t('instance.extraArgs')">
-          <NInput v-model:value="editExtraArgs" />
-        </NFormItem>
         <NFormItem :label="$t('instance.notes')">
           <NInput v-model:value="editing.notes" type="textarea" :rows="2" />
         </NFormItem>
@@ -1358,7 +1349,8 @@ function statusClass(s: string): string {
         </NFormItem>
         <LaunchProfileEditor
           v-model="draftProfile"
-          :extra-args="extraArgsText.split(/\s+/).filter(Boolean)"
+          v-model:extra-args="draft.extraArgs"
+          :instance-id="draft.id || undefined"
           :gpus="store.system?.gpus"
         />
         <div class="form-row">
@@ -1393,13 +1385,6 @@ function statusClass(s: string): string {
             <NInput v-model:value="draft.listen" placeholder="127.0.0.1" />
           </NFormItem>
         </div>
-        <NFormItem :label="$t('instance.extraArgs')">
-          <NInput
-            :value="extraArgsText"
-            :placeholder="$t('instance.extraArgsPlaceholder')"
-            @update:value="(v: string) => (extraArgsText = v)"
-          />
-        </NFormItem>
         <div class="form-row">
           <NFormItem :label="$t('instance.autoStartLabel')">
             <NSwitch v-model:value="draft.autoStart" />

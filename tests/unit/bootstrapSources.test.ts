@@ -75,6 +75,7 @@ describe('findInRuntimes nested install_only layout', () => {
     const { app } = await import('electron')
     const { findInRuntimes } = await import('../../src/main/services/bootstrap')
     const root = path.join(app.getPath('userData'), 'runtimes')
+    fs.rmSync(root, { recursive: true, force: true })
     // 0.2.0 only resolves versioned 3.13 runtimes; legacy `python/` is ignored.
     const legacyDir = path.join(root, 'python', 'python')
     fs.mkdirSync(legacyDir, { recursive: true })

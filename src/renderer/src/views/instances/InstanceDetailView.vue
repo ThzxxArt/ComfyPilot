@@ -140,6 +140,7 @@ const alignSpec = computed(() => {
 })
 // ---------- 0.1.9: structured launch tuning (detail-page panel) ----------
 const profileDraft = ref<LaunchProfile>({})
+const extraArgsDraft = ref<string[]>([])
 const savingProfile = ref(false)
 let profileSyncedFor = ''
 
@@ -158,11 +159,19 @@ async function saveProfile(): Promise<boolean> {
   savingProfile.value = true
   try {
     const profile = Object.keys(profileDraft.value).length ? { ...profileDraft.value } : undefined
-    await ipc('instance.save', { ...target, launchProfile: profile })
+    await ipc('instance.save', {
+      ...target,
+      launchProfile: profile,
+      extraArgs: [...extraArgsDraft.value]
+    })
     // The route may have switched during the await — only touch the view state
     // when we're still on the instance this save belongs to.
     if (instance.value?.id === target.id) {
-      instance.value = { ...instance.value, launchProfile: profile }
+      instance.value = {
+        ...instance.value,
+        launchProfile: profile,
+        extraArgs: [...extraArgsDraft.value]
+      }
       profileSyncedFor = target.id
       message.success(t('instance.configSaved'))
       if (instanceRunning.value) message.info(t('launchArgs.restartToApply'))
@@ -451,7 +460,14 @@ async function fixByRecipe(f: ExecFailure): Promise<void> {
 }
 
 function goPack(f: ExecFailure): void {
-  void router.push({ path: '/nodes', query: { focus: f.packFolder || '' } })
+  void router.push({
+    path: '/nodes',
+    query: {
+      instanceId: id.value,
+      focus: f.packFolder || '',
+      source: 'exec'
+    }
+  })
 }
 
 async function copyFailureReport(f: ExecFailure): Promise<void> {
@@ -605,9 +621,28 @@ async function checkStartupIssues(forId: string): Promise<void> {
   }
 }
 
-/** Send the user to the Nodes page to run a dependency audit / repair. */
+/** Send the user to the IssueCenter filtered to this instance. */
 function reviewStartupIssues(): void {
-  void router.push('/nodes')
+  void router.push({ path: '/issues', query: { instanceId: id.value } })
+}
+
+/**
+ * 0.2.0: dismissing the startup card persists an ignore for every current
+ * startup issue. The old version only cleared a local ref, so a refresh or
+ * restart brought the same errors straight back.
+ */
+async function dismissStartupIssues(): Promise<void> {
+  try {
+    const issues = await ipc('issue.scan', id.value)
+    for (const issue of issues) {
+      if (issue.kind === 'startup' || issue.kind === 'node-load') {
+        await ipc('issue.dismiss', issue.id)
+      }
+    }
+  } catch {
+    /* best effort — the card can still be hidden for this session */
+  }
+  startupIssues.value = null
 }
 
 async function refresh(): Promise<void> {
@@ -623,6 +658,7 @@ async function refresh(): Promise<void> {
     if (profileSyncedFor !== forId) {
       profileSyncedFor = forId
       profileDraft.value = { ...(instance.value?.launchProfile || {}) }
+      extraArgsDraft.value = [...(instance.value?.extraArgs || [])]
     }
     const logsResult = await ipc('instance.getLogs', forId, LOG_FETCH_LIMIT)
     if (seq !== refreshSeq || forId !== id.value) return
@@ -1485,7 +1521,8 @@ watch(
               <!-- Flat editor (0.1.11): no nested same-name collapse. -->
               <LaunchProfileEditor
                 v-model="profileDraft"
-                :extra-args="instance?.extraArgs || []"
+                v-model:extra-args="extraArgsDraft"
+                :instance-id="id"
                 :gpus="store.system?.gpus"
                 :version="instance?.onlineVersion || ''"
                 :baseline="instance?.launchProfile"
@@ -1563,7 +1600,7 @@ watch(
                     <NButton size="tiny" secondary @click="reviewStartupIssues">
                       {{ $t('instance.startupIssuesReview') }}
                     </NButton>
-                    <NButton size="tiny" quaternary @click="startupIssues = null">
+                    <NButton size="tiny" quaternary @click="dismissStartupIssues">
                       {{ $t('instance.startupIssuesDismiss') }}
                     </NButton>
                   </NSpace>

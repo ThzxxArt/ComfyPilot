@@ -17,6 +17,7 @@ import {
   ImagesOutline,
   SaveOutline,
   RocketOutline,
+  AlertCircleOutline,
   PlayOutline,
   StopOutline
 } from '@vicons/ionicons5'
@@ -148,6 +149,13 @@ const nav = computed(() => [
     label: t('nav.doctor'),
     icon: MedkitOutline,
     path: '/doctor',
+    group: 'ops' as const
+  },
+  {
+    key: 'issues',
+    label: t('nav.issues'),
+    icon: AlertCircleOutline,
+    path: '/issues',
     group: 'ops' as const
   },
   {
@@ -290,25 +298,12 @@ function onLayoutRequest(): void {
 watch([collapsed, sidebarWidth], () => notifyEmbedLayout())
 
 let dispose: (() => void) | null = null
-/**
- * Cursor driven by `notificationSeq` (monotonic). The notifications array is
- * capped at 20 entries — watching `length` silently dies after the 20th toast.
- */
-let notifiedSeq = 0
-
-// Surface main-process notifications as global toasts (task done / failed).
+// Surface the session toast queue. Restored history is never in this queue, so
+// a new notification cannot replay old notices (0.2.0 WP1).
 watch(
-  () => store.notificationSeq,
-  (seq) => {
-    const newCount = seq - notifiedSeq
-    if (newCount <= 0) return
-    notifiedSeq = seq
-    const items = store.notifications
-    // Array holds the last 20; show everything new from the tail.
-    const start = Math.max(0, items.length - newCount)
-    for (let i = start; i < items.length; i++) {
-      const n = items[i]
-      if (!n) continue
+  () => store.toastQueue.length,
+  () => {
+    for (const n of [...store.toastQueue]) {
       // Prefer i18n keys from main; fall back to the literal strings.
       const title = n.titleKey ? t(n.titleKey, n.params || {}) : n.title
       const msg = n.messageKey ? t(n.messageKey, n.params || {}) : n.message
@@ -321,6 +316,7 @@ watch(
               ? 'success'
               : 'info'
       ](title && msg ? `${title} — ${msg}` : title || msg, { duration: n.duration ?? 5000 })
+      store.consumeToast(n.id)
     }
   }
 )

@@ -6,7 +6,7 @@
  * (the store kept 20 in memory and nothing on disk). This keeps the last 200
  * notices, persists them, and exposes unread state.
  */
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NBadge, NButton, NDrawer, NDrawerContent, NEmpty, NIcon, NTag } from 'naive-ui'
 import { NotificationsOutline } from '@vicons/ionicons5'
@@ -15,8 +15,6 @@ import { useAppStore } from '@/stores/app'
 const { t } = useI18n()
 const store = useAppStore()
 const show = ref(false)
-const READ_KEY = 'cp.notifications.readSeq'
-const readSeq = ref(0)
 
 const items = computed(() => [...store.notifications].reverse())
 
@@ -27,7 +25,7 @@ function messageOf(n: (typeof store.notifications)[number]): string {
   return n.messageKey ? t(n.messageKey, n.params || {}) : n.message
 }
 
-const unread = computed(() => Math.max(0, store.notificationSeq - readSeq.value))
+const unread = computed(() => store.unreadCount)
 
 const TYPE_KEYS: Record<'info' | 'success' | 'warning' | 'error', string> = {
   info: 'notifications.type_info',
@@ -38,36 +36,22 @@ const TYPE_KEYS: Record<'info' | 'success' | 'warning' | 'error', string> = {
 
 function open(): void {
   show.value = true
-  readSeq.value = store.notificationSeq
-  try {
-    localStorage.setItem(READ_KEY, String(readSeq.value))
-  } catch {
-    /* storage may be unavailable — unread badge resets next launch */
-  }
+  // Opening the center acknowledges everything currently visible. New notices
+  // arriving while it is open are marked read immediately by the watcher below.
+  store.markAllRead()
 }
 
-// A new notice while the drawer is open counts as read.
+function markRead(): void {
+  store.markAllRead()
+}
+
+// A notice arriving while the drawer is open is considered read.
 watch(
-  () => store.notificationSeq,
-  (seq) => {
-    if (!show.value) return
-    readSeq.value = seq
-    try {
-      localStorage.setItem(READ_KEY, String(seq))
-    } catch {
-      /* ignore */
-    }
+  () => store.notifications.length,
+  () => {
+    if (show.value) store.markAllRead()
   }
 )
-
-onMounted(() => {
-  try {
-    const raw = Number(localStorage.getItem(READ_KEY) || 0)
-    if (Number.isFinite(raw) && raw > 0) readSeq.value = raw
-  } catch {
-    /* ignore */
-  }
-})
 </script>
 
 <template>
@@ -85,8 +69,13 @@ onMounted(() => {
 
   <NDrawer v-model:show="show" :width="400" placement="right">
     <NDrawerContent :title="t('notifications.title')" closable>
+      <div v-if="items.length" class="notice-actions">
+        <NButton size="tiny" secondary :disabled="unread === 0" @click="markRead">
+          {{ t('notifications.markAllRead') }}
+        </NButton>
+      </div>
       <NEmpty v-if="!items.length" :description="t('notifications.empty')" />
-      <div v-for="(n, i) in items" :key="i" class="notice-row">
+      <div v-for="n in items" :key="n.id" class="notice-row">
         <div class="notice-head">
           <NTag
             size="tiny"
@@ -114,6 +103,11 @@ onMounted(() => {
 @use '@/styles/variables.scss' as *;
 .notice-btn {
   color: $color-text-secondary;
+}
+.notice-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-bottom: 8px;
 }
 .notice-row {
   padding: 10px 0;

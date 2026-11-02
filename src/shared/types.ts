@@ -48,6 +48,36 @@ export interface PreviousExitInfo {
 }
 
 /** A single custom-node pack that failed to import at boot (0.1.16). */
+export type AppIssueKind = 'startup' | 'node-load' | 'deps' | 'doctor' | 'exec'
+export type AppIssueStatus = 'open' | 'acknowledged' | 'resolved' | 'ignored'
+
+export interface AppIssueAction {
+  id: string
+  labelKey: string
+  kind: 'navigate' | 'ipc'
+  /** Route for navigate, IPC channel for ipc. */
+  target: string
+  params?: Record<string, unknown>
+}
+
+/** One actionable problem, persisted in issues.jsonc (0.2.0 IssueCenter). */
+export interface AppIssue {
+  id: string
+  fingerprint: string
+  kind: AppIssueKind
+  instanceId?: string
+  pack?: string
+  module?: string
+  severity: 'error' | 'warning' | 'info'
+  title: string
+  detail: string
+  actions: AppIssueAction[]
+  status: AppIssueStatus
+  firstSeen: number
+  lastSeen: number
+  updatedAt: number
+}
+
 export interface InstanceStartupIssue {
   /** Custom-node pack folder name, or 'unknown'. */
   pack: string
@@ -55,6 +85,11 @@ export interface InstanceStartupIssue {
   summary: string
   /** Missing import names parsed from the log (best effort, may be empty). */
   missingModules: string[]
+  /**
+   * 0.2.0: platform/accelerator-optional imports (torch_npu, OpenGL_accelerate).
+   * They never make an otherwise healthy pack fail.
+   */
+  optionalModules?: string[]
 }
 
 /** Startup issues surfaced after an instance boots (0.1.16). */
@@ -644,7 +679,7 @@ export interface NodeNameConflict {
  * version and can be restored; temp unzip dirs and duplicate `.disabled`
  * copies can only be cleaned.
  */
-export type NodeRecoveryKind = 'backup' | 'temp' | 'duplicate'
+export type NodeRecoveryKind = 'backup' | 'temp' | 'duplicate' | 'trash'
 
 export interface NodeRecoveryEntry {
   kind: NodeRecoveryKind
@@ -1640,6 +1675,11 @@ export type IpcChannelMap = {
     args: []
     result: { ok: boolean; snapshot?: string; migratedFiles: number; error?: string }
   }
+  'issue.list': { args: [boolean?]; result: AppIssue[] }
+  'issue.scan': { args: [string?]; result: AppIssue[] }
+  'issue.dismiss': { args: [string]; result: AppIssue | null }
+  'issue.restore': { args: [string]; result: AppIssue | null }
+  'issue.resolve': { args: [string]; result: AppIssue | null }
   'settings.launchTemplates': { args: []; result: LaunchArgTemplate[] }
   'settings.dataDir': { args: []; result: string }
   /** Global app log directory (userData/logs) — 0.1.15, for the Settings button. */
@@ -1654,6 +1694,7 @@ export type IpcChannelMap = {
   'instance.list': { args: []; result: ComfyInstanceInfo[] }
   'instance.discover': { args: [string?]; result: InstanceDiscoveryCandidate[] }
   'instance.save': { args: [ComfyInstanceConfig]; result: ComfyInstanceInfo }
+  'instance.launchArgCatalog': { args: [string?]; result: string[] }
   'instance.migratePython': {
     args: [string]
     result: {
@@ -2192,6 +2233,7 @@ export const IPC_CHANNELS = [
   'instance.repairStatus',
   'instance.restart',
   'instance.runStartupSelfCheck',
+  'instance.launchArgCatalog',
   'instance.migratePython',
   'instance.save',
   'instance.startAll',
@@ -2292,6 +2334,11 @@ export const IPC_CHANNELS = [
   'remote.test',
   'settings.dataDir',
   'data.migrationState',
+  'issue.dismiss',
+  'issue.list',
+  'issue.resolve',
+  'issue.restore',
+  'issue.scan',
   'settings.get',
   'settings.launchTemplates',
   'settings.logsDir',
@@ -2368,7 +2415,24 @@ export const IPC_EVENTS = {
   outputScanProgress: 'event:output-scan-progress'
 } as const
 
+export interface NotificationAction {
+  /** A renderer route or a known issue action id. */
+  type: 'navigate' | 'issue' | 'none'
+  target?: string
+  labelKey?: string
+  params?: Record<string, string | number>
+}
+
 export interface AppNotification {
+  /** Stable id — toasts are consumed by id, never by sequence arithmetic. */
+  id: string
+  /** Creation timestamp (ms). */
+  at: number
+  /** Persistent read marker; unread = items without readAt. */
+  readAt?: number
+  /** Optional 10s dedupe key (batch updates emit one summary). */
+  dedupeKey?: string
+  action?: NotificationAction
   type: 'info' | 'success' | 'warning' | 'error'
   title: string
   message: string
@@ -2380,3 +2444,7 @@ export interface AppNotification {
   /** Interpolation params for titleKey / messageKey. */
   params?: Record<string, string | number>
 }
+
+/** Caller-facing shape: the store fills id/at. */
+export type AppNotificationInput = Omit<AppNotification, 'id' | 'at' | 'readAt'> &
+  Partial<Pick<AppNotification, 'id' | 'at' | 'readAt'>>

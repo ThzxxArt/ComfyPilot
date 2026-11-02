@@ -341,6 +341,8 @@ const CATALOG: CatalogEntry[] = [
   { flag: '--disable-assets', recent: true },
   { flag: '--feature-flag', recent: true },
   { flag: '--comfy-api-base', recent: true },
+  { flag: '--enable-agent', recent: true },
+  { flag: '--disable-product-tips', recent: true },
   { flag: '--enable-manager', recent: true },
   { flag: '--disable-manager-ui', recent: true },
   { flag: '--enable-manager-legacy-ui', recent: true },
@@ -351,6 +353,11 @@ const CATALOG: CatalogEntry[] = [
 ]
 
 const CATALOG_MAP = new Map(CATALOG.map((e) => [e.flag, e]))
+
+/** Static flags used when the instance's cli_args.py cannot be read. */
+export function staticLaunchFlags(): string[] {
+  return CATALOG.map((e) => e.flag)
+}
 
 /**
  * Version confirmed to understand every `recent: true` catalog entry (ComfyUI

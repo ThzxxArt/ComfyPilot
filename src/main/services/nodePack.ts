@@ -2106,16 +2106,24 @@ export class NodePackService extends EventEmitter {
           /* best-effort */
         }
         const targets = this.resolveRemovalTargets(pack.path, instanceId)
+        const customRoot = detectCustomNodesRoot(instanceId)
         for (const target of targets) {
-          const trash = `${target}.trash-${Date.now()}`
+          // 0.2.0: quarantine INSIDE .disabled (ComfyUI skips it), never
+          // `<name>.trash-*` next to custom_nodes — ComfyUI loads hidden
+          // directories and reported IMPORT FAILED on every boot.
+          const trashDir = customRoot
+            ? join(customRoot, '.disabled')
+            : join(dirname(target), '.disabled')
+          const trash = join(trashDir, `${basename(target)}.trash-${Date.now()}`)
           try {
+            mkdirSync(trashDir, { recursive: true })
             renameSync(target, trash)
             rmSync(trash, { recursive: true, force: true })
           } catch {
             try {
               rmSync(target, { recursive: true, force: true })
             } catch {
-              /* keep going — report via remaining dirs */
+              /* the quarantined copy (if any) stays inside .disabled */
             }
           }
         }
@@ -3110,7 +3118,30 @@ export class NodePackService extends EventEmitter {
     const cfg = resolveInstanceConfig(instanceId)
     if (!cfg) return null
     try {
-      const logs = instanceService.getLogs(cfg.id, 5000)
+      const all = instanceService.getLogs(cfg.id, 5000)
+      // 0.2.0: parse only the last boot; otherwise an old refusal/failure is
+      // shown forever even after the pack was fixed/removed.
+      let bootAt = -1
+      for (let i = all.length - 1; i >= 0; i--) {
+        if (all[i].message.includes('=== ComfyPilot boot ')) {
+          bootAt = i
+          break
+        }
+      }
+      if (bootAt < 0) return null
+      const logs: typeof all = []
+      let inSelfCheck = false
+      for (const line of all.slice(bootAt + 1)) {
+        if (line.message.includes('=== ComfyPilot selfcheck start ===')) {
+          inSelfCheck = true
+          continue
+        }
+        if (line.message.includes('=== ComfyPilot selfcheck end ===')) {
+          inSelfCheck = false
+          continue
+        }
+        if (!inSelfCheck) logs.push(line)
+      }
       return parseNodeLoadReport(logs)
     } catch {
       return null
@@ -3489,6 +3520,39 @@ export class NodePackService extends EventEmitter {
     return this.scanRecoveryAt(detectCustomNodesRoot(instanceId))
   }
 
+  /**
+   * 0.2.0: before ComfyUI starts, move every transient/backup entry at the
+   * root of custom_nodes into `.disabled/`, which ComfyUI skips. This is a
+   * quarantine, not a delete — the recovery center can clean it later.
+   */
+  quarantineTransients(instanceId?: string): string[] {
+    const root = detectCustomNodesRoot(instanceId)
+    if (!root || !existsSync(root)) return []
+    const disabled = join(root, '.disabled')
+    const moved: string[] = []
+    let names: string[] = []
+    try {
+      names = readdirSync(root)
+    } catch {
+      return moved
+    }
+    for (const name of names) {
+      if (!(name.startsWith('._') || name.includes('.trash-') || name.includes('.bak-'))) continue
+      const from = join(root, name)
+      if (!isStrictInside(from, root)) continue
+      try {
+        mkdirSync(disabled, { recursive: true })
+        let target = join(disabled, name)
+        if (existsSync(target)) target = join(disabled, `${name}.${Date.now()}`)
+        renameSync(from, target)
+        moved.push(name)
+      } catch {
+        /* a locked directory stays in place; the issue list still shows it */
+      }
+    }
+    return moved
+  }
+
   private scanRecoveryAt(root: string): NodeRecoveryEntry[] {
     if (!root || !existsSync(root)) return []
     const out: NodeRecoveryEntry[] = []
@@ -3509,9 +3573,23 @@ export class NodePackService extends EventEmitter {
       if (!name || name === '.' || name === '..') continue
       const abs = join(root, name)
       if (!isStrictInside(abs, root)) continue
-      if (name.startsWith('._unzip_tmp_')) {
+      if (name.startsWith('._')) {
         out.push({
           kind: 'temp',
+          name,
+          packName: '',
+          path: abs,
+          livePath: '',
+          liveExists: false,
+          mtimeMs: info(abs)
+        })
+        continue
+      }
+      // A `.trash-*` at the root is a legacy 0.1.x residue. It is never
+      // restorable but must be visible/cleanable.
+      if (name.includes('.trash-')) {
+        out.push({
+          kind: 'trash',
           name,
           packName: '',
           path: abs,
@@ -3543,9 +3621,36 @@ export class NodePackService extends EventEmitter {
       try {
         for (const name of readdirSync(disabledRoot)) {
           const live = join(root, name)
-          if (!existsSync(live)) continue
           const abs = join(disabledRoot, name)
           if (!isStrictInside(abs, disabledRoot)) continue
+          // Quarantined leftovers live here (ComfyUI skips `.disabled`).
+          if (name.includes('.trash-')) {
+            out.push({
+              kind: 'trash',
+              name: `.disabled/${name}`,
+              packName: '',
+              path: abs,
+              livePath: '',
+              liveExists: false,
+              mtimeMs: info(abs)
+            })
+            continue
+          }
+          if (name.includes('.bak-')) {
+            const idx = name.lastIndexOf('.bak-')
+            const packName = idx > 0 ? name.slice(0, idx) : name
+            out.push({
+              kind: 'backup',
+              name: `.disabled/${name}`,
+              packName,
+              path: abs,
+              livePath: join(root, packName),
+              liveExists: existsSync(join(root, packName)),
+              mtimeMs: info(abs)
+            })
+            continue
+          }
+          if (!existsSync(live)) continue
           out.push({
             kind: 'duplicate',
             // POSIX separator on purpose: recoveryEntry only accepts the

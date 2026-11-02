@@ -6,6 +6,7 @@ import type {
   SystemSnapshot,
   DoctorReport,
   AppNotification,
+  AppNotificationInput,
   RemoteInstanceSummary,
   TargetRef
 } from '@shared/types'
@@ -23,10 +24,37 @@ function loadNoticeStore(): { seq: number; items: AppNotification[] } {
     const raw = globalThis.localStorage?.getItem(NOTICE_STORE_KEY)
     if (!raw) return { seq: 0, items: [] }
     const parsed = JSON.parse(raw) as { seq?: unknown; items?: unknown }
-    const items = Array.isArray(parsed.items)
-      ? (parsed.items as AppNotification[]).filter((n) => n && typeof n === 'object').slice(-200)
+    const rawItems = Array.isArray(parsed.items)
+      ? (parsed.items as Array<Partial<AppNotification>>)
+          .filter((n) => n && typeof n === 'object')
+          .slice(-200)
       : []
-    const seq = Number.isFinite(Number(parsed.seq)) ? Math.max(0, Number(parsed.seq)) : items.length
+    const seq = Number.isFinite(Number(parsed.seq))
+      ? Math.max(0, Number(parsed.seq))
+      : rawItems.length
+    // 0.2.0 legacy migration: old records have no id/at/readAt. The old UI
+    // stored a read cursor in a separate key; mark exactly the prefix it had
+    // consumed as read so the badge is preserved without replaying toasts.
+    let legacyRead = 0
+    try {
+      legacyRead = Math.max(
+        0,
+        Number(globalThis.localStorage?.getItem('cp.notifications.readSeq') || 0)
+      )
+    } catch {
+      legacyRead = 0
+    }
+    const unreadTail = Math.max(0, seq - legacyRead)
+    const firstUnread = Math.max(0, rawItems.length - unreadTail)
+    const items = rawItems.map((n, i): AppNotification => {
+      const at = Number.isFinite(Number(n.at)) ? Number(n.at) : 0
+      return {
+        ...(n as AppNotification),
+        id: String(n.id || `legacy-${at}-${i}`),
+        at,
+        readAt: n.readAt !== undefined ? n.readAt : i < firstUnread ? at || 1 : undefined
+      }
+    })
     return { seq, items }
   } catch {
     return { seq: 0, items: [] }
@@ -63,12 +91,15 @@ export const useAppStore = defineStore('app', () => {
   /** Global notification queue pushed by the main process (long-running tasks). */
   const noticeInitial = loadNoticeStore()
   const notifications = ref<AppNotification[]>(noticeInitial.items)
-  /**
-   * Monotonic counter — the ONLY reliable cursor for consumers.
-   * `notifications.length` is capped at 20, so a length-based watcher
-   * silently stops firing after the 20th toast. Watch this seq instead.
-   */
+  /** Monotonic counter kept for persistence/debug; toasts no longer derive from it. */
   const notificationSeq = ref(noticeInitial.seq)
+  /**
+   * 0.2.0: toasts are an explicit session queue. A restored history item is
+   * never enqueued, so the first new notification can no longer replay 200 old
+   * ones (the 0.1.18 `notifiedSeq=0` bug).
+   */
+  const toastQueue = ref<AppNotification[]>([])
+  const unreadCount = computed(() => notifications.value.filter((n) => !n.readAt).length)
 
   /**
    * 0.1.18 (WP2): exactly one place defines "the active target".
@@ -117,12 +148,47 @@ export const useAppStore = defineStore('app', () => {
     instanceSwitchTick.value += 1
   })
 
-  function pushNotification(n: AppNotification): void {
-    // 0.1.18 (WP6): keep 200 for the notification center (toasts still only
-    // consume what is new via notificationSeq).
+  function pushNotification(input: AppNotificationInput): void {
+    const at = input.at || Date.now()
+    // Drop a duplicate burst (batch update emits one summary). The key is
+    // scoped to a 10s window so a later real event still shows.
+    if (
+      input.dedupeKey &&
+      notifications.value.some(
+        (n) => n.dedupeKey === input.dedupeKey && Math.abs(at - n.at) < 10_000
+      )
+    ) {
+      return
+    }
+    const n: AppNotification = {
+      ...input,
+      id:
+        input.id ||
+        globalThis.crypto?.randomUUID?.() ||
+        `notice-${at}-${Math.random().toString(36).slice(2)}`,
+      at,
+      readAt: input.readAt
+    }
     notifications.value = [...notifications.value.slice(-199), n]
+    toastQueue.value = [...toastQueue.value, n]
     notificationSeq.value += 1
     persistNoticeStore(notificationSeq.value, notifications.value)
+  }
+
+  function consumeToast(id: string): void {
+    toastQueue.value = toastQueue.value.filter((n) => n.id !== id)
+  }
+
+  function markRead(id?: string): void {
+    const now = Date.now()
+    notifications.value = notifications.value.map((n) =>
+      (!id || n.id === id) && !n.readAt ? { ...n, readAt: now } : n
+    )
+    persistNoticeStore(notificationSeq.value, notifications.value)
+  }
+
+  function markAllRead(): void {
+    markRead()
   }
 
   /**
@@ -169,9 +235,9 @@ export const useAppStore = defineStore('app', () => {
 
   async function refreshInstances(): Promise<void> {
     instances.value = await ipc('instance.list')
-    if (!activeInstanceId.value && !activeRemoteId.value && instances.value[0]) {
-      activeInstanceId.value = instances.value[0].id
-    }
+    // 0.2.0: never re-select after the user explicitly cleared the target.
+    // Initial bootstrap still chooses the first instance; a refresh must not
+    // silently redirect destructive work to instance[0].
     pruneActiveInstance()
   }
 
@@ -248,7 +314,7 @@ export const useAppStore = defineStore('app', () => {
       system.value = snap as SystemSnapshot
     })
     const off4 = onNotification((n) => {
-      pushNotification(n as AppNotification)
+      pushNotification(n as AppNotificationInput)
     })
     return () => {
       off1()
@@ -274,6 +340,11 @@ export const useAppStore = defineStore('app', () => {
     doctorReport,
     notifications,
     notificationSeq,
+    toastQueue,
+    unreadCount,
+    markRead,
+    markAllRead,
+    consumeToast,
     activeInstance,
     bootstrap,
     bootstrapError,

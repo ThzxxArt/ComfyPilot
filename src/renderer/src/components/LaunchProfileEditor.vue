@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NButton, NFormItem, NInput, NInputNumber, NSelect, NSwitch, NTag, NText } from 'naive-ui'
 import type { LaunchProfile } from '@shared/types'
+import { formatArgv, parseArgv } from '@shared/argv'
+import { ipc } from '@/composables/useIpc'
 import {
   LAUNCH_ARG_ERROR_KEYS,
   launchArgWarningKey,
@@ -20,7 +22,8 @@ import {
  * running instance's `onlineVersion` (renderer previously could not).
  */
 const props = defineProps<{
-  extraArgs?: string[]
+  /** Instance whose cli_args.py supplies live flag suggestions. */
+  instanceId?: string
   /** Live GPU facts (store.system.gpus) — enables the VRAM advisor. */
   gpus?: Array<{ vramTotal?: number }>
   /** Running instance version (onlineVersion) — tightens recent-flag warnings. */
@@ -29,7 +32,37 @@ const props = defineProps<{
   baseline?: LaunchProfile
 }>()
 const profile = defineModel<LaunchProfile>({ required: true })
+/** Free-form arguments are edited with the shared argv parser (0.2.0). */
+const extraArgs = defineModel<string[]>('extraArgs', { default: () => [] })
+const extraText = ref(formatArgv(extraArgs.value))
+const extraError = ref('')
+
+watch(extraText, (text) => {
+  const parsed = parseArgv(text)
+  extraError.value = parsed.errors[0] || ''
+  if (!parsed.errors.length) extraArgs.value = parsed.tokens
+})
+// External reset (instance switch / saved value) refreshes the text, but never
+// while the user is mid-edit with an error.
+watch(extraArgs, (args) => {
+  const formatted = formatArgv(args || [])
+  if (formatted !== extraText.value && !extraError.value) extraText.value = formatted
+})
 const { t } = useI18n()
+const catalog = ref<string[]>([])
+onMounted(async () => {
+  try {
+    catalog.value = await ipc('instance.launchArgCatalog', props.instanceId)
+  } catch {
+    catalog.value = []
+  }
+})
+
+function addSuggestion(flag: string): void {
+  const tokens = parseArgv(extraText.value).tokens
+  if (tokens.some((tkn) => tkn === flag || tkn.startsWith(`${flag}=`))) return
+  extraText.value = formatArgv([...tokens, flag])
+}
 
 const recommended = computed(() => recommendLaunchProfile(props.gpus))
 const vramGbText = computed(() => {
@@ -135,7 +168,7 @@ const assetsChoice = computed<'default' | 'on' | 'off'>({
   }
 })
 
-const fullArgs = computed(() => [...renderLaunchProfile(profile.value), ...(props.extraArgs || [])])
+const fullArgs = computed(() => [...renderLaunchProfile(profile.value), ...(extraArgs.value || [])])
 const errors = computed(() => validateLaunchArgs(fullArgs.value))
 const warnings = computed(() =>
   warnLaunchArgs(fullArgs.value, { version: props.version || undefined })
@@ -147,9 +180,10 @@ const changedCount = computed(() => {
   const cur = (profile.value || {}) as Record<string, unknown>
   const keys = new Set([...Object.keys(base), ...Object.keys(cur)])
   let n = 0
+  const norm = (v: unknown): unknown => (v === 'default' || v === '' || v === null ? undefined : v)
   for (const k of keys) {
-    const a = base[k]
-    const b = cur[k]
+    const a = norm(base[k])
+    const b = norm(cur[k])
     if (a === undefined && b === undefined) continue
     if (a !== b) n += 1
   }
@@ -410,6 +444,36 @@ function errorText(e: { code: string; flag?: string }): string {
       <NText depth="3" class="pe-hint">{{ t('launchArgs.autoLaunchNote') }}</NText>
     </section>
 
+    <section class="pe-section">
+      <div class="pe-section-title">{{ t('launchArgs.gCustom') }}</div>
+      <NFormItem
+        :label="t('instance.extraArgs')"
+        :validation-status="extraError ? 'error' : undefined"
+        :feedback="extraError || t('instance.extraArgsHint')"
+      >
+        <NInput
+          v-model:value="extraText"
+          type="textarea"
+          :autosize="{ minRows: 2, maxRows: 5 }"
+          :placeholder="t('instance.extraArgsPlaceholder')"
+        />
+      </NFormItem>
+      <NText depth="3" class="pe-hint">{{ t('launchArgs.customHint') }}</NText>
+      <div v-if="catalog.length" class="pe-suggest">
+        <span class="pe-hint">{{ t('launchArgs.suggestions') }}</span>
+        <NTag
+          v-for="flag in catalog.slice(0, 16)"
+          :key="flag"
+          size="tiny"
+          round
+          class="pe-suggest-tag"
+          @click="addSuggestion(flag)"
+        >
+          {{ flag }}
+        </NTag>
+      </div>
+    </section>
+
     <div class="pe-result">
       <div class="pe-result-title">
         {{ t('launchArgs.resultPreview') }}
@@ -537,5 +601,15 @@ function errorText(e: { code: string; flag?: string }): string {
   font-size: 12px;
   color: $color-warning;
   line-height: 1.7;
+}
+.pe-suggest {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+.pe-suggest-tag {
+  cursor: pointer;
 }
 </style>

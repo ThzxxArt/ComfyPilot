@@ -324,13 +324,28 @@ async function fillThumbs(items: OutputAsset[], seq: number): Promise<void> {
 function defaultOutputRoot(): string {
   const inst = store.activeInstance
   if (!inst?.path) return ''
-  const args = inst.extraArgs || []
-  const idx = args.indexOf('--output-directory')
-  if (idx >= 0 && args[idx + 1]) {
-    const p = args[idx + 1]
-    if (/^[a-zA-Z]:[\\/]|^\//.test(p)) return p
+  const args = [
+    ...(inst.extraArgs || []),
+    ...(inst.launchProfile?.outputDirectory
+      ? ['--output-directory', inst.launchProfile.outputDirectory]
+      : [])
+  ]
+  let custom = ''
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--output-directory' && args[i + 1]) {
+      custom = args[i + 1]
+      break
+    }
+    const eq = args[i].indexOf('=')
+    if (eq > 0 && args[i].slice(0, eq) === '--output-directory') {
+      custom = args[i].slice(eq + 1)
+      break
+    }
+  }
+  if (custom) {
+    if (/^[a-zA-Z]:[\\/]|^\//.test(custom)) return custom
     const base = inst.path.replace(/[\\/]+$/, '')
-    return `${base}${base.includes('\\') ? '\\' : '/'}${p}`
+    return `${base}${base.includes('\\') ? '\\' : '/'}${custom}`
   }
   const base = inst.path.replace(/[\\/]+$/, '')
   return `${base}${base.includes('\\') ? '\\' : '/'}output`
