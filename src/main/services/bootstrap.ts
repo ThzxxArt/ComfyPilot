@@ -232,6 +232,37 @@ export function archiveLegacyPythonRuntimes(): { archived: string[] } {
   return { archived }
 }
 
+/**
+ * Delete archived legacy Python runtimes. Only call after the user explicitly
+ * confirms that rolling back to 0.1.18 is no longer possible.
+ */
+export function deleteLegacyPythonRuntimes(): { removed: string[]; failed: string[] } {
+  const root = join(runtimesDir(), 'legacy')
+  const removed: string[] = []
+  const failed: string[] = []
+  let entries: string[] = []
+  try {
+    entries = readdirSync(root)
+  } catch {
+    return { removed, failed }
+  }
+  for (const entry of entries) {
+    if (entry === 'legacy.json') continue
+    try {
+      rmSync(join(root, entry), { recursive: true, force: true })
+      removed.push(entry)
+    } catch (e) {
+      failed.push(`${entry}: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+  try {
+    rmSync(join(root, 'legacy.json'), { force: true })
+  } catch {
+    /* ignore */
+  }
+  return { removed, failed }
+}
+
 function runtimeBinName(kind: RuntimeKind): string {
   if (kind === 'mingit') return 'git'
   if (kind === 'aria2') return 'aria2c'

@@ -214,8 +214,9 @@ describe('governance policy refusals (0.1.14)', () => {
         "Custom node pack 'Pack' is not loaded: ComfyUI-Manager cannot run under a custom-node policy, because its startup script installs packs before they are checked."
       )
     ])
-    expect(report!.policyRefused).toHaveLength(1)
-    expect(report!.policyRefused![0]).toEqual({ folder: 'Pack', reason: 'manager' })
+    // 0.2.0: a pack that actually loaded on this boot clears an older refusal
+    // line for the same folder (positive evidence wins).
+    expect(report!.policyRefused).toBeUndefined()
   })
 
   it('omits policyRefused when no refusal lines exist (no behaviour change)', () => {

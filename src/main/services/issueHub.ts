@@ -2,17 +2,28 @@
  * IssueCenter single source of truth (0.2.0).
  *
  * Aggregates startup import failures, node-load report rows, dependency-audit
- * results and doctor failures into persisted, de-duplicated issues. Every
- * issue carries at least one action; status survives restarts and a changed
- * fingerprint reopens an ignored/resolved issue.
+ * results, doctor failures and recorded execution failures into persisted,
+ * de-duplicated issues. Every issue carries at least one executable action.
+ *
+ * Lifecycle:
+ * - fingerprint = instance + source + pack + module + pack mtime
+ * - an ignored issue stays ignored across restarts while its fingerprint is
+ *   unchanged; changing the pack (update/reinstall) changes mtime and reopens
+ *   a new issue automatically.
+ * - a source that failed to run never resolves its previous issues.
  */
+import { existsSync, statSync } from 'fs'
 import type { AppIssue, AppIssueAction, AppIssueKind } from '@shared/types'
+import { resolvePipAlias } from '@shared/pipAliases'
 import { loadInstanceConfigs, listIssues, replaceIssues } from './db'
 import { instanceService } from './instance'
 import { nodePackService } from './nodePack'
 
-function fingerprint(parts: Array<string | undefined>): string {
-  return parts.map((p) => String(p || '').replace(/[|]/g, '_')).join('|')
+const TRANSIENT_RE = /(\.trash-|\.bak-|\.cp-old-|^\._)/
+const TRASH_REMINDER_MS = 7 * 24 * 60 * 60 * 1000
+
+function fingerprint(parts: Array<string | number | undefined>): string {
+  return parts.map((p) => String(p ?? '').replace(/[|]/g, '_')).join('|')
 }
 
 function nodeLink(instanceId: string, focus: string, source: string): string {
@@ -20,10 +31,15 @@ function nodeLink(instanceId: string, focus: string, source: string): string {
   return `/nodes?${q.toString()}`
 }
 
+function isTransientPack(pack: string): boolean {
+  return TRANSIENT_RE.test(String(pack || ''))
+}
+
 function actionsFor(
   kind: AppIssueKind,
   instanceId: string,
   pack: string,
+  module: string | undefined,
   source: string
 ): AppIssueAction[] {
   const actions: AppIssueAction[] = [
@@ -42,7 +58,21 @@ function actionsFor(
       target: nodeLink(instanceId, pack, 'deps')
     })
   }
-  if (pack.includes('.trash') || pack.includes('.bak') || pack.startsWith('._')) {
+  if (module && (kind === 'startup' || kind === 'node-load' || kind === 'exec')) {
+    actions.push({
+      id: 'install-module',
+      labelKey: 'issues.actionInstallModule',
+      kind: 'ipc',
+      target: 'issue.installModule'
+    })
+  }
+  if (isTransientPack(pack)) {
+    actions.push({
+      id: 'clean-leftover',
+      labelKey: 'issues.actionCleanLeftover',
+      kind: 'ipc',
+      target: 'issue.cleanLeftover'
+    })
     actions.push({
       id: 'recovery',
       labelKey: 'issues.actionRecovery',
@@ -67,7 +97,7 @@ function makeIssue(input: {
   return {
     id: input.fingerprint,
     ...input,
-    actions: actionsFor(input.kind, input.instanceId, input.pack || '', input.kind),
+    actions: actionsFor(input.kind, input.instanceId, input.pack || '', input.module, input.kind),
     status: 'open',
     firstSeen: now,
     lastSeen: now,
@@ -88,7 +118,7 @@ function mergeIssues(fresh: AppIssue[], resolvableKinds: Set<AppIssueKind>): App
       continue
     }
     // Same fingerprint: keep the user's lifecycle state. A resolved/ignored
-    // issue only reopens when its fingerprint changes, which creates a new id.
+    // issue only reopens when its fingerprint changes (e.g. pack mtime).
     merged.push({
       ...issue,
       firstSeen: prev.firstSeen,
@@ -97,7 +127,7 @@ function mergeIssues(fresh: AppIssue[], resolvableKinds: Set<AppIssueKind>): App
     })
   }
   // Problems that vanished from the latest scan become resolved, unless the
-  // user explicitly ignored them.
+  // user explicitly ignored them or the source could not run.
   for (const [fp, prev] of old) {
     if (seen.has(fp)) continue
     if (!resolvableKinds.has(prev.kind)) {
@@ -112,6 +142,42 @@ function mergeIssues(fresh: AppIssue[], resolvableKinds: Set<AppIssueKind>): App
   }
   replaceIssues(merged)
   return merged
+}
+
+function packMtime(
+  packs: Array<{ name?: string; displayName?: string; path?: string }>,
+  pack: string
+): number {
+  const wanted = String(pack || '').toLowerCase()
+  if (!wanted) return 0
+  const hit = packs.find((p) => {
+    const names = [p.name, p.displayName].filter(Boolean).map((n) => String(n).toLowerCase())
+    const path = String(p.path || '')
+      .replace(/\\/g, '/')
+      .toLowerCase()
+    return names.includes(wanted) || path.endsWith(`/${wanted}`)
+  })
+  if (!hit?.path) return 0
+  try {
+    return existsSync(hit.path) ? statSync(hit.path).mtimeMs : 0
+  } catch {
+    return 0
+  }
+}
+
+function packExists(
+  packs: Array<{ name?: string; displayName?: string; path?: string }>,
+  pack: string
+): boolean {
+  const wanted = String(pack || '').toLowerCase()
+  if (!wanted) return true
+  return packs.some((p) => {
+    const names = [p.name, p.displayName].filter(Boolean).map((n) => String(n).toLowerCase())
+    const path = String(p.path || '')
+      .replace(/\\/g, '/')
+      .toLowerCase()
+    return names.includes(wanted) || path.endsWith(`/${wanted}`)
+  })
 }
 
 export class IssueHubService {
@@ -131,18 +197,32 @@ export class IssueHubService {
     if (instanceId && !configs.length) throw new Error(`Instance not found: ${instanceId}`)
     const fresh: AppIssue[] = []
     // A source that failed to run must NOT resolve its previous issues.
-    const resolvable = new Set<AppIssueKind>(['startup', 'node-load', 'exec'])
+    const resolvable = new Set<AppIssueKind>(['startup', 'node-load', 'exec', 'deps', 'doctor'])
     for (const config of configs) {
       const id = config.id
+      // Cross-check against the real custom_nodes listing. A pack that was
+      // deleted must not keep an issue alive; a transient leftover is kept so
+      // the recovery action remains reachable.
+      let packs: Array<{ name?: string; displayName?: string; path?: string }> = []
+      try {
+        packs = nodePackService.list(id)
+      } catch {
+        packs = []
+      }
+      const packVisible = (pack: string): boolean =>
+        isTransientPack(pack) || !pack || pack === 'unknown' || packExists(packs, pack)
+
       // Startup traceback issues.
       try {
         const startup = instanceService.analyzeStartupIssues(id)
         for (const issue of startup.issues) {
+          if (!packVisible(issue.pack)) continue
           const fp = fingerprint([
             'startup',
             id,
             issue.pack,
-            ...(issue.missingModules || []).slice().sort()
+            ...(issue.missingModules || []).slice().sort(),
+            Math.round(packMtime(packs, issue.pack))
           ])
           fresh.push(
             makeIssue({
@@ -168,7 +248,14 @@ export class IssueHubService {
         const report = nodePackService.loadReport(id)
         for (const entry of report?.entries || []) {
           if (entry.ok) continue
-          const fp = fingerprint(['node-load', id, entry.folder, entry.modulePath])
+          if (!packVisible(entry.folder)) continue
+          const fp = fingerprint([
+            'node-load',
+            id,
+            entry.folder,
+            entry.modulePath,
+            Math.round(packMtime(packs, entry.folder))
+          ])
           fresh.push(
             makeIssue({
               fingerprint: fp,
@@ -182,7 +269,14 @@ export class IssueHubService {
           )
         }
         for (const refusal of report?.policyRefused || []) {
-          const fp = fingerprint(['policy', id, refusal.folder, refusal.reason])
+          if (!packVisible(refusal.folder)) continue
+          const fp = fingerprint([
+            'policy',
+            id,
+            refusal.folder,
+            refusal.reason,
+            Math.round(packMtime(packs, refusal.folder))
+          ])
           fresh.push(
             makeIssue({
               fingerprint: fp,
@@ -199,23 +293,49 @@ export class IssueHubService {
         /* report is advisory */
       }
 
+      // Quarantined leftovers older than 7 days get a reminder; they are never
+      // deleted automatically.
+      try {
+        const now = Date.now()
+        for (const entry of nodePackService.scanRecovery(id)) {
+          if (entry.kind !== 'trash') continue
+          if (now - entry.mtimeMs < TRASH_REMINDER_MS) continue
+          const fp = fingerprint(['recovery', id, entry.name, Math.round(entry.mtimeMs)])
+          fresh.push(
+            makeIssue({
+              fingerprint: fp,
+              kind: 'node-load',
+              instanceId: id,
+              pack: entry.name,
+              severity: 'warning',
+              title: `Quarantined leftover is older than 7 days: ${entry.name}`,
+              detail: entry.path
+            })
+          )
+        }
+      } catch {
+        /* recovery scan is advisory */
+      }
+
       // Recorded execution failures (WS + log) from the diagnosis service.
       try {
         const { execDiagnosticsService } = await import('./execDiagnostics')
         for (const failure of execDiagnosticsService.list(id)) {
+          const pack = failure.packFolder || ''
+          if (!packVisible(pack)) continue
           const fp = fingerprint([
             'exec',
             id,
-            failure.packFolder || failure.nodeType || 'unknown',
+            pack || failure.nodeType || 'unknown',
             failure.missingModule || failure.errorType,
-            failure.id
+            Math.round(packMtime(packs, pack))
           ])
           fresh.push(
             makeIssue({
               fingerprint: fp,
               kind: 'exec',
               instanceId: id,
-              pack: failure.packFolder,
+              pack,
               module: failure.missingModule,
               severity: 'error',
               title: failure.missingModule
@@ -234,14 +354,16 @@ export class IssueHubService {
         const audit = await nodePackService.depsAudit(id)
         // A failed audit (pip missing / env mismatch) says nothing about
         // whether the old dependency issue was fixed.
-        if (audit.ok) resolvable.add('deps')
+        if (!audit.ok) resolvable.delete('deps')
         for (const pack of audit.packs || []) {
+          if (!packVisible(pack.name)) continue
           const fp = fingerprint([
             'deps',
             id,
             pack.name,
             ...pack.missing.slice().sort(),
-            ...pack.mismatched.map((m) => `${m.name}${m.required}`).sort()
+            ...pack.mismatched.map((m) => `${m.name}${m.required}`).sort(),
+            Math.round(packMtime(packs, pack.name))
           ])
           fresh.push(
             makeIssue({
@@ -261,7 +383,7 @@ export class IssueHubService {
           )
         }
       } catch {
-        /* audit is advisory */
+        resolvable.delete('deps')
       }
 
       // Doctor findings are only included on an explicit scan (it can take a
@@ -269,7 +391,6 @@ export class IssueHubService {
       try {
         const { doctorService } = await import('./doctor')
         const report = await doctorService.run(id)
-        resolvable.add('doctor')
         for (const check of report.checks || []) {
           if (check.severity !== 'fail' && check.severity !== 'warn') continue
           const fp = fingerprint(['doctor', id, check.id, check.detail])
@@ -285,7 +406,7 @@ export class IssueHubService {
           )
         }
       } catch {
-        /* doctor is advisory */
+        resolvable.delete('doctor')
       }
     }
     mergeIssues(fresh, resolvable)
@@ -302,6 +423,44 @@ export class IssueHubService {
 
   resolve(id: string): AppIssue | null {
     return this.setStatus(id, 'resolved')
+  }
+
+  /** Install the module named by a startup/load/exec issue, then re-scan. */
+  async installModule(id: string): Promise<{ ok: boolean; message: string }> {
+    const issue = listIssues().find((i) => i.id === id)
+    if (!issue) throw new Error('Issue not found')
+    if (!issue.instanceId) throw new Error('This issue has no local instance')
+    if (!issue.module) throw new Error('This issue has no missing module')
+    const moduleName = String(issue.module).split('.')[0]
+    const spec = resolvePipAlias(moduleName)
+    const { pipOpsService } = await import('./pipOps')
+    const result = await pipOpsService.installSpec(issue.instanceId, spec)
+    if (result.ok) {
+      // Do not immediately re-scan the old boot log: it still contains the
+      // pre-install traceback, which would make a successful fix look open
+      // again. The next boot/scan is the honest verification point.
+      this.setStatus(id, 'resolved')
+    }
+    return {
+      ok: result.ok,
+      message: result.ok ? `Installed ${spec}` : result.error || `Could not install ${spec}`
+    }
+  }
+
+  /** Delete one quarantined leftover referenced by an issue. */
+  cleanLeftover(id: string): { ok: boolean; message: string } {
+    const issue = listIssues().find((i) => i.id === id)
+    if (!issue) throw new Error('Issue not found')
+    if (!issue.instanceId) throw new Error('This issue has no local instance')
+    const entries = nodePackService.scanRecovery(issue.instanceId)
+    const entry =
+      entries.find((e) => e.name === issue.pack) ||
+      entries.find((e) => String(issue.pack || '').includes(e.name)) ||
+      entries.find((e) => issue.detail.includes(e.path))
+    if (!entry) throw new Error('Leftover no longer exists — refresh the issue list')
+    nodePackService.cleanRecovery(entry.name, issue.instanceId)
+    this.setStatus(id, 'resolved')
+    return { ok: true, message: `Removed ${entry.name}` }
   }
 
   private setStatus(id: string, status: AppIssue['status']): AppIssue | null {

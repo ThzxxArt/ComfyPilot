@@ -116,7 +116,7 @@ describe('IPC registration contract (0.1.10)', () => {
     // IpcChannelMap is a TYPE (no runtime object) — extract the declared
     // channel literals from the source and compare them against what the real
     // registration path actually registers at runtime.
-    const typesSrc = readFileSync(join(__dirname, '../../src/shared/types.ts'), 'utf-8')
+    const typesSrc = readFileSync(join(__dirname, '../../src/shared/types/ipc.ts'), 'utf-8')
     const declared: string[] = []
     for (const m of typesSrc.matchAll(/^\s*'([a-zA-Z][\w-]*\.[\w.-]+)':\s*\{\s*args:/gm)) {
       declared.push(m[1])

@@ -15,7 +15,7 @@
  */
 import { EventEmitter } from 'events'
 import { createHash, randomUUID } from 'crypto'
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'fs'
+import { mkdtempSync, writeFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { PipOpResult, UpdateProgress, UpdateStep, UpdateStepId } from '@shared/types'
@@ -31,6 +31,8 @@ import { loadInstanceConfigs, loadSettings } from './db'
 import { resolveReadTarget } from './target'
 import { resolveInstancePythonPath } from './instance'
 import { bootstrapService } from './bootstrap'
+import { acquireEnvLock } from './envLock'
+import { readRequirementLines } from './depsAudit'
 import {
   installRequirements,
   ensurePip,
@@ -159,6 +161,28 @@ export class PipOpsService extends EventEmitter {
     })
   }
 
+  /** Install several validated specs in one op (dependency-audit repair). */
+  async installSpecs(instanceId: string, specs: string[]): Promise<PipOpResult> {
+    const valid = (specs || []).map((s) => String(s || '').trim()).filter(Boolean)
+    for (const spec of valid) {
+      if (!isValidPipSpec(spec)) {
+        throw codedError(
+          'INVALID_SPEC',
+          `Not a valid package spec: "${spec.slice(0, 60)}" — use name / name==version (URLs are not allowed)`
+        )
+      }
+    }
+    if (!valid.length) throw codedError('INVALID_SPEC', 'No packages to install')
+    return this.execute(instanceId, valid, 'Installing missing dependencies…', async (ctx) => {
+      await ctx.resolve()
+      ctx.step('download', 'skipped', 'No download step')
+      ctx.step('requirements', 'running', `Installing ${valid.join(', ')}…`)
+      await this.pipInstallTargets(ctx, valid)
+      ctx.step('requirements', 'done', 'pip install finished')
+      return this.verifyAndFinalize(ctx, valid)
+    })
+  }
+
   /** Apply a curated recipe (ordered steps; wheels hash-verified). */
   async installRecipe(instanceId: string, recipeId: string): Promise<PipOpResult> {
     const recipe = recipeById(recipeId)
@@ -226,8 +250,7 @@ export class PipOpsService extends EventEmitter {
     const settings = loadSettings()
     let reqs: Array<NonNullable<ReturnType<typeof parsePipRequirement>>> = []
     try {
-      reqs = readFileSync(reqFile, 'utf-8')
-        .split(/\r?\n/)
+      reqs = readRequirementLines(reqFile)
         .map((line) => parsePipRequirement(line))
         .filter((r): r is NonNullable<typeof r> => Boolean(r))
     } catch {
@@ -465,6 +488,14 @@ export class PipOpsService extends EventEmitter {
       }
     } as OpContext & { resolve: () => Promise<void> }
 
+    let releaseEnv: () => void = () => undefined
+    try {
+      releaseEnv = acquireEnvLock(instanceId, 'pip-op')
+    } catch (err) {
+      this.ops.delete(instanceId)
+      activePipInstances.delete(instanceId)
+      throw err
+    }
     this.emit('progress', { ...op.progress, steps: op.progress.steps.map((x) => ({ ...x })) })
     try {
       const result = await task(ctx)
@@ -500,6 +531,7 @@ export class PipOpsService extends EventEmitter {
       })
       this.ops.delete(instanceId)
       activePipInstances.delete(instanceId)
+      releaseEnv()
     }
   }
 

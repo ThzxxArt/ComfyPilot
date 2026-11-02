@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { formatBytes, formatDateTime } from '@/utils/format'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
@@ -65,7 +66,7 @@ import type {
 import TargetBanner from '@/components/TargetBanner.vue'
 import ListState from '@/components/ListState.vue'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const store = useAppStore()
 const router = useRouter()
 const route = useRoute()
@@ -428,6 +429,27 @@ async function cleanRecoveryEntry(name: string): Promise<void> {
   }
 }
 
+async function cleanAllRecovery(): Promise<void> {
+  const instId = store.localTargetId || undefined
+  if (!instId) return
+  recoveryBusy.value = '*'
+  try {
+    const result = await ipc('node.recoveryCleanAll', instId)
+    if (result.failed.length) {
+      message.warning(
+        t('nodes.recoveryCleanAllPartial', { n: result.removed, failed: result.failed.length })
+      )
+    } else {
+      message.success(t('nodes.recoveryCleanAllDone', { n: result.removed }))
+    }
+    await loadRecovery()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    recoveryBusy.value = ''
+  }
+}
+
 async function checkUpdates(): Promise<void> {
   // 0.1.18 (WP2): never check a machine the header is not pointing at.
   if (!store.localTargetId) {
@@ -759,8 +781,10 @@ async function fixPackDeps(p: NodeDepsAuditPack): Promise<void> {
       return
     }
     // 0.2.0: the audit runs against localTargetId; installing via
-    // activeInstanceId could target a different instance.
-    const r = await startPackDeps(target, p.id)
+    // activeInstanceId could target a different instance. Only the missing /
+    // mismatched specs are installed, so a clean pack is never re-resolved.
+    const specs = [...p.missing, ...p.mismatched.map((m) => `${m.name}${m.required}`)]
+    const r = await startPackDeps(target, p.id, specs)
     if (r.ok) {
       // Refresh the audit so the just-installed pack leaves the missing list
       // immediately instead of still showing its removed entries.
@@ -1069,6 +1093,17 @@ watch(
       :title="$t('nodes.recoveryTitle', { n: recovery.length })"
       style="max-width: 760px"
     >
+      <div v-if="recovery.length" class="recovery-toolbar">
+        <NButton
+          size="small"
+          secondary
+          type="warning"
+          :loading="recoveryBusy === '*'"
+          @click="cleanAllRecovery"
+        >
+          {{ $t('nodes.recoveryCleanAll') }}
+        </NButton>
+      </div>
       <div v-if="!recovery.length" class="meta">{{ $t('nodes.recoveryEmpty') }}</div>
       <div v-for="entry in recovery" :key="entry.name" class="recovery-row">
         <div class="recovery-info">
@@ -1084,7 +1119,10 @@ watch(
                   : $t('nodes.recoveryRestorable', { name: entry.packName })
                 : $t('nodes.recoveryCleanable')
             }}
+            · {{ formatDateTime(entry.mtimeMs, locale) }}
+            <template v-if="entry.sizeBytes"> · {{ formatBytes(entry.sizeBytes) }}</template>
           </div>
+          <div class="meta mono recovery-path" :title="entry.path">{{ entry.path }}</div>
         </div>
         <NSpace>
           <NButton
@@ -1500,7 +1538,7 @@ watch(
               <div class="snap-main">
                 <div class="pack-name" :title="s.name">{{ s.name }}</div>
                 <div class="pack-meta">
-                  {{ new Date(s.createdAt).toLocaleString() }} ·
+                  {{ formatDateTime(s.createdAt, locale) }} ·
                   {{ $t('nodes.snapPackCount', { n: s.packs.length }) }}
                 </div>
               </div>
@@ -1638,6 +1676,20 @@ watch(
                   }}
                 </span>
               </div>
+              <div v-if="p.skipped?.length" class="deps-line">
+                <NTag size="tiny" round type="info">{{ $t('nodes.depsSkipped') }}</NTag>
+                <span class="mono deps-items">{{ p.skipped.join(', ') }}</span>
+              </div>
+              <div v-if="p.unsupported?.length" class="deps-line">
+                <NTag size="tiny" round type="warning">{{ $t('nodes.depsUnsupported') }}</NTag>
+                <span class="mono deps-items">{{ p.unsupported.join(', ') }}</span>
+              </div>
+            </div>
+            <div v-if="depsAudit.pipCheck && !depsAudit.pipCheck.ok" class="deps-pack">
+              <div class="deps-pack-head">
+                <span class="deps-pack-name">{{ $t('nodes.depsPipCheck') }}</span>
+              </div>
+              <div class="mono deps-items">{{ depsAudit.pipCheck.broken.join('\n') }}</div>
             </div>
             <div class="deps-scope hint">{{ $t('nodes.depsAuditScope') }}</div>
           </div>
@@ -1712,6 +1764,17 @@ watch(
 
 .deps-scope {
   margin-top: 4px;
+}
+
+.recovery-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+.recovery-path {
+  font-size: 11px;
+  opacity: 0.75;
+  word-break: break-all;
 }
 
 .deps-error {

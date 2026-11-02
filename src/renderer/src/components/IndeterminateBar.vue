@@ -18,6 +18,9 @@ const props = withDefaults(defineProps<{ height?: number; label?: string }>(), {
     <div
       :class="['indet-track', { 'has-label': Boolean(props.label) }]"
       :style="{ height: `${props.height}px` }"
+      role="progressbar"
+      aria-busy="true"
+      :aria-label="props.label || 'Loading'"
     >
       <div class="indet-seg" />
     </div>

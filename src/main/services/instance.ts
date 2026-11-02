@@ -42,7 +42,7 @@ import {
   upsertInstanceConfig,
   userDataDir
 } from './db'
-import { resolveInsideAnyRoot } from './security'
+import { resolveInsideAnyRoot, normalizeForCompare } from './security'
 import { findInRuntimes } from './bootstrap'
 import { killProcessTree } from './processTree'
 import { COMFY_DEFAULT_PORTS, LAUNCH_TEMPLATES } from '@shared/constants'
@@ -744,6 +744,7 @@ export class InstanceService extends EventEmitter {
     if (bootAt < 0) {
       return { instanceId: id, hasIssues: false, issues: [], scannedAt: Date.now() }
     }
+    const bootId = (all[bootAt].match(/=== ComfyPilot boot (\S+)/) || [])[1]
     // Self-check emits its own Import-times block; it must not be attributed to
     // the running instance.
     const lines: string[] = []
@@ -759,7 +760,7 @@ export class InstanceService extends EventEmitter {
       }
       if (!inSelfCheck) lines.push(line)
     }
-    return parseStartupIssues(id, lines)
+    return { ...parseStartupIssues(id, lines), bootId }
   }
 
   async checkPort(port: number): Promise<PortCheckResult> {
@@ -940,11 +941,37 @@ export class InstanceService extends EventEmitter {
     )
     contents.push('console.log')
 
-    // env probe
+    // env probe (Python / venv / torch / CUDA / migration state)
     try {
       const probe = await this.probeEnv(id)
       writeFileSync(join(dir, 'env.json'), JSON.stringify(probe, null, 2))
       contents.push('env.json')
+      writeFileSync(
+        join(dir, 'runtime.json'),
+        JSON.stringify(
+          {
+            pythonVersion: probe.pythonVersion,
+            torchVersion: probe.torchVersion,
+            cudaVersion: probe.cudaVersion,
+            rocmVersion: probe.rocmVersion,
+            pipAvailable: probe.pip?.present,
+            venvPath: config?.venvPath,
+            migrationState: config?.migrationState,
+            migrationError: config?.migrationError,
+            configuredPythonVersion: config?.pythonVersion
+          },
+          null,
+          2
+        )
+      )
+      contents.push('runtime.json')
+      if (config?.venvPath) {
+        const pyvenv = join(config.venvPath, 'pyvenv.cfg')
+        if (existsSync(pyvenv)) {
+          writeFileSync(join(dir, 'pyvenv.cfg'), readFileSync(pyvenv, 'utf-8'))
+          contents.push('pyvenv.cfg')
+        }
+      }
     } catch {
       /* ignore */
     }
@@ -1516,6 +1543,40 @@ export class InstanceService extends EventEmitter {
       }
     } catch {
       /* quarantine is best-effort; ComfyUI still starts */
+    }
+    // EnvMarker: launch must use the same environment the audit/install wrote.
+    // A stale marker after a manual venv swap is a hard stop, not a warning.
+    try {
+      const markerFile = join(dirname(rt.config.path), '.comfypilot-env.json')
+      if (existsSync(markerFile)) {
+        const marker = JSON.parse(readFileSync(markerFile, 'utf-8')) as {
+          venvPath?: string
+          pythonVersion?: string
+        }
+        if (marker.pythonVersion && !/^3\.13\./.test(marker.pythonVersion)) {
+          throw Object.assign(
+            new Error(`ENV_MISMATCH: marker says Python ${marker.pythonVersion}`),
+            {
+              code: 'ENV_MISMATCH'
+            }
+          )
+        }
+        if (marker.venvPath && rt.config.venvPath) {
+          const a = normalizeForCompare(marker.venvPath)
+          const b = normalizeForCompare(rt.config.venvPath)
+          if (a !== b) {
+            throw Object.assign(
+              new Error(
+                `ENV_MISMATCH: marker says ${marker.venvPath}, instance uses ${rt.config.venvPath}`
+              ),
+              { code: 'ENV_MISMATCH' }
+            )
+          }
+        }
+      }
+    } catch (err) {
+      if ((err as { code?: string }).code === 'ENV_MISMATCH') throw err
+      /* a missing/corrupt marker is advisory */
     }
     const python = this.resolvePython(rt.config)
     // 0.2.0: refuse to spawn a non-3.13 interpreter. A Python 3.12 venv is a

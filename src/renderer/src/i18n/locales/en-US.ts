@@ -228,6 +228,7 @@ export default {
     test: 'Test',
     deleteRemoteConfirm: 'Delete this remote config?',
     noRemotes: 'No remote instances yet',
+    remoteListFailed: 'Failed to load remotes: {error}',
     addRemote: 'Add remote instance',
     remoteSaved: 'Remote instance saved',
     remoteName: 'Name',
@@ -246,6 +247,11 @@ export default {
     runtimeLegacy:
       'Legacy Python {version} detected: archived and never used at runtime; 3.12 instances must migrate before they can start',
     runtimeUnknown: 'Runtime status is unavailable',
+    runtimeLegacyDelete: 'Delete legacy runtime archive',
+    runtimeLegacyDeleteConfirm:
+      'After deletion you cannot roll back to 0.1.18 with the old Python 3.12 environment. Confirm all instances are migrated and backed up?',
+    runtimeLegacyDeleted: 'Deleted {n} legacy runtime archive(s)',
+    runtimeLegacyDeletePartial: '{n} legacy runtime(s) could not be deleted (in use)',
     probeEnv: 'Probe environment',
     envProbeDone: 'Environment probe complete',
     availablePythons: 'Available interpreters: {n}',
@@ -260,6 +266,8 @@ export default {
     importNoChanges: 'No differences from the current settings.',
     importApply: 'Apply',
     importDone: 'Applied {n} setting(s)',
+    importWarnings:
+      '{n} security/credential field(s) were ignored (a config file cannot override local security state)',
     importInvalid: 'Import failed: {error}',
     about: 'About',
     aboutStorage: 'Storage: JSONC config files (no SQLite / no native modules)',
@@ -587,6 +595,7 @@ export default {
     runtimeStatus: 'Runtime status',
     runtimeHint:
       'Portable runtime components required by the installer. Missing ones can be installed in one click.',
+    runtimePinned: '0.2.0 pins Python {version} (cp313)',
     runtimeRefresh: 'Refresh status',
     runtimeEnsure: 'Install missing',
     runtimeEnsureDone: 'Runtime components ready',
@@ -767,11 +776,27 @@ export default {
     stop: 'Stop current instance',
     openLogs: 'Open logs directory'
   },
+  migration: {
+    blockedTitle: 'Data migration failed — the app is paused',
+    blockedBody:
+      '0.2.0 reads and writes v2 data only. A failed migration never falls back to v1 or old schemas. Retry, restore the snapshot, or reinstall 0.1.18.',
+    snapshot: 'Pre-upgrade snapshot: {path}',
+    retry: 'Retry migration',
+    openSnapshot: 'Open snapshot folder',
+    reinstallHint:
+      'If retry still fails: keep this snapshot, uninstall 0.2.0, reinstall 0.1.18, then copy the snapshot back into the data directory.'
+  },
+  errorBoundary: {
+    title: 'This page failed to render',
+    body: 'The page hit an error. The sidebar and other features still work; retry or switch pages.',
+    retry: 'Retry'
+  },
   notifications: {
     open: 'Notifications',
     title: 'Notifications',
     empty: 'No notifications yet.',
     markAllRead: 'Mark all read',
+    openAction: 'Open',
     type_info: 'Info',
     type_success: 'Success',
     type_warning: 'Warning',
@@ -824,6 +849,9 @@ export default {
     depsReinstall: 'Install deps',
     depsMissing: 'Missing',
     depsMismatch: 'Mismatch',
+    depsSkipped: 'Marker/platform not applicable',
+    depsUnsupported: 'Not auto-auditable',
+    depsPipCheck: 'pip check conflicts',
     depsAuditScope:
       'Scope: only dependencies declared in requirements.txt are audited. Optional deps (e.g. sageattention) are not declared — use the runtime failure diagnosis card on the instance detail page instead.',
     sevError: 'Error',
@@ -865,6 +893,9 @@ export default {
     recoveryKind_temp: 'Temp unpack dir',
     recoveryKind_duplicate: 'Duplicate copy',
     recoveryKind_trash: 'Quarantined leftover',
+    recoveryCleanAll: 'Clean all',
+    recoveryCleanAllDone: 'Cleaned {n} leftover item(s)',
+    recoveryCleanAllPartial: 'Cleaned {n}; {failed} could not be removed',
     recoveryRestorable: 'Can be restored as package “{name}”',
     recoveryLiveExists: '“{name}” already exists — only cleanup is possible',
     recoveryCleanable: 'Safe to clean up',
@@ -1406,6 +1437,37 @@ export default {
     notesPlaceholder: 'Notes (optional)'
   },
   doctor: {
+    checks: {
+      'install-path': 'ComfyUI installation path',
+      python: 'Python interpreter',
+      venv: 'Virtual environment',
+      pip: 'pip availability',
+      torch: 'PyTorch & CUDA',
+      'runtime-integrity': 'Managed Python runtime',
+      'models-dir': 'Models directory',
+      'custom-nodes': 'custom_nodes directory',
+      'extra-paths': 'extra_model_paths.yaml',
+      port: 'Listen address / port',
+      'cn-count': 'Custom node packs',
+      'download-dir': 'Download directory',
+      registry: 'Comfy Registry connectivity',
+      manager: 'ComfyUI-Manager flag',
+      metadata: 'PNG metadata (workflow attribution)',
+      requirements: 'requirements.txt'
+    },
+    suggestions: {
+      python: '0.2.0 supports Python 3.13.x only — run the migration wizard on the instance page.',
+      venv: 'The venv is not Python 3.13 — run the migration wizard.',
+      pip: 'pip is missing (uv venvs ship without it). The one-click fix seeds it with ensurepip.',
+      torch: 'Install a torch build matching your GPU driver (cu130 recommended for NVIDIA 20+).',
+      'models-dir': 'Create models/ under the ComfyUI root or configure extra_model_paths.yaml.',
+      'custom-nodes': 'Create custom_nodes/ or check the instance path.',
+      'extra-paths': 'Add extra_model_paths.yaml if you share models with A1111/Forge.',
+      manager: 'Enable the Manager launch template if you use it.',
+      metadata: 'With --disable-metadata, output PNGs do not embed the workflow.',
+      requirements:
+        'requirements.txt is missing under the ComfyUI root; dependencies cannot be repaired automatically.'
+    },
     reportStale: 'This report belongs to another instance — run the check again',
     title: 'Health check',
     subtitle: 'Full checkup of Python / Torch / paths / ports / Registry, with one-click fixes.',
@@ -1805,8 +1867,15 @@ export default {
     restore: 'Restore',
     actionOpenNodes: 'Open node page',
     actionAudit: 'Run dependency audit',
+    actionInstallModule: 'Install missing module',
+    actionCleanLeftover: 'Clean up leftover',
     actionRecovery: 'Open recovery',
     actionUnavailable: 'That action is not available yet',
+    allInstances: 'All instances',
+    allSeverities: 'All severities',
+    allKinds: 'All kinds',
+    openCount: '{n} open',
+    ignoreAll: 'Ignore all',
     severity_error: 'Error',
     severity_warning: 'Warning',
     severity_info: 'Info',

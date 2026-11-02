@@ -8,8 +8,8 @@
  *   instance in `migration-failed` (never silently runs 3.12).
  */
 import { execFile } from 'child_process'
-import { existsSync, renameSync, rmSync } from 'fs'
-import { join } from 'path'
+import { existsSync, renameSync, rmSync, writeFileSync } from 'fs'
+import { dirname, join } from 'path'
 import { promisify } from 'util'
 import type { ComfyInstanceConfig, TorchChannel } from '@shared/types'
 import { loadInstanceConfigs, upsertInstanceConfig } from './db'
@@ -216,7 +216,25 @@ export async function migrateInstancePython(
       warnings
     )
 
-    // 5. Only now write the config.
+    // 5. Only now write the config + EnvMarker. A stale marker from the old
+    // 3.12 era would block the next launch with ENV_MISMATCH.
+    try {
+      writeFileSync(
+        join(dirname(config.path), '.comfypilot-env.json'),
+        JSON.stringify(
+          {
+            venvPath,
+            pythonPath: newPython,
+            pythonVersion: '3.13.18',
+            migratedAt: Date.now()
+          },
+          null,
+          2
+        )
+      )
+    } catch {
+      warnings.push('could not update .comfypilot-env.json')
+    }
     upsertInstanceConfig({
       ...config,
       venvPath,

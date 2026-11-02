@@ -87,7 +87,7 @@ describe('batch produced semantics (behavioural)', () => {
   })
 
   it('produced only counts prompts that linked output files', async () => {
-    const src = read('src/main/services/p1p2.ts')
+    const src = read('src/main/services/p1p2/batch.ts')
     // produced must not be incremented in lockstep with completed
     const completedIdx = src.indexOf('item.completed += 1')
     expect(completedIdx).toBeGreaterThan(-1)
@@ -97,7 +97,7 @@ describe('batch produced semantics (behavioural)', () => {
   })
 
   it('re-running a finished job resets run counters', async () => {
-    const src = read('src/main/services/p1p2.ts')
+    const src = read('src/main/services/p1p2/batch.ts')
     // start() must reset produced/submitted/completed/failed for done/error, not only cancelled
     const startFn = src.slice(src.indexOf('async start('))
     const body = startFn.slice(

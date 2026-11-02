@@ -40,6 +40,8 @@ import { clampPercent, formatBytes } from '@/utils/format'
 import { severityColor } from '@/styles/tokens'
 import {
   PIP_INDEX_PRESETS,
+  PYTHON_RUNTIME_VERSION,
+  RUNTIME_SOURCES,
   STARTER_MODELS,
   TORCH_DISK_GB,
   TORCH_INDEX_PRESETS
@@ -186,6 +188,15 @@ function runtimeKindLabel(kind: RuntimeKind): string {
       return kind
   }
 }
+
+const pythonRuntimeSourceKey = computed(() => {
+  const ua = (globalThis.navigator?.userAgent || '').toLowerCase()
+  const arm = /\barm64\b|\baarch64\b/.test(ua)
+  if (ua.includes('windows')) return 'python-win-x64'
+  if (ua.includes('mac os')) return arm ? 'python-darwin-arm64' : 'python-darwin-x64'
+  return arm ? 'python-linux-arm64' : 'python-linux-x64'
+})
+const pythonRuntimePin = computed(() => RUNTIME_SOURCES[pythonRuntimeSourceKey.value])
 
 function runtimeOriginLabel(origin: 'system' | 'runtimes' | 'missing'): string {
   switch (origin) {
@@ -983,6 +994,12 @@ onUnmounted(() => {
           <div>
             <div class="panel-title">{{ $t('install.runtimeStatus') }}</div>
             <div class="hint">{{ $t('install.runtimeHint') }}</div>
+            <div class="hint mono">
+              {{ $t('install.runtimePinned', { version: PYTHON_RUNTIME_VERSION }) }}
+              <span v-if="pythonRuntimePin?.sha256">
+                · SHA256 {{ pythonRuntimePin.sha256.slice(0, 16) }}…
+              </span>
+            </div>
           </div>
           <NSpace>
             <NButton

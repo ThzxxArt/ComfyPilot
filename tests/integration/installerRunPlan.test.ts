@@ -383,7 +383,9 @@ describe('installer runPlan (integration)', () => {
     const p = await waitStatus(svc, (s) => s.status === 'done' || s.status === 'failed')
     expect(p.status).toBe('done')
     expect(existsSync(join(root, 'ComfyUI', 'main.py'))).toBe(true)
-    expect(existsSync(join(root, 'ComfyUI', 'custom_nodes', 'x.js'))).toBe(false)
+    // 0.2.0: custom_nodes is user data; it is archived to `.cp-old-*` and
+    // copied back after the fresh fetch instead of being silently deleted.
+    expect(existsSync(join(root, 'ComfyUI', 'custom_nodes', 'x.js'))).toBe(true)
   })
 
   it('refuses to delete foreign non-empty ComfyUI directory', async () => {

@@ -63,7 +63,7 @@ import LaunchProfileEditor from '@/components/LaunchProfileEditor.vue'
 import { LAUNCH_ARG_ERROR_KEYS, launchArgWarningKey } from '@shared/launchArgs'
 import { versionMismatch } from '@/utils/versionDisplay'
 import { frontendAlignSpec, frontendPkgStatus } from '@/utils/frontendAlign'
-import { formatDate } from '@/utils/format'
+import { formatDate, formatDateTime, formatTime } from '@/utils/format'
 import { formatExecErrorReport } from '@shared/execError'
 import { recipeForModule, recipeSupportsPlatform, type PipRecipe } from '@shared/pipRecipes'
 
@@ -309,7 +309,7 @@ async function copyLogs(): Promise<void> {
   if (!logs.value.length) return
   try {
     const text = logs.value
-      .map((l) => `[${new Date(l.ts).toLocaleString()}] ${l.level.toUpperCase()} ${l.message}`)
+      .map((l) => `[${formatDateTime(l.ts, locale.value)}] ${l.level.toUpperCase()} ${l.message}`)
       .join('\n')
     await ipc('shell.writeClipboard', text)
     message.success(t('instance.logCopied', { n: logs.value.length }))
@@ -1066,6 +1066,17 @@ watch(
     void refresh()
   }
 )
+
+// A #logs deep link can arrive while the view is already mounted.
+watch(
+  () => route.hash,
+  (hash) => {
+    const name = String(hash || '').replace(/^#/, '')
+    if (!(TAB_NAMES as readonly string[]).includes(name)) return
+    tab.value = name as DetailTab
+    if (name === 'logs') requestLogScroll()
+  }
+)
 </script>
 
 <template>
@@ -1633,7 +1644,7 @@ watch(
                 </div>
                 <div v-for="f in execFailures" :key="f.id" class="exec-row">
                   <div class="exec-main">
-                    <span class="exec-time mono">{{ new Date(f.at).toLocaleTimeString() }}</span>
+                    <span class="exec-time mono">{{ formatTime(f.at, locale) }}</span>
                     <span class="exec-type mono">{{ f.errorType }}</span>
                     <span class="exec-msg" :title="f.message">{{ f.message }}</span>
                   </div>
@@ -1687,7 +1698,7 @@ watch(
                     class="term-line"
                     :class="line.level"
                   >
-                    <span class="term-time">{{ new Date(line.ts).toLocaleTimeString() }}</span>
+                    <span class="term-time">{{ formatTime(line.ts, locale) }}</span>
                     <span class="term-msg">{{ line.message }}</span>
                   </div>
                 </div>

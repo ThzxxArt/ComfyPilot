@@ -57,6 +57,29 @@ let mainWindow: BrowserWindow | null = null
 /** Set when the user actually quit — close then destroys instead of hiding. */
 let forceQuit = false
 
+// ---------- batched batch-progress IPC (0.2.0) ----------
+const pendingBatchProgress = new Map<string, unknown>()
+let batchProgressTimer: NodeJS.Timeout | null = null
+function flushBatchProgress(): void {
+  if (batchProgressTimer) {
+    clearTimeout(batchProgressTimer)
+    batchProgressTimer = null
+  }
+  for (const job of pendingBatchProgress.values()) {
+    broadcast(IPC_EVENTS.batchProgress, job)
+  }
+  pendingBatchProgress.clear()
+}
+function queueBatchProgress(job: { id?: string }): void {
+  if (!job || typeof job !== 'object') return
+  pendingBatchProgress.set(String(job.id || 'default'), job)
+  if (batchProgressTimer) return
+  batchProgressTimer = setTimeout(flushBatchProgress, 150)
+  if (typeof (batchProgressTimer as { unref?: () => void }).unref === 'function') {
+    ;(batchProgressTimer as unknown as { unref: () => void }).unref()
+  }
+}
+
 // ---------- batched instance-log IPC (0.2.0) ----------
 const pendingLogBatches = new Map<string, Array<{ ts: number; level: string; message: string }>>()
 let logBatchTimer: NodeJS.Timeout | null = null
@@ -801,7 +824,9 @@ app.whenReady().then(async () => {
   })
   modelService.on('progress', (p) => broadcast(IPC_EVENTS.modelScanProgress, p))
   modelService.on('download', (t) => broadcast(IPC_EVENTS.downloadProgress, t))
-  batchService.on('progress', (job) => broadcast(IPC_EVENTS.batchProgress, job))
+  // 0.2.0: batch progress used to send the FULL job on every accepted prompt
+  // (dozens per second). Coalesce to one message per 150ms per job.
+  batchService.on('progress', (job) => queueBatchProgress(job))
   installerService.on('progress', (p) => broadcast(IPC_EVENTS.installProgress, p))
   // Resume interrupted model downloads so Range continues where we left off.
   import('./services/model')
@@ -969,6 +994,7 @@ app.whenReady().then(async () => {
         failed = [...failed, err instanceof Error ? err.message : String(err)]
       }
       flushLogBatches()
+      flushBatchProgress()
       if (failed.length) {
         const detail = `exit flush failed: ${failed.join(', ')}`
         try {

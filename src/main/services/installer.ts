@@ -7,7 +7,8 @@ import {
   statSync,
   readdirSync,
   renameSync,
-  createWriteStream
+  createWriteStream,
+  cpSync
 } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { execFile, type ChildProcess } from 'child_process'
@@ -154,7 +155,15 @@ export function buildGitCloneArgs(repo: string, dest: string, branch?: string): 
  * Torch index for a channel. Always a PEP 503 simple index (trailing slash).
  * Wheel mirrors publish `<prefix>/<channel>/`; official publishes `/whl/<channel>/`.
  */
+function normalizeTorchChannel(channel: TorchChannel | string): TorchChannel {
+  // 0.2.0 removed cu124 (no cp313 torch >= 2.7). Old configs/plans map to
+  // cu126 rather than silently falling back to CPU.
+  if (channel === 'cu124') return 'cu126'
+  return (channel in TORCH_INDEX ? channel : 'cpu') as TorchChannel
+}
+
 export function resolveTorchIndex(channel: TorchChannel): string {
+  channel = normalizeTorchChannel(channel)
   const base = TORCH_INDEX[channel] || TORCH_INDEX.cpu
   const mirror = String(loadSettings().torchIndexMirror || '').trim()
   if (!mirror) return base
@@ -169,7 +178,7 @@ export function resolveTorchIndex(channel: TorchChannel): string {
 }
 
 export function officialTorchIndex(channel: TorchChannel): string {
-  return TORCH_INDEX[channel] || TORCH_INDEX.cpu
+  return TORCH_INDEX[normalizeTorchChannel(channel)] || TORCH_INDEX.cpu
 }
 
 /**
@@ -263,6 +272,30 @@ export function canDeleteComfyDebris(comfyDir: string, installRoot: string): boo
  * `<dir>.cp-old-<ts>` and reported, provable debris is deleted, anything else
  * throws so the caller can surface a clear refusal (0.1.17 WP2).
  */
+/** Merge user-data directories from a `.cp-old-*` archive into the new tree. */
+export function restorePreciousFromArchive(
+  archivePath: string,
+  comfyDir: string,
+  precious: string[]
+): number {
+  let restored = 0
+  for (const name of precious) {
+    const from = join(archivePath, name)
+    const to = join(comfyDir, name)
+    if (!existsSync(from)) continue
+    try {
+      mkdirSync(to, { recursive: true })
+      // `force: true` overwrites only the freshly fetched placeholder dirs;
+      // the archive is the user's last known good copy.
+      cpSync(from, to, { recursive: true, force: true })
+      restored += 1
+    } catch {
+      /* keep the archive intact; the user can recover manually */
+    }
+  }
+  return restored
+}
+
 export function disposeExistingComfyDir(
   comfyDir: string,
   installRoot: string
@@ -867,6 +900,11 @@ export class InstallerService extends EventEmitter {
     if (!plan.installRoot || hasParentHop(plan.installRoot)) {
       throw new Error('Invalid install root')
     }
+    // 0.2.0: cu124 has no cp313 torch >= 2.7 wheel. An old config/plan that
+    // still names it is migrated to cu126 instead of failing mid-download.
+    if ((plan.torchChannel as string) === 'cu124') {
+      plan = { ...plan, torchChannel: 'cu126' }
+    }
     const source = plan.comfySource === 'git' ? 'git' : 'zip'
     if (source === 'git') {
       assertSafeGitUrl(plan.comfyRepo || COMFY_REPO)
@@ -1124,6 +1162,9 @@ export class InstallerService extends EventEmitter {
         undefined,
         comfySource === 'git' ? 'stepMsg.comfyGit' : 'stepMsg.comfyZip'
       )
+      let comfyFetched = false
+      let preservedArchive = ''
+      let preservedDirs: string[] = []
       if (existsSync(join(comfyDir, 'main.py'))) {
         this.log('comfyui', 'ComfyUI already present — skipping fetch')
         if (plan.comfyBranch && comfySource === 'git') {
@@ -1143,6 +1184,8 @@ export class InstallerService extends EventEmitter {
           // Shared rule lives in disposeExistingComfyDir().
           const disposed = disposeExistingComfyDir(comfyDir, installRoot)
           if (disposed.action === 'archived') {
+            preservedArchive = disposed.archivePath || ''
+            preservedDirs = disposed.precious
             this.log(
               'comfyui',
               `Preserved existing user data (${disposed.precious.join(', ')}) → ${disposed.archivePath}`
@@ -1169,6 +1212,18 @@ export class InstallerService extends EventEmitter {
         }
         if (!existsSync(join(comfyDir, 'main.py')))
           throw new Error('ComfyUI fetch finished but main.py is missing')
+        comfyFetched = true
+        // The archive is the user's data, not debris. Copy it back after the
+        // fresh source tree exists; the archive is kept intact for rollback.
+        if (preservedArchive && preservedDirs.length) {
+          const restored = restorePreciousFromArchive(preservedArchive, comfyDir, preservedDirs)
+          if (restored) {
+            this.log(
+              'comfyui',
+              `Restored user data from ${preservedArchive} (${restored} director${restored === 1 ? 'y' : 'ies'})`
+            )
+          }
+        }
         this.setStep(
           'comfyui',
           'done',
@@ -1187,6 +1242,36 @@ export class InstallerService extends EventEmitter {
       const index = resolveTorchIndex(plan.torchChannel)
       const official = officialTorchIndex(plan.torchChannel)
       this.log('torch', `torch index: ${index}`)
+      // 0.2.0: confirm the selected index actually has a cp313 wheel for this
+      // torch channel before downloading gigabytes. Best-effort: a dry-run
+      // failure is logged, then the real install decides (some mirrors do not
+      // implement --dry-run but still serve wheels).
+      if (useUv && uvComp?.path) {
+        try {
+          await this.run(
+            uvComp.path,
+            [
+              'pip',
+              'install',
+              '--dry-run',
+              '--python',
+              vpy,
+              'torch',
+              'torchvision',
+              'torchaudio',
+              '--index-url',
+              index
+            ],
+            { timeout: 120000 }
+          )
+          this.log('torch', `cp313 wheel preflight ok (${plan.torchChannel})`)
+        } catch (err) {
+          this.log(
+            'torch',
+            `wheel preflight failed: ${err instanceof Error ? err.message : String(err)} — install will decide`
+          )
+        }
+      }
       const installTorchWith = async (idx: string): Promise<void> => {
         if (useUv && uvComp?.path) {
           await this.run(
@@ -1317,7 +1402,9 @@ export class InstallerService extends EventEmitter {
             createdAt: Date.now(),
             isolated: true,
             comfySource,
-            comfyFetchedAt: Date.now()
+            // Only a real fetch updates this timestamp; reusing an existing
+            // tree must not pretend it was just downloaded.
+            ...(comfyFetched ? { comfyFetchedAt: Date.now() } : {})
           },
           null,
           2
@@ -1611,10 +1698,14 @@ export class InstallerService extends EventEmitter {
         server.once('listening', () => server.close(() => resolvePort(true)))
         server.listen(port, '127.0.0.1')
       })
-    for (const p of [8188, 8189, 8190, 8191, 8288]) {
+    for (const p of [8188, 8189, 8190, 8191, 8288, 8388, 8488, 8588, 8688, 8788]) {
       if (await tryPort(p)) return p
     }
-    return 8388
+    // Do not return a port we know is busy. Scan upward until one is free.
+    for (let p = 8888; p < 8998; p += 1) {
+      if (await tryPort(p)) return p
+    }
+    throw new Error('No free ComfyUI port found in 8188–8997')
   }
 }
 

@@ -2115,7 +2115,7 @@ describe('batch resumability (0.1.17 WP5)', () => {
   })
 
   it('resolveOutputDir follows --output-directory for history links', async () => {
-    const { resolveOutputDir } = await freshP1p2()
+    const { resolveOutputDir } = await import('@shared/outputDir')
     expect(
       resolveOutputDir({ path: '/x/ComfyUI', extraArgs: ['--output-directory', 'D:/renders'] })
     ).toBe('D:/renders')

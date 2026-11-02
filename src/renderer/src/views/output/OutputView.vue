@@ -48,6 +48,7 @@ import ListSkeleton from '@/components/ListSkeleton.vue'
 import ListState from '@/components/ListState.vue'
 import { viewersCloseAfterRemoval } from '@/utils/batchOps'
 import { isWebViewableImage, isRawImage } from '@shared/mediaTypes'
+import { resolveOutputDir } from '@shared/outputDir'
 import type { OutputAsset, OutputAssetMatch, WorkflowRecord } from '@shared/types'
 
 const { t } = useI18n()
@@ -319,36 +320,11 @@ async function fillThumbs(items: OutputAsset[], seq: number): Promise<void> {
   await Promise.all(Array.from({ length: Math.min(4, pending.length) }, worker))
 }
 
-/** Instance output dir incl. --output-directory overrides — mirrors the main
- *  process's resolveOutputDir (0.1.11) so "Rescan" walks the REAL folder. */
+/** Instance output dir incl. --output-directory overrides — one shared resolver. */
 function defaultOutputRoot(): string {
   const inst = store.activeInstance
   if (!inst?.path) return ''
-  const args = [
-    ...(inst.extraArgs || []),
-    ...(inst.launchProfile?.outputDirectory
-      ? ['--output-directory', inst.launchProfile.outputDirectory]
-      : [])
-  ]
-  let custom = ''
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--output-directory' && args[i + 1]) {
-      custom = args[i + 1]
-      break
-    }
-    const eq = args[i].indexOf('=')
-    if (eq > 0 && args[i].slice(0, eq) === '--output-directory') {
-      custom = args[i].slice(eq + 1)
-      break
-    }
-  }
-  if (custom) {
-    if (/^[a-zA-Z]:[\\/]|^\//.test(custom)) return custom
-    const base = inst.path.replace(/[\\/]+$/, '')
-    return `${base}${base.includes('\\') ? '\\' : '/'}${custom}`
-  }
-  const base = inst.path.replace(/[\\/]+$/, '')
-  return `${base}${base.includes('\\') ? '\\' : '/'}output`
+  return resolveOutputDir(inst)
 }
 
 async function pickRoot(): Promise<void> {

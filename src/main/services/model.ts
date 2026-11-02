@@ -527,7 +527,13 @@ export class ModelService extends EventEmitter {
         const id = createHash('sha1').update(file).digest('hex').slice(0, 16)
         const category = rootHintByFile.get(file) ?? categorize(file)
         const existing = existingByPath.get(file)
-        let hash = existing?.hashSha256
+        // 0.2.0: an in-place replacement (same path, new bytes) must not keep
+        // the old SHA-256. The old code reused any stored hash forever.
+        const unchanged =
+          Boolean(existing) &&
+          existing!.size === st.size &&
+          Math.abs(Number(existing!.modifiedAt || 0) - st.mtimeMs) < 1
+        let hash = unchanged ? existing?.hashSha256 : undefined
         if (opts?.hash && !hash) {
           this.emit('progress', {
             scanned,

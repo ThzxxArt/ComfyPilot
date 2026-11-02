@@ -7,12 +7,14 @@
  * notices, persists them, and exposes unread state.
  */
 import { computed, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { NBadge, NButton, NDrawer, NDrawerContent, NEmpty, NIcon, NTag } from 'naive-ui'
 import { NotificationsOutline } from '@vicons/ionicons5'
 import { useAppStore } from '@/stores/app'
 
 const { t } = useI18n()
+const router = useRouter()
 const store = useAppStore()
 const show = ref(false)
 
@@ -43,6 +45,15 @@ function open(): void {
 
 function markRead(): void {
   store.markAllRead()
+}
+
+function runAction(n: (typeof store.notifications)[number]): void {
+  const action = n.action
+  if (!action || action.type === 'none') return
+  if (action.type === 'navigate' && action.target?.startsWith('/')) {
+    show.value = false
+    void router.push(action.target)
+  }
 }
 
 // A notice arriving while the drawer is open is considered read.
@@ -94,6 +105,15 @@ watch(
         </div>
         <div class="notice-title">{{ titleOf(n) }}</div>
         <div v-if="messageOf(n)" class="notice-body">{{ messageOf(n) }}</div>
+        <div v-if="n.action && n.action.type !== 'none'" class="notice-action">
+          <NButton size="tiny" secondary type="primary" @click="runAction(n)">
+            {{
+              n.action.labelKey
+                ? t(n.action.labelKey, n.action.params || {})
+                : t('notifications.openAction')
+            }}
+          </NButton>
+        </div>
       </div>
     </NDrawerContent>
   </NDrawer>
@@ -108,6 +128,9 @@ watch(
   display: flex;
   justify-content: flex-end;
   padding-bottom: 8px;
+}
+.notice-action {
+  margin-top: 4px;
 }
 .notice-row {
   padding: 10px 0;

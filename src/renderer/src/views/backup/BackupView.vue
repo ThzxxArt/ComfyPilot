@@ -19,11 +19,11 @@ import {
   NAlert
 } from 'naive-ui'
 import { ipc } from '@/composables/useIpc'
-import { formatBytes } from '@/utils/format'
+import { formatBytes, formatDateTime } from '@/utils/format'
 import ListSkeleton from '@/components/ListSkeleton.vue'
 import type { BackupManifest, BackupRestorePreview, BackupRestoreSection } from '@shared/types'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const message = useMessage()
 const loading = ref(false)
 const items = ref<BackupManifest[]>([])
@@ -186,7 +186,7 @@ onMounted(() => void refresh())
               <div class="backup-main">
                 <div class="name" :title="b.name">{{ b.name }}</div>
                 <div class="meta">
-                  {{ new Date(b.createdAt).toLocaleString() }} · {{ formatBytes(b.size) }}
+                  {{ formatDateTime(b.createdAt, locale) }} · {{ formatBytes(b.size) }}
                 </div>
                 <div class="meta mono">{{ b.path }}</div>
               </div>
@@ -248,7 +248,13 @@ onMounted(() => void refresh())
       style="width: 620px; border-radius: 20px"
       @update:show="
         (v: boolean) => {
-          if (!v) preview = null
+          if (!v) {
+            // Invalidate an in-flight preview so a late response cannot
+            // reopen the modal the user just closed.
+            previewId = ''
+            previewLoading = false
+            preview = null
+          }
         }
       "
     >

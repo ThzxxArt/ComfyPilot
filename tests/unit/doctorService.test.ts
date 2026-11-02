@@ -30,7 +30,36 @@ vi.mock('../../src/main/services/model', () => ({
 }))
 
 vi.mock('../../src/main/services/instance', () => ({
-  resolveInstancePythonPath: () => 'python'
+  resolveInstancePythonPath: () => 'python',
+  instanceService: {
+    list: () => [{ id: 'inst-1', status: 'stopped' }],
+    stop: async () => ({ id: 'inst-1', status: 'stopped' })
+  }
+}))
+vi.mock('../../src/main/services/bootstrap', () => ({
+  bootstrapService: {
+    status: async () => ({
+      components: [
+        {
+          kind: 'python',
+          installed: true,
+          path: '/runtimes/python-3.13.18/python',
+          version: '3.13.18'
+        }
+      ],
+      pythonVersion: '3.13.18',
+      supportedPython: '3.13'
+    })
+  }
+}))
+vi.mock('../../src/main/services/pythonMigration', () => ({
+  migrateInstancePython: async () => ({
+    ok: true,
+    fromVersion: 'Python 3.12.10',
+    toVersion: 'Python 3.13.18',
+    channel: 'cu126',
+    warnings: []
+  })
 }))
 
 vi.mock('../../src/main/services/proxy', () => ({
@@ -193,6 +222,37 @@ describe('DoctorService (0.1.10 behaviour)', () => {
     const torch = report.checks.find((c: any) => c.id === 'torch')!
     expect(torch.severity).toBe('warn')
     expect(torch.detail).toContain('cuda none')
+  })
+
+  it('run() fails torch below 2.7 and exposes the managed runtime/vven checks', async () => {
+    const dir = seedMinimalInstall('old-torch')
+    const venv = join(dir, 'venv')
+    mkdirSync(venv, { recursive: true })
+    writeFileSync(join(venv, 'pyvenv.cfg'), 'version = 3.12.10\n')
+    ;(h.state.instances[0] as { venvPath: string }).venvPath = venv
+    h.state.execHandler = (cmd, args) => {
+      if (args[0] === '-c' && String(args[1]).includes('torch')) {
+        return { stdout: '2.6.0+cu124 12.4 True' }
+      }
+      return defaultExec(cmd, args)
+    }
+    const svc = await freshDoctor()
+    const report = await svc.run('inst-1')
+    const byId = new Map<string, any>(report.checks.map((c: any) => [c.id, c]))
+    expect(byId.get('torch')?.severity).toBe('fail')
+    expect(byId.get('torch')?.suggestion).toContain('2.7')
+    expect(byId.get('venv')?.severity).toBe('fail')
+    expect(byId.get('venv')?.fixId).toBe('migrate-python-313')
+    expect(byId.get('runtime-integrity')?.severity).toBe('pass')
+  })
+
+  it('fix(migrate-python-313) stops the instance and runs the migration', async () => {
+    seedMinimalInstall('migrate-fix')
+    ;(h.state.instances[0] as { venvPath: string }).venvPath = join(h.state.root, 'venv')
+    const svc = await freshDoctor()
+    const result = await svc.fix('inst-1', 'migrate-python-313')
+    expect(result.ok).toBe(true)
+    expect(result.message).toContain('3.13.18')
   })
 
   it('run() fails install-path/python when the directory is broken', async () => {

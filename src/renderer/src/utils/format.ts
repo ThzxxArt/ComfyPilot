@@ -72,3 +72,27 @@ export function formatDate(iso?: string, locale?: string): string {
     return d.toLocaleDateString()
   }
 }
+
+/** Date + time in the UI language (0.2.0: no mixed-language timestamps). */
+export function formatDateTime(value?: string | number | Date, locale?: string): string {
+  if (value === undefined || value === null || value === '') return '—'
+  const d = value instanceof Date ? value : new Date(value)
+  if (!Number.isFinite(d.getTime())) return '—'
+  try {
+    return d.toLocaleString(locale || undefined)
+  } catch {
+    return d.toLocaleString()
+  }
+}
+
+/** Time-only in the UI language. */
+export function formatTime(value?: string | number | Date, locale?: string): string {
+  if (value === undefined || value === null || value === '') return '—'
+  const d = value instanceof Date ? value : new Date(value)
+  if (!Number.isFinite(d.getTime())) return '—'
+  try {
+    return d.toLocaleTimeString(locale || undefined)
+  } catch {
+    return d.toLocaleTimeString()
+  }
+}

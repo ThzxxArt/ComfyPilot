@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { writeFileSync, readFileSync, rmSync, mkdtempSync } from 'fs'
+import { writeFileSync, readFileSync, readdirSync, rmSync, mkdtempSync } from 'fs'
 
 // Mock electron before any import of db.ts
 const tempDir = mkdtempSync(join(tmpdir(), 'cp-v017-'))
@@ -359,7 +359,11 @@ describe('i18n keys for v0.1.7 features', () => {
 
 // ============ Type completeness ============
 describe('shared types completeness', () => {
-  const typesSrc = readFileSync(join(__dirname, '..', '..', 'src', 'shared', 'types.ts'), 'utf-8')
+  const typesDir = join(__dirname, '..', '..', 'src', 'shared', 'types')
+  const typesSrc = readdirSync(typesDir)
+    .filter((f) => f.endsWith('.ts'))
+    .map((f) => readFileSync(join(typesDir, f), 'utf-8'))
+    .join('\n')
 
   it('BatchJobItem has submitFailed and execFailed', () => {
     expect(typesSrc).toContain('submitFailed: number')
@@ -526,10 +530,15 @@ describe('view feature completeness', () => {
 
 // ============ Handler feature presence ============
 describe('handler feature completeness', () => {
-  const src = readFileSync(
-    join(__dirname, '..', '..', 'src', 'main', 'ipc', 'handlers.ts'),
-    'utf-8'
-  )
+  const ipcDir = join(__dirname, '..', '..', 'src', 'main', 'ipc')
+  const domainDir = join(ipcDir, 'domains')
+  const src = [
+    readFileSync(join(ipcDir, 'handlers.ts'), 'utf-8'),
+    readFileSync(join(ipcDir, 'context.ts'), 'utf-8'),
+    ...readdirSync(domainDir)
+      .filter((f) => f.endsWith('.ts'))
+      .map((f) => readFileSync(join(domainDir, f), 'utf-8'))
+  ].join('\n')
 
   it('node.install broadcasts restartRequired', () => {
     expect(src).toContain('notify.restartRequired')

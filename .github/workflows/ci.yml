@@ -56,6 +56,12 @@ jobs:
       - name: ESLint (no fix)
         run: npm run lint:check
 
+      - name: Prettier (check)
+        run: npm run format:check
+
+      - name: Dependency audit (production, high+)
+        run: npm audit --omit=dev --audit-level=high --registry=https://registry.npmjs.org
+
       - name: Unit & integration tests
         run: npx vitest run --coverage
 

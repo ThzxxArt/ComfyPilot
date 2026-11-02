@@ -1181,16 +1181,29 @@ describe('unsafe destination guards', () => {
     h.state.resolveThrowOn = ''
   })
 
-  it('rejects an unsafe temp clone path', async () => {
-    h.state.resolveThrowOn = '_clone_tmp_'
-    await expect(
-      nodePackService.install({
-        id: 'https://github.com/u/TmpGit.git',
-        source: 'git',
-        instanceId: 'inst-1'
-      })
-    ).rejects.toThrow(/unsafe temp clone path/i)
-    h.state.resolveThrowOn = ''
+  it('keeps clone scratch space outside custom_nodes', async () => {
+    const cloneArgs: string[][] = []
+    cpMock.__setExecHandler((cmd, args) => {
+      if (args.includes('--version')) return { stdout: 'git version 2.40' }
+      if (args.includes('clone')) {
+        cloneArgs.push([...args])
+        const dest = args[args.length - 1]
+        h.mkdirPath(dest)
+        h.writeFile(join(dest, '__init__.py'), 'x')
+        h.writeFile(join(dest, 'pyproject.toml'), 'name = "TmpGit"\nversion = "1.0.0"\n')
+        return { stdout: 'cloned' }
+      }
+      return { stdout: '' }
+    })
+    const rec = await nodePackService.install({
+      id: 'https://github.com/u/TmpGit.git',
+      source: 'git',
+      instanceId: 'inst-1'
+    })
+    expect(rec.name).toBe('TmpGit')
+    const cloneDest = cloneArgs[0][cloneArgs[0].length - 1]
+    expect(cloneDest).not.toContain('custom_nodes')
+    expect(cloneDest.replace(/\\/g, '/')).toContain('cache/node-tmp')
   })
 
   it('rejects a registry zip install whose dest resolves outside root and unlinks the tmp zip', async () => {
@@ -1215,26 +1228,29 @@ describe('unsafe destination guards', () => {
     h.state.unlinkFail.clear()
   })
 
-  it('rejects an unsafe temp unzip path and unlinks the tmp zip', async () => {
+  it('unzips registry packages in the cache scratch dir, not custom_nodes', async () => {
     seedRegistryApi({ url: 'https://cdn.example/pack.zip' })
-    h.state.resolveThrowOn = '_unzip_tmp_'
-    await expect(
-      nodePackService.install({ id: 'EvilTmp', source: 'registry', instanceId: 'inst-1' })
-    ).rejects.toThrow(/unsafe temp unzip path/i)
+    zipSafeMock.safeUnzip.mockClear()
+    const rec = await nodePackService.install({
+      id: 'EvilTmp',
+      source: 'registry',
+      instanceId: 'inst-1'
+    })
+    expect(rec.name).toBeTruthy()
+    const dest = String(zipSafeMock.safeUnzip.mock.calls[0][1]).replace(/\\/g, '/')
+    expect(dest).toContain('cache/node-tmp')
+    expect(dest).not.toContain('custom_nodes')
     const leftovers = [...h.state.files.keys()].filter((k) => k.includes('._install_'))
     expect(leftovers).toEqual([])
-    h.state.resolveThrowOn = ''
   })
 
-  it('unsafe temp unzip rejection still throws when unlink(tmpZip) itself throws', async () => {
+  it('uses a unique cache scratch directory per install', async () => {
     seedRegistryApi({ url: 'https://cdn.example/pack.zip' })
-    h.state.resolveThrowOn = '_unzip_tmp_'
-    h.state.unlinkFail.add('._install_')
-    await expect(
-      nodePackService.install({ id: 'EvilTmp2', source: 'registry', instanceId: 'inst-1' })
-    ).rejects.toThrow(/unsafe temp unzip path/i)
-    h.state.resolveThrowOn = ''
-    h.state.unlinkFail.clear()
+    zipSafeMock.safeUnzip.mockClear()
+    await nodePackService.install({ id: 'TmpOne', source: 'registry', instanceId: 'inst-1' })
+    await nodePackService.install({ id: 'TmpTwo', source: 'registry', instanceId: 'inst-1' })
+    const calls = zipSafeMock.safeUnzip.mock.calls.map((c) => String(c[1]))
+    expect(new Set(calls).size).toBe(2)
   })
 })
 

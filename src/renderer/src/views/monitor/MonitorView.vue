@@ -23,7 +23,13 @@ import ListSkeleton from '@/components/ListSkeleton.vue'
 import { useAppStore } from '@/stores/app'
 import { ipc, onIpc, onMonitorTick, IPC_EVENTS } from '@/composables/useIpc'
 import { useExecDiagnostics } from '@/composables/useExecDiagnostics'
-import { clampPercent, formatBytes, formatPercent } from '@/utils/format'
+import {
+  clampPercent,
+  formatBytes,
+  formatDateTime,
+  formatPercent,
+  formatTime
+} from '@/utils/format'
 import { buildQueueSections } from '@/utils/queueView'
 import { runMonitorOp } from '@/utils/monitorOps'
 import { formatExecErrorReport } from '@shared/execError'
@@ -38,7 +44,7 @@ import type {
 } from '@shared/types'
 
 const store = useAppStore()
-const { t, te } = useI18n()
+const { t, te, locale } = useI18n()
 const message = useMessage()
 const dialog = useDialog()
 const router = useRouter()
@@ -322,8 +328,7 @@ function historyStatusType(status: string): 'success' | 'error' | 'default' {
 }
 
 function formatHistoryTime(ts?: number): string {
-  if (!ts) return '—'
-  return new Date(ts).toLocaleString()
+  return formatDateTime(ts, locale.value)
 }
 
 /** 0.1.18 (WP7): main keeps a 10-minute series; the page renders it. */
@@ -691,7 +696,7 @@ onUnmounted(() => {
                     {{ failureFor(it.id)?.errorType }}: {{ failureFor(it.id)?.message }}
                   </span>
                   <span v-if="it.at" class="meta history-time">
-                    {{ new Date(it.at).toLocaleTimeString() }}
+                    {{ formatTime(it.at, locale) }}
                   </span>
                   <NButton
                     v-if="failureFor(it.id)"
@@ -800,7 +805,7 @@ onUnmounted(() => {
         </div>
         <div class="detail-kv">
           <b>{{ $t('exec.timeLabel') }}</b>
-          <span>{{ new Date(selectedFailure.at).toLocaleString() }}</span>
+          <span>{{ formatDateTime(selectedFailure.at, locale) }}</span>
         </div>
       </div>
       <div v-if="selectedFailure?.traceback?.length" class="detail-tb mono">

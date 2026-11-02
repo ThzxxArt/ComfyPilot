@@ -595,6 +595,15 @@ export class BackupService {
             !incomingProxy.password && sameProxyOrigin ? String(currentProxy.password || '') : ''
         }
         saveSettings(nextSettings)
+        // 0.2.0: settings are only half-applied until the OS-level proxy and
+        // login item are updated. Restore must not leave the UI and Electron
+        // disagreeing about the active proxy / autostart. Fire-and-forget keeps
+        // restore synchronous for the existing callers/tests.
+        void import('./proxy').then((m) => m.syncProxyFromSettings()).catch(() => undefined)
+        void import('./desktop')
+          .then((m) => m.setLaunchOnBoot(Boolean(nextSettings.launchOnBoot)))
+          .catch(() => undefined)
+        void import('./tray').then((m) => m.refreshTray()).catch(() => undefined)
       }
 
       const listFor = (section: BackupRestoreSection): unknown[] | undefined => plan.lists[section]

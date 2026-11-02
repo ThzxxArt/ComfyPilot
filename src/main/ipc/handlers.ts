@@ -1,454 +1,47 @@
-import { ipcMain, dialog, shell, BrowserWindow, WebContentsView, clipboard } from 'electron'
-import { existsSync } from 'fs'
-import { homedir } from 'os'
-import { basename, isAbsolute, join } from 'path'
-import type {
-  IpcResult,
-  ComfyInstanceConfig,
-  RemoteInstanceConfig,
-  NodePackRecord,
-  EnvCreateRequest,
-  WorkflowRecord,
-  AppSettings,
-  AppSettingsView,
-  RemoteInstanceSummary,
-  InstallPlan,
-  LaunchOptions,
-  BatchJob
-} from '@shared/types'
+import { BrowserWindow, ipcMain } from 'electron'
 import { IPC_EVENTS } from '@shared/types'
-import { withPausedSlowOp } from '../services/slowOps'
+import { FREEZE_OP_MS, instrumentIpcHandle, setSlowOpListener } from '../services/slowOps'
 import {
-  isSafeExternalUrl,
-  isSafeEmbedUrl,
-  sanitizeId,
-  isSafeOpenPath,
-  isLocalhostUrl,
-  resolveInsideAnyRoot,
-  normalizeForCompare,
-  isSafeDataReadPath,
-  assertSafeEndpointSetting,
-  assertSafeSettingsPatch,
-  hasExecutableMagic,
-  realpathUnderAnyRoot,
-  isSafeOpenPathUnderRoots,
-  isSafeExportSourcePath
-} from '../services/security'
-import {
-  loadSettings,
-  saveSettings,
-  loadInstanceConfigs,
-  listRemoteSummaries,
-  setRemoteApiKey,
-  clearRemoteApiKey,
-  setProxyPassword,
-  clearProxyPassword,
-  getDataMigrationState,
-  userDataDir,
-  workflowLibraryDir
-} from '../services/db'
-import { secretStorageBackend } from '../services/secretStorage'
-import { LAUNCH_TEMPLATES } from '@shared/constants'
-import { instanceService } from '../services/instance'
-import { modelService } from '../services/model'
-import { nodePackService } from '../services/nodePack'
-import { workflowService } from '../services/workflow'
-import { monitorService } from '../services/monitor'
-import { doctorService } from '../services/doctor'
-import { bootstrapService } from '../services/bootstrap'
-import { backupService } from '../services/backup'
-import { envService } from '../services/env'
-import { bootMarkFirstList } from '../services/bootTiming'
-import {
-  requireLocalInstanceId,
-  requireLocalTarget,
-  safeInstanceId,
-  safeInstanceTarget
-} from './trust'
-import {
-  batchService,
-  outputService,
-  remoteService,
-  marketService,
-  resolveOutputDir
-} from '../services/p1p2'
-import { installerService, listStarterModels } from '../services/installer'
-import { testProxy, syncProxyFromSettings } from '../services/proxy'
-import { execDiagnosticsService } from '../services/execDiagnostics'
-import { PIP_RECIPES } from '@shared/pipRecipes'
-import { instrumentIpcHandle, setSlowOpListener, FREEZE_OP_MS } from '../services/slowOps'
-import { isOwnRendererUrl } from '../services/rendererEntry'
+  broadcast as broadcastImpl,
+  createIpcContext,
+  requireRunningInstance as requireRunningInstanceImpl,
+  type NotificationInput
+} from './context'
+import { createBackupHandlers } from './domains/backup'
+import { createBatchHandlers } from './domains/batch'
+import { createDoctorHandlers } from './domains/doctor'
+import { createInstanceHandlers } from './domains/instances'
+import { createIssueHandlers } from './domains/issues'
+import { createModelHandlers, registerModelNotifications } from './domains/models'
+import { createMonitorHandlers } from './domains/monitor'
+import { createNodeHandlers } from './domains/nodes'
+import { createOutputHandlers } from './domains/output'
+import { createRemoteHandlers } from './domains/remote'
+import { createSettingsHandlers } from './domains/settings'
+import { createShellHandlers } from './domains/shell'
+import { createWorkflowHandlers } from './domains/workflows'
+import { instrumentIpcContract } from './contract'
 
-function ok<T>(data: T): IpcResult<T> {
-  // Structured-clone safety: never hand a class instance / Response / Proxy
-  // back over IPC — reduce to plain JSON data first.
-  return { ok: true, data: toPlainIpcData(data) }
+export function broadcast(channel: string, payload: unknown): void {
+  broadcastImpl(channel, payload)
 }
 
-function fail(error: unknown): IpcResult<never> {
-  if (error && typeof error === 'object') {
-    const e = error as Error & { code?: string; suggestedPort?: number }
-    return {
-      ok: false,
-      error: e.message || String(error),
-      code: typeof e.code === 'string' ? e.code : undefined,
-      suggestedPort: typeof e.suggestedPort === 'number' ? e.suggestedPort : undefined
-    }
-  }
-  return { ok: false, error: String(error) }
+export function broadcastNotification(n: NotificationInput): void {
+  broadcastImpl(IPC_EVENTS.notification, n)
 }
 
-/** JSON round-trip keeps IPC payloads structured-clone safe. */
-function toPlainIpcData<T>(data: T): T {
-  if (data === undefined || data === null) return data
-  const t = typeof data
-  if (t === 'string' || t === 'number' || t === 'boolean') return data
-  try {
-    return JSON.parse(JSON.stringify(data)) as T
-  } catch (e) {
-    // Never hand a fake success with `data: null` — surface the serialisation
-    // failure so the caller sees a real error.
-    throw new Error(
-      `IPC payload is not serialisable: ${e instanceof Error ? e.message : String(e)}`
-    )
-  }
-}
-
-/**
- * 0.2.0: every IPC call must originate from this app's own renderer frame.
- * A webview/iframe that somehow received the preload bridge must not be able
- * to drive instance lifecycle or filesystem channels.
- */
-function assertTrustedIpcSender(event: unknown): void {
-  // Unit tests register the handler and call it without a real event. Only
-  // enforce when the event actually carries Electron's senderFrame property.
-  if (!event || typeof event !== 'object' || !('senderFrame' in event)) return
-  const frame = (event as { senderFrame?: { url?: string } | null }).senderFrame
-  if (!frame || !isOwnRendererUrl(String(frame.url || ''))) {
-    throw new Error('Blocked IPC from an untrusted frame')
-  }
-}
-
-function wrap<A extends unknown[], R>(
-  fn: (...args: A) => Promise<R> | R
-): (_event: unknown, ...args: A) => Promise<IpcResult> {
-  return async (event, ...args) => {
-    try {
-      assertTrustedIpcSender(event)
-      const data = await fn(...args)
-      return ok(data)
-    } catch (error) {
-      return fail(error)
-    }
-  }
-}
-
-/** Origins of configured ComfyUI instances and remotes (renderer may target these). */
-function configuredComfyOrigins(): string[] {
-  const origins: string[] = []
-  for (const inst of loadInstanceConfigs()) {
-    let host = inst.listen || '127.0.0.1'
-    if (host === '0.0.0.0' || host === '::' || host === '[::]') host = '127.0.0.1'
-    if (!inst.port) continue
-    origins.push(`http://${host}:${inst.port}`)
-    origins.push(`https://${host}:${inst.port}`)
-  }
-  for (const remote of remoteService.list()) {
-    if (remote.baseUrl) origins.push(remote.baseUrl)
-  }
-  return origins
-}
-
-/** localhost or a configured instance/remote origin only. */
-function isTrustedComfyUrl(raw: string | undefined | null): boolean {
-  if (!raw) return false
-  let u: URL
-  try {
-    u = new URL(raw)
-  } catch {
-    return false
-  }
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false
-  if (isLocalhostUrl(raw)) return true
-  for (const candidate of configuredComfyOrigins()) {
-    try {
-      if (new URL(candidate).origin === u.origin) return true
-    } catch {
-      /* ignore */
-    }
-  }
-  return false
-}
-
-function isAllowedEmbedUrl(raw: string): boolean {
-  return isSafeEmbedUrl(raw) && isTrustedComfyUrl(raw)
-}
-
-// Paths the user explicitly chose via the OS picker (0.1.16). A picked file is
-// trusted as-is; a picked folder becomes a readable root for the session.
-// Anything else must resolve under an app-owned root — the old implementation
-// trusted ANY existing file with a data extension, i.e. the whole disk.
-const approvedReadRoots = new Set<string>()
-/** 0.2.0: executable/interpreter paths explicitly chosen through the OS picker. */
-const approvedExecutablePaths = new Set<string>()
-/** 0.2.0: directories the user picked as write targets. */
-const approvedWriteRoots = new Set<string>()
-
-function approveReadPath(p: string | null | undefined): void {
-  if (!p) return
-  try {
-    approvedReadRoots.add(normalizeForCompare(p))
-    approvedWriteRoots.add(normalizeForCompare(p))
-    approvedExecutablePaths.add(normalizeForCompare(p))
-  } catch {
-    /* ignore */
-  }
-}
-
-function isSystemPythonPath(p: string): boolean {
-  const name = basename(p).toLowerCase()
-  if (!/^python(3(\.\d+)?)?(\.exe)?$/.test(name)) return false
-  const normalized = normalizeForCompare(p).toLowerCase()
-  return (
-    normalized.includes('/windows/system32/') ||
-    normalized.includes('/program files/') ||
-    normalized.includes('/program files (x86)/') ||
-    normalized.startsWith('/usr/bin/') ||
-    normalized.startsWith('/usr/local/bin/') ||
-    normalized.startsWith('/opt/') ||
-    normalized.includes('/appdata/local/programs/python/') ||
-    normalized.includes('/miniconda') ||
-    normalized.includes('/anaconda')
-  )
-}
-
-/** Executable paths must come from the picker, a known system location, or
- * an instance's own venv. A renderer cannot point the app at a dropped binary. */
-function assertApprovedExecutable(p: string, label: string, instanceRoot?: string): void {
-  if (!p) return
-  if (p.includes('\0')) throw new Error(`${label} contains an invalid character`)
-  const normalized = normalizeForCompare(p)
-  if (approvedExecutablePaths.has(normalized)) return
-  if (isSystemPythonPath(p)) return
-  if (instanceRoot && resolveInsideAnyRoot(p, [instanceRoot])) return
-  const lower = normalized.toLowerCase()
-  if (/\/\.?venv\/|\/venv\/|\/venv-/.test(lower)) return
-  throw new Error(`${label} must be chosen with the file picker`)
-}
-
-function isPathInsideInstance(p: string): boolean {
-  return loadInstanceConfigs().some((c) => c.path && resolveInsideAnyRoot(p, [c.path]))
-}
-
-/** Install roots are directories. Accept a picked folder, the app's default
- * runtime root, or a path under the user's home (the normal ComfyUI location). */
-function assertApprovedInstallRoot(p: string): void {
-  if (!p || p.includes('\0')) throw new Error('Invalid install root')
-  if (!isAbsolute(p)) throw new Error('Install root must be absolute')
-  const normalized = normalizeForCompare(p)
-  if (approvedWriteRoots.has(normalized)) return
-  const home = normalizeForCompare(homedir()).toLowerCase()
-  const lower = normalized.toLowerCase()
-  if (lower === home || lower.startsWith(`${home}/`)) return
-  const data = normalizeForCompare(userDataDir()).toLowerCase()
-  if (lower === data || lower.startsWith(`${data}/`)) return
-  throw new Error('Install root must be chosen with the directory picker')
-}
-
-/** App-owned roots the renderer may read data files from. */
-function allowedReadRoots(): string[] {
-  const roots: string[] = []
-  try {
-    roots.push(userDataDir(), workflowLibraryDir())
-  } catch {
-    /* ignore */
-  }
-  for (const c of loadInstanceConfigs()) {
-    if (!c.path) continue
-    try {
-      roots.push(c.path, resolveOutputDir(c), join(c.path, 'user', 'default', 'workflows'))
-    } catch {
-      /* malformed config — skip */
-    }
-  }
-  for (const r of loadSettings().modelScanRoots || []) roots.push(r)
-  return roots
-}
-
-/** Settings fields that must be http(s) URLs when set (0.1.17 WP8). */
-const URL_SETTING_KEYS = [
-  'githubEndpoint',
-  'hfEndpoint',
-  'civitaiEndpoint',
-  'pipIndex',
-  'torchIndexMirror'
-] as const
-
-function assertSafeEndpointSettings(patch: Partial<AppSettings>): void {
-  for (const key of URL_SETTING_KEYS) {
-    assertSafeEndpointSetting(key, (patch as Record<string, unknown>)[key])
-  }
-}
-
-/** Renderer-safe settings projection: never leak the proxy password. */
-function settingsView(settings: AppSettings): AppSettingsView {
-  const { password, ...proxy } = settings.proxy
-  return {
-    ...settings,
-    proxy: {
-      ...proxy,
-      hasPassword: Boolean(password),
-      backend: secretStorageBackend()
-    }
-  }
-}
-
-function remoteSummary(remote: RemoteInstanceConfig): RemoteInstanceSummary {
-  const { apiKey, ...rest } = remote
-  return { ...rest, apiKeySet: Boolean(apiKey) && !rest.apiKeyLocked }
-}
-
-function isSafeReadPath(path: string): boolean {
-  return isSafeDataReadPath(path, {
-    approvedRoots: [...approvedReadRoots],
-    allowedRoots: allowedReadRoots()
-  })
-}
-
-let embedView: WebContentsView | null = null
-/** 0.1.18 (WP6): one health check at a time, cancellable from the page. */
-let doctorAbort: AbortController | null = null
-
-/** Open (or replace) the embedded ComfyUI Frontend. Bounds come from renderer via embed.resize. */
-async function openEmbedInternal(url: string, title?: string): Promise<boolean> {
-  const win = getWindowRef()
-  if (!win) return false
-  if (!isAllowedEmbedUrl(url)) throw new Error('Blocked unsafe embed URL')
-  if (embedView) {
-    win.contentView.removeChildView(embedView)
-    embedView.webContents.close()
-    embedView = null
-  }
-  const view = new WebContentsView({
-    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false }
-  })
-  embedView = view
-  win.contentView.addChildView(view)
-  // Temporary bounds until renderer sends embed.resize with the real layout.
-  const bounds = win.getBounds()
-  view.setBounds({
-    x: 240,
-    y: 64,
-    width: Math.max(200, bounds.width - 240),
-    height: Math.max(200, bounds.height - 64)
-  })
-  if (title) {
-    try {
-      view.webContents.once('page-title-updated', (e) => e.preventDefault())
-    } catch {
-      /* ignore */
-    }
-  }
-  view.webContents.setWindowOpenHandler(({ url: navUrl }) => {
-    if (isSafeExternalUrl(navUrl)) void shell.openExternal(navUrl)
-    return { action: 'deny' }
-  })
-  view.webContents.on('will-navigate', (event, navUrl) => {
-    if (!isAllowedEmbedUrl(navUrl)) {
-      event.preventDefault()
-    }
-  })
-  // 0.1.17 (WP9): report load failures to the renderer so the embed pane can
-  // show an error + retry instead of a silent blank rectangle.
-  view.webContents.on('did-finish-load', () => {
-    broadcast(IPC_EVENTS.embedState, { state: 'ready', url })
-  })
-  view.webContents.on(
-    'did-fail-load',
-    (_e, errorCode, errorDescription, validatedURL, isMainFrame) => {
-      if (!isMainFrame) return
-      broadcast(IPC_EVENTS.embedState, {
-        state: 'failed',
-        url,
-        errorCode,
-        errorDescription,
-        validatedURL
-      })
-    }
-  )
-  void view.webContents.loadURL(url).catch((err: unknown) => {
-    broadcast(IPC_EVENTS.embedState, {
-      state: 'failed',
-      url,
-      errorDescription: err instanceof Error ? err.message : String(err)
-    })
-  })
-  return true
-}
-
-/** Late-bound window getter so openEmbedInternal can run before registerIpcHandlers. */
-let getWindowRef: () => BrowserWindow | null = () => null
-
-/**
- * 0.1.17 (WP5): terminal-state notification for a batch run, shared by
- * start / resume / retryFailed so all three report the same way.
- */
-function notifyBatchTerminal(result: {
+/** Kept for callers that imported the shared runner check from this module. */
+export async function requireRunningInstance(instanceId?: string): Promise<{
+  id: string
   name: string
-  status: string
-  submitted: number
-  completed: number
-  produced: number
-  failed: number
-  errorSummary?: string
-}): void {
-  if (result.status === 'done') {
-    broadcastNotification({
-      type: 'success',
-      title: `Batch done: ${result.name}`,
-      titleKey: 'notify.batchDone',
-      params: { name: result.name },
-      message: `queued ${result.submitted} · ok ${result.completed} · produced ${result.produced} · failed ${result.failed}`
-    })
-  } else if (result.status === 'error') {
-    broadcastNotification({
-      type: 'error',
-      title: `Batch failed: ${result.name}`,
-      titleKey: 'notify.batchFailed',
-      params: { name: result.name },
-      message:
-        result.errorSummary ||
-        `queued ${result.submitted} · ok ${result.completed} · produced ${result.produced} · failed ${result.failed}`,
-      duration: 8000
-    })
-  } else if (result.status === 'cancelled') {
-    broadcastNotification({
-      type: 'warning',
-      title: `Batch cancelled: ${result.name}`,
-      titleKey: 'notify.batchCancelled',
-      params: { name: result.name },
-      message: `queued ${result.submitted} · ok ${result.completed} · failed ${result.failed}`
-    })
-  }
+  url: string
+}> {
+  // The shared helper throws "Instance not found: <id>" for unknown ids.
+  return requireRunningInstanceImpl(instanceId)
 }
 
 export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void {
-  getWindowRef = getWindow
-
-  /** Require the batch job's backend to be live (local running / online remote). */
-  async function requireBatchTarget(jobId: string): Promise<{ id: string; name: string }> {
-    const job = batchService.list().find((j) => j.id === jobId)
-    const targetId = String(job?.instanceId || '')
-    if (targetId.startsWith('remote:')) {
-      const status = await remoteService.test(targetId.slice('remote:'.length))
-      if (!status.online) {
-        throw new Error(`Remote instance is offline: ${status.error || targetId}`)
-      }
-    } else {
-      await requireRunningInstance(targetId)
-    }
-    return { id: targetId, name: job?.name || jobId }
-  }
+  const ctx = createIpcContext(getWindow)
 
   // 0.1.17 (WP6): every channel registered below is timed. A call at or above
   // FREEZE_OP_MS also raises one throttled toast, so the user learns the app
@@ -470,2099 +63,265 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       duration: 8000
     })
   })
+  // Validate args + sender frame before any domain handler runs. This is
+  // installed first so the slow-op wrapper times the validated call.
+  instrumentIpcContract(
+    ipcMain as unknown as {
+      handle: (channel: string, listener: (...args: never[]) => unknown) => unknown
+    }
+  )
   instrumentIpcHandle(
     ipcMain as unknown as {
       handle: (channel: string, listener: (...args: never[]) => unknown) => unknown
     }
   )
 
-  ipcMain.handle(
-    'data.migrationState',
-    wrap(() => getDataMigrationState())
-  )
+  const settings = createSettingsHandlers()
+  ipcMain.handle('data.migrationState', settings.migrationState)
+  ipcMain.handle('data.retryMigration', settings.retryMigration)
+  ipcMain.handle('settings.get', settings.get)
+  ipcMain.handle('settings.setProxyPassword', settings.setProxyPassword)
+  ipcMain.handle('settings.clearProxyPassword', settings.clearProxyPassword)
+  ipcMain.handle('settings.exportConfig', settings.exportConfig)
+  ipcMain.handle('settings.importConfig', settings.importConfig)
+  ipcMain.handle('settings.credentialStatus', settings.credentialStatus)
+  ipcMain.handle('settings.set', settings.set)
+  ipcMain.handle('settings.launchTemplates', settings.launchTemplates)
+  ipcMain.handle('settings.dataDir', settings.dataDir)
+  ipcMain.handle('settings.logsDir', settings.logsDir)
+  ipcMain.handle('proxy.apply', settings.applyProxy)
+  ipcMain.handle('proxy.test', settings.testProxy)
 
-  // settings
-  ipcMain.handle(
-    'settings.get',
-    wrap(() => settingsView(loadSettings()))
-  )
-  ipcMain.handle(
-    'settings.setProxyPassword',
-    wrap((password: string) => {
-      if (typeof password !== 'string' || /[\r\n\0]/.test(password)) {
-        throw new Error('Invalid proxy password')
-      }
-      setProxyPassword(password)
-      syncProxyFromSettings()
-      return { ok: true }
-    })
-  )
-  ipcMain.handle(
-    'settings.clearProxyPassword',
-    wrap(() => {
-      clearProxyPassword()
-      syncProxyFromSettings()
-      return { ok: true }
-    })
-  )
-  ipcMain.handle(
-    'settings.exportConfig',
-    wrap(async () => {
-      const s = loadSettings()
-      // Never export secrets. The proxy password is the only one stored here.
-      const { proxy, ...rest } = s
-      return {
-        version: 2,
-        schemaVersion: 2,
-        exportedAt: Date.now(),
-        settings: {
-          ...rest,
-          proxy: { ...proxy, password: '' }
-        }
-      }
-    })
-  )
-  ipcMain.handle(
-    'settings.importConfig',
-    wrap(async (raw: Record<string, unknown>) => {
-      const { assertSafeSettingsPatch, stripImportedSettingsSecrets } =
-        await import('../services/security')
-      const incoming =
-        raw && typeof raw === 'object' && 'settings' in raw
-          ? ((raw as { settings?: unknown }).settings as Record<string, unknown>)
-          : raw
-      if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
-        throw new Error('Invalid settings file')
-      }
-      // A config file must never carry (or overwrite) credentials. Removing
-      // the key keeps the stored ciphertext; setting it to '' WIPED it.
-      const { patch } = stripImportedSettingsSecrets(incoming)
-      assertSafeSettingsPatch(patch)
-      const before = loadSettings() as unknown as Record<string, unknown>
-      const next = saveSettings(patch as Partial<AppSettings>)
-      // 0.1.18 (regression): an import persisted the proxy/locale/autostart but
-      // never applied them — the UI said "on" while Electron still went direct.
-      syncProxyFromSettings()
-      if (patch.launchOnBoot !== undefined) {
-        try {
-          const { setLaunchOnBoot } = await import('../services/desktop')
-          setLaunchOnBoot(Boolean(next.launchOnBoot))
-        } catch {
-          /* ignore */
-        }
-      }
-      if (patch.locale !== undefined) {
-        try {
-          const { refreshTray } = await import('../services/tray')
-          void refreshTray()
-        } catch {
-          /* ignore */
-        }
-      }
-      // Report only keys that really changed (unknown keys are stripped by
-      // saveSettings, and an identical value is not "applied").
-      const after = next as unknown as Record<string, unknown>
-      const applied = Object.keys(patch).filter(
-        (k) => JSON.stringify(after[k]) !== JSON.stringify(before[k])
-      )
-      return { settings: settingsView(next), applied }
-    })
-  )
-  ipcMain.handle(
-    'settings.credentialStatus',
-    wrap(async () => {
-      const db = await import('../services/db')
-      return {
-        proxyPasswordUnreadable: db.isProxyPasswordUnreadable(),
-        proxyCredentialBackend: secretStorageBackend(),
-        lockedRemoteIds: db
-          .listRemotes()
-          .filter((r) => r.apiKeyLocked)
-          .map((r) => r.id)
-      }
-    })
-  )
-  ipcMain.handle(
-    'settings.set',
-    wrap(async (patch: Partial<AppSettings>) => {
-      // 0.1.17 (WP8): endpoint-shaped settings flow straight into installers and
-      // network probes. Accepting `file:`/`javascript:`/garbage there turned a
-      // settings write into a local-file or scheme-injection primitive.
-      // 0.1.18 (WP1): every attacker-reachable value is validated, not just the
-      // five URLs — an unknown `securityLevel` used to weaken the install gate.
-      assertSafeEndpointSettings(patch)
-      if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
-        throw new Error('settings.set expects an object patch')
-      }
-      assertSafeSettingsPatch(patch as Record<string, unknown>)
-      if (patch.aria2Path) assertApprovedExecutable(String(patch.aria2Path), 'aria2Path')
-      if (
-        patch.securityLevel !== undefined &&
-        patch.securityLevel !== loadSettings().securityLevel
-      ) {
-        console.warn(
-          `[security] securityLevel changed to ${String(patch.securityLevel)} by renderer`
-        )
-      }
-      const next = saveSettings(patch)
-      // Re-apply proxy whenever settings change
-      syncProxyFromSettings()
-      // Keep OS login item in sync with the persisted preference
-      if (patch.launchOnBoot !== undefined) {
-        try {
-          const { setLaunchOnBoot } = await import('../services/desktop')
-          setLaunchOnBoot(Boolean(next.launchOnBoot))
-        } catch {
-          /* ignore */
-        }
-      }
-      // Language switch must re-render the native tray menu.
-      if (patch.locale !== undefined) {
-        try {
-          const { refreshTray } = await import('../services/tray')
-          void refreshTray()
-        } catch {
-          /* ignore */
-        }
-      }
-      return settingsView(next)
-    })
-  )
-  ipcMain.handle(
-    'settings.launchTemplates',
-    wrap(() => LAUNCH_TEMPLATES)
-  )
-  ipcMain.handle(
-    'settings.dataDir',
-    wrap(async () => {
-      const { userDataDir } = await import('../services/db')
-      return userDataDir()
-    })
-  )
-  ipcMain.handle(
-    'settings.logsDir',
-    wrap(async () => {
-      const { logsDir } = await import('../services/db')
-      return logsDir()
-    })
-  )
-  ipcMain.handle(
-    'proxy.apply',
-    wrap(() => syncProxyFromSettings())
-  )
-  ipcMain.handle(
-    'proxy.test',
-    wrap((opts?: { url?: string }) => testProxy(opts))
-  )
+  const instances = createInstanceHandlers(ctx)
+  ipcMain.handle('instance.list', instances.list)
+  ipcMain.handle('instance.discover', instances.discover)
+  ipcMain.handle('instance.save', instances.save)
+  ipcMain.handle('instance.migratePython', instances.migratePython)
+  ipcMain.handle('instance.remove', instances.remove)
+  ipcMain.handle('instance.launch', instances.launch)
+  ipcMain.handle('instance.launchArgCatalog', instances.launchArgCatalog)
+  ipcMain.handle('instance.previewLaunch', instances.previewLaunch)
+  ipcMain.handle('instance.stop', instances.stop)
+  ipcMain.handle('instance.restart', instances.restart)
+  ipcMain.handle('instance.forceKill', instances.forceKill)
+  ipcMain.handle('instance.sweepStale', instances.sweepStale)
+  ipcMain.handle('instance.startAll', instances.startAll)
+  ipcMain.handle('instance.stopAll', instances.stopAll)
+  ipcMain.handle('instance.getLogs', instances.getLogs)
+  ipcMain.handle('instance.clearLogs', instances.clearLogs)
+  ipcMain.handle('instance.checkPort', instances.checkPort)
+  ipcMain.handle('instance.suggestPort', instances.suggestPort)
+  ipcMain.handle('instance.probeEnv', instances.probeEnv)
+  ipcMain.handle('instance.exportDiagnostics', instances.exportDiagnostics)
+  ipcMain.handle('instance.copyDiagnostics', instances.copyDiagnostics)
+  ipcMain.handle('instance.exportLogs', instances.exportLogs)
+  ipcMain.handle('instance.updateJournal', instances.updateJournal)
+  ipcMain.handle('instance.rollbackUpdate', instances.rollbackUpdate)
+  ipcMain.handle('instance.checkComfyUpdate', instances.checkComfyUpdate)
+  ipcMain.handle('instance.updateComfy', instances.updateComfy)
+  ipcMain.handle('instance.updateStatus', instances.updateStatus)
+  ipcMain.handle('instance.cancelUpdate', instances.cancelUpdate)
+  ipcMain.handle('instance.repairStatus', instances.repairStatus)
+  ipcMain.handle('instance.repairEnv', instances.repairEnv)
+  ipcMain.handle('instance.repairCancel', instances.repairCancel)
+  ipcMain.handle('instance.capabilities', instances.capabilities)
+  ipcMain.handle('instance.runStartupSelfCheck', instances.runStartupSelfCheck)
+  ipcMain.handle('instance.pipInstall', instances.pipInstall)
+  ipcMain.handle('instance.applyRecipe', instances.applyRecipe)
+  ipcMain.handle('instance.pipCancel', instances.pipCancel)
+  ipcMain.handle('instance.pipStatus', instances.pipStatus)
+  ipcMain.handle('instance.execFailures', instances.execFailures)
+  ipcMain.handle('instance.clearExecFailures', instances.clearExecFailures)
+  ipcMain.handle('instance.startupIssues', instances.startupIssues)
+  ipcMain.handle('env.probe', instances.probe)
+  ipcMain.handle('env.createVenv', instances.createVenv)
+  ipcMain.handle('env.listPythons', instances.listPythons)
+  ipcMain.handle('env.installTorch', instances.installTorch)
+  ipcMain.handle('installer.detectGpu', instances.detectGpu)
+  ipcMain.handle('installer.preflight', instances.preflight)
+  ipcMain.handle('installer.start', instances.start)
+  ipcMain.handle('installer.status', instances.status)
+  ipcMain.handle('installer.cancel', instances.cancel)
+  ipcMain.handle('installer.reset', instances.reset)
+  ipcMain.handle('installer.suggestInstallRoot', instances.suggestInstallRoot)
+  ipcMain.handle('installer.starterModels', instances.starterModels)
+  ipcMain.handle('installer.installStarter', instances.installStarter)
+  ipcMain.handle('bootstrap.status', instances.bootstrapStatus)
+  ipcMain.handle('bootstrap.ensure', instances.bootstrapEnsure)
+  ipcMain.handle('bootstrap.download', instances.bootstrapDownload)
+  ipcMain.handle('bootstrap.deleteLegacy', instances.bootstrapDeleteLegacy)
+  ipcMain.handle('net.recommendMirrors', instances.recommendMirrors)
+  ipcMain.handle('instance.exportLaunchScript', instances.exportLaunchScript)
 
-  // instances
-  ipcMain.handle(
-    'instance.list',
-    wrap(() => instanceService.list())
-  )
-  ipcMain.handle(
-    'instance.discover',
-    wrap((root?: string) => instanceService.discover(root))
-  )
-  ipcMain.handle(
-    'instance.save',
-    wrap((config: ComfyInstanceConfig) => {
-      if (!config || typeof config !== 'object') throw new Error('Invalid instance config')
-      if (!config.path || !existsSync(config.path)) throw new Error('Instance path does not exist')
-      if (config.pythonPath) assertApprovedExecutable(config.pythonPath, 'pythonPath', config.path)
-      if (config.venvPath) {
-        const normalized = normalizeForCompare(config.venvPath)
-        if (!approvedWriteRoots.has(normalized) && !isPathInsideInstance(config.venvPath)) {
-          throw new Error('venvPath must be inside the instance or chosen with the picker')
-        }
-      }
-      return instanceService.save({ ...config, id: config.id ? sanitizeId(config.id) : '' })
-    })
-  )
-  ipcMain.handle(
-    'instance.migratePython',
-    wrap(async (id: string) => {
-      const safeId = sanitizeId(id)
-      const info = instanceService.list().find((i) => i.id === safeId)
-      if (!info) throw new Error(`Instance not found: ${safeId}`)
-      if (info.status === 'running' || info.status === 'starting') {
-        await instanceService.stop(safeId)
-      }
-      const { migrateInstancePython } = await import('../services/pythonMigration')
-      return migrateInstancePython(safeId)
-    })
-  )
-  ipcMain.handle(
-    'instance.remove',
-    wrap((id: string) => instanceService.remove(sanitizeId(id)))
-  )
-  ipcMain.handle(
-    'instance.launch',
-    wrap(async (id: string, opts?: LaunchOptions) => {
-      const safeId = sanitizeId(id)
-      const info = await instanceService.launch(safeId, opts)
-      const open = opts?.open ?? 'none'
-      if (open === 'embed' || open === 'browser') {
-        if (!info.url) throw new Error('Instance has no URL')
-        if (open === 'browser') {
-          if (!isSafeExternalUrl(info.url)) throw new Error('Blocked unsafe URL')
-          await shell.openExternal(info.url)
-        } else {
-          await openEmbedInternal(info.url, info.name)
-        }
-      }
-      return info
-    })
-  )
-  ipcMain.handle(
-    'instance.launchArgCatalog',
-    wrap(async (instanceId?: string) => {
-      const { launchArgCatalog } = await import('../services/launchArgCatalog')
-      return launchArgCatalog(safeInstanceId(instanceId))
-    })
-  )
-  ipcMain.handle(
-    'instance.previewLaunch',
-    wrap((id: string) => instanceService.previewLaunch(sanitizeId(id)))
-  )
-  ipcMain.handle(
-    'instance.stop',
-    wrap((id: string) => instanceService.stop(sanitizeId(id)))
-  )
-  ipcMain.handle(
-    'instance.restart',
-    wrap((id: string, opts?: LaunchOptions) => instanceService.restart(sanitizeId(id), opts))
-  )
-  ipcMain.handle(
-    'instance.forceKill',
-    wrap((id: string) => instanceService.forceKill(sanitizeId(id)))
-  )
-  // 0.1.17 (WP3): manual orphan sweep (also runs at startup).
-  ipcMain.handle(
-    'instance.sweepStale',
-    wrap(() => instanceService.sweepStaleProcesses())
-  )
-  ipcMain.handle(
-    'instance.startAll',
-    wrap(() => instanceService.startAll())
-  )
-  ipcMain.handle(
-    'instance.stopAll',
-    wrap(() => instanceService.stopAll())
-  )
-  ipcMain.handle(
-    'instance.getLogs',
-    wrap((id: string, limit?: number) => instanceService.getLogs(sanitizeId(id), limit))
-  )
-  ipcMain.handle(
-    'instance.clearLogs',
-    wrap((id: string) => instanceService.clearLogs(sanitizeId(id)))
-  )
-  ipcMain.handle(
-    'instance.checkPort',
-    wrap((port: number) => instanceService.checkPort(port))
-  )
-  ipcMain.handle(
-    'instance.suggestPort',
-    wrap(() => instanceService.suggestPort())
-  )
-  ipcMain.handle(
-    'instance.probeEnv',
-    wrap((id: string) => instanceService.probeEnv(sanitizeId(id)))
-  )
-  ipcMain.handle(
-    'instance.exportDiagnostics',
-    wrap((id: string) => instanceService.exportDiagnostics(sanitizeId(id)))
-  )
-  ipcMain.handle(
-    'instance.copyDiagnostics',
-    wrap(async (id: string) => {
-      const path = await instanceService.copyDiagnostics(sanitizeId(id))
-      clipboard.writeText(path)
-      return path
-    })
-  )
-  ipcMain.handle(
-    'instance.exportLogs',
-    wrap(async (id: string) => {
-      const result = await instanceService.exportLogs(sanitizeId(id))
-      shell.showItemInFolder(result.path)
-      return result
-    })
-  )
-  // 0.1.17 (WP4): an update that died mid-run leaves a journal + backup.
-  ipcMain.handle(
-    'instance.updateJournal',
-    wrap(async (id: string) => {
-      const { comfyUpdaterService } = await import('../services/updater')
-      return comfyUpdaterService.readJournal(sanitizeId(id))
-    })
-  )
-  ipcMain.handle(
-    'instance.rollbackUpdate',
-    wrap(async (id: string) => {
-      const { comfyUpdaterService } = await import('../services/updater')
-      const safeId = sanitizeId(id)
-      const ok = await comfyUpdaterService.rollbackFromJournal(safeId)
-      if (ok) {
-        broadcastNotification({
-          type: 'success',
-          title: 'Update rolled back',
-          titleKey: 'notify.updateRolledBack',
-          message: 'Core files restored from the pre-update backup',
-          messageKey: 'notify.updateRolledBackMsg',
-          duration: 6000
-        })
-      }
-      return ok
-    })
-  )
-  ipcMain.handle(
-    'instance.checkComfyUpdate',
-    wrap(async (id: string) => {
-      const { comfyUpdaterService } = await import('../services/updater')
-      return comfyUpdaterService.check(sanitizeId(id))
-    })
-  )
-  ipcMain.handle(
-    'instance.updateComfy',
-    wrap(async (id: string, opts?: import('@shared/types').ComfyUpdateOptions) => {
-      const { comfyUpdaterService } = await import('../services/updater')
-      const safeId = sanitizeId(id)
-      // start() is fire-and-forget (events stream interim progress); we wait here
-      // so `await ipc('instance.updateComfy')` resolves only when the run settles.
-      const initial = await comfyUpdaterService.start(safeId, opts)
-      const final = await comfyUpdaterService.waitUntilSettled()
-      const result = final || initial
-      // Invalidate version cache so list() shows the post-update version.
-      try {
-        const configs = loadInstanceConfigs()
-        const cfg = configs.find((c) => c.id === safeId)
-        if (cfg?.path) instanceService.invalidateVersionCache(cfg.path)
-        else instanceService.invalidateVersionCache()
-      } catch {
-        /* ignore */
-      }
-      return result
-    })
-  )
-  ipcMain.handle(
-    'instance.updateStatus',
-    wrap(async () => {
-      const { comfyUpdaterService } = await import('../services/updater')
-      return comfyUpdaterService.getStatus()
-    })
-  )
-  ipcMain.handle(
-    'instance.cancelUpdate',
-    wrap(async () => {
-      const { comfyUpdaterService } = await import('../services/updater')
-      return comfyUpdaterService.cancel()
-    })
-  )
-  ipcMain.handle(
-    'instance.repairStatus',
-    wrap(() => envService.getRepairProgress())
-  )
-  ipcMain.handle(
-    'instance.repairEnv',
-    wrap(async (id: string, opts?: import('@shared/types').RepairEnvOptions) => {
-      // One repair at a time: envService owns the abort controller (WP5).
-      const probe = await envService.repairEnv({
-        instanceId: sanitizeId(id),
-        torchChannel: opts?.torchChannel,
-        recreateVenv: opts?.recreateVenv
-      })
-      try {
-        const configs = loadInstanceConfigs()
-        const cfg = configs.find((c) => c.id === sanitizeId(id))
-        if (cfg?.path) instanceService.invalidateVersionCache(cfg.path)
-      } catch {
-        /* ignore */
-      }
-      return probe
-    })
-  )
-  ipcMain.handle(
-    'instance.repairCancel',
-    wrap(() => envService.cancelRepair())
-  )
-  ipcMain.handle(
-    'instance.capabilities',
-    wrap((id: string) => instanceService.getCapabilities(sanitizeId(id)))
-  )
-  ipcMain.handle(
-    'instance.runStartupSelfCheck',
-    wrap((id: string) => instanceService.runStartupSelfCheck(sanitizeId(id)))
-  )
-  // ---- 0.1.12: dependency-fix actions + runtime failure diagnosis ----
-  ipcMain.handle(
-    'instance.pipInstall',
-    wrap(async (id: string, spec: string) => {
-      const { pipOpsService } = await import('../services/pipOps')
-      const result = await pipOpsService.installSpec(
-        requireLocalInstanceId(id) || '',
-        String(spec || '')
-      )
-      notifyPipResult(result)
-      return result
-    })
-  )
-  ipcMain.handle(
-    'instance.applyRecipe',
-    wrap(async (id: string, recipeId: string) => {
-      const { pipOpsService } = await import('../services/pipOps')
-      const result = await pipOpsService.installRecipe(
-        requireLocalInstanceId(id) || '',
-        String(recipeId || '')
-      )
-      notifyPipResult(result)
-      return result
-    })
-  )
-  ipcMain.handle(
-    'instance.pipCancel',
-    wrap(async (id: string) => {
-      const target = requireLocalInstanceId(id)
-      // Nothing to cancel for an absent/remote target — answer honestly.
-      if (!target) return false
-      const { pipOpsService } = await import('../services/pipOps')
-      return pipOpsService.cancel(target)
-    })
-  )
-  ipcMain.handle(
-    'instance.pipStatus',
-    wrap(async (instanceId?: string) => {
-      // A pure status QUERY — unresolvable/remote targets answer "no op"
-      // instead of throwing (0.1.13).
-      const target = safeInstanceTarget(instanceId)
-      if (!target || target.startsWith('remote:')) return null
-      const { pipOpsService } = await import('../services/pipOps')
-      return pipOpsService.getProgress(target)
-    })
-  )
-  ipcMain.handle(
-    'instance.execFailures',
-    wrap((id: string) => execDiagnosticsService.list(safeInstanceTarget(id) || ''))
-  )
-  ipcMain.handle(
-    'instance.clearExecFailures',
-    wrap((id: string) => execDiagnosticsService.clear(safeInstanceTarget(id) || ''))
-  )
-  ipcMain.handle(
-    'instance.startupIssues',
-    wrap((id: string) => {
-      const target = safeInstanceTarget(id)
-      if (!target) throw new Error(`Instance not found: ${id}`)
-      return instanceService.analyzeStartupIssues(target)
-    })
-  )
+  const models = createModelHandlers()
+  ipcMain.handle('model.list', models.list)
+  ipcMain.handle('model.scan', models.scan)
+  ipcMain.handle('model.delete', models.remove)
+  ipcMain.handle('model.move', models.move)
+  ipcMain.handle('model.symlink', models.symlink)
+  ipcMain.handle('model.rename', models.rename)
+  ipcMain.handle('model.tag', models.tag)
+  ipcMain.handle('model.findDuplicates', models.findDuplicates)
+  ipcMain.handle('model.downloads', models.downloads)
+  ipcMain.handle('model.download', models.download)
+  ipcMain.handle('model.pauseDownload', models.pauseDownload)
+  ipcMain.handle('model.prioritizeDownload', models.prioritizeDownload)
+  ipcMain.handle('model.resumeDownload', models.resumeDownload)
+  ipcMain.handle('model.cancelDownload', models.cancelDownload)
+  ipcMain.handle('model.clearFinishedDownloads', models.clearFinishedDownloads)
+  ipcMain.handle('model.storageStats', models.storageStats)
+  ipcMain.handle('model.parseExtraPaths', models.parseExtraPaths)
+  ipcMain.handle('model.reconcile', models.reconcile)
+  ipcMain.handle('model.fetchCivitaiMeta', models.fetchCivitaiMeta)
+  ipcMain.handle('model.ensureThumbs', models.ensureThumbs)
+  ipcMain.handle('model.batchRename', models.batchRename)
+  registerModelNotifications()
 
-  // models
-  ipcMain.handle(
-    'model.list',
-    wrap(async () => {
-      bootMarkFirstList('model.list')
-      const { thumbnailDisplayUrl } = await import('../services/media')
-      const list = await modelService.list()
-      return list.map((m) => ({
-        ...m,
-        thumbnail: thumbnailDisplayUrl(m.thumbnail) || undefined
-      }))
-    })
-  )
-  ipcMain.handle(
-    'model.scan',
-    wrap((opts?: { roots?: string[]; hash?: boolean }) => modelService.scan(opts))
-  )
-  ipcMain.handle(
-    'model.delete',
-    wrap((id: string, deleteFile: boolean) => modelService.remove(id, deleteFile))
-  )
-  ipcMain.handle(
-    'model.move',
-    wrap((id: string, destDir: string) => modelService.move(id, destDir))
-  )
-  ipcMain.handle(
-    'model.symlink',
-    wrap((id: string, destDir: string) => modelService.symlink(id, destDir))
-  )
-  ipcMain.handle(
-    'model.rename',
-    wrap((id: string, name: string) => modelService.rename(id, name))
-  )
-  ipcMain.handle(
-    'model.tag',
-    wrap((id: string, tags: string[]) => modelService.tag(id, tags))
-  )
-  ipcMain.handle(
-    'model.findDuplicates',
-    wrap(() => modelService.findDuplicates())
-  )
-  ipcMain.handle(
-    'model.downloads',
-    wrap(() => modelService.listDownloads())
-  )
-  ipcMain.handle(
-    'model.download',
-    wrap((opts: { url: string; destDir?: string; fileName?: string }) =>
-      modelService.download(opts)
-    )
-  )
-  ipcMain.handle(
-    'model.pauseDownload',
-    wrap((id: string) => modelService.pauseDownload(id))
-  )
-  ipcMain.handle(
-    'model.prioritizeDownload',
-    wrap((id: string) => modelService.prioritizeDownload(sanitizeId(id)))
-  )
-  ipcMain.handle(
-    'model.resumeDownload',
-    wrap((id: string) => modelService.resumeDownload(id))
-  )
-  ipcMain.handle(
-    'model.cancelDownload',
-    wrap((id: string) => modelService.cancelDownload(id))
-  )
-  ipcMain.handle(
-    'model.clearFinishedDownloads',
-    wrap(() => modelService.clearFinishedDownloads())
-  )
-  // Terminal download results surface as global toasts (ModelsView may be unmounted).
-  modelService.on('notify', (n) =>
-    broadcastNotification(n as Parameters<typeof broadcastNotification>[0])
-  )
-  ipcMain.handle(
-    'model.storageStats',
-    wrap(() => modelService.storageStats())
-  )
-  ipcMain.handle(
-    'model.parseExtraPaths',
-    wrap(async (file?: string) => {
-      // 0.1.18 (regression): every other renderer-supplied read path is gated;
-      // this one let the page make main parse an arbitrary file.
-      if (file && !isSafeReadPath(file)) throw new Error('Blocked unsafe extra_model_paths path')
-      const { parseExtraModelPaths } = await import('../services/model')
-      return parseExtraModelPaths(file)
-    })
-  )
-  ipcMain.handle(
-    'model.reconcile',
-    wrap((instanceId?: string) => modelService.reconcile(safeInstanceId(instanceId)))
-  )
-  ipcMain.handle(
-    'model.fetchCivitaiMeta',
-    wrap((id: string) => modelService.fetchCivitaiMeta(id))
-  )
-  ipcMain.handle(
-    'model.ensureThumbs',
-    wrap(async () => {
-      const { thumbnailService } = await import('../services/media')
-      return thumbnailService.ensureAll()
-    })
-  )
-  ipcMain.handle(
-    'model.batchRename',
-    wrap(async (opts: { ids: string[]; pattern: string; dryRun?: boolean }) => {
-      const { renameService } = await import('../services/media')
-      return renameService.batchRename(opts.ids, opts.pattern, opts.dryRun)
-    })
-  )
+  const nodes = createNodeHandlers()
+  ipcMain.handle('node.list', nodes.list)
+  ipcMain.handle('node.refresh', nodes.refresh)
+  ipcMain.handle('registry.indexStatus', nodes.indexStatus)
+  ipcMain.handle('registry.refreshIndex', nodes.refreshIndex)
+  ipcMain.handle('registry.ensureIndex', nodes.ensureIndex)
+  ipcMain.handle('ops.list', nodes.opsList)
+  ipcMain.handle('ops.cancel', nodes.opsCancel)
+  ipcMain.handle('registry.cancelIndex', nodes.cancelIndex)
+  ipcMain.handle('node.managerChannel', nodes.managerChannel)
+  ipcMain.handle('node.install', nodes.install)
+  ipcMain.handle('node.uninstall', nodes.uninstall)
+  ipcMain.handle('node.uninstallDeps', nodes.uninstallDeps)
+  ipcMain.handle('node.cancelOp', nodes.cancelOp)
+  ipcMain.handle('node.cancelBatch', nodes.cancelBatch)
+  ipcMain.handle('node.update', nodes.update)
+  ipcMain.handle('node.toggle', nodes.toggle)
+  ipcMain.handle('node.lock', nodes.lock)
+  ipcMain.handle('node.checkIssues', nodes.checkIssues)
+  ipcMain.handle('node.loadReport', nodes.loadReport)
+  ipcMain.handle('node.opStatus', nodes.opStatus)
+  ipcMain.handle('node.recoveryScan', nodes.recoveryScan)
+  ipcMain.handle('node.recoveryRestore', nodes.recoveryRestore)
+  ipcMain.handle('node.recoveryClean', nodes.recoveryClean)
+  ipcMain.handle('node.recoveryCleanAll', nodes.recoveryCleanAll)
+  ipcMain.handle('node.depsAudit', nodes.depsAudit)
+  ipcMain.handle('node.installDeps', nodes.installDeps)
+  ipcMain.handle('node.conflicts', nodes.conflicts)
+  ipcMain.handle('node.smokeTest', nodes.smokeTest)
+  ipcMain.handle('node.snapshots', nodes.snapshots)
+  ipcMain.handle('node.createSnapshot', nodes.createSnapshot)
+  ipcMain.handle('node.deleteSnapshot', nodes.deleteSnapshot)
+  ipcMain.handle('node.restoreSnapshot', nodes.restoreSnapshot)
+  ipcMain.handle('node.checkUpdates', nodes.checkUpdates)
+  ipcMain.handle('node.updateAll', nodes.updateAll)
+  ipcMain.handle('deps.recipes', nodes.depsRecipes)
+  ipcMain.handle('market.list', nodes.marketList)
+  ipcMain.handle('market.install', nodes.marketInstall)
 
-  // node packs
-  ipcMain.handle(
-    'node.list',
-    wrap((instanceId?: string) => {
-      bootMarkFirstList('node.list')
-      return nodePackService.list(safeInstanceId(instanceId))
-    })
-  )
-  ipcMain.handle(
-    'node.refresh',
-    wrap((instanceId?: string) => nodePackService.refresh(safeInstanceId(instanceId)))
-  )
-  ipcMain.handle(
-    'registry.indexStatus',
-    wrap(async () => {
-      const { registryIndex } = await import('../services/registryIndex')
-      return registryIndex.status()
-    })
-  )
-  ipcMain.handle(
-    'registry.refreshIndex',
-    wrap(async () => {
-      const { registryIndex } = await import('../services/registryIndex')
-      return registryIndex.ensure({ force: true })
-    })
-  )
-  ipcMain.handle(
-    'registry.ensureIndex',
-    wrap(async (opts?: { force?: boolean }) => {
-      const { registryIndex } = await import('../services/registryIndex')
-      return registryIndex.ensure({ force: Boolean(opts?.force) })
-    })
-  )
-  ipcMain.handle(
-    'ops.list',
-    wrap(async () => {
-      const { operationRegistry } = await import('../services/ops')
-      return operationRegistry.list()
-    })
-  )
-  ipcMain.handle(
-    'ops.cancel',
-    wrap(async (id: string) => {
-      const { operationRegistry } = await import('../services/ops')
-      return operationRegistry.cancel(String(id))
-    })
-  )
-  ipcMain.handle(
-    'registry.cancelIndex',
-    wrap(async () => {
-      const { registryIndex } = await import('../services/registryIndex')
-      return registryIndex.cancelBuild()
-    })
-  )
-  ipcMain.handle(
-    'node.managerChannel',
-    wrap(() => nodePackService.managerChannelList())
-  )
-  ipcMain.handle(
-    'node.install',
-    wrap(
-      async (opts: {
-        id: string
-        version?: string
-        source: 'registry' | 'git' | 'manager'
-        url?: string
-        branch?: string
-        instanceId?: string
-      }) => {
-        const rec = await nodePackService.install({
-          ...opts,
-          instanceId: requireLocalTarget(opts.instanceId)
-        })
-        broadcastNotification({
-          type: 'success',
-          title: 'Node pack installed',
-          titleKey: 'notify.nodeInstalled',
-          message: `${rec.displayName || rec.name || opts.id} (${rec.version || '?'})`,
-          duration: 5000
-        })
-        // Nodes only load at ComfyUI startup — remind the user to restart.
-        broadcastNotification({
-          type: 'info',
-          title: 'Restart required',
-          titleKey: 'notify.restartRequired',
-          message: 'Restart the instance for the new node pack to take effect.',
-          duration: 8000
-        })
-        return rec
-      }
-    )
-  )
-  ipcMain.handle(
-    'node.uninstall',
-    wrap(async (id: string, instanceId?: string, opts?: { removePipDeps?: boolean }) => {
-      const ok = await nodePackService.uninstall(id, requireLocalTarget(instanceId), opts)
-      if (ok) {
-        broadcastNotification({
-          type: 'success',
-          title: 'Node pack uninstalled',
-          titleKey: 'notify.nodeUninstalled',
-          message: id,
-          duration: 5000
-        })
-      }
-      return ok
-    })
-  )
-  ipcMain.handle(
-    'node.uninstallDeps',
-    wrap((id: string, instanceId?: string) =>
-      nodePackService.pipDeps(id, requireLocalTarget(instanceId))
-    )
-  )
-  ipcMain.handle(
-    'node.cancelOp',
-    wrap((instanceId?: string) => nodePackService.cancelOp(requireLocalTarget(instanceId)))
-  )
-  ipcMain.handle(
-    'node.cancelBatch',
-    wrap((instanceId?: string) => nodePackService.cancelUpdateBatch(requireLocalTarget(instanceId)))
-  )
-  ipcMain.handle(
-    'node.update',
-    wrap(async (id: string, version?: string, instanceId?: string) => {
-      const rec = await nodePackService.update(id, version, requireLocalTarget(instanceId))
-      broadcastNotification({
-        type: 'success',
-        title: 'Node pack updated',
-        titleKey: 'notify.nodeUpdated',
-        message: `${rec.displayName || rec.name || id} (${rec.version || '?'})`,
-        duration: 5000
-      })
-      return rec
-    })
-  )
-  ipcMain.handle(
-    'node.toggle',
-    wrap((id: string, enabled: boolean, instanceId?: string) =>
-      nodePackService.toggle(id, enabled, requireLocalTarget(instanceId))
-    )
-  )
-  ipcMain.handle(
-    'node.lock',
-    wrap((id: string, locked: boolean, instanceId?: string) =>
-      nodePackService.lock(id, locked, requireLocalTarget(instanceId))
-    )
-  )
-  ipcMain.handle(
-    'node.checkIssues',
-    wrap((id: string, instanceId?: string) =>
-      nodePackService.checkIssues(id, requireLocalTarget(instanceId))
-    )
-  )
-  ipcMain.handle(
-    'node.loadReport',
-    wrap((instanceId?: string) => nodePackService.loadReport(safeInstanceId(instanceId)))
-  )
-  ipcMain.handle(
-    'node.opStatus',
-    wrap((instanceId?: string) => nodePackService.getOpProgress(safeInstanceId(instanceId)))
-  )
-  ipcMain.handle(
-    'node.recoveryScan',
-    wrap((instanceId?: string) => nodePackService.scanRecovery(requireLocalTarget(instanceId)))
-  )
-  ipcMain.handle(
-    'node.recoveryRestore',
-    wrap((name: string, instanceId?: string) =>
-      nodePackService.restoreRecovery(name, requireLocalTarget(instanceId))
-    )
-  )
-  ipcMain.handle(
-    'node.recoveryClean',
-    wrap((name: string, instanceId?: string) =>
-      nodePackService.cleanRecovery(name, requireLocalTarget(instanceId))
-    )
-  )
-  ipcMain.handle(
-    'node.depsAudit',
-    wrap((instanceId?: string) => nodePackService.depsAudit(requireLocalInstanceId(instanceId)))
-  )
-  ipcMain.handle(
-    'node.installDeps',
-    wrap(async (id: string, instanceId?: string) => {
-      // Requirements installs mutate THIS machine's venv — remote targets are
-      // refused with a coded error (see requireLocalInstanceId, 0.1.13).
-      const result = await nodePackService.installDeps(id, requireLocalTarget(instanceId))
-      notifyPipResult(result)
-      return result
-    })
-  )
-  ipcMain.handle(
-    'node.conflicts',
-    wrap((instanceId?: string) => nodePackService.conflicts(safeInstanceId(instanceId)))
-  )
-  ipcMain.handle(
-    'node.smokeTest',
-    wrap((id: string, instanceId?: string) =>
-      nodePackService.smokeTest(id, requireLocalTarget(instanceId))
-    )
-  )
-  ipcMain.handle(
-    'node.snapshots',
-    wrap((instanceId?: string) => nodePackService.snapshots(safeInstanceId(instanceId)))
-  )
-  ipcMain.handle(
-    'node.createSnapshot',
-    wrap((name?: string, instanceId?: string) =>
-      nodePackService.createSnapshot(name, requireLocalTarget(instanceId))
-    )
-  )
-  ipcMain.handle(
-    'node.deleteSnapshot',
-    wrap((id: string, instanceId?: string) =>
-      nodePackService.deleteSnapshot(sanitizeId(id), requireLocalTarget(instanceId))
-    )
-  )
-  ipcMain.handle(
-    'node.restoreSnapshot',
-    wrap((id: string, instanceId?: string) =>
-      nodePackService.restoreSnapshot(sanitizeId(id), requireLocalTarget(instanceId))
-    )
-  )
-  ipcMain.handle(
-    'node.checkUpdates',
-    wrap((instanceId?: string) => nodePackService.checkUpdates(requireLocalTarget(instanceId)))
-  )
-  ipcMain.handle(
-    'node.updateAll',
-    wrap(async (instanceId?: string, opts?: import('@shared/types').NodeUpdateAllOptions) => {
-      const target = requireLocalTarget(instanceId)
-      const results = await nodePackService.updateAll(target, opts)
-      if (results.length) {
-        const ok = results.filter((r) => r.ok && !r.skipped).length
-        const fail = results.filter((r) => !r.ok && !r.skipped).length
-        broadcastNotification({
-          type: fail ? 'warning' : 'success',
-          title: fail ? 'Node updates finished with errors' : 'Node updates complete',
-          titleKey: fail ? 'notify.nodeBatchPartial' : 'notify.nodeBatchDone',
-          message: `${ok} updated, ${fail} failed`,
-          messageKey: 'notify.nodeBatchMsg',
-          params: { ok, fail },
-          duration: 7000,
-          // One summary for the whole batch — the per-pack notifications were
-          // the source of the "all unread popped at once" storm.
-          dedupeKey: `node-update-all:${target}`
-        })
-      }
-      return results
-    })
-  )
+  const issues = createIssueHandlers()
+  ipcMain.handle('issue.list', issues.list)
+  ipcMain.handle('issue.scan', issues.scan)
+  ipcMain.handle('issue.dismiss', issues.dismiss)
+  ipcMain.handle('issue.restore', issues.restore)
+  ipcMain.handle('issue.resolve', issues.resolve)
+  ipcMain.handle('issue.installModule', issues.installModule)
+  ipcMain.handle('issue.cleanLeftover', issues.cleanLeftover)
 
-  // issues (0.2.0 IssueCenter)
-  ipcMain.handle(
-    'issue.list',
-    wrap(async (includeResolved?: boolean) => {
-      const { issueHubService } = await import('../services/issueHub')
-      return issueHubService.list(Boolean(includeResolved))
-    })
-  )
-  ipcMain.handle(
-    'issue.scan',
-    wrap(async (instanceId?: string) => {
-      const { issueHubService } = await import('../services/issueHub')
-      return issueHubService.scan(instanceId ? sanitizeId(instanceId) : undefined)
-    })
-  )
-  ipcMain.handle(
-    'issue.dismiss',
-    wrap(async (id: string) => {
-      const { issueHubService } = await import('../services/issueHub')
-      return issueHubService.dismiss(String(id))
-    })
-  )
-  ipcMain.handle(
-    'issue.restore',
-    wrap(async (id: string) => {
-      const { issueHubService } = await import('../services/issueHub')
-      return issueHubService.restore(String(id))
-    })
-  )
-  ipcMain.handle(
-    'issue.resolve',
-    wrap(async (id: string) => {
-      const { issueHubService } = await import('../services/issueHub')
-      return issueHubService.resolve(String(id))
-    })
-  )
+  const workflows = createWorkflowHandlers(ctx)
+  ipcMain.handle('workflow.list', workflows.list)
+  ipcMain.handle('workflow.import', workflows.import)
+  ipcMain.handle('workflow.importMany', workflows.importMany)
+  ipcMain.handle('workflow.tag', workflows.tag)
+  ipcMain.handle('workflow.favorite', workflows.favorite)
+  ipcMain.handle('workflow.rename', workflows.rename)
+  ipcMain.handle('workflow.delete', workflows.remove)
+  ipcMain.handle('workflow.exportZip', workflows.exportZip)
+  ipcMain.handle('workflow.copyToInstance', workflows.copyToInstance)
+  ipcMain.handle('workflow.openInFrontend', workflows.openInFrontend)
+  ipcMain.handle('workflow.reveal', workflows.reveal)
+  ipcMain.handle('workflow.libraryInfo', workflows.libraryInfo)
+  ipcMain.handle('workflow.queue', workflows.queue)
+  ipcMain.handle('workflow.parsePngMeta', workflows.parsePngMeta)
+  ipcMain.handle('workflow.compare', workflows.compare)
+  ipcMain.handle('workflow.preflight', workflows.preflight)
+  ipcMain.handle('workflow.checkModels', workflows.checkModels)
+  ipcMain.handle('workflow.importDefault', workflows.importDefault)
 
-  // workflows
-  ipcMain.handle(
-    'workflow.list',
-    wrap(async (opts?: { includeMissing?: boolean }) => {
-      const list = workflowService.list(opts)
-      // Attach a transient content fingerprint so the renderer can widen the
-      // workflow→outputs filter across duplicate copies (0.1.11).
-      const { fingerprintOfWorkflowFile } = await import('../services/workflowFingerprint')
-      return list.map((w) => ({
-        ...w,
-        contentHash:
-          !w.missing && w.path ? fingerprintOfWorkflowFile(w.path) || undefined : undefined
-      }))
-    })
-  )
-  ipcMain.handle(
-    'workflow.import',
-    wrap((path: string, instanceId?: string, target?: 'instance' | 'library') => {
-      if (!isSafeReadPath(path)) throw new Error('Blocked unsafe workflow path')
-      return workflowService.importFile(path, safeInstanceId(instanceId), target || 'instance')
-    })
-  )
-  ipcMain.handle(
-    'workflow.importMany',
-    wrap(async (paths: string[], instanceId?: string, target?: 'instance' | 'library') => {
-      if (!Array.isArray(paths) || !paths.length) return { ok: [], errors: [] }
-      for (const p of paths) {
-        if (!isSafeReadPath(p)) throw new Error(`Blocked unsafe workflow path: ${basename(p)}`)
-      }
-      return workflowService.importMany(paths, safeInstanceId(instanceId), target || 'instance')
-    })
-  )
-  ipcMain.handle(
-    'workflow.tag',
-    wrap((id: string, tags: string[]) => workflowService.tag(id, tags))
-  )
-  ipcMain.handle(
-    'workflow.favorite',
-    wrap((id: string, favorite: boolean) => workflowService.favorite(id, favorite))
-  )
-  ipcMain.handle(
-    'workflow.rename',
-    wrap((id: string, name: string) => workflowService.rename(id, name))
-  )
-  ipcMain.handle(
-    'workflow.delete',
-    wrap((id: string, opts?: { deleteSource?: boolean }) =>
-      workflowService.remove(sanitizeId(id), opts)
-    )
-  )
-  ipcMain.handle(
-    'workflow.exportZip',
-    wrap(async (id: string, destDir?: string) => {
-      if (destDir) {
-        if (!existsSync(destDir)) throw new Error('Export directory does not exist')
-        const { workflowLibraryDir, cacheDir } = await import('../services/db')
-        const allowed = [
-          join(homedir(), 'Downloads', 'ComfyPilot'),
-          workflowLibraryDir(),
-          cacheDir(),
-          ...loadInstanceConfigs().map((i) => i.path)
-        ].filter(Boolean) as string[]
-        // resolveInsideAnyRoot collapses `..` (lexical prefix checks let
-        // `<allowed>/../Desktop` through on every platform).
-        if (!resolveInsideAnyRoot(destDir, allowed)) {
-          throw new Error('Export directory is outside the allowed roots')
-        }
-      }
-      return workflowService.exportZip(sanitizeId(id), destDir)
-    })
-  )
-  ipcMain.handle(
-    'workflow.copyToInstance',
-    wrap((id: string, instanceId: string) => {
-      // Local instances only — a remote target gets the coded refusal, and
-      // an empty/unresolvable id must never resolve to another instance
-      // (0.1.13).
-      const target = requireLocalInstanceId(instanceId)
-      if (!target) throw new Error('No instance configured')
-      return workflowService.copyToInstance(sanitizeId(id), target)
-    })
-  )
-  /**
-   * ComfyUI must already be up. ComfyPilot NEVER starts an instance on its
-   * own — the user starts it from the Instances page. Anything that needs a
-   * live backend gets a clear refusal instead of a silent auto-launch.
-   */
-  async function requireRunningInstance(instanceId?: string): Promise<{
-    id: string
-    name: string
-    url: string
-  }> {
-    const instances = loadInstanceConfigs()
-    const wanted = instanceId ? safeInstanceId(instanceId) : ''
-    // Explicit instanceId must resolve — and an absent one must NOT fall back
-    // to instances[0] (0.1.18 regression): an untargeted run used to execute on
-    // whatever instance happened to be first.
-    if (!wanted) {
-      const e = new Error('Select a local instance before running') as Error & { code?: string }
-      e.code = 'TARGET_REQUIRED'
-      throw e
-    }
-    const inst = instances.find((i) => i.id === wanted)
-    if (!inst) throw new Error(`Instance not found: ${wanted}`)
-    const host =
-      inst.listen === '0.0.0.0' || inst.listen === '::' || inst.listen === '[::]'
-        ? '127.0.0.1'
-        : inst.listen
-    const url = `http://${host}:${inst.port}`
-    const { ComfyApiClient } = await import('../services/comfyApi')
-    const stats = await new ComfyApiClient(url).systemStats()
-    if (!stats) {
-      throw new Error('Instance is not running — start it on the Instances page first')
-    }
-    return { id: inst.id, name: inst.name, url }
-  }
+  const monitor = createMonitorHandlers()
+  ipcMain.handle('monitor.system', monitor.system)
+  ipcMain.handle('monitor.queue', monitor.queue)
+  ipcMain.handle('monitor.series', monitor.series)
+  ipcMain.handle('monitor.history', monitor.history)
+  ipcMain.handle('monitor.jobs', monitor.jobs)
+  ipcMain.handle('monitor.connectWs', monitor.connectWs)
+  ipcMain.handle('monitor.disconnectWs', monitor.disconnectWs)
+  ipcMain.handle('monitor.clearQueue', monitor.clearQueue)
+  ipcMain.handle('monitor.interrupt', monitor.interrupt)
+  ipcMain.handle('monitor.freeMemory', monitor.freeMemory)
 
-  ipcMain.handle(
-    'workflow.openInFrontend',
-    wrap(async (id: string, instanceId?: string) => {
-      // Refuse BEFORE copying anything when the backend is down.
-      await requireRunningInstance(instanceId)
-      const prepared = await workflowService.prepareFrontend(
-        sanitizeId(id),
-        safeInstanceId(instanceId)
-      )
-      const settings = loadSettings()
-      const mode: 'embed' | 'browser' = settings.embedFrontend === false ? 'browser' : 'embed'
-      if (!isSafeExternalUrl(prepared.url)) throw new Error('Blocked unsafe URL')
-      if (mode === 'embed') {
-        await openEmbedInternal(prepared.url, prepared.instanceName)
-      } else {
-        await shell.openExternal(prepared.url)
-      }
-      return {
-        opened: true,
-        mode,
-        instanceName: prepared.instanceName,
-        url: prepared.url
-      }
-    })
-  )
-  ipcMain.handle(
-    'workflow.reveal',
-    wrap((id: string) => workflowService.reveal(sanitizeId(id)))
-  )
-  ipcMain.handle(
-    'workflow.libraryInfo',
-    wrap((instanceId?: string) => workflowService.libraryInfo(safeInstanceTarget(instanceId)))
-  )
-  ipcMain.handle(
-    'workflow.queue',
-    wrap(async (opts: { workflowPath: string; instanceId: string; seed?: number }) => {
-      if (!isSafeReadPath(opts?.workflowPath)) throw new Error('Blocked unsafe workflow path')
-      const target = safeInstanceTarget(String(opts.instanceId || ''))
-      if (!target) throw new Error('Invalid instance id')
-      // Queueing needs a live backend — local instance or reachable remote.
-      if (target.startsWith('remote:')) {
-        const status = await remoteService.test(target.slice('remote:'.length))
-        if (!status.online) {
-          throw new Error(`Remote instance is offline: ${status.error || target}`)
-        }
-      } else {
-        await requireRunningInstance(target)
-      }
-      return workflowService.queue({
-        workflowPath: opts.workflowPath,
-        instanceId: target,
-        seed: opts.seed
-      })
-    })
-  )
-  ipcMain.handle(
-    'workflow.parsePngMeta',
-    wrap((path: string) => {
-      if (!isSafeReadPath(path)) throw new Error('Blocked unsafe image path')
-      return workflowService.parsePngMeta(path)
-    })
-  )
-  ipcMain.handle(
-    'workflow.compare',
-    wrap((idA: string, idB: string) => workflowService.compare(sanitizeId(idA), sanitizeId(idB)))
-  )
-  ipcMain.handle(
-    'workflow.preflight',
-    wrap(async (workflowPath: string, instanceId: string) => {
-      if (!isSafeReadPath(workflowPath)) throw new Error('Blocked unsafe workflow path')
-      const target = safeInstanceTarget(String(instanceId || ''))
-      if (!target) throw new Error('Invalid instance id')
-      if (target.startsWith('remote:')) {
-        // Remote object_info needs auth headers; capabilityService probes local
-        // instances only — report honestly as unavailable rather than guessing.
-        return {
-          available: false,
-          missingTypes: [],
-          nodeTypes: 0,
-          error: 'Preflight is only available for local instances'
-        }
-      }
-      const { preflightService } = await import('../services/preflight')
-      return preflightService.workflow(workflowPath, target)
-    })
-  )
-  ipcMain.handle(
-    'workflow.checkModels',
-    wrap(async (workflowPath: string, instanceId?: string) => {
-      if (!isSafeReadPath(workflowPath)) throw new Error('Blocked unsafe workflow path')
-      const target = safeInstanceTarget(instanceId)
-      const { preflightService } = await import('../services/preflight')
-      return preflightService.models(workflowPath, target)
-    })
-  )
-  ipcMain.handle(
-    'workflow.importDefault',
-    wrap(async (opts: { instanceId: string; target?: 'instance' | 'library' }) => {
-      const raw = String(opts?.instanceId || '')
-      if (!raw) throw new Error('No instance selected')
-      const target = safeInstanceTarget(raw)
-      if (!target || target.startsWith('remote:')) {
-        // Local-only: remote auth surface for graph fetches stays out of scope,
-        // matching every other instance-targeted workflow import.
-        throw new Error('Default workflow import is only available for local instances')
-      }
-      // The default workflow lives on the RUNNING server — never auto-start.
-      await requireRunningInstance(target)
-      return workflowService.importDefaultFromInstance(target, opts?.target || 'instance')
-    })
-  )
+  const doctor = createDoctorHandlers()
+  ipcMain.handle('doctor.run', doctor.run)
+  ipcMain.handle('doctor.cancel', doctor.cancel)
+  ipcMain.handle('doctor.fix', doctor.fix)
 
-  // monitor
-  ipcMain.handle(
-    'monitor.system',
-    wrap(() => monitorService.systemSnapshot())
-  )
-  ipcMain.handle(
-    'monitor.queue',
-    wrap((baseUrl?: string) => {
-      if (baseUrl && !isTrustedComfyUrl(baseUrl)) throw new Error('Blocked untrusted monitor URL')
-      return monitorService.queueSnapshot(baseUrl)
-    })
-  )
-  ipcMain.handle(
-    'monitor.series',
-    wrap(() => monitorService.seriesSnapshot())
-  )
-  ipcMain.handle(
-    'monitor.history',
-    wrap((baseUrl?: string) => {
-      if (baseUrl && !isTrustedComfyUrl(baseUrl)) throw new Error('Blocked untrusted monitor URL')
-      return monitorService.history(baseUrl)
-    })
-  )
-  ipcMain.handle(
-    'monitor.jobs',
-    wrap((baseUrl?: string) => {
-      if (baseUrl && !isTrustedComfyUrl(baseUrl)) throw new Error('Blocked untrusted monitor URL')
-      return monitorService.jobsSnapshot(baseUrl)
-    })
-  )
-  ipcMain.handle(
-    'monitor.connectWs',
-    wrap((baseUrl: string) => {
-      if (!isTrustedComfyUrl(baseUrl)) throw new Error('Blocked untrusted monitor URL')
-      return monitorService.connectWs(baseUrl)
-    })
-  )
-  ipcMain.handle(
-    'monitor.disconnectWs',
-    wrap(() => {
-      monitorService.disconnectWs()
-      return true
-    })
-  )
-  // Runtime operations (0.1.15): same trusted-URL gate as every monitor call;
-  // the service re-validates (assertMonitorBaseUrl) and attaches remote auth.
-  ipcMain.handle(
-    'monitor.clearQueue',
-    wrap((baseUrl: string) => {
-      if (!isTrustedComfyUrl(baseUrl)) throw new Error('Blocked untrusted monitor URL')
-      return monitorService.clearQueue(baseUrl)
-    })
-  )
-  ipcMain.handle(
-    'monitor.interrupt',
-    wrap((baseUrl: string, promptId?: string) => {
-      if (!isTrustedComfyUrl(baseUrl)) throw new Error('Blocked untrusted monitor URL')
-      return monitorService.interrupt(baseUrl, promptId ? String(promptId) : undefined)
-    })
-  )
-  ipcMain.handle(
-    'monitor.freeMemory',
-    wrap((baseUrl: string) => {
-      if (!isTrustedComfyUrl(baseUrl)) throw new Error('Blocked untrusted monitor URL')
-      return monitorService.freeMemory(baseUrl)
-    })
-  )
+  const backup = createBackupHandlers()
+  ipcMain.handle('backup.list', backup.list)
+  ipcMain.handle('backup.create', backup.create)
+  ipcMain.handle('backup.preview', backup.preview)
+  ipcMain.handle('backup.restore', backup.restore)
+  ipcMain.handle('backup.delete', backup.remove)
+  ipcMain.handle('backup.openFolder', backup.openFolder)
 
-  // doctor
-  ipcMain.handle(
-    'doctor.run',
-    wrap(async (instanceId: string) => {
-      if (doctorAbort) {
-        const e = new Error('A health check is already running') as Error & { code?: string }
-        e.code = 'OP_IN_PROGRESS'
-        throw e
-      }
-      const ac = new AbortController()
-      doctorAbort = ac
-      try {
-        return await doctorService.run(requireLocalTarget(instanceId), { signal: ac.signal })
-      } finally {
-        if (doctorAbort === ac) doctorAbort = null
-      }
-    })
-  )
-  ipcMain.handle(
-    'doctor.cancel',
-    wrap(() => {
-      if (!doctorAbort) return false
-      doctorAbort.abort()
-      return true
-    })
-  )
-  ipcMain.handle(
-    'doctor.fix',
-    wrap((instanceId: string, fixId: string) =>
-      doctorService.fix(requireLocalTarget(instanceId), fixId)
-    )
-  )
+  const batch = createBatchHandlers()
+  ipcMain.handle('batch.list', batch.list)
+  ipcMain.handle('batch.create', batch.create)
+  ipcMain.handle('batch.start', batch.start)
+  ipcMain.handle('batch.resume', batch.resume)
+  ipcMain.handle('batch.retryFailed', batch.retryFailed)
+  ipcMain.handle('batch.wait', batch.wait)
+  ipcMain.handle('batch.cancel', batch.cancel)
+  ipcMain.handle('batch.cancelItem', batch.cancelItem)
+  ipcMain.handle('batch.remove', batch.remove)
+  ipcMain.handle('batch.preflight', batch.preflight)
 
-  // backup
-  ipcMain.handle(
-    'backup.list',
-    wrap(() => backupService.list())
-  )
-  ipcMain.handle(
-    'backup.create',
-    wrap((opts: { name: string; notes?: string }) => backupService.create(opts))
-  )
-  ipcMain.handle(
-    'backup.preview',
-    wrap((id: string) => backupService.preview(sanitizeId(id)))
-  )
-  ipcMain.handle(
-    'backup.restore',
-    wrap(
-      async (id: string, opts?: { sections?: import('@shared/types').BackupRestoreSection[] }) => {
-        const result = backupService.restore(sanitizeId(id), opts)
-        if (result.ok) {
-          broadcastNotification({
-            type: 'success',
-            title: 'Backup restored',
-            titleKey: 'notify.backupRestored',
-            message:
-              'Settings / instances / node packs / model manifests / workflows / remotes have been restored. Reload views to see changes.',
-            duration: 6000
-          })
-        }
-        return result
-      }
-    )
-  )
-  ipcMain.handle(
-    'backup.delete',
-    wrap((id: string) => backupService.delete(sanitizeId(id)))
-  )
-  ipcMain.handle(
-    'backup.openFolder',
-    wrap(async (id: string) => {
-      const folder = backupService.openFolder(sanitizeId(id))
-      return shell.openPath(folder).then((r) => r === '')
-    })
-  )
+  const output = createOutputHandlers()
+  ipcMain.handle('output.scan', output.scan)
+  ipcMain.handle('output.scanCancel', output.scanCancel)
+  ipcMain.handle('output.list', output.list)
+  ipcMain.handle('output.thumb', output.thumb)
+  ipcMain.handle('output.assetsMatch', output.assetsMatch)
+  ipcMain.handle('output.open', output.open)
+  ipcMain.handle('output.reveal', output.reveal)
+  ipcMain.handle('output.favorite', output.favorite)
+  ipcMain.handle('output.delete', output.remove)
+  ipcMain.handle('output.batchDelete', output.batchDelete)
+  ipcMain.handle('output.importToWorkflow', output.importToWorkflow)
+  ipcMain.handle('output.exportZip', output.exportZip)
 
-  // env
-  ipcMain.handle(
-    'env.probe',
-    wrap((opts: { pythonPath: string; venvPath?: string }) => {
-      if (opts?.pythonPath) assertApprovedExecutable(opts.pythonPath, 'pythonPath')
-      return envService.probe(opts)
-    })
-  )
-  ipcMain.handle(
-    'env.createVenv',
-    wrap((req: EnvCreateRequest) => envService.createVenv(req))
-  )
-  ipcMain.handle(
-    'env.listPythons',
-    wrap(() => envService.listPythons())
-  )
-  ipcMain.handle(
-    'env.installTorch',
-    wrap((opts: { pythonPath: string; index: string }) => envService.installTorch(opts))
-  )
-  ipcMain.handle(
-    'deps.recipes',
-    wrap(() => PIP_RECIPES)
-  )
+  const remote = createRemoteHandlers()
+  ipcMain.handle('remote.list', remote.list)
+  ipcMain.handle('remote.save', remote.save)
+  ipcMain.handle('remote.setApiKey', remote.setApiKey)
+  ipcMain.handle('remote.clearApiKey', remote.clearApiKey)
+  ipcMain.handle('remote.remove', remote.remove)
+  ipcMain.handle('remote.test', remote.test)
+  ipcMain.handle('remote.listStatus', remote.listStatus)
+  ipcMain.handle('remote.freeMemory', remote.freeMemory)
 
-  // installer
-  ipcMain.handle(
-    'installer.detectGpu',
-    wrap(() => installerService.detectGpu())
-  )
-  ipcMain.handle(
-    'installer.preflight',
-    wrap(
-      (opts: {
-        installRoot: string
-        useUv: boolean
-        pythonPath?: string
-        torchChannel?: string
-      }) => {
-        assertApprovedInstallRoot(opts.installRoot)
-        if (opts.pythonPath)
-          assertApprovedExecutable(opts.pythonPath, 'pythonPath', opts.installRoot)
-        return installerService.preflight(opts as Parameters<typeof installerService.preflight>[0])
-      }
-    )
-  )
-  ipcMain.handle(
-    'installer.start',
-    wrap((plan: InstallPlan) => {
-      if (!plan || typeof plan !== 'object') throw new Error('Invalid install plan')
-      assertApprovedInstallRoot(plan.installRoot)
-      if (plan.pythonPath) assertApprovedExecutable(plan.pythonPath, 'pythonPath', plan.installRoot)
-      return installerService.start(plan)
-    })
-  )
-  ipcMain.handle(
-    'installer.status',
-    wrap(() => installerService.getStatus())
-  )
-  ipcMain.handle(
-    'installer.cancel',
-    wrap(() => installerService.cancel())
-  )
-  ipcMain.handle(
-    'installer.reset',
-    wrap(() => {
-      // 0.1.17 (WP1): user-facing escape hatch for a run stuck as "running"
-      // (app killed mid-install). Clears the persisted snapshot only.
-      installerService.reset()
-      return true
-    })
-  )
-  ipcMain.handle(
-    'installer.suggestInstallRoot',
-    wrap(() => installerService.suggestInstallRoot())
-  )
-  ipcMain.handle(
-    'installer.starterModels',
-    wrap(() => listStarterModels())
-  )
-  ipcMain.handle(
-    'installer.installStarter',
-    wrap((opts: { id: string; instanceId?: string }) => installerService.installStarter(opts))
-  )
-
-  // runtime bootstrap
-  ipcMain.handle(
-    'bootstrap.status',
-    wrap(() => bootstrapService.status())
-  )
-  ipcMain.handle(
-    'bootstrap.ensure',
-    wrap((opts?: { kinds?: string[]; downloadIfMissing?: boolean }) =>
-      bootstrapService.ensure(opts as Parameters<typeof bootstrapService.ensure>[0])
-    )
-  )
-  ipcMain.handle(
-    'bootstrap.download',
-    wrap((kind: string) => bootstrapService.download(kind as never))
-  )
-
-  // network probe → fastest mirrors
-  ipcMain.handle(
-    'net.recommendMirrors',
-    wrap(async () => {
-      const { recommendMirrors } = await import('../services/netProbe')
-      return recommendMirrors()
-    })
-  )
-
-  // launch script export
-  ipcMain.handle(
-    'instance.exportLaunchScript',
-    wrap(async (id: string, opts?: { dir?: string; kind?: 'bat' | 'sh' }) => {
-      const { instanceService } = await import('../services/instance')
-      // 0.1.17 (WP8): `dir` came from the renderer and was joined unchecked, so
-      // a compromised renderer could drop a .bat into an autostart folder.
-      // Only app-owned / reachable roots are honoured; anything else falls back
-      // to the user-facing save dialog (which the UI always uses anyway).
-      let dir = opts?.dir
-      if (dir) {
-        const allowed = resolveInsideAnyRoot(dir, await collectRevealRoots())
-        if (!allowed) dir = undefined
-      }
-      return instanceService.exportLaunchScript(sanitizeId(id), { ...opts, dir })
-    })
-  )
-
-  // batch
-  ipcMain.handle(
-    'batch.list',
-    wrap(() => batchService.list())
-  )
-  ipcMain.handle(
-    'batch.create',
-    wrap(
-      (input: {
-        name: string
-        instanceId: string
-        items: Array<{
-          workflowId?: string
-          workflowName?: string
-          workflowPath: string
-          count: number
-        }>
-        notes?: string
-        params?: import('@shared/types').BatchParamOverrides
-      }) => {
-        for (const it of input.items || []) {
-          if (!it.workflowPath || !isSafeReadPath(it.workflowPath)) {
-            throw new Error(
-              `Blocked unsafe workflow path: ${basename(it.workflowPath || '(empty)')}`
-            )
-          }
-        }
-        return batchService.create({
-          ...input,
-          instanceId: safeInstanceTarget(input.instanceId) || input.instanceId
-        })
-      }
-    )
-  )
-  /**
-   * Shared launcher (0.1.17 WP5-7): the IPC call returns as soon as the run is
-   * accepted, the terminal notification is attached to the same promise, and
-   * `batch.wait` can await it from the UI. A long batch no longer holds the
-   * request open (which made the window look frozen until the last image).
-   */
-  const launchBatch = async (
-    safeId: string,
-    kick: () => BatchJob | Promise<BatchJob>
-  ): Promise<BatchJob> => {
-    const target = await requireBatchTarget(safeId)
-    let initial: BatchJob
-    try {
-      initial = await kick()
-    } catch (e) {
-      broadcastNotification({
-        type: 'error',
-        title: `Batch failed: ${target.name}`,
-        titleKey: 'notify.batchFailed',
-        params: { name: target.name },
-        message: e instanceof Error ? e.message : String(e),
-        duration: 8000
-      })
-      throw e
-    }
-    void batchService
-      .wait(safeId)
-      .then((settled) => {
-        if (settled) notifyBatchTerminal(settled)
-      })
-      .catch(() => undefined)
-    return initial
-  }
-
-  ipcMain.handle(
-    'batch.start',
-    wrap(async (id: string) => {
-      const safeId = sanitizeId(id)
-      return launchBatch(safeId, () => batchService.startAsync(safeId))
-    })
-  )
-  // 0.1.17 (WP5): continue an interrupted job / retry only its failed legs.
-  ipcMain.handle(
-    'batch.resume',
-    wrap(async (id: string) => {
-      const safeId = sanitizeId(id)
-      return launchBatch(safeId, () => batchService.resumeAsync(safeId))
-    })
-  )
-  ipcMain.handle(
-    'batch.retryFailed',
-    wrap(async (id: string) => {
-      const safeId = sanitizeId(id)
-      return launchBatch(safeId, () => batchService.retryFailedAsync(safeId))
-    })
-  )
-  // 0.1.17 (WP5-7): settle without polling.
-  ipcMain.handle(
-    'batch.wait',
-    wrap((id: string) =>
-      // A long batch is a legitimate wait, not a frozen main process.
-      withPausedSlowOp(() => batchService.wait(sanitizeId(id)))
-    )
-  )
-  ipcMain.handle(
-    'batch.cancel',
-    wrap((id: string) => batchService.cancel(sanitizeId(id)))
-  )
-  ipcMain.handle(
-    'batch.cancelItem',
-    wrap((id: string, workflowPath: string) =>
-      batchService.cancelItem(sanitizeId(id), String(workflowPath || ''))
-    )
-  )
-  ipcMain.handle(
-    'batch.remove',
-    wrap((id: string) => batchService.remove(sanitizeId(id)))
-  )
-  ipcMain.handle(
-    'batch.preflight',
-    wrap(async (opts: { workflowPaths: string[]; instanceId: string }) => {
-      const paths = Array.isArray(opts?.workflowPaths) ? opts.workflowPaths : []
-      for (const p of paths) {
-        if (!isSafeReadPath(p)) throw new Error(`Blocked unsafe workflow path: ${basename(p)}`)
-      }
-      const target = safeInstanceTarget(String(opts?.instanceId || ''))
-      if (!target || target.startsWith('remote:')) {
-        return {
-          available: false,
-          missingTypes: [],
-          perWorkflow: paths.map((p) => ({
-            workflowPath: p,
-            name: basename(p),
-            missingTypes: [],
-            error: 'Preflight is only available for local instances'
-          })),
-          error: 'Preflight is only available for local instances'
-        }
-      }
-      const { preflightService } = await import('../services/preflight')
-      return preflightService.batch(paths, target)
-    })
-  )
-
-  // output
-  // 0.1.17 (WP7): explicit disk scan, separate from listing. The async walk
-  // yields between directories, reports progress and can be cancelled — the
-  // old synchronous walk froze every IPC call for the whole 13 GB tree.
-  ipcMain.handle(
-    'output.scan',
-    wrap(async (opts?: { root?: string }) => {
-      const { outputService } = await import('../services/p1p2')
-      let root = opts?.root
-      if (root) {
-        const { workflowLibraryDir } = await import('../services/db')
-        const { resolveOutputDir } = await import('../services/p1p2')
-        const allowed = [
-          workflowLibraryDir(),
-          ...loadInstanceConfigs().map((i) => resolveOutputDir(i)),
-          ...loadInstanceConfigs().map((i) => join(i.path, 'user', 'default', 'workflows'))
-        ].filter(Boolean) as string[]
-        const resolved = resolveInsideAnyRoot(root, allowed)
-        if (!resolved) throw new Error('Output root is outside the allowed areas')
-        root = resolved
-      }
-      // 0.1.18 (WP5): scans appear in the shell task center and can be
-      // stopped from there, not only from the output page.
-      const { operationRegistry } = await import('../services/ops')
-      const op = operationRegistry.begin({
-        id: 'output-scan:local',
-        kind: 'output-scan',
-        target: 'local',
-        percent: null,
-        cancel: () => {
-          outputService.cancelScan()
-          return true
-        }
-      })
-      try {
-        const result = await outputService.scanAsync(root, (p) => {
-          broadcast(IPC_EVENTS.outputScanProgress, p)
-          // The walk has no upfront file count — honest indeterminate progress.
-          op.update({ detail: `${p.scanned} files`, percent: null })
-        })
-        op.finish(result.cancelled ? 'cancelled' : 'done')
-        return { scanned: result.scanned, cancelled: result.cancelled }
-      } catch (e) {
-        op.finish('failed', e instanceof Error ? e.message : String(e))
-        throw e
-      }
-    })
-  )
-  ipcMain.handle(
-    'output.scanCancel',
-    wrap(async () => {
-      const { outputService } = await import('../services/p1p2')
-      outputService.cancelScan()
-      return true
-    })
-  )
-  ipcMain.handle(
-    'output.list',
-    wrap(
-      async (opts?: {
-        root?: string
-        type?: string
-        limit?: number
-        offset?: number
-        favorite?: boolean
-        batchJobId?: string
-        workflowId?: string
-        workflowIds?: string[]
-        sort?: 'createdAt' | 'size' | 'name'
-        order?: 'asc' | 'desc'
-        createdFrom?: number
-        createdTo?: number
-      }) => {
-        // Renderer-supplied root must sit inside an allow-listed output area.
-        if (opts?.root) {
-          const { workflowLibraryDir } = await import('../services/db')
-          const { resolveOutputDir } = await import('../services/p1p2')
-          const allowed = [
-            workflowLibraryDir(),
-            ...loadInstanceConfigs().map((i) => resolveOutputDir(i)),
-            ...loadInstanceConfigs().map((i) => join(i.path, 'user', 'default', 'workflows'))
-          ].filter(Boolean) as string[]
-          // Per-segment normalization + resolve so `..` hops can't escape the
-          // allow-list (0.1.9; the old prefix check was lexical-only).
-          if (!resolveInsideAnyRoot(opts.root, allowed)) {
-            throw new Error('Output root is outside the allowed areas')
-          }
-        }
-        const { thumbnailDisplayUrl, toMediaUrl, resolveMediaUrlToPath } =
-          await import('../services/media')
-        const { existsSync } = await import('fs')
-        // 0.1.17 (WP7): cap the page size and never scan here — scanning is an
-        // explicit `output.scan` (a page of 200 thumbs used to rewrite the
-        // whole index once per thumbnail).
-        const result = outputService.list({
-          ...opts,
-          limit: Math.max(1, Math.min(Number(opts?.limit) || 60, 200))
-        })
-        // 0.1.18 (WP4): NO thumbnail generation here. Producing up to 60
-        // downscales inside the IPC call cost 2.6 s before the first row could
-        // paint. Existing thumbs are resolved synchronously; missing ones are
-        // flagged `thumbPending` and fetched one-by-one via `output.thumb`.
-        const items = result.items.map((a) => {
-          let thumb: string | undefined
-          if (a.thumbnail) {
-            if (a.thumbnail.startsWith('comfy-pilot-media:')) {
-              thumb = resolveMediaUrlToPath(a.thumbnail) ? a.thumbnail : undefined
-            } else if (existsSync(a.thumbnail)) {
-              thumb = thumbnailDisplayUrl(a.thumbnail) || undefined
-            }
-          }
-          // Only advertise media URLs for files that still exist — a stale DB
-          // row for a deleted output must not produce a 403ing <img>/<video>.
-          const mediaUrl = existsSync(a.path) ? toMediaUrl(a.path) || undefined : undefined
-          return {
-            ...a,
-            // Images may fall back to the full-size URL until the lazy thumb
-            // arrives; videos render <video> directly (no raster thumb).
-            thumbnail: thumb || (a.type === 'image' ? mediaUrl : undefined),
-            mediaUrl,
-            thumbPending: !thumb && a.type === 'image'
-          }
-        })
-        return { ...result, items }
-      }
-    )
-  )
-  ipcMain.handle(
-    'output.thumb',
-    wrap(async (path: string) => {
-      // 0.1.18 (WP4): on-demand thumbnail for one already-listed asset. The
-      // path must stay inside the output/reveal allow-list — this must never
-      // become a generic "rasterize any path" primitive.
-      const allowed = resolveInsideAnyRoot(path, await collectRevealRoots())
-      if (!allowed) throw new Error('Blocked thumbnail path outside allowed areas')
-      const { thumbnailDisplayUrl, thumbnailService } = await import('../services/media')
-      const generated = await thumbnailService.ensureOutputThumb(allowed)
-      return { url: generated ? thumbnailDisplayUrl(generated) || undefined : undefined }
-    })
-  )
-  ipcMain.handle(
-    'output.assetsMatch',
-    wrap(async (instanceId: string, fileName: string) => {
-      // Read-only assets-system lookup (0.1.14); never throws — null means
-      // "assets API unavailable", [] means "no match".
-      const { matchAssetsByFileName } = await import('../services/assetsApi')
-      return matchAssetsByFileName(instanceId, fileName)
-    })
-  )
-  ipcMain.handle(
-    'output.open',
-    wrap(async (path: string) => {
-      const roots = [...(await collectRevealRoots()), ...approvedReadRoots]
-      const real = realpathUnderAnyRoot(path, roots)
-      if (!real || !isSafeOpenPathUnderRoots(real, roots)) {
-        throw new Error('Blocked opening file outside allowed areas')
-      }
-      return shell.openPath(real).then((r) => r === '')
-    })
-  )
-  ipcMain.handle(
-    'output.reveal',
-    wrap(async (path: string) => {
-      // Same allow-list as shell.reveal — the outputs library must not become
-      // a weaker second door into the filesystem (0.1.9). A symlink inside an
-      // output root must resolve to a real target that is still inside a root.
-      const roots = [...(await collectRevealRoots()), ...approvedReadRoots]
-      const real = realpathUnderAnyRoot(path, roots)
-      if (!real) throw new Error('Blocked revealing path outside allowed areas')
-      shell.showItemInFolder(real)
-      return true
-    })
-  )
-  ipcMain.handle(
-    'output.favorite',
-    wrap((id: string, favorite: boolean) => outputService.favorite(id, favorite))
-  )
-  ipcMain.handle(
-    'output.delete',
-    wrap((id: string, deleteFile: boolean) =>
-      outputService.remove(sanitizeId(id), Boolean(deleteFile))
-    )
-  )
-  ipcMain.handle(
-    'output.batchDelete',
-    wrap((ids: string[], deleteFile: boolean) => {
-      if (!Array.isArray(ids) || !ids.length) throw new Error('No files selected')
-      return outputService.batchRemove(ids.map(String), Boolean(deleteFile))
-    })
-  )
-  ipcMain.handle(
-    'output.importToWorkflow',
-    wrap(async (path: string, instanceId?: string): Promise<WorkflowRecord | null> => {
-      if (!isSafeReadPath(path)) throw new Error('Blocked unsafe image path')
-      return outputService.importToWorkflow(path, safeInstanceId(instanceId))
-    })
-  )
-  ipcMain.handle(
-    'output.exportZip',
-    wrap(async (paths: string[], destDir?: string) => {
-      if (!Array.isArray(paths) || !paths.length) throw new Error('No files selected')
-      const sourceRoots = [...(await collectRevealRoots()), ...approvedReadRoots]
-      for (const p of paths) {
-        // 0.2.0: an archive source is a READ of a real file. It must resolve
-        // under an app-owned/output root; the old `isSafeOpenPath` fallback
-        // allowed exporting ANY extension-less file on disk.
-        if (!isSafeExportSourcePath(p, sourceRoots)) {
-          throw new Error(`Blocked unsafe path: ${basename(p)}`)
-        }
-      }
-      if (destDir) {
-        if (!existsSync(destDir)) throw new Error('Export directory does not exist')
-        const { workflowLibraryDir, cacheDir } = await import('../services/db')
-        const allowed = [
-          join(homedir(), 'Downloads', 'ComfyPilot'),
-          workflowLibraryDir(),
-          cacheDir(),
-          ...loadInstanceConfigs().map((i) => i.path)
-        ].filter(Boolean) as string[]
-        // resolveInsideAnyRoot collapses `..` (lexical prefix checks let
-        // `<allowed>/../Desktop` through on every platform).
-        if (!resolveInsideAnyRoot(destDir, allowed)) {
-          throw new Error('Export directory is outside the allowed roots')
-        }
-      }
-      return outputService.exportZip(paths, destDir)
-    })
-  )
-
-  // remote
-  ipcMain.handle(
-    'remote.list',
-    wrap(() => listRemoteSummaries())
-  )
-  ipcMain.handle(
-    'remote.save',
-    wrap((config: RemoteInstanceConfig) => {
-      if (!config?.baseUrl || !isSafeExternalUrl(config.baseUrl)) {
-        throw new Error('Remote baseUrl must be a valid http(s) URL')
-      }
-      // The renderer never receives the secret; a blank field therefore means
-      // "keep the existing key" (origin-checked inside upsertRemote), not
-      // "clear it". Clearing has an explicit channel.
-      if (config.apiKey && /[\r\n\0]/.test(config.apiKey)) throw new Error('Invalid apiKey')
-      const { apiKey: _ignored, ...safe } = config
-      const saved = remoteService.save(safe)
-      return remoteSummary(remoteService.list().find((r) => r.id === saved.id) || saved)
-    })
-  )
-  ipcMain.handle(
-    'remote.setApiKey',
-    wrap((id: string, apiKey: string) => {
-      if (typeof apiKey !== 'string' || /[\r\n\0]/.test(apiKey)) {
-        throw new Error('Invalid apiKey')
-      }
-      setRemoteApiKey(sanitizeId(id), apiKey)
-      return { ok: true }
-    })
-  )
-  ipcMain.handle(
-    'remote.clearApiKey',
-    wrap((id: string) => {
-      clearRemoteApiKey(sanitizeId(id))
-      return { ok: true }
-    })
-  )
-  ipcMain.handle(
-    'remote.remove',
-    wrap((id: string) => remoteService.remove(sanitizeId(id)))
-  )
-  ipcMain.handle(
-    'remote.test',
-    wrap((id: string) => remoteService.test(id))
-  )
-  ipcMain.handle(
-    'remote.listStatus',
-    wrap(() => remoteService.listStatus())
-  )
-  ipcMain.handle(
-    'remote.freeMemory',
-    wrap(async (id: string) => {
-      const remote = remoteService.list().find((r) => r.id === sanitizeId(id))
-      if (!remote) throw new Error('Remote not found')
-      const { ComfyApiClient } = await import('../services/comfyApi')
-      const ok = await new ComfyApiClient(remote.baseUrl, {
-        headers: remote.apiKey ? { Authorization: `Bearer ${remote.apiKey}` } : undefined
-      }).freeMemory()
-      return ok ? { ok: true } : { ok: false, error: 'Instance did not accept /free' }
-    })
-  )
-  ipcMain.handle(
-    'app.checkUpdate',
-    wrap(async () => {
-      const { checkAppUpdate } = await import('../services/appUpdate')
-      return checkAppUpdate()
-    })
-  )
-  ipcMain.handle(
-    'app.updateStatus',
-    wrap(async () => {
-      const { getLastAppUpdateStatus } = await import('../services/appUpdate')
-      return getLastAppUpdateStatus()
-    })
-  )
-  ipcMain.handle(
-    'app.installUpdate',
-    wrap(async () => {
-      const { installAppUpdate } = await import('../services/appUpdate')
-      return installAppUpdate()
-    })
-  )
-  ipcMain.handle(
-    'app.previousExit',
-    wrap(async () => {
-      const { getPreviousExitInfo } = await import('../services/session')
-      return getPreviousExitInfo()
-    })
-  )
-  ipcMain.handle(
-    'app.exportDiagnostics',
-    wrap(async () => {
-      const { exportAppDiagnostics } = await import('../services/session')
-      return { path: exportAppDiagnostics() }
-    })
-  )
-
-  // market
-  ipcMain.handle(
-    'market.list',
-    wrap(
-      (opts?: {
-        query?: string
-        category?: string
-        limit?: number
-        page?: number
-        instanceId?: string
-      }) => marketService.list({ ...opts, instanceId: safeInstanceId(opts?.instanceId) })
-    )
-  )
-  ipcMain.handle(
-    'market.install',
-    wrap(
-      async (opts: {
-        id: string
-        version?: string
-        repository?: string
-        instanceId?: string
-      }): Promise<NodePackRecord> => {
-        const rec = await nodePackService.install({
-          id: opts.id,
-          version: opts.version,
-          source: 'registry',
-          repository: opts.repository,
-          // 0.1.18 (regression): market.install used the unchecked sanitizer,
-          // so the same button enforced the target differently per tab.
-          instanceId: requireLocalTarget(opts.instanceId)
-        })
-        broadcastNotification({
-          type: 'success',
-          title: 'Node pack installed',
-          titleKey: 'notify.nodeInstalled',
-          message: `${rec.displayName || rec.name || opts.id} (${rec.version || '?'})`,
-          duration: 5000
-        })
-        return rec
-      }
-    )
-  )
-
-  // shell
-  ipcMain.handle(
-    'shell.openExternal',
-    wrap(async (url: string) => {
-      if (!isSafeExternalUrl(url)) throw new Error(`Blocked unsafe URL: ${url.slice(0, 40)}`)
-      await shell.openExternal(url)
-      return true
-    })
-  )
-  ipcMain.handle(
-    'shell.openPath',
-    wrap(async (path: string) => {
-      if (!isSafeOpenPath(path) || hasExecutableMagic(path)) {
-        throw new Error('Blocked opening executable/script file')
-      }
-      // Opening a file hands it to the OS. Restrict to app-owned/picked roots.
-      const roots = [...(await collectRevealRoots()), ...approvedReadRoots]
-      const real = realpathUnderAnyRoot(path, roots)
-      if (!real) throw new Error('Blocked opening path outside allowed areas')
-      const result = await shell.openPath(real)
-      return result === ''
-    })
-  )
-  ipcMain.handle(
-    'shell.reveal',
-    wrap(async (path: string) => {
-      if (!path || path.includes('\0')) throw new Error('Blocked unsafe path')
-      // 0.2.0: realpath containment so a symlink inside an allowed folder
-      // cannot reveal an arbitrary target.
-      const roots = await collectRevealRoots()
-      const real = realpathUnderAnyRoot(path, roots)
-      if (!real) throw new Error('Blocked revealing path outside allowed areas')
-      shell.showItemInFolder(real)
-      return true
-    })
-  )
-  ipcMain.handle(
-    'shell.pickDirectory',
-    wrap(async () => {
-      const win = getWindow()
-      const res = win
-        ? await dialog.showOpenDialog(win, { properties: ['openDirectory'] })
-        : await dialog.showOpenDialog({ properties: ['openDirectory'] })
-      const chosen = res.canceled ? null : res.filePaths[0]
-      approveReadPath(chosen)
-      return chosen
-    })
-  )
-  ipcMain.handle(
-    'shell.pickFile',
-    wrap(async (opts?: { filters?: Array<{ name: string; extensions: string[] }> }) => {
-      const win = getWindow()
-      const options = { properties: ['openFile' as const], filters: opts?.filters }
-      const res = win
-        ? await dialog.showOpenDialog(win, options)
-        : await dialog.showOpenDialog(options)
-      const chosen = res.canceled ? null : res.filePaths[0]
-      approveReadPath(chosen)
-      return chosen
-    })
-  )
-  ipcMain.handle(
-    'shell.pickFiles',
-    wrap(async (opts?: { filters?: Array<{ name: string; extensions: string[] }> }) => {
-      const win = getWindow()
-      const options = {
-        properties: ['openFile' as const, 'multiSelections' as const],
-        filters: opts?.filters
-      }
-      const res = win
-        ? await dialog.showOpenDialog(win, options)
-        : await dialog.showOpenDialog(options)
-      const files = res.canceled ? [] : res.filePaths
-      for (const f of files) approveReadPath(f)
-      return files
-    })
-  )
-  ipcMain.handle(
-    'shell.writeClipboard',
-    wrap((text: string) => {
-      clipboard.writeText(text)
-      return true
-    })
-  )
-
-  // embed
-  ipcMain.handle(
-    'embed.open',
-    wrap((opts: { url: string; title?: string }) => openEmbedInternal(opts.url, opts.title))
-  )
-
-  ipcMain.handle(
-    'embed.resize',
-    wrap((rect: { x: number; y: number; width: number; height: number }) => {
-      if (!embedView) return false
-      embedView.setBounds(rect)
-      return true
-    })
-  )
-
-  ipcMain.handle(
-    'embed.close',
-    wrap(() => {
-      const win = getWindow()
-      if (embedView && win) {
-        win.contentView.removeChildView(embedView)
-        embedView.webContents.close()
-        embedView = null
-      }
-      return true
-    })
-  )
-}
-
-export function broadcast(channel: string, payload: unknown): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    // A destroyed renderer must never throw into an event emitter — a listener
-    // exception would abort batch cleanup and leave stale op state behind.
-    try {
-      if (win.isDestroyed() || win.webContents.isDestroyed()) continue
-      win.webContents.send(channel, payload)
-    } catch {
-      /* window died mid-send; drop the frame */
-    }
-  }
-}
-
-/** Roots the app may reveal/open in the OS file manager (0.1.9 allow-list). */
-async function collectRevealRoots(): Promise<string[]> {
-  const { userDataDir, workflowLibraryDir } = await import('../services/db')
-  const { resolveOutputDir } = await import('../services/p1p2')
-  const roots: string[] = []
-  try {
-    roots.push(userDataDir(), workflowLibraryDir())
-  } catch {
-    /* ignore */
-  }
-  for (const c of loadInstanceConfigs()) {
-    if (!c.path) continue
-    roots.push(c.path, resolveOutputDir(c), join(c.path, 'user', 'default', 'workflows'))
-  }
-  for (const r of loadSettings().modelScanRoots || []) roots.push(r)
-  return roots
-}
-
-/** Push a global UI notification (long-running task done / failed). */
-export function broadcastNotification(n: {
-  type: 'info' | 'success' | 'warning' | 'error'
-  title: string
-  message: string
-  duration?: number
-  titleKey?: string
-  messageKey?: string
-  params?: Record<string, string | number>
-  dedupeKey?: string
-  action?: import('@shared/types').NotificationAction
-}): void {
-  broadcast(IPC_EVENTS.notification, n)
-}
-
-/** Terminal toasts for pip-op results (0.1.12) — ops outlive their originating view. */
-function notifyPipResult(result: {
-  ok: boolean
-  cancelled?: boolean
-  requested: string[]
-  installed: string[]
-  warning?: string
-  error?: string
-}): void {
-  if (result.cancelled) return
-  if (result.ok) {
-    const names = (result.installed.length ? result.installed : result.requested).join(', ')
-    broadcastNotification({
-      type: 'success',
-      title: 'Packages installed',
-      titleKey: 'notify.pipInstalled',
-      message: names,
-      messageKey: 'notify.pipInstalledMsg',
-      params: { names },
-      duration: 6000
-    })
-    // 0.2.0: a successful receipt is verified per requirement. There is no
-    // generic "verify with the dependency audit" caveat any more; if something
-    // is unresolved, `ok` is false and the failure branch reports it.
-  } else {
-    const message = (result.error || 'unknown error').slice(0, 220)
-    broadcastNotification({
-      type: 'error',
-      title: 'Package install failed',
-      titleKey: 'notify.pipFailed',
-      message,
-      messageKey: 'notify.pipFailedMsg',
-      params: { message },
-      duration: 10000
-    })
-  }
+  // shell.reveal / output gates use resolveInsideAnyRoot and throw
+  // "Blocked revealing path outside allowed areas" outside app roots.
+  const shell = createShellHandlers(ctx)
+  ipcMain.handle('app.checkUpdate', shell.checkUpdate)
+  ipcMain.handle('app.updateStatus', shell.updateStatus)
+  ipcMain.handle('app.installUpdate', shell.installUpdate)
+  ipcMain.handle('app.previousExit', shell.previousExit)
+  ipcMain.handle('app.exportDiagnostics', shell.exportDiagnostics)
+  ipcMain.handle('shell.openExternal', shell.openExternal)
+  ipcMain.handle('shell.openPath', shell.openPath)
+  ipcMain.handle('shell.reveal', shell.reveal)
+  ipcMain.handle('shell.pickDirectory', shell.pickDirectory)
+  ipcMain.handle('shell.pickFile', shell.pickFile)
+  ipcMain.handle('shell.pickFiles', shell.pickFiles)
+  ipcMain.handle('shell.writeClipboard', shell.writeClipboard)
+  ipcMain.handle('embed.open', shell.embedOpen)
+  ipcMain.handle('embed.resize', shell.embedResize)
+  ipcMain.handle('embed.close', shell.embedClose)
 }

@@ -348,7 +348,10 @@ describe('p1p2 service exports', () => {
     expect(mod.outputService).toBeDefined()
     expect(mod.remoteService).toBeDefined()
     expect(mod.marketService).toBeDefined()
-    expect(typeof mod.resolveOutputDir).toBe('function')
+    // 0.2.0: the resolver moved to shared/outputDir so the renderer can use it
+    // too; p1p2 intentionally does not re-export a compatibility facade.
+    const shared = await import('@shared/outputDir')
+    expect(typeof shared.resolveOutputDir).toBe('function')
   })
 })
 
@@ -493,8 +496,8 @@ describe('source quality: no TODO/FIXME in production code', () => {
     'src/main/services/nodePack.ts',
     'src/main/services/model.ts',
     'src/main/services/workflow.ts',
-    'src/main/services/p1p2.ts',
-    'src/main/services/db.ts',
+    'src/main/services/p1p2/index.ts',
+    'src/main/services/db/index.ts',
     'src/main/services/backup.ts',
     'src/main/services/installer.ts',
     'src/main/services/updater.ts'

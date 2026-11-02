@@ -596,6 +596,10 @@ async function runDoctor(): Promise<void> {
                 <NIcon :size="22" :component="MedkitOutline" />
                 <span>{{ $t('dashboard.healthCheck') }}</span>
               </button>
+              <button class="quick" @click="router.push('/issues')">
+                <NIcon :size="22" :component="AlertCircleOutline" />
+                <span>{{ $t('nav.issues') }}</span>
+              </button>
             </div>
             <div class="tip card">
               <NTag type="info" round size="small">{{ $t('dashboard.proTip') }}</NTag>

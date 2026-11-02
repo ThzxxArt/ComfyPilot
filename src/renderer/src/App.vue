@@ -32,10 +32,11 @@ import {
   NConfigProvider,
   NSelect,
   NTag,
-  NAlert
+  NAlert,
+  NBadge
 } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
-import { ipc } from '@/composables/useIpc'
+import { ipc, onIssuesChanged } from '@/composables/useIpc'
 import { useLaunch } from '@/composables/useLaunch'
 import { usePipOps } from '@/composables/usePipOps'
 import { createDiscreteApi, dateEnUS, dateZhCN, enUS, zhCN } from 'naive-ui'
@@ -45,6 +46,7 @@ import { COLORS } from '@/styles/tokens'
 import PipOpModal from '@/components/PipOpModal.vue'
 import TaskCenter from '@/components/TaskCenter.vue'
 import NotificationCenter from '@/components/NotificationCenter.vue'
+import ErrorBoundary from '@/components/ErrorBoundary.vue'
 import CommandPalette from '@/components/CommandPalette.vue'
 
 // App.vue sits outside NMessageProvider — use discrete message/dialog APIs.
@@ -298,28 +300,119 @@ function onLayoutRequest(): void {
 watch([collapsed, sidebarWidth], () => notifyEmbedLayout())
 
 let dispose: (() => void) | null = null
+/** 0.2.0 WP1: at most 3 visible toasts; the rest wait in the session queue. */
+const activeToastIds = new Set<string>()
+const MAX_VISIBLE_TOASTS = 3
+
+function drainToasts(): void {
+  if (activeToastIds.size >= MAX_VISIBLE_TOASTS) return
+  for (const n of [...store.toastQueue]) {
+    if (activeToastIds.size >= MAX_VISIBLE_TOASTS) break
+    if (activeToastIds.has(n.id)) continue
+    activeToastIds.add(n.id)
+    // Prefer i18n keys from main; fall back to the literal strings.
+    const title = n.titleKey ? t(n.titleKey, n.params || {}) : n.title
+    const msg = n.messageKey ? t(n.messageKey, n.params || {}) : n.message
+    const close = (): void => {
+      activeToastIds.delete(n.id)
+      store.consumeToast(n.id)
+      drainToasts()
+    }
+    discreteMessage[
+      n.type === 'error'
+        ? 'error'
+        : n.type === 'warning'
+          ? 'warning'
+          : n.type === 'success'
+            ? 'success'
+            : 'info'
+    ](title && msg ? `${title} — ${msg}` : title || msg, {
+      duration: n.duration ?? 5000,
+      onClose: close
+    })
+  }
+}
+
 // Surface the session toast queue. Restored history is never in this queue, so
 // a new notification cannot replay old notices (0.2.0 WP1).
-watch(
-  () => store.toastQueue,
-  () => {
-    for (const n of [...store.toastQueue]) {
-      // Prefer i18n keys from main; fall back to the literal strings.
-      const title = n.titleKey ? t(n.titleKey, n.params || {}) : n.title
-      const msg = n.messageKey ? t(n.messageKey, n.params || {}) : n.message
-      discreteMessage[
-        n.type === 'error'
-          ? 'error'
-          : n.type === 'warning'
-            ? 'warning'
-            : n.type === 'success'
-              ? 'success'
-              : 'info'
-      ](title && msg ? `${title} — ${msg}` : title || msg, { duration: n.duration ?? 5000 })
-      store.consumeToast(n.id)
+watch(() => store.toastQueue, drainToasts, { deep: false })
+const issueCount = ref(0)
+let offIssuesChanged: (() => void) | null = null
+
+/** 0.2.0: v1→v2 is one-way; a failed migration blocks the whole shell. */
+const migration = ref<{
+  ok: boolean
+  snapshot?: string
+  migratedFiles: number
+  error?: string
+} | null>(null)
+const migrationBlocked = computed(() => Boolean(migration.value && !migration.value.ok))
+
+async function loadMigrationState(): Promise<void> {
+  try {
+    migration.value = await ipc('data.migrationState')
+  } catch (err) {
+    migration.value = {
+      ok: false,
+      migratedFiles: 0,
+      error: err instanceof Error ? err.message : String(err)
     }
   }
-)
+}
+
+async function retryMigration(): Promise<void> {
+  try {
+    migration.value = await ipc('data.retryMigration')
+    if (migration.value.ok) {
+      await store.bootstrap({ keepSelection: true })
+      await refreshIssueCount()
+    }
+  } catch (err) {
+    migration.value = {
+      ok: false,
+      migratedFiles: 0,
+      error: err instanceof Error ? err.message : String(err)
+    }
+  }
+}
+
+async function openMigrationSnapshot(): Promise<void> {
+  const snapshot = migration.value?.snapshot
+  if (!snapshot) return
+  try {
+    await ipc('shell.openPath', snapshot)
+  } catch {
+    /* path may have been moved */
+  }
+}
+
+async function refreshIssueCount(): Promise<void> {
+  try {
+    const list = await ipc('issue.list', false)
+    issueCount.value = list.filter((i) => i.status === 'open').length
+  } catch {
+    /* issue badge is advisory */
+  }
+}
+
+onMounted(() => {
+  drainToasts()
+  void loadMigrationState()
+  void refreshIssueCount()
+  offIssuesChanged = onIssuesChanged((list) => {
+    if (Array.isArray(list)) {
+      issueCount.value = (list as Array<{ status?: string }>).filter(
+        (i) => i.status === 'open'
+      ).length
+    } else {
+      void refreshIssueCount()
+    }
+  })
+})
+
+onUnmounted(() => {
+  offIssuesChanged?.()
+})
 
 /**
  * 0.1.16: if the previous session did not write a clean-exit marker, the app
@@ -546,6 +639,17 @@ async function toggleInstanceRun(): Promise<void> {
                 <!-- 0.1.18 (WP5/WP6): task center + notification center,
                      reachable from every view. -->
                 <TaskCenter />
+                <NBadge :value="issueCount" :show="issueCount > 0" :max="99">
+                  <NButton
+                    text
+                    class="header-icon-btn"
+                    :title="t('nav.issues')"
+                    :aria-label="t('nav.issues')"
+                    @click="router.push('/issues')"
+                  >
+                    <template #icon><NIcon :component="AlertCircleOutline" /></template>
+                  </NButton>
+                </NBadge>
                 <NotificationCenter />
                 <!-- Active instance context — used by nodes/models/batch/monitor -->
                 <div class="instance-pick">
@@ -654,10 +758,32 @@ async function toggleInstanceRun(): Promise<void> {
                   </NSpace>
                 </div>
               </NAlert>
-              <router-view v-slot="{ Component }">
-                <transition name="page-fade" mode="out-in">
-                  <component :is="Component" />
-                </transition>
+              <div v-if="migrationBlocked" class="migration-block card">
+                <div class="migration-block-title">{{ t('migration.blockedTitle') }}</div>
+                <div class="migration-block-body">{{ t('migration.blockedBody') }}</div>
+                <pre v-if="migration?.error" class="migration-block-error mono">{{
+                  migration.error
+                }}</pre>
+                <div v-if="migration?.snapshot" class="migration-block-path mono">
+                  {{ t('migration.snapshot', { path: migration.snapshot }) }}
+                </div>
+                <NSpace>
+                  <NButton type="primary" @click="retryMigration">
+                    {{ t('migration.retry') }}
+                  </NButton>
+                  <NButton v-if="migration?.snapshot" secondary @click="openMigrationSnapshot">
+                    {{ t('migration.openSnapshot') }}
+                  </NButton>
+                  <NButton secondary @click="openLogsDir">{{ t('palette.openLogs') }}</NButton>
+                </NSpace>
+                <div class="migration-block-hint">{{ t('migration.reinstallHint') }}</div>
+              </div>
+              <router-view v-else v-slot="{ Component }">
+                <ErrorBoundary>
+                  <transition name="page-fade" mode="out-in">
+                    <component :is="Component" />
+                  </transition>
+                </ErrorBoundary>
               </router-view>
             </main>
           </section>
@@ -962,6 +1088,45 @@ async function toggleInstanceRun(): Promise<void> {
   background: $gradient-primary;
   color: white;
   font-weight: 700;
+}
+
+.header-icon-btn {
+  color: $color-text-secondary;
+}
+
+.migration-block {
+  margin: 32px auto;
+  max-width: 760px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.migration-block-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: $color-danger;
+}
+.migration-block-body,
+.migration-block-hint {
+  font-size: 13px;
+  color: $color-text-secondary;
+  line-height: 1.7;
+}
+.migration-block-error {
+  padding: 10px;
+  border-radius: 8px;
+  background: rgba($color-danger, 0.08);
+  color: $color-danger;
+  font-size: 12px;
+  white-space: pre-wrap;
+  max-height: 200px;
+  overflow: auto;
+}
+.migration-block-path {
+  font-size: 12px;
+  color: $color-text-muted-ink;
+  word-break: break-all;
 }
 
 .content {

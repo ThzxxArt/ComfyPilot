@@ -1138,8 +1138,9 @@ describe('install via git/manager channel', () => {
     expect(cloneArgs[0]).toContain('clone')
     expect(cloneArgs[0]).toContain('--branch')
     expect(cloneArgs[0]).toContain('dev')
-    // clone lands in a throwaway temp dir, then renameSync publishes it
-    expect(cloneArgs[0][cloneArgs[0].length - 1]).toContain('custom_nodes')
+    // 0.2.0: clone scratch space lives under the app cache, never custom_nodes
+    // (ComfyUI would otherwise load a half-cloned pack on the next boot).
+    expect(cloneArgs[0][cloneArgs[0].length - 1]).not.toContain('custom_nodes')
     expect(rec.name).toBe('GitPack')
     expect(rec.installSource).toBe('git')
     expect(rec.version).toBe('3.0.0')

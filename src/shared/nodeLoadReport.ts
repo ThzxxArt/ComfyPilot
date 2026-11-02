@@ -34,7 +34,7 @@ const LEVEL_PREFIX_RE = /^(?:\x1b\[[0-9;]*m)*\s*(?:\[[A-Z]+\](?:\x1b\[[0-9;]*m)*
  *   before they are checked.
  */
 const POLICY_REFUSAL_RE =
-  /Custom node pack '([^']+)' (is not permitted by your organization's policy|is not loaded: ComfyUI-Manager cannot run under a custom-node policy)/
+  /Custom node pack '([^']+)' (is not permitted by your organization's policy|is not loaded: ComfyUI-Manager cannot run under a custom-node policy)/i
 /**
  * Entry line, tolerating the ANSI level prefix added by ComfyUI 0.39+.
  *
@@ -136,12 +136,16 @@ export function parseNodeLoadReport(
       })
     }
   }
+  // A pack that actually loaded on THIS boot clears an older refusal line
+  // (case-insensitive: Windows folder names are not case-preserving).
+  const loaded = new Set(entries.filter((e) => e.ok).map((e) => e.folder.toLowerCase()))
+  const activeRefusals = policyRefused.filter((p) => !loaded.has(p.folder.toLowerCase()))
   const observedAt =
     importIdx >= 0 ? lines[importIdx].ts : prestartupIdx >= 0 ? lines[prestartupIdx].ts : undefined
   return {
     available: true,
     entries,
-    policyRefused: policyRefused.length ? policyRefused : undefined,
+    policyRefused: activeRefusals.length ? activeRefusals : undefined,
     observedAt
   }
 }
@@ -152,7 +156,8 @@ export function packPolicyRefusalOf(
   report: NodeLoadReport | null | undefined
 ): { folder: string; reason: 'policy' | 'manager' } | undefined {
   if (!report || !folder) return undefined
-  return report.policyRefused?.find((p) => p.folder === folder)
+  const wanted = folder.toLowerCase()
+  return report.policyRefused?.find((p) => p.folder.toLowerCase() === wanted)
 }
 
 /** Per-pack load status derived from the boot-log report (0.1.10). */
@@ -163,7 +168,8 @@ export function packLoadStatusOf(
   report: NodeLoadReport | null | undefined
 ): PackLoadStatus {
   if (!report || !report.available || !folder) return 'unknown'
-  const hits = report.entries.filter((e) => e.folder === folder)
+  const wanted = folder.toLowerCase()
+  const hits = report.entries.filter((e) => e.folder.toLowerCase() === wanted)
   if (!hits.length) return 'unknown'
   if (hits.some((h) => !h.ok && !h.prestartup)) return 'import-failed'
   if (hits.some((h) => !h.ok && h.prestartup)) return 'prestartup-failed'
@@ -176,5 +182,6 @@ export function packLoadFailureOf(
   report: NodeLoadReport | null | undefined
 ): NodeLoadEntry | undefined {
   if (!report || !folder) return undefined
-  return report.entries.find((e) => e.folder === folder && !e.ok)
+  const wanted = folder.toLowerCase()
+  return report.entries.find((e) => e.folder.toLowerCase() === wanted && !e.ok)
 }

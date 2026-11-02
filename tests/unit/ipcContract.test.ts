@@ -9,7 +9,7 @@ function read(rel: string): string {
 }
 
 describe('IPC contract parity', () => {
-  const typesSrc = read('src/shared/types.ts')
+  const typesSrc = read('src/shared/types/ipc.ts')
   const mapBlock = typesSrc.match(/export type IpcChannelMap = \{([\s\S]*?)\n\}/)
   expect(mapBlock, 'IpcChannelMap must exist').toBeTruthy()
   const channels = [...(mapBlock?.[1] || '').matchAll(/'([\w.]+)'\s*:/g)].map((m) => m[1])

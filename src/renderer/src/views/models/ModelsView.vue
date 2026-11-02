@@ -658,17 +658,24 @@ const columns = computed<DataTableColumns<ModelRecord>>(() => [
 /** 0.1.18 (WP6 / U7): distinguish "no models" from "the list failed". */
 const loadError = ref('')
 
+let loadSeq = 0
 async function refresh(): Promise<void> {
+  const seq = ++loadSeq
+  const scope = store.localTargetId
   loading.value = true
   try {
-    models.value = await ipc('model.list')
-    storage.value = await ipc('model.storageStats')
+    const list = await ipc('model.list')
+    const stats = await ipc('model.storageStats')
+    if (seq !== loadSeq || scope !== store.localTargetId) return
+    models.value = list
+    storage.value = stats
     loadError.value = ''
   } catch (err) {
+    if (seq !== loadSeq || scope !== store.localTargetId) return
     loadError.value = err instanceof Error ? err.message : String(err)
     message.error(loadError.value)
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
 
@@ -680,15 +687,22 @@ function currentScanRoots(): string[] {
 }
 
 async function scan(hash = false): Promise<void> {
+  const seq = ++loadSeq
+  const scope = store.localTargetId
   scanning.value = true
   try {
     const roots = currentScanRoots()
-    models.value = await ipc('model.scan', { roots, hash })
-    storage.value = await ipc('model.storageStats')
+    const list = await ipc('model.scan', { roots, hash })
+    const stats = await ipc('model.storageStats')
+    if (seq !== loadSeq || scope !== store.localTargetId) return
+    models.value = list
+    storage.value = stats
     if (hash) duplicates.value = await ipc('model.findDuplicates')
-    message.success(t('models.scanDone', { n: models.value.length }))
+    message.success(t('models.scanDone', { n: list.length }))
   } catch (err) {
-    message.error(err instanceof Error ? err.message : String(err))
+    if (seq === loadSeq && scope === store.localTargetId) {
+      message.error(err instanceof Error ? err.message : String(err))
+    }
   } finally {
     scanning.value = false
     scanProgress.value = ''

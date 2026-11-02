@@ -69,6 +69,12 @@ vi.mock('electron', () => ({
         p.includes('small') ? { width: 80, height: 60 } : { width: 640, height: 480 },
       resize: () => ({ toPNG: () => Buffer.from('resized-png') }),
       toPNG: () => Buffer.from('resized-png')
+    }),
+    createFromBuffer: (_buf: Buffer) => ({
+      isEmpty: () => false,
+      getSize: () => ({ width: 640, height: 480 }),
+      resize: () => ({ toPNG: () => Buffer.from('resized-png') }),
+      toPNG: () => Buffer.from('resized-png')
     })
   },
   session: {
@@ -184,7 +190,9 @@ describe('media services', () => {
         const out = await media.thumbnailService.ensureModelThumb(r)
         expect(out).toBeTruthy()
         expect(existsSync(out!)).toBe(true)
-        expect(readFileSync(out!)).toEqual(Buffer.from('img-bytes'))
+        // 0.2.0: sidecars are resized to a 320px PNG instead of copying a
+        // potentially multi-megabyte source image.
+        expect(readFileSync(out!)).toEqual(Buffer.from('resized-png'))
         const saved = listModels().find((m) => m.id === id)
         expect(saved?.thumbnail).toBe(out)
         deleteModel(id)
@@ -221,8 +229,34 @@ describe('media services', () => {
       h.readFileSyncImpl = null
       expect(out).toBeTruthy()
       expect(fetchSpy).toHaveBeenCalled()
-      expect(readFileSync(out!)).toEqual(Buffer.from('civ-img'))
+      expect(readFileSync(out!)).toEqual(Buffer.from('resized-png'))
       deleteModel('civ1')
+      rmSync(out!, { force: true })
+    })
+
+    it('rejects a non-image Civitai body instead of writing an HTML error page as PNG', async () => {
+      const media = await freshMedia()
+      const p = join(ROOT, 'models', 'civ-html.safetensors')
+      writeFileSync(p, 'x')
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          async () =>
+            new Response('<html>not an image</html>', {
+              status: 200,
+              headers: { 'content-type': 'text/html' }
+            })
+        )
+      )
+      const r = rec({
+        id: 'civhtml',
+        path: p,
+        source: 'civitai',
+        metadata: { civitai: { images: [{ url: 'https://civitai.example/x' }] } }
+      })
+      const out = await media.thumbnailService.ensureModelThumb(r)
+      expect(out).toBeTruthy()
+      expect(out!.endsWith('.svg')).toBe(true)
       rmSync(out!, { force: true })
     })
 

@@ -20,7 +20,8 @@ import {
   NPopconfirm,
   NTag,
   NModal,
-  NProgress
+  NProgress,
+  NAlert
 } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 import { ipc, onIpc, IPC_EVENTS } from '@/composables/useIpc'
@@ -112,6 +113,7 @@ const saving = ref(false)
 /** 0.2.0: the stored password never leaves main; this is a write-only draft. */
 const proxyPasswordDraft = ref('')
 const remotes = ref<RemoteInstanceSummary[]>([])
+const remoteError = ref('')
 /** 0.1.18 (WP1/S6): stored secrets that cannot be decrypted need re-entry. */
 const credStatus = ref<{
   proxyPasswordUnreadable: boolean
@@ -277,6 +279,20 @@ onBeforeRouteLeave(async () => {
   })
 })
 
+async function deleteLegacyRuntimes(): Promise<void> {
+  try {
+    const result = await ipc('bootstrap.deleteLegacy')
+    if (result.failed.length) {
+      message.warning(t('settings.runtimeLegacyDeletePartial', { n: result.failed.length }))
+    } else {
+      message.success(t('settings.runtimeLegacyDeleted', { n: result.removed.length }))
+    }
+    runtimeStatus.value = await ipc('bootstrap.status')
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
 async function clearProxyPassword(): Promise<void> {
   saving.value = true
   try {
@@ -380,6 +396,9 @@ async function onImportFile(e: Event): Promise<void> {
     form.value = cloneSettings(result.settings)
     editedKeys.clear()
     message.success(t('settings.importDone', { n: result.applied.length }))
+    if (result.warnings?.length) {
+      message.warning(t('settings.importWarnings', { n: result.warnings.length }))
+    }
   } catch (err) {
     message.error(
       t('settings.importInvalid', { error: err instanceof Error ? err.message : String(err) })
@@ -398,11 +417,14 @@ async function loadCredentialStatus(): Promise<void> {
 async function loadRemotes(): Promise<void> {
   try {
     remotes.value = await ipc('remote.list')
+    remoteError.value = ''
     void loadCredentialStatus()
     // 0.1.17 (WP10): the app-store copy feeds the global instance selector —
     // without this it kept showing the pre-edit remote list until restart.
     await store.refreshRemotes()
   } catch (err) {
+    // 0.2.0: an IPC failure must not render as "no remotes configured".
+    remoteError.value = err instanceof Error ? err.message : String(err)
     console.error(err)
   }
 }
@@ -904,6 +926,9 @@ onUnmounted(() => {
               {{ t('settings.testAllRemotes') }}
             </NButton>
           </div>
+          <NAlert v-if="remoteError" type="error" :bordered="false" style="margin-bottom: 10px">
+            {{ t('settings.remoteListFailed', { error: remoteError }) }}
+          </NAlert>
           <NList v-if="remotes.length" bordered>
             <NListItem v-for="r in remotes" :key="r.id">
               <div class="row">
@@ -995,6 +1020,14 @@ onUnmounted(() => {
               {{ t('settings.runtimeLegacy', { version: runtimeStatus.legacyPython }) }}
             </div>
             <div class="meta mono">{{ runtimeStatus.runtimesDir }}</div>
+            <NPopconfirm v-if="runtimeStatus.legacyPython" @positive-click="deleteLegacyRuntimes">
+              <template #trigger>
+                <NButton size="tiny" secondary type="error" style="margin-top: 8px">
+                  {{ t('settings.runtimeLegacyDelete') }}
+                </NButton>
+              </template>
+              {{ t('settings.runtimeLegacyDeleteConfirm') }}
+            </NPopconfirm>
           </template>
           <div v-else class="meta">{{ t('settings.runtimeUnknown') }}</div>
         </NCard>

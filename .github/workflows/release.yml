@@ -30,6 +30,8 @@ jobs:
       - run: npm run typecheck
       - run: npm run typecheck:test
       - run: npm run lint:check
+      - run: npm run format:check
+      - run: npm audit --omit=dev --audit-level=high --registry=https://registry.npmjs.org
       - run: npm run test
       - run: npm run test:behavior
       - run: node scripts/check-i18n.cjs
@@ -92,6 +94,15 @@ jobs:
       - run: npm run build
       - name: Package (NSIS, no publish)
         run: npx electron-builder --win --publish never
+      - name: Asar manifest assertion
+        shell: bash
+        run: |
+          ASAR=$(find release -path '*/resources/app.asar' | head -n 1)
+          if [ -z "$ASAR" ]; then
+            echo "app.asar not found"
+            exit 1
+          fi
+          node scripts/check-asar.cjs "$ASAR"
       - name: Post-build metadata agreement
         shell: bash
         # checks package.json / APP_VERSION / README / latest.yml AFTER packaging

@@ -195,13 +195,13 @@ const dynamicDomains = {
     'none',
     'failed'
   ],
-  // Must match BatchJobStatus in src/shared/types.ts
+  // Must match BatchJobStatus in src/shared/types/batch.ts
   'batch.status.*': ['queued', 'submitting', 'running', 'done', 'error', 'cancelled'],
   // Must match DoctorCheck.group values emitted by src/main/services/doctor.ts
   'doctor.group.*': ['Environment', 'Runtime', 'Storage', 'Extensions', 'Network'],
-  // Must match DownloadTask.status in src/shared/types.ts
+  // Must match DownloadTask.status in src/shared/types/model.ts
   'models.dlStatus.*': ['queued', 'running', 'paused', 'done', 'error', 'cancelled'],
-  // Must match InstallStepStatus in src/shared/types.ts
+  // Must match InstallStepStatus in src/shared/types/installer.ts
   'install.stepStatus.*': ['pending', 'running', 'done', 'failed', 'skipped', 'cancelled'],
   // Must match InstallView FIX_LABEL_KEY (bootstrap fix ids)
   'install.fix*': ['Python', 'Git', 'Uv'],

@@ -121,8 +121,39 @@ export class DoctorService extends EventEmitter {
           : pyMinor === 12
             ? 'Python 3.12 is no longer supported. Run “Migrate Python” on the instance detail page.'
             : '0.2.0 requires Python 3.13.x. Install/migrate the instance environment.',
-      fixable: false
+      // A 3.12 venv is migratable; 3.14+/missing is not (no torch wheels).
+      fixable: pyMinor === 12 && Boolean(config?.venvPath),
+      fixId: pyMinor === 12 && config?.venvPath ? 'migrate-python-313' : undefined
     })
+
+    // 2a. venv marker: the actual interpreter must be 3.13.x, not just the
+    // configured path. This catches a config copied from another machine.
+    if (config?.venvPath) {
+      const cfgFile = join(config.venvPath, 'pyvenv.cfg')
+      let venvVersion = ''
+      try {
+        if (existsSync(cfgFile)) {
+          const text = readFileSync(cfgFile, 'utf-8')
+          venvVersion = (text.match(/version\s*=\s*([^\r\n]+)/i) || [])[1]?.trim() || ''
+        }
+      } catch {
+        /* unreadable cfg is reported below */
+      }
+      checks.push({
+        id: 'venv',
+        group: 'Environment',
+        title: 'Virtual environment',
+        severity: venvVersion.startsWith('3.13') ? 'pass' : 'fail',
+        detail: venvVersion
+          ? `pyvenv.cfg version=${venvVersion}`
+          : `pyvenv.cfg missing at ${cfgFile}`,
+        suggestion: venvVersion.startsWith('3.13')
+          ? undefined
+          : 'The venv is not Python 3.13 — run the migration wizard.',
+        fixable: !venvVersion.startsWith('3.13'),
+        fixId: venvVersion.startsWith('3.13') ? undefined : 'migrate-python-313'
+      })
+    }
 
     // 2b. pip availability (0.1.12 WP4) — uv-created venvs ship without pip
     // ("No module named pip"), which silently breaks manual installs, the
@@ -167,7 +198,13 @@ export class DoctorService extends EventEmitter {
       const cudaVersion = tripleMatch[2].toLowerCase() === 'none' ? null : tripleMatch[2]
       const cudaAvailable = tripleMatch[3].toLowerCase() === 'true'
       torchDetail = `torch ${torchVersion}, cuda ${cudaVersion ?? 'none'}, available ${String(cudaAvailable)}`
-      if (cudaVersion && cudaAvailable) {
+      const numeric = torchVersion.split('+')[0].match(/^(\d+)\.(\d+)/)
+      const torchMajor = numeric ? Number(numeric[1]) : 0
+      const torchMinor = numeric ? Number(numeric[2]) : 0
+      if (torchMajor < 2 || (torchMajor === 2 && torchMinor < 7)) {
+        torchSeverity = 'fail'
+        torchSuggestion = `torch ${torchVersion} is below ComfyUI's minimum 2.7 — install cu126/cu130.`
+      } else if (cudaVersion && cudaAvailable) {
         torchSeverity = 'pass'
         torchSuggestion = undefined
       } else if (!cudaVersion) {
@@ -185,6 +222,31 @@ export class DoctorService extends EventEmitter {
       suggestion: torchSuggestion,
       fixable: false
     })
+
+    // 3b. managed runtime integrity: 0.2.0 must have a 3.13 runtime available
+    // for installs/migrations, and legacy 3.12 must be archived, not resolved.
+    try {
+      const { bootstrapService } = await import('./bootstrap')
+      const status = await bootstrapService.status()
+      const py = status.components.find((c) => c.kind === 'python')
+      checks.push({
+        id: 'runtime-integrity',
+        group: 'Runtime',
+        title: 'Managed Python runtime',
+        severity: py?.installed ? 'pass' : 'warn',
+        detail: py?.installed
+          ? `${py.path} (${py.version || status.pythonVersion})`
+          : status.legacyPython
+            ? `legacy ${status.legacyPython} is archived; no 3.13 runtime installed`
+            : 'No managed Python 3.13 runtime installed',
+        suggestion: py?.installed
+          ? undefined
+          : 'Run the installer or download the Python 3.13.18 runtime in Settings.',
+        fixable: false
+      })
+    } catch {
+      /* bootstrap probe is advisory */
+    }
 
     // 4. models dir
     const modelRoot = installPath ? join(installPath, 'models') : ''
@@ -460,6 +522,25 @@ export class DoctorService extends EventEmitter {
     if (!installPath) return { ok: false, message: 'No instance path' }
 
     switch (fixId) {
+      case 'migrate-python-313': {
+        try {
+          const { instanceService } = await import('./instance')
+          const info = instanceService.list().find((i) => i.id === instanceId)
+          if (info && (info.status === 'running' || info.status === 'starting')) {
+            await instanceService.stop(instanceId)
+          }
+          const { migrateInstancePython } = await import('./pythonMigration')
+          const result = await migrateInstancePython(instanceId)
+          return {
+            ok: result.ok,
+            message: result.ok
+              ? `Migrated ${result.fromVersion} → ${result.toVersion} (${result.channel})`
+              : 'Migration did not complete'
+          }
+        } catch (e) {
+          return { ok: false, message: e instanceof Error ? e.message : String(e) }
+        }
+      }
       case 'ensure-pip': {
         // 0.1.12 WP4 — seed pip into the instance interpreter via ensurepip.
         const python = resolveInstancePythonPath(config)

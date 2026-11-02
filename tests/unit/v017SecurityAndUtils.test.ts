@@ -444,7 +444,7 @@ describe('installer git URL validation', () => {
 // ============ IPC contract ============
 describe('IPC channel map consistency', () => {
   it('all IpcChannelMap keys are implemented in handlers', () => {
-    const types = readSrc('src/shared/types.ts')
+    const types = readSrc('src/shared/types/ipc.ts')
     const handlers = readSrc('src/main/ipc/handlers.ts')
     // Extract channel names from IpcChannelMap
     const mapMatch = types.match(/export type IpcChannelMap = \{([\s\S]*?)\n\}/)

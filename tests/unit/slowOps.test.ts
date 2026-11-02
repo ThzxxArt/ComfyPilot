@@ -231,4 +231,32 @@ describe('paused attribution (review fix)', () => {
     await ipc.listeners.get('output.scan')!({})
     expect(m.getRecentSlowOps(10)[0].channel).toBe('output.scan')
   })
+
+  it('channel-scoped pause does not hide another channel freezing', async () => {
+    const m = await load()
+    m.setSlowOpThreshold(0)
+    const ipc = fakeIpc()
+    m.instrumentIpcHandle(ipc)
+    ipc.handle('output.scan', async () => 'slow')
+    await m.withPausedSlowOp(async () => {
+      await ipc.listeners.get('output.scan')!({})
+    }, 'batch.wait')
+    const channels = m.getRecentSlowOps(10).map((e) => e.channel)
+    expect(channels).toContain('output.scan')
+  })
+
+  it('global pause suppresses every channel during the wait', async () => {
+    const m = await load()
+    m.setSlowOpThreshold(0)
+    const ipc = fakeIpc()
+    m.instrumentIpcHandle(ipc)
+    ipc.handle('output.scan', async () => {
+      await m.withPausedSlowOp(async () => {
+        await new Promise((r) => setTimeout(r, 5))
+      })
+      return 'slow'
+    })
+    await ipc.listeners.get('output.scan')!({})
+    expect(m.getRecentSlowOps(10)).toHaveLength(0)
+  })
 })

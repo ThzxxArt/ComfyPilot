@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { formatDateTime } from '@/utils/format'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
@@ -43,7 +44,7 @@ import type {
   NodePackRecord
 } from '@shared/types'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const store = useAppStore()
 const route = useRoute()
 const router = useRouter()
@@ -203,7 +204,7 @@ function hint(): string {
     ? indexUpdatedAt.value
       ? t('market.hintIndexTime', {
           n: indexCount.value,
-          time: new Date(indexUpdatedAt.value).toLocaleString()
+          time: formatDateTime(indexUpdatedAt.value, locale.value)
         })
       : t('market.hintIndex', { n: indexCount.value })
     : ''

@@ -205,7 +205,7 @@ watch(
       </NSpace>
     </div>
 
-    <div v-if="embedded && embedError" class="embed-error card">
+    <div v-if="embedError" class="embed-error card">
       <div class="fallback-title">{{ $t('embed.loadFailed') }}</div>
       <p class="fallback-text mono">{{ embedError }}</p>
       <NSpace>
@@ -215,7 +215,7 @@ watch(
       </NSpace>
     </div>
 
-    <div v-if="!embedded" class="fallback card">
+    <div v-if="!embedded && !embedError" class="fallback card">
       <div class="fallback-title">ComfyUI Frontend</div>
       <p class="fallback-text">
         {{ $t('embed.fallbackText') }}

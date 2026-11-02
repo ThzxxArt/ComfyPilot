@@ -2,7 +2,7 @@ import { app } from 'electron'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { existsSync, mkdirSync, writeFileSync, unlinkSync } from 'fs'
-import { join } from 'path'
+import { dirname, join } from 'path'
 import { homedir } from 'os'
 
 const execFileAsync = promisify(execFile)
@@ -18,10 +18,20 @@ export interface ShortcutRequest {
 }
 
 function desktopDir(): string {
-  if (process.platform === 'win32') {
-    return join(process.env.USERPROFILE || homedir(), 'Desktop')
+  // Electron resolves the LOCALIZED desktop folder (OneDrive / 桌面 / Bureau).
+  try {
+    return app.getPath('desktop')
+  } catch {
+    return process.platform === 'win32'
+      ? join(process.env.USERPROFILE || homedir(), 'Desktop')
+      : join(homedir(), 'Desktop')
   }
-  return join(homedir(), 'Desktop')
+}
+
+/** XDG autostart entry used on Linux, where setLoginItemSettings is a no-op. */
+function linuxAutostartFile(): string {
+  const config = process.env.XDG_CONFIG_HOME || join(homedir(), '.config')
+  return join(config, 'autostart', 'comfypilot.desktop')
 }
 
 export function safeShortcutName(name: string): string {
@@ -162,11 +172,33 @@ export function removeDesktopShortcut(name: string): boolean {
 
 /** Toggle "launch ComfyPilot when I sign in". */
 export function setLaunchOnBoot(enabled: boolean): void {
-  if (
-    process.platform === 'win32' ||
-    process.platform === 'darwin' ||
-    process.platform === 'linux'
-  ) {
+  if (process.platform === 'linux') {
+    const file = linuxAutostartFile()
+    try {
+      if (!enabled) {
+        if (existsSync(file)) unlinkSync(file)
+        return
+      }
+      mkdirSync(dirname(file), { recursive: true })
+      writeFileSync(
+        file,
+        [
+          '[Desktop Entry]',
+          'Type=Application',
+          'Name=ComfyPilot',
+          `Exec="${app.getPath('exe')}"`,
+          'Terminal=false',
+          'X-GNOME-Autostart-enabled=true',
+          'Categories=Utility;Development;'
+        ].join('\n') + '\n',
+        { mode: 0o755 }
+      )
+    } catch {
+      /* best effort — the setting still persists in settings.jsonc */
+    }
+    return
+  }
+  if (process.platform === 'win32' || process.platform === 'darwin') {
     app.setLoginItemSettings({
       openAtLogin: enabled,
       path: app.getPath('exe'),
@@ -177,6 +209,7 @@ export function setLaunchOnBoot(enabled: boolean): void {
 
 export function isLaunchOnBoot(): boolean {
   try {
+    if (process.platform === 'linux') return existsSync(linuxAutostartFile())
     return Boolean(app.getLoginItemSettings().openAtLogin)
   } catch {
     return false

@@ -9,6 +9,8 @@ import { loadSettings } from './db'
 
 let tray: Tray | null = null
 let onShowWindow: (() => void) | null = null
+let statusListener: (() => void) | null = null
+let refreshInFlight: Promise<void> | null = null
 
 type TrayStrings = {
   stop: string
@@ -194,16 +196,25 @@ async function buildMenu(): Promise<Menu> {
 
 export async function refreshTray(): Promise<void> {
   if (!tray) return
-  try {
-    const s = trayT()
-    const menu = await buildMenu()
-    tray.setContextMenu(menu)
-    const list = instanceService.list()
-    const running = list.filter((i) => i.status === 'running').length
-    tray.setToolTip(s.tip(running, list.length))
-  } catch {
-    /* ignore */
-  }
+  // Single-flight: a burst of status events must not build several menus in
+  // parallel (each one calls instanceService.list and reads settings).
+  if (refreshInFlight) return refreshInFlight
+  refreshInFlight = (async () => {
+    try {
+      const s = trayT()
+      const menu = await buildMenu()
+      if (!tray) return
+      tray.setContextMenu(menu)
+      const list = instanceService.list()
+      const running = list.filter((i) => i.status === 'running').length
+      tray.setToolTip(s.tip(running, list.length))
+    } catch {
+      /* ignore */
+    } finally {
+      refreshInFlight = null
+    }
+  })()
+  return refreshInFlight
 }
 
 export function createTray(handlers: { onShowWindow: () => void }): void {
@@ -217,7 +228,8 @@ export function createTray(handlers: { onShowWindow: () => void }): void {
   // Keep the menu fresh as instance status changes — throttled to 300ms so a
   // burst of status/log transitions cannot rebuild the menu dozens of times
   // per second (0.1.11).
-  instanceService.on('status', () => scheduleTrayRefresh())
+  statusListener = () => scheduleTrayRefresh()
+  instanceService.on('status', statusListener)
 }
 
 let trayRefreshTimer: NodeJS.Timeout | null = null
@@ -239,6 +251,19 @@ function scheduleTrayRefresh(): void {
 }
 
 export function destroyTray(): void {
+  if (statusListener) {
+    try {
+      instanceService.off('status', statusListener)
+    } catch {
+      /* ignore */
+    }
+    statusListener = null
+  }
+  if (trayRefreshTimer) {
+    clearTimeout(trayRefreshTimer)
+    trayRefreshTimer = null
+  }
+  trayRefreshQueued = false
   if (tray) {
     try {
       tray.destroy()

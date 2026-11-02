@@ -105,10 +105,10 @@ describe('0.1.9 node-op modal contracts', () => {
   })
 
   it('shell.reveal enforces a path allow-list', () => {
-    const src = read('src/main/ipc/handlers.ts')
+    const src = read('src/main/ipc/domains/shell.ts')
     expect(src).toContain('Blocked revealing path outside allowed areas')
-    // The gate must be the per-segment normalizing resolver, not a lexical prefix.
-    expect(src).toContain('resolveInsideAnyRoot')
+    // 0.2.0: the gate resolves symlinks/junctions to a real path under a root.
+    expect(src).toContain('realpathUnderAnyRoot')
   })
 
   it('e2e smoke boots the packaged bootstrap entry (not out/main/index.js)', () => {
@@ -123,8 +123,8 @@ describe('0.1.9 node-op modal contracts', () => {
   })
 
   it('output scan depth is wired settings → walk', () => {
-    expect(read('src/main/services/p1p2.ts')).toContain('outputScanDepth')
+    expect(read('src/main/services/p1p2/output.ts')).toContain('outputScanDepth')
     expect(read('src/shared/constants.ts')).toContain('outputScanDepth: 4')
-    expect(read('src/main/services/db.ts')).toContain("'outputScanDepth'")
+    expect(read('src/main/services/db/settings.ts')).toContain("'outputScanDepth'")
   })
 })

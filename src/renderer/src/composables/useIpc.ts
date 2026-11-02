@@ -23,11 +23,24 @@ export function toPlainIpcArg<T>(value: T): T {
 export class ComfyPilotIpcError extends Error {
   code?: string
   suggestedPort?: number
-  constructor(message: string, code?: string, suggestedPort?: number) {
+  messageKey?: string
+  params?: Record<string, string | number>
+  detail?: string
+  retryable?: boolean
+  constructor(
+    message: string,
+    code?: string,
+    suggestedPort?: number,
+    extra?: Pick<ComfyPilotIpcError, 'messageKey' | 'params' | 'detail' | 'retryable'>
+  ) {
     super(message)
     this.name = 'ComfyPilotIpcError'
     this.code = code
     this.suggestedPort = suggestedPort
+    this.messageKey = extra?.messageKey
+    this.params = extra?.params
+    this.detail = extra?.detail
+    this.retryable = extra?.retryable
   }
 }
 
@@ -43,7 +56,12 @@ export async function ipc<C extends IpcChannel>(
     IpcChannelMap[C]['result']
   >
   if (!res.ok) {
-    throw new ComfyPilotIpcError(res.error || 'IPC failed', res.code, res.suggestedPort)
+    throw new ComfyPilotIpcError(res.error || 'IPC failed', res.code, res.suggestedPort, {
+      messageKey: res.messageKey,
+      params: res.params,
+      detail: res.detail,
+      retryable: res.retryable
+    })
   }
   return res.data as IpcChannelMap[C]['result']
 }
@@ -87,6 +105,10 @@ export function onBatchProgress<T>(fn: (job: T) => void): () => void {
 
 export function onRegistryIndexProgress<T>(fn: (p: T) => void): () => void {
   return onIpc(IPC_EVENTS.registryIndexProgress, (payload) => fn(payload as T))
+}
+
+export function onIssuesChanged<T>(fn: (issues: T) => void): () => void {
+  return onIpc(IPC_EVENTS.issuesChanged, (payload) => fn(payload as T))
 }
 
 export { IPC_EVENTS }

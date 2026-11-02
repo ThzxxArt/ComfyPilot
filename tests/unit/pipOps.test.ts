@@ -130,6 +130,29 @@ describe('PipOpsService (0.1.12)', () => {
     expect(h.execCalls).toHaveLength(0)
   })
 
+  it('installSpecs validates every spec and installs them in one op', async () => {
+    const svc = await fresh()
+    await expect(svc.installSpecs('i1', ['ok-pkg', 'https://evil/x.whl'])).rejects.toMatchObject({
+      code: 'INVALID_SPEC'
+    })
+    await expect(svc.installSpecs('i1', [])).rejects.toMatchObject({ code: 'INVALID_SPEC' })
+    const r = await svc.installSpecs('i1', ['onnx', 'triton'])
+    expect(r.ok).toBe(true)
+    const install = h.execCalls.find((c) => c.args.includes('install'))
+    expect(install!.args).toContain('onnx')
+    expect(install!.args).toContain('triton')
+  })
+
+  it('installSpecs refuses when another env operation holds the lock', async () => {
+    const svc = await fresh()
+    const { acquireEnvLock, resetEnvLocksForTest } = await import('../../src/main/services/envLock')
+    const release = acquireEnvLock('i1', 'audit')
+    await expect(svc.installSpecs('i1', ['onnx'])).rejects.toMatchObject({ code: 'ENV_BUSY' })
+    expect(svc.busy('i1')).toBe(false)
+    release()
+    resetEnvLocksForTest()
+  })
+
   it('installs via uv first (uv pip install --python …) and verifies with pip show', async () => {
     const svc = await fresh()
     const r = await svc.installSpec('i1', 'onnx')

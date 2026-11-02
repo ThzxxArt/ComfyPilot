@@ -72,6 +72,18 @@ function groupLabel(g: string): string {
   return te(key) ? t(key) : g
 }
 
+/** Main emits a stable check id; translate known ids, fall back to its text. */
+function checkTitle(check: DoctorCheck): string {
+  const key = `doctor.checks.${check.id}`
+  return te(key) ? t(key) : check.title
+}
+
+function checkSuggestion(check: DoctorCheck): string | undefined {
+  if (!check.suggestion) return undefined
+  const key = `doctor.suggestions.${check.id}`
+  return te(key) ? t(key) : check.suggestion
+}
+
 /** Guards against a slow report landing after the user switched instances. */
 let runSeq = 0
 
@@ -212,7 +224,7 @@ onUnmounted(() => offProgress?.())
                   <NIcon :size="20" :component="iconFor(check.severity)" />
                 </div>
                 <div class="check-main">
-                  <div class="check-title">{{ check.title }}</div>
+                  <div class="check-title">{{ checkTitle(check) }}</div>
                   <div class="check-group">
                     <NTag size="tiny" round>{{ groupLabel(check.group) }}</NTag>
                     <span class="chip" :class="toneFor(check.severity)">{{
@@ -234,9 +246,9 @@ onUnmounted(() => offProgress?.())
                 </NButton>
               </div>
               <div class="check-detail mono">{{ check.detail }}</div>
-              <div v-if="check.suggestion" class="check-fix">
+              <div v-if="checkSuggestion(check)" class="check-fix">
                 <NIcon :size="14" :component="MedkitOutline" />
-                {{ check.suggestion }}
+                {{ checkSuggestion(check) }}
               </div>
             </article>
           </div>

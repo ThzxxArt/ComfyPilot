@@ -248,28 +248,46 @@ export function readSlowOpsLog(limit = 200): string[] {
  * the wrapper skips recording for calls made while paused.
  */
 let pauseDepth = 0
-/** Bumped every time a pause fully ends — lets a call detect "waited inside". */
-let pauseEpoch = 0
+/**
+ * 0.2.0: a deliberate wait (batch.wait) must only suppress attribution for
+ * THAT channel. The old global depth silenced every concurrent IPC handler.
+ */
+const pausedChannels = new Map<string, number>()
+const pausedChannelEpochs = new Map<string, number>()
+let globalPauseEpoch = 0
 
-export function pauseSlowOp(): void {
+export function pauseSlowOp(channel?: string): void {
   pauseDepth += 1
+  if (channel) pausedChannels.set(channel, (pausedChannels.get(channel) || 0) + 1)
 }
 
-export function resumeSlowOp(): void {
+export function resumeSlowOp(channel?: string): void {
   pauseDepth = Math.max(0, pauseDepth - 1)
-  if (pauseDepth === 0) pauseEpoch += 1
+  if (channel) {
+    const next = (pausedChannels.get(channel) || 0) - 1
+    if (next > 0) pausedChannels.set(channel, next)
+    else {
+      pausedChannels.delete(channel)
+      pausedChannelEpochs.set(channel, (pausedChannelEpochs.get(channel) || 0) + 1)
+    }
+  }
+  if (pauseDepth === 0) {
+    // A global pause (no channel) suppresses every handler for that window.
+    if (!channel) globalPauseEpoch += 1
+  }
 }
 
-export function isSlowOpPaused(): boolean {
+export function isSlowOpPaused(channel?: string): boolean {
+  if (channel) return (pausedChannels.get(channel) || 0) > 0
   return pauseDepth > 0
 }
 
-export async function withPausedSlowOp<T>(fn: () => Promise<T>): Promise<T> {
-  pauseSlowOp()
+export async function withPausedSlowOp<T>(fn: () => Promise<T>, channel?: string): Promise<T> {
+  pauseSlowOp(channel)
   try {
     return await fn()
   } finally {
-    resumeSlowOp()
+    resumeSlowOp(channel)
   }
 }
 
@@ -301,14 +319,20 @@ export function instrumentIpcHandle(ipc: HandleLike): boolean {
       if (typeof handler !== 'function') return original(channel, handler)
       const timed = async (...callArgs: unknown[]): Promise<unknown> => {
         const started = Date.now()
-        const startedPaused = isSlowOpPaused()
-        const epochAtStart = pauseEpoch
+        const startedPaused = isSlowOpPaused(channel)
+        const globalEpochAtStart = globalPauseEpoch
+        const channelEpochAtStart = pausedChannelEpochs.get(channel) || 0
         try {
           return await handler(...callArgs)
         } finally {
           try {
             // A wait that was explicitly paused (batch.wait) is not a stall.
-            if (!startedPaused && !isSlowOpPaused() && pauseEpoch === epochAtStart) {
+            // Compare only the channel's own epoch so another handler's wait
+            // does not hide a genuine freeze here; a global pause still does.
+            const channelWaited =
+              (pausedChannelEpochs.get(channel) || 0) !== channelEpochAtStart ||
+              globalPauseEpoch !== globalEpochAtStart
+            if (!startedPaused && !isSlowOpPaused(channel) && !channelWaited) {
               // callArgs[0] is the IPC event; the rest are the renderer's args.
               recordSlowOp(channel, Date.now() - started, callArgs.slice(1))
             }

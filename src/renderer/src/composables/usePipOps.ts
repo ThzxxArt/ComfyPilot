@@ -194,8 +194,12 @@ export function usePipOps() {
     return run(instanceId, () => ipc('instance.applyRecipe', instanceId, recipeId))
   }
 
-  async function startPackDeps(instanceId: string, packId: string): Promise<PipOpResult> {
-    return run(instanceId, () => ipc('node.installDeps', packId, instanceId))
+  async function startPackDeps(
+    instanceId: string,
+    packId: string,
+    specs?: string[]
+  ): Promise<PipOpResult> {
+    return run(instanceId, () => ipc('node.installDeps', packId, instanceId, specs))
   }
 
   async function cancel(instanceId: string): Promise<boolean> {

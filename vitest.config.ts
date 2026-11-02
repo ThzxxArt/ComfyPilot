@@ -77,14 +77,14 @@ export default defineConfig({
         'src/main/services/zipWrite.ts',
         'src/main/services/workflowConvert.ts',
         'src/main/services/workflow.ts',
-        'src/main/services/p1p2.ts',
+        'src/main/services/p1p2/**/*.ts',
         'src/main/services/proxy.ts',
         'src/main/services/installer.ts',
         'src/main/services/media.ts',
         'src/main/services/nodePack.ts',
         'src/main/services/updater.ts',
         'src/main/services/instance.ts',
-        'src/main/services/db.ts',
+        'src/main/services/db/**/*.ts',
         'src/main/services/backup.ts',
         'src/main/services/doctor.ts',
         'src/main/services/monitor.ts',
@@ -132,18 +132,33 @@ export default defineConfig({
         'src/main/services/workPool.ts',
         'src/main/services/processTree.ts',
         'src/main/services/secretStorage.ts',
+        // ── 0.2.0: extracted domain modules + IPC contract ──
+        'src/main/services/depsAudit.ts',
+        'src/main/services/envLock.ts',
+        'src/main/services/issueHub.ts',
+        'src/main/services/pythonMigration.ts',
+        'src/main/services/launchArgCatalog.ts',
+        'src/main/services/rendererEntry.ts',
+        'src/shared/argv.ts',
+        'src/shared/outputDir.ts',
+        'src/renderer/src/composables/useScopedResource.ts',
+        'src/renderer/src/composables/useAsyncAction.ts',
+        'src/renderer/src/components/ErrorBoundary.vue',
         'src/renderer/src/composables/useScopedSelection.ts',
         'src/renderer/src/composables/useInstanceScope.ts'
       ],
       thresholds: {
         // Derived per file (baseline − 2pp) + a global floor.
         ...perFileThresholds(),
-        // 0.1.18 measured global: statements 84.71 / branches 76.06 /
-        // functions 85.87 / lines 86.97 → floor = −2pp (model.ts now included).
-        statements: 82,
-        lines: 84,
-        functions: 83,
-        branches: 74
+        // 0.2.0 denominator now includes the extracted domain modules
+        // (depsAudit/envLock/issueHub/pythonMigration/argv/outputDir/renderer
+        // composables). Measured: statements 83.07 / branches 73.12 /
+        // functions 84.83 / lines 85.61 → floor is a real ratchet, not the
+        // old denominator's number.
+        statements: 83,
+        lines: 85,
+        functions: 84,
+        branches: 73
       }
     }
   }

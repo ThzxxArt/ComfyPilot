@@ -7,7 +7,8 @@ import {
   unlinkSync,
   mkdirSync,
   rmSync,
-  renameSync
+  renameSync,
+  cpSync
 } from 'fs'
 import { join, dirname, resolve, sep, basename } from 'path'
 import { createHash, randomUUID } from 'crypto'
@@ -17,7 +18,6 @@ import { EventEmitter } from 'events'
 import type {
   NodeCheckProgressEvent,
   NodeDepsAudit,
-  NodeDepsAuditPack,
   NodeLoadReport,
   NodeNameConflict,
   NodeOpLogEvent,
@@ -37,14 +37,14 @@ import type {
 } from '@shared/types'
 import { parseNodeLoadReport } from '@shared/nodeLoadReport'
 import { compareVersions, isUpdateAvailable } from '@shared/version'
+import type { PipRequirement } from '@shared/pipVersion'
 import {
-  parsePipRequirement,
-  versionSatisfies,
-  normalizePipName,
-  evaluateMarker,
-  type PipRequirement
-} from '@shared/pipVersion'
-import { pipAliasCandidates } from '@shared/pipAliases'
+  auditPackRequirements,
+  installedPackages,
+  pipCheck,
+  requirementsForPack
+} from './depsAudit'
+import { acquireEnvLock } from './envLock'
 import {
   deleteNodePack,
   listNodePacks,
@@ -115,65 +115,6 @@ export function parseRequirementNames(text: string): string[] {
     if (m) names.push(m[1].toLowerCase())
   }
   return [...new Set(names)]
-}
-
-/** Parse `uv pip list --format json` / `python -m pip list --format=json`. */
-function parsePipListJson(text: string): Map<string, string> | null {
-  // pip writes deprecation/build noise to stderr; the combined stream may not
-  // start at `[`. Extract the JSON array instead of declaring the environment
-  // unavailable.
-  const source = String(text || '')
-  const start = source.indexOf('[')
-  const end = source.lastIndexOf(']')
-  const json = start >= 0 && end > start ? source.slice(start, end + 1) : source.trim() || '[]'
-  try {
-    const raw = JSON.parse(json) as Array<{
-      name?: unknown
-      version?: unknown
-    }>
-    if (!Array.isArray(raw)) return null
-    const map = new Map<string, string>()
-    for (const item of raw) {
-      if (!item || typeof item !== 'object') continue
-      const name = typeof item.name === 'string' ? normalizePipName(item.name) : ''
-      const version = typeof item.version === 'string' ? item.version : ''
-      if (name) map.set(name, version)
-    }
-    return map
-  } catch {
-    return null
-  }
-}
-
-/**
- * Read requirements recursively (0.2.0): continuation lines and `-r file`
- * includes are part of pip's grammar; ignoring them made the audit skip
- * exactly the packages that were missing.
- */
-function readRequirementLines(file: string, depth = 0, seen = new Set<string>()): string[] {
-  if (depth > 5 || seen.has(file) || !existsSync(file)) return []
-  seen.add(file)
-  let text = ''
-  try {
-    text = readFileSync(file, 'utf-8')
-  } catch {
-    return []
-  }
-  // Join backslash continuations before splitting.
-  text = text.replace(/\\\r?\n/g, ' ')
-  const out: string[] = []
-  for (const line of text.split(/\r?\n/)) {
-    const trimmed = line.trim()
-    if (!trimmed || trimmed.startsWith('#')) continue
-    const inc = trimmed.match(/^(?:-r|--requirement)\s+(.+)$/i)
-    if (inc) {
-      const target = inc[1].trim().replace(/^["']|["']$/g, '')
-      out.push(...readRequirementLines(join(dirname(file), target), depth + 1, seen))
-      continue
-    }
-    out.push(line)
-  }
-  return out
 }
 
 /** Best-effort git HEAD sha for a pack directory. */
@@ -292,6 +233,32 @@ export function isStrictInside(child: string, parent: string): boolean {
     return c !== p && c.startsWith(p + (p.endsWith(sep) ? '' : sep))
   } catch {
     return false
+  }
+}
+
+/**
+ * 0.2.0: install scratch space lives under the app cache, NOT custom_nodes.
+ * A crash during install used to leave `._clone_tmp_*` / `._unzip_tmp_*` where
+ * ComfyUI scans and reports IMPORT FAILED on every boot.
+ */
+async function nodeTempPath(prefix: string, fallbackRoot: string): Promise<string> {
+  try {
+    const { cacheDir } = await import('./db')
+    const dir = join(cacheDir(), 'node-tmp')
+    mkdirSync(dir, { recursive: true })
+    return join(dir, `${prefix}${Date.now()}_${Math.random().toString(36).slice(2, 8)}`)
+  } catch {
+    return join(fallbackRoot, `._${prefix}${Date.now()}_${Math.random().toString(36).slice(2, 8)}`)
+  }
+}
+
+/** Rename when possible; copy+delete across drives (cache vs instance root). */
+function moveDirIntoPlace(from: string, to: string): void {
+  try {
+    renameSync(from, to)
+  } catch {
+    cpSync(from, to, { recursive: true, force: true })
+    rmSync(from, { recursive: true, force: true })
   }
 }
 
@@ -1419,11 +1386,10 @@ export class NodePackService extends EventEmitter {
       const gitBin = resolveGitBinary()
       // Clone into a throwaway sibling, then rename — a failed clone can only
       // ever remove OUR temp dir, never a pre-existing user directory.
-      const tmpDest = join(
-        root,
-        `._clone_tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-      )
-      if (!isStrictInside(tmpDest, root)) throw new Error('Refusing unsafe temp clone path')
+      const tmpDest = await nodeTempPath('clone_tmp_', root)
+      if (isPathInside(tmpDest, root) && !isStrictInside(tmpDest, root)) {
+        throw new Error('Refusing unsafe temp clone path')
+      }
       // Version pin: clone the default branch shallow first, then check out the
       // requested tag/ref inside the temp dir so a failed checkout never touches
       // `dest`. Shallow clone hides most tags, so fetch the ref explicitly.
@@ -1498,7 +1464,7 @@ export class NodePackService extends EventEmitter {
           rmSync(tmpDest, { recursive: true, force: true })
           throw new Error(`Destination already exists: ${destName}`)
         }
-        renameSync(tmpDest, dest)
+        moveDirIntoPlace(tmpDest, dest)
         this.emitOpProgress({
           instanceId: opts.instanceId || 'default',
           step: 'clone',
@@ -1520,7 +1486,7 @@ export class NodePackService extends EventEmitter {
       } catch (e) {
         // Clean ONLY the temp clone we created — never a pre-existing dest.
         try {
-          if (existsSync(tmpDest) && isStrictInside(tmpDest, root)) {
+          if (existsSync(tmpDest) && /(?:clone_tmp_|unzip_tmp_)/.test(tmpDest)) {
             rmSync(tmpDest, { recursive: true, force: true })
           }
         } catch {
@@ -1705,7 +1671,7 @@ export class NodePackService extends EventEmitter {
         ? `Downloaded ${(buf.byteLength / 1024 / 1024).toFixed(1)} MB`
         : 'Download complete'
     })
-    const tmpZip = join(root, `._install_${Date.now()}.zip`)
+    const tmpZip = `${await nodeTempPath('install_', root)}.zip`
     writeFileSync(tmpZip, buf)
     const destName = sanitizeInstallName(opts.id)
     const dest = join(root, normalizePathEverySegment(destName))
@@ -1719,11 +1685,8 @@ export class NodePackService extends EventEmitter {
     }
     // Unzip into a throwaway sibling, then rename — a failed unzip can only
     // ever remove OUR temp dir, never a pre-existing user directory.
-    const tmpDest = join(
-      root,
-      `._unzip_tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-    )
-    if (!isStrictInside(tmpDest, root)) {
+    const tmpDest = await nodeTempPath('unzip_tmp_', root)
+    if (isPathInside(tmpDest, root) && !isStrictInside(tmpDest, root)) {
       try {
         unlinkSync(tmpZip)
       } catch {
@@ -1757,7 +1720,7 @@ export class NodePackService extends EventEmitter {
         rmSync(tmpDest, { recursive: true, force: true })
         throw new Error(`Destination already exists: ${destName}`)
       }
-      renameSync(tmpDest, dest)
+      moveDirIntoPlace(tmpDest, dest)
       // GitHub archive zips nest a single folder (e.g. ComfyUI-KJNodes-main/).
       // Flatten it so the pack lives directly at dest/, not dest/nested/.
       flattenSingleNestedDir(dest)
@@ -1775,7 +1738,7 @@ export class NodePackService extends EventEmitter {
       }
       // Clean ONLY the temp dir we created — never a pre-existing dest.
       try {
-        if (existsSync(tmpDest) && isStrictInside(tmpDest, root)) {
+        if (existsSync(tmpDest) && /(?:clone_tmp_|unzip_tmp_)/.test(tmpDest)) {
           rmSync(tmpDest, { recursive: true, force: true })
         }
       } catch {
@@ -1996,7 +1959,9 @@ export class NodePackService extends EventEmitter {
       nodeCount: meta.nodeList?.length || 0,
       tags: prev?.tags || [],
       installSource: source,
-      lastCheckedAt: Date.now(),
+      // Installing does not prove an update check ran. Only checkUpdates() may
+      // advance this timestamp, otherwise the UI claims "checked just now".
+      lastCheckedAt: prev?.lastCheckedAt ?? 0,
       issues,
       locked: prev?.locked || false,
       nodeList: meta.nodeList || [],
@@ -2672,7 +2637,8 @@ export class NodePackService extends EventEmitter {
           packName: c.name
         })
         try {
-          await this.update(c.name, undefined, instancePathOrId, { fromBatch: true })
+          // 0.2.0: ids are stable; names can collide/change after a reinstall.
+          await this.update(c.id || c.name, undefined, instancePathOrId, { fromBatch: true })
           out.push({ name: c.name, ok: true, checkStatus: c.checkStatus })
           this.emitBatch({
             batchId,
@@ -3195,127 +3161,116 @@ export class NodePackService extends EventEmitter {
    *   covers those after the fact).
    */
   async depsAudit(instanceId?: string): Promise<NodeDepsAudit> {
-    const packs = this.list(instanceId)
-    const targets: Array<{ pack: NodePackRecord; reqs: PipRequirement[] }> = []
-    for (const pack of packs) {
-      if (pack.status === 'disabled') continue
-      const reqFile = pack.path ? join(pack.path, 'requirements.txt') : ''
-      if (!reqFile || !existsSync(reqFile)) continue
-      try {
-        const reqs = readRequirementLines(reqFile)
-          .map((l) => parsePipRequirement(l))
-          .filter((r): r is PipRequirement => Boolean(r))
-        if (reqs.length) targets.push({ pack, reqs })
-      } catch {
-        /* unreadable requirements — skip this pack */
+    const key = instanceId || 'default'
+    // Audit must not read a venv while a node op is writing it. Node installs
+    // do not take the env lock (they own opBatches/opAborts), so check both.
+    if (this.isOpActive(key) || this.opBatches.has(key) || this.opAborts.has(key)) {
+      return {
+        ok: false,
+        pipAvailable: true,
+        checkedPacks: 0,
+        packs: [],
+        error: 'ENV_BUSY: a node operation is running — wait for it to finish'
       }
     }
-    if (!targets.length) {
-      return { ok: true, pipAvailable: true, checkedPacks: 0, packs: [] }
-    }
-
-    const vpy = resolveInstancePython(instanceId)
-    // 0.2.0 EnvMarker: audit and install must agree on the environment. A
-    // repaired/replaced venv left a stale marker; silently auditing a different
-    // interpreter was the source of "installed but still missing".
+    // One env lock shared with pipOps: an audit must never read a venv while a
+    // package install is writing it.
+    const release = acquireEnvLock(key, 'deps-audit')
     try {
-      const cfg = resolveInstanceConfig(instanceId)
-      const markerFile = cfg ? join(cfg.path, '..', '.comfypilot-env.json') : ''
-      if (markerFile && existsSync(markerFile)) {
-        const marker = JSON.parse(readFileSync(markerFile, 'utf-8')) as {
-          venvPath?: string
-          pythonVersion?: string
+      const packs = this.list(instanceId)
+      const targets: Array<{
+        pack: NodePackRecord
+        reqs: PipRequirement[]
+        unsupported?: string[]
+      }> = []
+      for (const pack of packs) {
+        if (pack.status === 'disabled') continue
+        try {
+          const parsed = requirementsForPack(pack)
+          if (parsed.reqs.length || parsed.unsupported.length) {
+            targets.push({
+              pack,
+              reqs: parsed.reqs,
+              unsupported: parsed.unsupported
+            })
+          }
+        } catch {
+          /* unreadable requirements — skip this pack */
         }
-        if (marker.venvPath) {
-          const actualVenv = dirname(dirname(vpy))
-          if (normalizeForCompare(marker.venvPath) !== normalizeForCompare(actualVenv)) {
+      }
+      if (!targets.length) {
+        return { ok: true, pipAvailable: true, checkedPacks: 0, packs: [] }
+      }
+
+      const vpy = resolveInstancePython(instanceId)
+      if (!vpy) {
+        return {
+          ok: false,
+          pipAvailable: false,
+          checkedPacks: targets.length,
+          packs: [],
+          error: 'No Python interpreter resolved for this instance'
+        }
+      }
+      // EnvMarker: audit and install must agree on the environment. A
+      // repaired/replaced venv left a stale marker; silently auditing a
+      // different interpreter was the source of "installed but still missing".
+      try {
+        const cfg = resolveInstanceConfig(instanceId)
+        const markerFile = cfg ? join(dirname(cfg.path), '.comfypilot-env.json') : ''
+        if (markerFile && existsSync(markerFile)) {
+          const marker = JSON.parse(readFileSync(markerFile, 'utf-8')) as {
+            venvPath?: string
+            pythonVersion?: string
+          }
+          if (marker.venvPath) {
+            const actualVenv = dirname(dirname(vpy))
+            if (normalizeForCompare(marker.venvPath) !== normalizeForCompare(actualVenv)) {
+              return {
+                ok: false,
+                pipAvailable: true,
+                checkedPacks: targets.length,
+                packs: [],
+                error: `ENV_MISMATCH: marker says ${marker.venvPath}, audit resolved ${actualVenv}`
+              }
+            }
+          }
+          if (marker.pythonVersion && !/^3\.13\./.test(marker.pythonVersion)) {
             return {
               ok: false,
               pipAvailable: true,
               checkedPacks: targets.length,
               packs: [],
-              error: `ENV_MISMATCH: marker says ${marker.venvPath}, audit resolved ${actualVenv}`
+              error: `PYTHON_UNSUPPORTED: marker says ${marker.pythonVersion}`
             }
           }
         }
+      } catch {
+        /* a missing/corrupt marker is advisory; audit still runs */
       }
-    } catch {
-      /* a missing/corrupt marker is advisory; audit still runs */
-    }
-    let installed: Map<string, string> | null = null
-    try {
-      const { throwingExec } = await import('./env')
-      const { bootstrapService } = await import('./bootstrap')
-      const bootstrap = await bootstrapService.ensure({ kinds: ['uv'], downloadIfMissing: false })
-      const uvComp = bootstrap.components.find((c) => c.kind === 'uv' && c.installed)
-      if (uvComp?.path) {
-        try {
-          const out = await throwingExec(
-            uvComp.path,
-            ['pip', 'list', '--python', vpy, '--format', 'json'],
-            { timeout: 60000 }
-          )
-          installed = parsePipListJson(out)
-        } catch {
-          /* older uv without --format json — fall through to pip */
-        }
-      }
-      if (!installed) {
-        const out = await throwingExec(vpy, ['-m', 'pip', 'list', '--format=json'], {
-          timeout: 60000
-        })
-        installed = parsePipListJson(out)
-      }
-    } catch {
-      installed = null
-    }
-    if (!installed) {
-      return {
-        ok: false,
-        pipAvailable: false,
-        checkedPacks: targets.length,
-        packs: [],
-        error: 'No package manager available (pip missing and uv unavailable)'
-      }
-    }
 
-    const auditPacks: NodeDepsAuditPack[] = []
-    for (const { pack, reqs } of targets) {
-      const missing: string[] = []
-      const mismatched: NodeDepsAuditPack['mismatched'] = []
-      for (const r of reqs) {
-        // 0.2.0: evaluate the marker for the TARGET environment. A Windows-only
-        // or `python_version < "3.12"` requirement is not missing on 3.13; an
-        // unknown marker is skipped (unknown ≠ missing) until a richer
-        // evaluator can decide it.
-        if (r.marker) {
-          const applies = evaluateMarker(r.marker)
-          if (applies !== true) continue
-        }
-        let have: string | undefined
-        for (const candidate of pipAliasCandidates(r.name)) {
-          have = installed.get(candidate)
-          if (have) break
-        }
-        if (!have) {
-          missing.push(r.specifier ? `${r.name}${r.specifier}` : r.name)
-          continue
-        }
-        if (r.specifier && !versionSatisfies(have, r.specifier)) {
-          mismatched.push({ name: r.name, required: r.specifier, installed: have })
+      const installed = await installedPackages(vpy)
+      if (!installed) {
+        return {
+          ok: false,
+          pipAvailable: false,
+          checkedPacks: targets.length,
+          packs: [],
+          error: 'No package manager available (pip missing and uv unavailable)'
         }
       }
-      if (missing.length || mismatched.length) {
-        auditPacks.push({
-          id: pack.id,
-          name: pack.name,
-          declared: reqs.map((r) => r.raw),
-          missing,
-          mismatched
-        })
+      const auditPacks = auditPackRequirements(targets, installed)
+      const check = await pipCheck(vpy)
+      return {
+        ok: true,
+        pipAvailable: true,
+        checkedPacks: targets.length,
+        packs: auditPacks,
+        pipCheck: check
       }
+    } finally {
+      release()
     }
-    return { ok: true, pipAvailable: true, checkedPacks: targets.length, packs: auditPacks }
   }
 
   /**
@@ -3323,7 +3278,7 @@ export class NodePackService extends EventEmitter {
    * (0.1.12 WP5 action) — delegates to the pip-op service so the same busy
    * guard, streaming log and cancellation semantics apply.
    */
-  async installDeps(idOrName: string, instanceId?: string): Promise<PipOpResult> {
+  async installDeps(idOrName: string, instanceId?: string, specs?: string[]): Promise<PipOpResult> {
     // 0.2.0: the dependency-fix action must obey the same allow-pip gate as
     // a pack install. It previously bypassed it entirely.
     if (loadSettings().allowPipInstall === false) {
@@ -3334,12 +3289,25 @@ export class NodePackService extends EventEmitter {
     }
     const pack = this.list(instanceId).find((p) => p.id === idOrName || p.name === idOrName)
     if (!pack?.path) throw codedError('PACK_NOT_FOUND', `Node pack not found: ${idOrName}`)
-    const reqFile = join(pack.path, 'requirements.txt')
-    if (!existsSync(reqFile)) {
-      throw codedError('NO_REQUIREMENTS', 'This pack has no requirements.txt')
-    }
     const { pipOpsService } = await import('./pipOps')
-    return pipOpsService.installRequirementsFor(instanceId, reqFile, pack.name)
+    // The audit already knows exactly which specs are missing/mismatched.
+    // Installing only those is faster and avoids re-resolving the whole file.
+    if (specs?.length) {
+      return pipOpsService.installSpecs(instanceId || 'default', specs)
+    }
+    const reqFile = join(pack.path, 'requirements.txt')
+    if (existsSync(reqFile)) {
+      return pipOpsService.installRequirementsFor(instanceId, reqFile, pack.name)
+    }
+    const parsed = requirementsForPack(pack)
+    const declared = parsed.reqs.map((r) => (r.specifier ? `${r.name}${r.specifier}` : r.name))
+    if (!declared.length) {
+      throw codedError(
+        'NO_REQUIREMENTS',
+        'This pack has no requirements.txt or pyproject dependencies'
+      )
+    }
+    return pipOpsService.installSpecs(instanceId || 'default', declared)
   }
 
   conflicts(instanceId?: string): NodeNameConflict[] {
@@ -3625,6 +3593,25 @@ export class NodePackService extends EventEmitter {
         return 0
       }
     }
+    const sizeOf = (p: string, budget = { n: 5000 }): number => {
+      try {
+        const st = statSync(p)
+        if (st.isFile()) return st.size
+        if (!st.isDirectory()) return 0
+      } catch {
+        return 0
+      }
+      let total = 0
+      try {
+        for (const child of readdirSync(p)) {
+          if (budget.n-- <= 0) break
+          total += sizeOf(join(p, child), budget)
+        }
+      } catch {
+        /* unreadable child */
+      }
+      return total
+    }
     let names: string[] = []
     try {
       names = readdirSync(root)
@@ -3643,7 +3630,8 @@ export class NodePackService extends EventEmitter {
           path: abs,
           livePath: '',
           liveExists: false,
-          mtimeMs: info(abs)
+          mtimeMs: info(abs),
+          sizeBytes: sizeOf(abs)
         })
         continue
       }
@@ -3657,7 +3645,8 @@ export class NodePackService extends EventEmitter {
           path: abs,
           livePath: '',
           liveExists: false,
-          mtimeMs: info(abs)
+          mtimeMs: info(abs),
+          sizeBytes: sizeOf(abs)
         })
         continue
       }
@@ -3672,7 +3661,8 @@ export class NodePackService extends EventEmitter {
           path: abs,
           livePath: live,
           liveExists: existsSync(live),
-          mtimeMs: info(abs)
+          mtimeMs: info(abs),
+          sizeBytes: sizeOf(abs)
         })
       }
     }
@@ -3694,7 +3684,8 @@ export class NodePackService extends EventEmitter {
               path: abs,
               livePath: '',
               liveExists: false,
-              mtimeMs: info(abs)
+              mtimeMs: info(abs),
+              sizeBytes: sizeOf(abs)
             })
             continue
           }
@@ -3708,7 +3699,8 @@ export class NodePackService extends EventEmitter {
               path: abs,
               livePath: join(root, packName),
               liveExists: existsSync(join(root, packName)),
-              mtimeMs: info(abs)
+              mtimeMs: info(abs),
+              sizeBytes: sizeOf(abs)
             })
             continue
           }
@@ -3723,7 +3715,8 @@ export class NodePackService extends EventEmitter {
             path: abs,
             livePath: live,
             liveExists: true,
-            mtimeMs: info(abs)
+            mtimeMs: info(abs),
+            sizeBytes: sizeOf(abs)
           })
         }
       } catch {
@@ -3765,6 +3758,22 @@ export class NodePackService extends EventEmitter {
     rmSync(entry.path, { recursive: true, force: true })
     this.opLog?.(`cleaned leftover ${entry.name}`, instanceId)
     return true
+  }
+
+  /** Clean every scanned leftover. Returns the number removed and failures. */
+  cleanAllRecovery(instanceId?: string): { removed: number; failed: string[] } {
+    const entries = this.scanRecovery(instanceId)
+    const failed: string[] = []
+    let removed = 0
+    for (const entry of entries) {
+      try {
+        this.cleanRecovery(entry.name, instanceId)
+        removed += 1
+      } catch (err) {
+        failed.push(`${entry.name}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    return { removed, failed }
   }
 
   /** Resolve one scanned entry by name, refusing path traversal. */

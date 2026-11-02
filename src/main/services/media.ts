@@ -23,7 +23,7 @@ import {
   mergeUpsertOutputAsset,
   clearOutputAssetThumbnails
 } from './db'
-import { resolveOutputDir } from './p1p2'
+import { resolveOutputDir } from '@shared/outputDir'
 import {
   assertSafeRelativeFilename,
   isSafeExternalUrl,
@@ -52,10 +52,36 @@ export class ThumbnailService {
     return join(this.ensure(), `${id}.png`)
   }
 
+  /** Write a resized PNG thumbnail (max 320px) via Electron nativeImage. */
+  private async writeResizedThumb(input: Buffer, out: string): Promise<boolean> {
+    try {
+      const { nativeImage } = await import('electron')
+      const img = nativeImage.createFromBuffer(input)
+      if (img.isEmpty()) return false
+      const size = img.getSize()
+      const scale = Math.min(1, 320 / Math.max(size.width || 1, size.height || 1))
+      const resized =
+        scale < 1 ? img.resize({ width: Math.max(1, Math.round(size.width * scale)) }) : img
+      writeFileSync(out, resized.toPNG())
+      return true
+    } catch {
+      return false
+    }
+  }
+
   /** Generate or reuse thumbnail for a model record. */
   async ensureModelThumb(rec: ModelRecord): Promise<string | null> {
     const out = this.thumbPathFor(rec.id)
-    if (existsSync(out)) return out
+    // A thumbnail older than the model file is stale (model replaced in place).
+    if (existsSync(out)) {
+      try {
+        if (!existsSync(rec.path) || statSync(out).mtimeMs >= statSync(rec.path).mtimeMs) {
+          return out
+        }
+      } catch {
+        return out
+      }
+    }
 
     // 1) sidecar: foo.preview.png / foo.png next to model
     const base = rec.path.replace(/\.[^.]+$/, '')
@@ -63,17 +89,18 @@ export class ThumbnailService {
       if (existsSync(cand)) {
         try {
           const buf = readFileSync(cand)
-          // Preserve real image bytes; only the cache filename is hashed by id.
-          writeFileSync(out, buf)
-          this.mark(rec, out)
-          return out
+          if (await this.writeResizedThumb(buf, out)) {
+            this.mark(rec, out)
+            return out
+          }
         } catch {
           /* fallthrough */
         }
       }
     }
 
-    // 2) Civitai metadata thumbnail
+    // 2) Civitai metadata thumbnail — reject non-image bodies (HTML error
+    // pages were previously written as `.png` and rendered as broken images).
     if (rec.source === 'civitai' || rec.metadata?.civitai) {
       const meta = rec.metadata?.civitai as { images?: Array<{ url?: string }> } | undefined
       const url = meta?.images?.[0]?.url
@@ -81,10 +108,13 @@ export class ThumbnailService {
         try {
           const { proxyFetch } = await import('./proxy')
           const res = await proxyFetch(url, { timeoutMs: 15000 })
-          if (res.ok) {
-            writeFileSync(out, Buffer.from(await res.arrayBuffer()))
-            this.mark(rec, out)
-            return out
+          const type = String(res.headers.get('content-type') || '').toLowerCase()
+          if (res.ok && (!type || type.startsWith('image/'))) {
+            const buf = Buffer.from(await res.arrayBuffer())
+            if (await this.writeResizedThumb(buf, out)) {
+              this.mark(rec, out)
+              return out
+            }
           }
         } catch {
           /* fallthrough */
