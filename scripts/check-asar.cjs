@@ -47,8 +47,8 @@ if (asarPath) {
       if (!entries.some((p) => p.includes('/out/main/'))) {
         problems.push('asar has no out/main payload')
       }
-      const resources = path.join(path.dirname(abs), '..', 'preload')
-      const renderer = path.join(path.dirname(abs), '..', 'renderer')
+      const resources = path.join(path.dirname(abs), 'preload')
+      const renderer = path.join(path.dirname(abs), 'renderer')
       if (!fs.existsSync(resources)) problems.push('extraResources/preload missing')
       if (!fs.existsSync(renderer)) problems.push('extraResources/renderer missing')
     } catch (e) {
