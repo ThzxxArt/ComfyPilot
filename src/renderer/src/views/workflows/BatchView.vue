@@ -55,20 +55,18 @@ function isBusy(status: string): boolean {
   return status === 'submitting' || status === 'running'
 }
 
-/** Local target needs a running instance; remote targets are checked in main
- *  (0.1.11 — remote batch submission is now supported). */
-const localTargetRunning = computed(() => store.activeInstance?.status === 'running')
-
 /** Instance options incl. configured remotes (`remote:<id>`). */
 const instanceOptions = computed(() => [
   ...store.instances.map((i) => ({ label: i.name, value: i.id })),
   ...store.remotes.map((r) => ({ label: `☁ ${r.name}`, value: `remote:${r.id}` }))
 ])
 
-/** Can this job start now: local instance running, or a remote target. */
+/** Can this job start now: its OWN local instance running, or a remote target. */
 function canStartJob(job: BatchJob): boolean {
   if (job.instanceId?.startsWith('remote:')) return true
-  return localTargetRunning.value
+  // 0.2.0: check the job's target, not whatever instance happens to be active.
+  const target = store.instances.find((i) => i.id === job.instanceId)
+  return target?.status === 'running'
 }
 
 const needInstanceHint = computed(() => t('batch.needRunningInstance'))
@@ -292,7 +290,8 @@ async function start(id: string): Promise<void> {
     return
   }
   const target = job?.instanceId || ''
-  if (!target.startsWith('remote:') && !localTargetRunning.value) {
+  const targetRunning = store.instances.find((i) => i.id === target)?.status === 'running'
+  if (!target.startsWith('remote:') && !targetRunning) {
     message.warning(needInstanceHint.value)
     return
   }

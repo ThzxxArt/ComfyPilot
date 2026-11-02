@@ -250,15 +250,30 @@ export class RegistryIndexService extends EventEmitter {
       unique.push(n)
     }
 
-    this.items = unique
+    // 0.2.0: a partial refresh must not replace a complete index with fewer
+    // rows. Merge page successes into the existing snapshot instead.
+    const previous = this.items || []
+    const nextItems = skippedPages > 0 && previous.length ? [...previous] : []
+    const mergedSeen = new Set(
+      nextItems.map((n) =>
+        String((n as Record<string, unknown>).id || (n as Record<string, unknown>).name || '')
+      )
+    )
+    for (const n of unique) {
+      const key = String(n.id || n.name || '')
+      if (!key || mergedSeen.has(key)) continue
+      mergedSeen.add(key)
+      nextItems.push(n)
+    }
+    this.items = nextItems
     this.meta = {
       updatedAt: Date.now(),
-      total: first.total || unique.length,
+      total: first.total || nextItems.length,
       pages: totalPages,
-      count: unique.length,
+      count: nextItems.length,
       skippedPages
     }
-    this.saveToDisk(unique, this.meta.total, totalPages, skippedPages)
+    this.saveToDisk(nextItems, this.meta.total, totalPages, skippedPages)
     this.emit('ready', this.status())
     if (skippedPages > 0) {
       // Surface skipped pages — a silently partial index looks like missing packs.

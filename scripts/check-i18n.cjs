@@ -97,7 +97,7 @@ const dynamicDomains = {
     'errGeneric'
   ],
   'starterModels.*.desc': ['sd15', 'sdxl', 'flux'],
-  'install.torchChannels.*': ['cu130', 'cu126', 'cu124', 'rocm', 'xpu', 'mps', 'cpu'],
+  'install.torchChannels.*': ['cu130', 'cu126', 'rocm', 'xpu', 'mps', 'cpu'],
   'stepMsg.*': [
     'bootstrapRun',
     'bootstrapDone',

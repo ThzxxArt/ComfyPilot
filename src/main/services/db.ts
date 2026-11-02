@@ -567,6 +567,8 @@ function readJsoncCached<T>(name: string, fallback: T): T {
       if (fileCacheStamp.get(name) !== mtime) {
         fileCache.delete(name)
         fileCacheStamp.delete(name)
+        // 0.2.0: a hand-edited output index must invalidate list caches too.
+        if (name === 'output_assets') outputAssetsRevision += 1
       }
     } catch {
       /* file missing — keep the snapshot until a write recreates it */

@@ -2,8 +2,17 @@
  * Minimal ZIP writer (deflate + store) for workflow / output share bundles.
  * No third-party deps — enough for export-to-zip of small JSON/PNG/text files.
  */
-import { readFileSync, writeFileSync, statSync } from 'fs'
-import { basename } from 'path'
+import {
+  closeSync,
+  fsyncSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeSync
+} from 'fs'
+import { basename, extname } from 'path'
 import { deflateRawSync, crc32 } from 'zlib'
 
 export interface ZipEntry {
@@ -130,8 +139,46 @@ export function writeZip(outPath: string, entries: ZipEntry[]): string {
   eocd.writeUInt32LE(offset, 16)
   eocd.writeUInt16LE(0, 20)
 
-  writeFileSync(outPath, Buffer.concat([...locals, centralBuf, eocd]))
+  // 0.2.0: atomic archive write. A crash/full disk must not leave a truncated
+  // `.zip` that looks like a finished export.
+  const data = Buffer.concat([...locals, centralBuf, eocd])
+  const tmp = `${outPath}.tmp-${process.pid}-${Date.now()}`
+  let fd: number | undefined
+  try {
+    fd = openSync(tmp, 'w')
+    writeSync(fd, data)
+    fsyncSync(fd)
+    closeSync(fd)
+    fd = undefined
+    renameSync(tmp, outPath)
+  } catch (e) {
+    try {
+      if (fd !== undefined) closeSync(fd)
+    } catch {
+      /* ignore */
+    }
+    try {
+      rmSync(tmp, { force: true })
+    } catch {
+      /* ignore */
+    }
+    throw e
+  }
   return outPath
+}
+
+/** Make duplicate basenames unique while preserving the extension. */
+export function uniqueZipNames(names: string[]): string[] {
+  const used = new Map<string, number>()
+  return names.map((raw) => {
+    const name = basename(raw)
+    const count = used.get(name.toLowerCase()) || 0
+    used.set(name.toLowerCase(), count + 1)
+    if (count === 0) return name
+    const ext = extname(name)
+    const stem = ext ? name.slice(0, -ext.length) : name
+    return `${stem} (${count})${ext}`
+  })
 }
 
 /** Convenience wrapper used by workflow export. */

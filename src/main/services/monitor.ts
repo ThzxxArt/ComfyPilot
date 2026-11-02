@@ -11,6 +11,7 @@ import type {
   SystemSnapshot
 } from '@shared/types'
 import { ComfyApiClient, COMFY_CLIENT_ID } from './comfyApi'
+import { proxyFetch } from './proxy'
 import { isLocalhostUrl } from './security'
 import { loadInstanceConfigs, listRemotes } from './db'
 
@@ -367,9 +368,9 @@ export class MonitorService extends EventEmitter {
     const auth = remoteAuthHeadersForUrl(baseUrl)
     const client = new ComfyApiClient(baseUrl, { headers: auth })
     try {
-      const res = await fetch(`${baseUrl.replace(/\/$/, '')}/queue`, {
+      const res = await proxyFetch(`${baseUrl.replace(/\/$/, '')}/queue`, {
         headers: auth,
-        signal: AbortSignal.timeout(2000)
+        timeoutMs: 2000
       })
       if (!res.ok) return empty
       const data = (await res.json()) as {

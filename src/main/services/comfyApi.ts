@@ -1,4 +1,5 @@
 import type { ComfyJobSummary } from '@shared/types'
+import { proxyFetch } from './proxy'
 
 /** Stable client id so WS progress events match queued prompts. */
 export const COMFY_CLIENT_ID = 'comfy-pilot'
@@ -39,7 +40,7 @@ export class ComfyApiClient {
 
   async systemStats(): Promise<Record<string, unknown> | null> {
     try {
-      const res = await fetch(
+      const res = await proxyFetch(
         this.url('/system_stats'),
         this.authInit({ signal: AbortSignal.timeout(1500) })
       )
@@ -70,7 +71,7 @@ export class ComfyApiClient {
           /* non-serializable metadata is dropped, never fatal */
         }
       }
-      const res = await fetch(
+      const res = await proxyFetch(
         this.url('/prompt'),
         this.authInit({
           method: 'POST',
@@ -115,7 +116,7 @@ export class ComfyApiClient {
   } | null> {
     if (!promptId) return null
     try {
-      const res = await fetch(
+      const res = await proxyFetch(
         this.url(`/history/${encodeURIComponent(promptId)}`),
         this.authInit({ signal: AbortSignal.timeout(3000) })
       )
@@ -189,7 +190,7 @@ export class ComfyApiClient {
     }>
   > {
     try {
-      const res = await fetch(
+      const res = await proxyFetch(
         this.url('/history?max_items=' + limit),
         this.authInit({ signal: AbortSignal.timeout(5000) })
       )
@@ -205,7 +206,7 @@ export class ComfyApiClient {
   async deleteQueueItems(promptIds: string[]): Promise<boolean> {
     if (!promptIds.length) return true
     try {
-      const res = await fetch(
+      const res = await proxyFetch(
         this.url('/queue'),
         this.authInit({
           method: 'POST',
@@ -226,7 +227,7 @@ export class ComfyApiClient {
    */
   async clearQueue(): Promise<boolean> {
     try {
-      const res = await fetch(
+      const res = await proxyFetch(
         this.url('/queue'),
         this.authInit({
           method: 'POST',
@@ -247,7 +248,7 @@ export class ComfyApiClient {
    */
   async interrupt(promptId?: string, timeoutMs = 3000): Promise<boolean> {
     try {
-      const res = await fetch(
+      const res = await proxyFetch(
         this.url('/interrupt'),
         this.authInit({
           method: 'POST',
@@ -269,7 +270,7 @@ export class ComfyApiClient {
     try {
       const q = new URLSearchParams({ limit: String(Math.max(1, Math.min(500, limit))) })
       if (status) q.set('status', status)
-      const res = await fetch(
+      const res = await proxyFetch(
         this.url(`/api/jobs?${q.toString()}`),
         this.authInit({ signal: AbortSignal.timeout(5000) })
       )
@@ -291,7 +292,7 @@ export class ComfyApiClient {
   async jobsCancel(ids: string[]): Promise<boolean> {
     if (!ids.length) return true
     try {
-      const res = await fetch(
+      const res = await proxyFetch(
         this.url('/api/jobs/cancel'),
         this.authInit({
           method: 'POST',
@@ -314,7 +315,7 @@ export class ComfyApiClient {
    */
   async defaultWorkflow(): Promise<Record<string, unknown> | null> {
     try {
-      const res = await fetch(
+      const res = await proxyFetch(
         this.url('/default_workflow'),
         this.authInit({ signal: AbortSignal.timeout(5000) })
       )
@@ -336,7 +337,7 @@ export class ComfyApiClient {
    */
   async freeMemory(): Promise<boolean> {
     try {
-      const res = await fetch(
+      const res = await proxyFetch(
         this.url('/free'),
         this.authInit({
           method: 'POST',

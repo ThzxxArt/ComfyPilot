@@ -366,7 +366,7 @@ export class InstanceService extends EventEmitter {
       version: this.probeVersion(rt.config.path),
       // Real version reported by the running server (0.1.10) — only set when a
       // recent capability probe hit the instance while online.
-      onlineVersion: capabilityService.knownVersionForUrl(this.baseUrlOf(rt.config))
+      onlineVersion: capabilityService.knownVersionForInstance(rt.config.id)
     }
   }
 
@@ -391,7 +391,7 @@ export class InstanceService extends EventEmitter {
       commandLine,
       validationErrors: validateLaunchArgs(args),
       validationWarnings: warnLaunchArgs(args, {
-        version: capabilityService.knownVersionForUrl(this.baseUrlOf(config))
+        version: capabilityService.knownVersionForInstance(config.id)
       })
     }
   }
@@ -1546,7 +1546,7 @@ export class InstanceService extends EventEmitter {
     // (version drift), so they only land in the instance log. When the online
     // version is known, confirmed-recent flags are silenced entirely.
     for (const w of warnLaunchArgs(args, {
-      version: capabilityService.cachedForUrl(this.baseUrlOf(rt.config))?.version
+      version: capabilityService.cachedForInstance(rt.config.id)?.version
     })) {
       this.pushLog(
         rt,

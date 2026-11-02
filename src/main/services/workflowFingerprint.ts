@@ -96,9 +96,14 @@ function indexSignature(workflows: WorkflowRecord[]): string {
     if (w.missing || !w.path) continue
     try {
       const st = statSync(w.path)
-      parts.push(`${w.id}:${w.path}:${st.size}:${st.mtimeMs}`)
+      // 0.2.0: names are part of the fingerprint key too. Renaming a workflow
+      // used to keep the old index for up to 5s and attribute outputs to the
+      // previous name.
+      parts.push(
+        `${w.id}:${w.path}:${w.name}:${(w as { displayName?: string }).displayName || ''}:${st.size}:${st.mtimeMs}`
+      )
     } catch {
-      parts.push(`${w.id}:${w.path}:-`)
+      parts.push(`${w.id}:${w.path}:${w.name}:-`)
     }
   }
   return parts.join('|')

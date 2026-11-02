@@ -794,40 +794,12 @@ export class WorkflowService {
         } catch {
           /* keep going — DB row still removed */
         }
-        // Only clean a true sibling INSIDE the same folder (legacy PNG↔JSON
-        // pairs). `params.extractedFrom` points at the user's ORIGINAL source
-        // and must never be deleted.
-        const sibling = this.siblingPath(rec)
-        if (sibling && dirname(sibling) === dirname(rec.path)) {
-          const sibRec = all.find((w) => w.path === sibling)
-          try {
-            if (existsSync(sibling)) unlinkSync(sibling)
-          } catch {
-            /* ignore */
-          }
-          if (sibRec) dbDeleteWorkflow(sibRec.id)
-        }
+        // 0.2.0: do NOT delete a same-folder `.json`/`.png` counterpart.
+        // The old "legacy pair" heuristic removed a separate workflow the user
+        // had saved next to this one. Only the record's own file is deleted.
       }
     }
     return dbDeleteWorkflow(id)
-  }
-
-  /**
-   * Same-folder `.json`/`.png` counterpart of a legacy pair.
-   * NEVER returns `params.extractedFrom` — that is the original source file
-   * outside the target folder and deleting it would destroy user data.
-   */
-  private siblingPath(rec: WorkflowRecord): string | null {
-    const p = rec.path
-    if (/\.png$/i.test(p)) {
-      const j = p.replace(/\.png$/i, '.json')
-      return existsSync(j) ? j : null
-    }
-    if (/\.json$/i.test(p)) {
-      const png = p.replace(/\.json$/i, '.png')
-      return existsSync(png) ? png : null
-    }
-    return null
   }
 
   /** Zip the workflow (json preferred, else png) + optional notes into destDir. */

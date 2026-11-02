@@ -15,9 +15,31 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # 0.2.0: no tag may publish without the same gates as CI. A red build was
+  # previously still uploaded because packaging had no `needs`.
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run typecheck:test
+      - run: npm run lint:check
+      - run: npm run test
+      - run: npm run test:behavior
+      - run: node scripts/check-i18n.cjs
+      - run: node scripts/check-hardcoded-zh.cjs
+      - run: node scripts/check-version.cjs
+
   # macOS / Linux are built best-effort: they are NOT verified products yet, so
   # their failure must never block the Windows release.
   build-other:
+    needs: gate
     continue-on-error: true
     strategy:
       fail-fast: false
@@ -47,6 +69,7 @@ jobs:
           if-no-files-found: ignore
 
   build-windows:
+    needs: gate
     runs-on: windows-latest
     timeout-minutes: 40
     steps:

@@ -1313,6 +1313,7 @@ export class InstallerService extends EventEmitter {
             venvPath,
             torchChannel: plan.torchChannel,
             python,
+            pythonVersion: '3.13.18',
             createdAt: Date.now(),
             isolated: true,
             comfySource,

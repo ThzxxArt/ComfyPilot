@@ -224,12 +224,13 @@ function isSystemPythonPath(p: string): boolean {
 
 /** Executable paths must come from the picker, a known system location, or
  * an instance's own venv. A renderer cannot point the app at a dropped binary. */
-function assertApprovedExecutable(p: string, label: string): void {
+function assertApprovedExecutable(p: string, label: string, instanceRoot?: string): void {
   if (!p) return
   if (p.includes('\0')) throw new Error(`${label} contains an invalid character`)
   const normalized = normalizeForCompare(p)
   if (approvedExecutablePaths.has(normalized)) return
   if (isSystemPythonPath(p)) return
+  if (instanceRoot && resolveInsideAnyRoot(p, [instanceRoot])) return
   const lower = normalized.toLowerCase()
   if (/\/\.?venv\/|\/venv\/|\/venv-/.test(lower)) return
   throw new Error(`${label} must be chosen with the file picker`)
@@ -667,7 +668,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     wrap((config: ComfyInstanceConfig) => {
       if (!config || typeof config !== 'object') throw new Error('Invalid instance config')
       if (!config.path || !existsSync(config.path)) throw new Error('Instance path does not exist')
-      if (config.pythonPath) assertApprovedExecutable(config.pythonPath, 'pythonPath')
+      if (config.pythonPath) assertApprovedExecutable(config.pythonPath, 'pythonPath', config.path)
       if (config.venvPath) {
         const normalized = normalizeForCompare(config.venvPath)
         if (!approvedWriteRoots.has(normalized) && !isPathInsideInstance(config.venvPath)) {
@@ -1772,7 +1773,8 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
         torchChannel?: string
       }) => {
         assertApprovedInstallRoot(opts.installRoot)
-        if (opts.pythonPath) assertApprovedExecutable(opts.pythonPath, 'pythonPath')
+        if (opts.pythonPath)
+          assertApprovedExecutable(opts.pythonPath, 'pythonPath', opts.installRoot)
         return installerService.preflight(opts as Parameters<typeof installerService.preflight>[0])
       }
     )
@@ -1782,7 +1784,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     wrap((plan: InstallPlan) => {
       if (!plan || typeof plan !== 'object') throw new Error('Invalid install plan')
       assertApprovedInstallRoot(plan.installRoot)
-      if (plan.pythonPath) assertApprovedExecutable(plan.pythonPath, 'pythonPath')
+      if (plan.pythonPath) assertApprovedExecutable(plan.pythonPath, 'pythonPath', plan.installRoot)
       return installerService.start(plan)
     })
   )

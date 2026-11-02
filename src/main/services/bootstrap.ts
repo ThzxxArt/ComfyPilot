@@ -307,10 +307,10 @@ export function findInRuntimes(name: string): string | null {
     return null
   }
   if (name === 'uv' || name === 'mingit') {
-    // Prefer the pinned versioned directory; fall back to legacy `uv/`.
+    // 0.2.0: only the pinned versioned directory is accepted. A legacy
+    // `uv/` from 0.1.x is not silently reused; bootstrap downloads the pin.
     const preferred = name === 'uv' ? 'uv-0.13.6' : 'mingit-2.56.0.4'
-    const direct = walk(join(root, preferred), 0)
-    if (direct) return direct
+    return walk(join(root, preferred), 0)
   }
   return walk(root, 0)
 }

@@ -1880,10 +1880,10 @@ describe('batch resumability (0.1.17 WP5)', () => {
     })
 
     const result = await batchService.resume('r1')
-    // 0.1.17 (review fix): the in-flight prompt from the killed run cannot be
-    // recovered — it is counted as failed (with an explanatory summary), so the
-    // resume only submits the ONE prompt that was never attempted.
-    expect(prompts).toHaveLength(1)
+    // 0.2.0: the lost in-flight prompt is one attempt; two of the three legs
+    // were never attempted. (The old formula double-counted the lost prompt as
+    // submitted + failed and re-submitted only one.)
+    expect(prompts).toHaveLength(2)
     expect(result.items[0].promptIds[0]).toBe('old-1')
     expect(result.items[0].failed).toBe(1)
     expect(result.notes + (result.errorSummary || '')).toMatch(/in-flight|Retry failed/i)

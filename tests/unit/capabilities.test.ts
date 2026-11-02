@@ -94,16 +94,15 @@ describe('capabilityService (0.1.10)', () => {
     routes.set('/features', () => json({}))
     routes.set('/api/jobs', () => json({ jobs: [] }))
     await capabilityService.probe('inst-a')
-    const base = 'http://127.0.0.1:8188'
-    expect(capabilityService.knownVersionForUrl(base)).toBe('0.39.0')
+    expect(capabilityService.knownVersionForInstance('inst-a')).toBe('0.39.0')
 
     // Stopping the instance drops it (the card falls back to the install stamp).
     capabilityService.invalidate('inst-a')
-    expect(capabilityService.knownVersionForUrl(base)).toBeUndefined()
+    expect(capabilityService.knownVersionForInstance('inst-a')).toBeUndefined()
 
     // A fresh probe after a restart re-establishes the fact.
     await capabilityService.probe('inst-a')
-    expect(capabilityService.knownVersionForUrl(base)).toBe('0.39.0')
+    expect(capabilityService.knownVersionForInstance('inst-a')).toBe('0.39.0')
   })
 
   it('parses /system_stats facts exactly as reported', async () => {
@@ -173,17 +172,17 @@ describe('capabilityService (0.1.10)', () => {
     expect(fetchMock.mock.calls.length).toBeGreaterThan(callsAfterFirst)
   })
 
-  it('cachedForUrl only returns fresh entries', async () => {
+  it('cachedForInstance only returns fresh entries for the same instance', async () => {
     const { capabilityService } = await fresh()
     routes.set('/system_stats', () => json(fullStats))
     routes.set('/features', () => json({}))
     routes.set('/api/jobs', () => json({ jobs: [] }))
     await capabilityService.probe('inst-a')
-    expect(capabilityService.cachedForUrl('http://127.0.0.1:8188')?.version).toBe('0.39.0')
-    expect(capabilityService.cachedForUrl('http://127.0.0.1:9999')).toBeUndefined()
+    expect(capabilityService.cachedForInstance('inst-a')?.version).toBe('0.39.0')
+    expect(capabilityService.cachedForInstance('inst-b')).toBeUndefined()
   })
 
-  it('cachedForUrl expires after the 30s TTL (fake clock)', async () => {
+  it('cachedForInstance expires after the 30s TTL (fake clock)', async () => {
     vi.useFakeTimers({ now: 1_000_000 })
     try {
       const { capabilityService } = await fresh()
@@ -191,9 +190,9 @@ describe('capabilityService (0.1.10)', () => {
       routes.set('/features', () => json({}))
       routes.set('/api/jobs', () => json({ jobs: [] }))
       await capabilityService.probe('inst-a')
-      expect(capabilityService.cachedForUrl('http://127.0.0.1:8188')).toBeDefined()
+      expect(capabilityService.cachedForInstance('inst-a')).toBeDefined()
       vi.setSystemTime(1_000_000 + 31_000)
-      expect(capabilityService.cachedForUrl('http://127.0.0.1:8188')).toBeUndefined()
+      expect(capabilityService.cachedForInstance('inst-a')).toBeUndefined()
     } finally {
       vi.useRealTimers()
     }

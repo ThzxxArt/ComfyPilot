@@ -101,7 +101,16 @@ async function probeOnce(url: string, method: 'HEAD' | 'GET', timeoutMs: number)
       method,
       signal: AbortSignal.timeout(timeoutMs)
     })
-    void res.status
+    // 0.2.0: an HTTP response alone is not "healthy". 5xx means the endpoint
+    // is broken; a HEAD 405/501 must fall through to GET.
+    if (res.status >= 500 || (method === 'HEAD' && (res.status === 405 || res.status === 501))) {
+      try {
+        await res.body?.cancel()
+      } catch {
+        /* ignore */
+      }
+      throw new Error(`HTTP ${res.status}`)
+    }
     try {
       await res.body?.cancel()
     } catch {
@@ -114,7 +123,7 @@ async function probeOnce(url: string, method: 'HEAD' | 'GET', timeoutMs: number)
     // deliberately proxy-free; only reached when `session.fetch` itself throws.
   }
   const res = await fetch(url, { method, signal: AbortSignal.timeout(timeoutMs) })
-  void res.status
+  if (res.status >= 500) throw new Error(`HTTP ${res.status}`)
   try {
     await res.body?.cancel()
   } catch {

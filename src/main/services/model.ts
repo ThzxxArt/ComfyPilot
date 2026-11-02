@@ -1459,7 +1459,6 @@ export class ModelService extends EventEmitter {
       arr.push(m.fileName)
       localByCategory.set(m.category, arr)
     }
-    const allLocalFileNames = new Set(localModels.map((m) => m.fileName))
     const settings = loadSettings()
     const knownRoots = new Set(
       [
@@ -1482,8 +1481,11 @@ export class ModelService extends EventEmitter {
         (CATEGORY_BY_DIR[rawName.toLowerCase()] as ModelCategory | undefined) || rawName
       const localNames = localByCategory.get(canonical as ModelCategory) || []
       const instanceSet = new Set(info.names)
+      // 0.2.0: compare within the SAME category. A global filename set made
+      // `SD15/model` hide a missing `SDXL/model` when both had the same name.
+      const localNameSet = new Set(localNames.map((n) => n.toLowerCase()))
       const missingLocally = info.names
-        .filter((n) => !allLocalFileNames.has(n))
+        .filter((n) => !localNameSet.has(n.toLowerCase()))
         .sort()
         .slice(0, 200)
       const extraLocally: string[] = []

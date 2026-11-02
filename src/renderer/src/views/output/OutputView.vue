@@ -804,6 +804,17 @@ watch(
   }
 )
 
+// Deep links may arrive while the view is already mounted (0.2.0).
+watch(
+  () => [route.query.batchJobId, route.query.workflowId],
+  ([batchJobId, workflowId]) => {
+    if (typeof batchJobId === 'string' && batchJobId) batchFilter.value = batchJobId
+    if (typeof workflowId === 'string' && workflowId) workflowFilter.value = workflowId
+    page.value = 1
+    void refresh()
+  }
+)
+
 onMounted(async () => {
   await store.bootstrap({ keepSelection: true })
   const q = route.query

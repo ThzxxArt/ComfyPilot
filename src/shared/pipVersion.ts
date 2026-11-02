@@ -289,12 +289,24 @@ export function evaluateMarker(marker: string, env: MarkerEnv = {}): boolean | n
     /^([a-zA-Z_][a-zA-Z0-9_]*)\s*(===|==|!=|<=|>=|<|>|~=|not\s+in|in)\s*["']([^"']*)["']$/
   )
   if (!m) return null
-  const value = markerValue(m[1].toLowerCase(), env)
+  const name = m[1].toLowerCase()
+  const value = markerValue(name, env)
   if (value === null) return null
   const op = m[2].replace(/\s+/g, ' ').toLowerCase()
   const want = m[3]
   if (op === 'in') return value.includes(want)
   if (op === 'not in') return !value.includes(want)
+  // Platform/os markers are opaque strings, not PEP 440 versions. Comparing
+  // `linux` and `win32` as versions made every string equality true.
+  if (!name.startsWith('python_')) {
+    if (op === '===' || op === '==') return value === want
+    if (op === '!=') return value !== want
+    if (op === '<') return value < want
+    if (op === '<=') return value <= want
+    if (op === '>') return value > want
+    if (op === '>=') return value >= want
+    return null
+  }
   if (op === '===') return value === want
   if (op === '==') return comparePipVersions(value, want) === 0
   if (op === '!=') return comparePipVersions(value, want) !== 0

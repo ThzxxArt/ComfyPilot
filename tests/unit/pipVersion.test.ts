@@ -65,6 +65,54 @@ describe('comparePipVersions', () => {
     expect(comparePipVersions('1.0rc1', '1.0')).toBe(-1)
     expect(comparePipVersions('1.0', '1.0.post1')).toBe(-1)
     expect(comparePipVersions('1.0.dev1', '1.0a1')).toBe(-1)
+    expect(comparePipVersions('1.0.post1', '1.0')).toBe(1)
+    expect(comparePipVersions('1.0', '1.0.post1')).toBe(-1)
+  })
+
+  it('keeps environment markers and evaluates the common ones (0.2.0)', async () => {
+    const { parsePipRequirement, evaluateMarker } = await import('@shared/pipVersion')
+    const req = parsePipRequirement('torch ; python_version < "3.12"')
+    expect(req?.marker).toContain('python_version')
+    expect(evaluateMarker('python_version < "3.12"', { pythonVersion: '3.13.18' })).toBe(false)
+    expect(evaluateMarker('python_version >= "3.12"', { pythonVersion: '3.13.18' })).toBe(true)
+    expect(evaluateMarker('sys_platform == "win32"', { sysPlatform: 'linux' })).toBe(false)
+    expect(evaluateMarker('sys_platform == "win32"', { sysPlatform: 'win32' })).toBe(true)
+    expect(evaluateMarker('extra == "cuda"')).toBeNull()
+    expect(
+      evaluateMarker('python_version < "3.12" or sys_platform == "linux"', {
+        pythonVersion: '3.13'
+      })
+    ).toBe(true)
+    expect(evaluateMarker('sys_platform != "win32"', { sysPlatform: 'linux' })).toBe(true)
+    expect(evaluateMarker('sys_platform > "a"', { sysPlatform: 'b' })).toBe(true)
+    expect(evaluateMarker('sys_platform in "linux"', { sysPlatform: 'linux' })).toBe(true)
+    expect(evaluateMarker('sys_platform not in "win32"', { sysPlatform: 'linux' })).toBe(true)
+    expect(evaluateMarker('os_name == "posix"', { osName: 'posix' })).toBe(true)
+    expect(evaluateMarker('platform_system == "Linux"', { platformSystem: 'Linux' })).toBe(true)
+    expect(evaluateMarker('python_full_version ~= "3.13.0"', { pythonVersion: '3.13.2' })).toBe(
+      true
+    )
+    expect(evaluateMarker('python_version ~= "3.12"', { pythonVersion: '3.13.2' })).toBe(true)
+    expect(evaluateMarker('unknown_marker == "x"')).toBeNull()
+    expect(
+      evaluateMarker('python_version < "3" and sys_platform == "linux"', { pythonVersion: '3.13' })
+    ).toBe(false)
+    expect(
+      evaluateMarker('python_version > "3" and sys_platform == "linux"', {
+        pythonVersion: '3.13',
+        sysPlatform: 'win32'
+      })
+    ).toBe(false)
+  })
+
+  it('parses extras and URL/VCS lines honestly', async () => {
+    const { parsePipRequirement } = await import('@shared/pipVersion')
+    const req = parsePipRequirement('flash-attn[cuda]>=2.0,<3')
+    expect(req?.name).toBe('flash-attn')
+    expect(req?.extras).toEqual(['cuda'])
+    expect(req?.specifier).toBe('>=2.0,<3')
+    expect(parsePipRequirement('-r other.txt')).toBeNull()
+    expect(parsePipRequirement('https://example.com/a.whl')).toBeNull()
   })
 
   it('handles token-count mismatch, alpha-vs-numeric and local ordering', () => {

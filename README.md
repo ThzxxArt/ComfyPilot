@@ -1,7 +1,7 @@
 # ComfyPilot
 
 > **ComfyUI 全能管理器** — 本机 ComfyUI 生产线的控制塔  
-> TypeScript · Vue 3 · Electron 45 · Naive UI · MIT · v0.1.18
+> TypeScript · Vue 3 · Electron 45 · Naive UI · MIT · v0.2.0
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-4f6ef7)](./LICENSE)
 
@@ -117,7 +117,9 @@ ComfyPilot **不替代** ComfyUI 节点工作台，而是管理它的整套生�
 
 下载安装包后：打开应用 → 空态三步引导 →「全自动安装」→ 完成后「立即启动并打开 Frontend」→ 下载基础模型 → 出图。
 
-**安装包与签名（0.1.18）：** 目前发布产物**未做代码签名**。首次运行 Windows 会弹 SmartScreen，选择“更多信息 → 仍要运行”即可；发布页同时附 `SHA256SUMS.txt`，可用 `Get-FileHash` 或 `sha256sum` 核对后再安装。tag 触发的 release 流水线（`.github/workflows/release.yml`）会生成草稿 Release，人工确认安装/卸载无 Application Error 后再发布。
+**0.2.0 破坏性变更：** IPC 通道/类型、JSONC 数据格式（`schemaVersion: 2`）、备份格式、Python 运行时均已升级且**不向下兼容**。首次启动会生成 `pre-upgrade-<ts>` 快照并做一次性 v1→v2 迁移；迁移后 0.1.18 不能直接读 v2 数据。0.2.0 只支持 Python **3.13.x**，旧 3.12 实例会被阻断并进入迁移向导；cu124 通道已移除。旧版本回退只能靠迁移前快照 + 重装 0.1.18。
+
+**安装包与签名（0.2.0）：** 目前发布产物**未做代码签名**。首次运行 Windows 会弹 SmartScreen，选择“更多信息 → 仍要运行”即可；发布页同时附 `SHA256SUMS.txt`，可用 `Get-FileHash` 或 `sha256sum` 核对后再安装。tag 触发的 release 流水线（`.github/workflows/release.yml`）会生成草稿 Release，人工确认安装/卸载无 Application Error 后再发布。
 
 ### 开发环境
 

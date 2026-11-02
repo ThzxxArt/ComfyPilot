@@ -364,7 +364,10 @@ export class BatchService extends EventEmitter {
     // the loss and "Retry failed" can re-run exactly those.
     this.markLostPrompts(job)
     const plans = job.items.map((it) => {
-      const attempted = Math.min(it.count, it.submitted + it.failed)
+      // 0.2.0: count actual outcomes, not `submitted + failed`. A failed prompt
+      // is already inside submitted, so the old formula double-counted it and
+      // skipped legs that never ran.
+      const attempted = Math.min(it.count, it.completed + it.submitFailed + it.execFailed)
       return { start: attempted, count: Math.max(0, it.count - attempted) }
     })
     if (!plans.some((p) => p.count > 0)) {
@@ -425,7 +428,7 @@ export class BatchService extends EventEmitter {
     // already made. Starting at 0 re-used the same increment seeds, so a retry
     // re-rendered the same images with the same seeds as the first run.
     const plans = job.items.map((it) => ({
-      start: Math.max(0, it.submitted + it.failed),
+      start: Math.max(0, it.completed + it.submitFailed + it.execFailed),
       count: Math.max(0, it.failed)
     }))
     if (!plans.some((p) => p.count > 0)) throw new Error('No failed prompts to retry')
@@ -1541,14 +1544,17 @@ export class OutputService {
     const targetDir = destDir || dirname(paths[0])
     mkdirSync(targetDir, { recursive: true })
     const zipPath = join(targetDir, `comfy-pilot-outputs-${Date.now()}.zip`)
-    const { writeZip } = await import('./zipWrite')
+    const { writeZip, uniqueZipNames } = await import('./zipWrite')
+    const rawNames = paths.map((p) => {
+      if (!existsSync(p)) throw new Error(`Missing file: ${p}`)
+      return assertSafeRelativeFilename(basename(p))
+    })
+    // 0.2.0: two `preview.png` files from different folders used to collide in
+    // the archive and silently lose one entry.
+    const names = uniqueZipNames(rawNames)
     writeZip(
       zipPath,
-      paths.map((p) => {
-        if (!existsSync(p)) throw new Error(`Missing file: ${p}`)
-        // Keep only the basename inside the archive (no path traversal).
-        return { path: p, name: assertSafeRelativeFilename(basename(p)) }
-      })
+      paths.map((p, i) => ({ path: p, name: names[i] }))
     )
     return { path: zipPath }
   }

@@ -47,7 +47,7 @@ function markRead(): void {
 
 // A notice arriving while the drawer is open is considered read.
 watch(
-  () => store.notifications.length,
+  () => store.notificationSeq,
   () => {
     if (show.value) store.markAllRead()
   }

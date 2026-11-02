@@ -28,6 +28,18 @@ function readZipEntries(buf: Buffer): Array<{ name: string; method: number; data
   return out
 }
 
+describe('zipWrite (0.2.0)', () => {
+  it('deduplicates archive entry names without dropping files', async () => {
+    const { uniqueZipNames } = await import('../../src/main/services/zipWrite')
+    expect(uniqueZipNames(['preview.png', 'preview.png', 'preview.png'])).toEqual([
+      'preview.png',
+      'preview (1).png',
+      'preview (2).png'
+    ])
+    expect(uniqueZipNames(['a.json', 'a.png'])).toEqual(['a.json', 'a.png'])
+  })
+})
+
 describe('zipWrite', () => {
   beforeAll(() => mkdirSync(ROOT, { recursive: true }))
 

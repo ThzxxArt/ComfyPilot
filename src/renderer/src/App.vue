@@ -301,7 +301,7 @@ let dispose: (() => void) | null = null
 // Surface the session toast queue. Restored history is never in this queue, so
 // a new notification cannot replay old notices (0.2.0 WP1).
 watch(
-  () => store.toastQueue.length,
+  () => store.toastQueue,
   () => {
     for (const n of [...store.toastQueue]) {
       // Prefer i18n keys from main; fall back to the literal strings.

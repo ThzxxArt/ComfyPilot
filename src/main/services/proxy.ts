@@ -1,7 +1,19 @@
-import { session } from 'electron'
+import * as electron from 'electron'
 import type { ProxySettings } from '@shared/types'
 import { loadSettings } from './db'
 import { isSafeExternalUrl } from './security'
+
+/** Electron session, or null in unit tests / very early bootstrap. */
+function electronSession(): Electron.Session | null {
+  try {
+    return (
+      (electron as unknown as { session?: { defaultSession?: Electron.Session } }).session
+        ?.defaultSession ?? null
+    )
+  } catch {
+    return null
+  }
+}
 
 /** Build a proxy URL for child-process env (may include credentials). */
 export function buildProxyUrl(p: ProxySettings, opts?: { withAuth?: boolean }): string {
@@ -127,7 +139,9 @@ export function applyProxyToElectron(p: ProxySettings): {
   bypass: string
 } {
   const bypass = buildBypassList(p)
-  const ses = session.defaultSession
+  const ses = electronSession()
+  if (!ses)
+    return { enabled: Boolean(p.enabled), url: buildProxyUrl(p, { withAuth: false }), bypass }
   if (!p.enabled || !p.host || !p.port) {
     void ses.setProxy({ mode: 'direct' }).catch(() => {})
     return { enabled: false, url: '', bypass }
@@ -172,7 +186,9 @@ export async function fetchThroughProxy(
   opts?: { method?: string }
 ): Promise<Response> {
   if (!isSafeExternalUrl(url)) throw new Error('Blocked unsafe URL for proxy test')
-  return session.defaultSession.fetch(url, {
+  const ses = electronSession()
+  const fetcher = ses ? ses.fetch.bind(ses) : globalThis.fetch
+  return fetcher(url, {
     method: opts?.method || 'GET',
     signal: AbortSignal.timeout(10000)
   }) as unknown as Promise<Response>
@@ -191,17 +207,18 @@ export async function fetchThroughProxy(
  */
 export async function proxyFetch(
   url: string,
-  init?: {
-    method?: string
-    headers?: Record<string, string>
-    body?: string | Uint8Array
-    timeoutMs?: number
-    signal?: AbortSignal
-  }
+  init?: RequestInit & { timeoutMs?: number }
 ): Promise<Response> {
   // Same URL safety gate as fetchThroughProxy — never fetch arbitrary schemes.
   if (!isSafeExternalUrl(url)) throw new Error(`Blocked unsafe URL: ${url.slice(0, 60)}`)
-  return session.defaultSession.fetch(url, {
+  const runtimeSession = electronSession()
+  const fetcher =
+    typeof runtimeSession?.fetch === 'function'
+      ? runtimeSession.fetch.bind(runtimeSession)
+      : globalThis.fetch
+  // Node tests and very early bootstrap do not have an Electron session; the
+  // global fallback keeps the same request shape and proxy-less semantics.
+  return fetcher(url, {
     method: init?.method || 'GET',
     headers: init?.headers,
     body: init?.body as never,
@@ -242,7 +259,9 @@ export function syncProxyFromSettings(): { enabled: boolean; url: string; bypass
     // On invalid config, explicitly fall back to direct so we never
     // claim "direct" while a stale proxy remains active.
     try {
-      void session.defaultSession.setProxy({ mode: 'direct' }).catch(() => {})
+      void electronSession()
+        ?.setProxy({ mode: 'direct' })
+        .catch(() => {})
     } catch {
       /* ignore */
     }

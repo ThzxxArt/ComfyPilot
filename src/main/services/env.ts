@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync } from 'fs'
-import { join } from 'path'
+import { existsSync, mkdirSync, writeFileSync } from 'fs'
+import { dirname, join } from 'path'
 import { execFile, spawn } from 'child_process'
 import { promisify } from 'util'
 import { EventEmitter } from 'events'
@@ -867,6 +867,24 @@ export class EnvService extends EventEmitter {
       }
 
       const probe = await this.probe({ pythonPath: pythonInVenv, venvPath })
+      // EnvMarker: audit/launch/install all check this before trusting a venv.
+      try {
+        writeFileSync(
+          join(dirname(comfyDir), '.comfypilot-env.json'),
+          JSON.stringify(
+            {
+              venvPath,
+              pythonPath: pythonInVenv,
+              pythonVersion: '3.13.18',
+              updatedAt: Date.now()
+            },
+            null,
+            2
+          )
+        )
+      } catch {
+        /* marker is advisory */
+      }
       // 0.2.0: persist the venv we actually used. Before this, a repaired
       // instance kept an empty venvPath and later launch/pip fell back to
       // `dirname(comfyDir)/.venv` — a different environment.

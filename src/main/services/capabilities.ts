@@ -140,17 +140,20 @@ export class CapabilityService {
    */
   private versionCache = new LruCache<string, string>(200)
 
+  /** Single-flight guard: two views probing at once share one request set. */
+  private inFlight = new Map<string, Promise<InstanceCapabilities | null>>()
+
   /** Sync peek used by instance.toInfo (no probing on hot paths). */
-  cachedForUrl(baseUrl: string): InstanceCapabilities | undefined {
-    const hit = this.cache.get(baseUrl)
+  cachedForInstance(instanceId: string): InstanceCapabilities | undefined {
+    const hit = this.cache.get(instanceId)
     if (!hit) return undefined
     if (Date.now() - hit.at > CACHE_TTL_MS) return undefined
     return hit.caps
   }
 
-  /** Last known online version for a base URL (running-instance lifetime). */
-  knownVersionForUrl(baseUrl: string): string | undefined {
-    return this.versionCache.get(baseUrl)
+  /** Last known online version for an instance (running-instance lifetime). */
+  knownVersionForInstance(instanceId: string): string | undefined {
+    return this.versionCache.get(instanceId)
   }
 
   invalidate(instanceId?: string): void {
@@ -158,16 +161,15 @@ export class CapabilityService {
       this.cache.clear()
       this.versionCache.clear()
       this.objectInfoCache.clear()
+      this.inFlight.clear()
       return
     }
-    const configs = loadInstanceConfigs()
-    const cfg = configs.find((c) => c.id === instanceId)
-    if (cfg) {
-      const url = instanceBaseUrl(cfg)
-      this.cache.delete(url)
-      this.versionCache.delete(url)
-      this.objectInfoCache.delete(url)
-    }
+    // 0.2.0: key by instance id, not base URL. Two instances behind the same
+    // URL (or a changed remote baseUrl) used to share stale capabilities.
+    this.cache.delete(instanceId)
+    this.versionCache.delete(instanceId)
+    this.objectInfoCache.delete(instanceId)
+    this.inFlight.delete(instanceId)
   }
 
   /**
@@ -182,7 +184,7 @@ export class CapabilityService {
     const cfg = loadInstanceConfigs().find((c) => c.id === instanceId)
     if (!cfg) return null
     const baseUrl = instanceBaseUrl(cfg)
-    const hit = this.objectInfoCache.get(baseUrl)
+    const hit = this.objectInfoCache.get(instanceId)
     if (hit && Date.now() - hit.at < OBJECT_INFO_TTL_MS) return hit
     const data = await fetchJson(`${baseUrl}/object_info`, OBJECT_INFO_TIMEOUT_MS)
     if (!data) return null
@@ -197,7 +199,7 @@ export class CapabilityService {
       }
     }
     const map = { at: Date.now(), types, moduleByType }
-    this.objectInfoCache.set(baseUrl, map)
+    this.objectInfoCache.set(instanceId, map)
     return map
   }
 
@@ -205,7 +207,7 @@ export class CapabilityService {
   pythonModuleForTypeCached(instanceId: string, nodeType: string): string | undefined {
     const cfg = loadInstanceConfigs().find((c) => c.id === instanceId)
     if (!cfg) return undefined
-    const hit = this.objectInfoCache.get(instanceBaseUrl(cfg))
+    const hit = this.objectInfoCache.get(instanceId)
     return hit?.moduleByType.get(nodeType)
   }
 
@@ -218,9 +220,21 @@ export class CapabilityService {
     // 0.1.18 (WP2): single read-target policy (see services/target.ts).
     const cfg = resolveReadTarget(instanceId)
     if (!cfg) return null
-    const baseUrl = instanceBaseUrl(cfg)
-    const cached = this.cachedForUrl(baseUrl)
+    const cached = this.cachedForInstance(cfg.id)
     if (cached) return cached
+    const existing = this.inFlight.get(cfg.id)
+    if (existing) return existing
+    const run = this.probeInner(cfg.id).finally(() => {
+      if (this.inFlight.get(cfg.id) === run) this.inFlight.delete(cfg.id)
+    })
+    this.inFlight.set(cfg.id, run)
+    return run
+  }
+
+  private async probeInner(instanceId: string): Promise<InstanceCapabilities | null> {
+    const cfg = loadInstanceConfigs().find((c) => c.id === instanceId)
+    if (!cfg) return null
+    const baseUrl = instanceBaseUrl(cfg)
 
     const [stats, features, jobsProbe, assetsProbe] = await Promise.all([
       fetchJson(`${baseUrl}/system_stats`),
@@ -257,9 +271,9 @@ export class CapabilityService {
       error: online ? undefined : 'Instance is not answering on ' + baseUrl,
       probedAt: Date.now()
     }
-    this.cache.set(baseUrl, { at: Date.now(), caps })
+    this.cache.set(cfg.id, { at: Date.now(), caps })
     // Remember the online version for the instance's RUNNING lifetime.
-    if (caps.online && caps.version) this.versionCache.set(baseUrl, caps.version)
+    if (caps.online && caps.version) this.versionCache.set(cfg.id, caps.version)
     return caps
   }
 }

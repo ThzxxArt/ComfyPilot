@@ -60,7 +60,12 @@ import { resolveReadTarget } from './target'
 import { REGISTRY_API } from '@shared/constants'
 import { comfyChildEnv } from './childEnv'
 import { runStreaming } from './env'
-import { sanitizeId, isPathInside, normalizePathEverySegment } from './security'
+import {
+  sanitizeId,
+  isPathInside,
+  normalizePathEverySegment,
+  normalizeForCompare
+} from './security'
 import { assertSafeGitUrl, applyGithubMirror, assertSafeBranch } from './installer'
 import { instanceService, resolveInstancePythonPath, resolveRuntimesPythonSync } from './instance'
 import { findInRuntimes } from './bootstrap'
@@ -138,6 +143,37 @@ function parsePipListJson(text: string): Map<string, string> | null {
   } catch {
     return null
   }
+}
+
+/**
+ * Read requirements recursively (0.2.0): continuation lines and `-r file`
+ * includes are part of pip's grammar; ignoring them made the audit skip
+ * exactly the packages that were missing.
+ */
+function readRequirementLines(file: string, depth = 0, seen = new Set<string>()): string[] {
+  if (depth > 5 || seen.has(file) || !existsSync(file)) return []
+  seen.add(file)
+  let text = ''
+  try {
+    text = readFileSync(file, 'utf-8')
+  } catch {
+    return []
+  }
+  // Join backslash continuations before splitting.
+  text = text.replace(/\\\r?\n/g, ' ')
+  const out: string[] = []
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const inc = trimmed.match(/^(?:-r|--requirement)\s+(.+)$/i)
+    if (inc) {
+      const target = inc[1].trim().replace(/^["']|["']$/g, '')
+      out.push(...readRequirementLines(join(dirname(file), target), depth + 1, seen))
+      continue
+    }
+    out.push(line)
+  }
+  return out
 }
 
 /** Best-effort git HEAD sha for a pack directory. */
@@ -3166,8 +3202,7 @@ export class NodePackService extends EventEmitter {
       const reqFile = pack.path ? join(pack.path, 'requirements.txt') : ''
       if (!reqFile || !existsSync(reqFile)) continue
       try {
-        const reqs = readFileSync(reqFile, 'utf-8')
-          .split(/\r?\n/)
+        const reqs = readRequirementLines(reqFile)
           .map((l) => parsePipRequirement(l))
           .filter((r): r is PipRequirement => Boolean(r))
         if (reqs.length) targets.push({ pack, reqs })
@@ -3180,6 +3215,33 @@ export class NodePackService extends EventEmitter {
     }
 
     const vpy = resolveInstancePython(instanceId)
+    // 0.2.0 EnvMarker: audit and install must agree on the environment. A
+    // repaired/replaced venv left a stale marker; silently auditing a different
+    // interpreter was the source of "installed but still missing".
+    try {
+      const cfg = resolveInstanceConfig(instanceId)
+      const markerFile = cfg ? join(cfg.path, '..', '.comfypilot-env.json') : ''
+      if (markerFile && existsSync(markerFile)) {
+        const marker = JSON.parse(readFileSync(markerFile, 'utf-8')) as {
+          venvPath?: string
+          pythonVersion?: string
+        }
+        if (marker.venvPath) {
+          const actualVenv = dirname(dirname(vpy))
+          if (normalizeForCompare(marker.venvPath) !== normalizeForCompare(actualVenv)) {
+            return {
+              ok: false,
+              pipAvailable: true,
+              checkedPacks: targets.length,
+              packs: [],
+              error: `ENV_MISMATCH: marker says ${marker.venvPath}, audit resolved ${actualVenv}`
+            }
+          }
+        }
+      }
+    } catch {
+      /* a missing/corrupt marker is advisory; audit still runs */
+    }
     let installed: Map<string, string> | null = null
     try {
       const { throwingExec } = await import('./env')
