@@ -799,17 +799,27 @@ async function fixPackDeps(p: NodeDepsAuditPack): Promise<void> {
 async function applyFocus(): Promise<void> {
   const f = String(route.query.focus || '').trim()
   const requestedInstance = String(route.query.instanceId || '').trim()
-  if (!f && !requestedInstance) return
+  const source = String(route.query.source || '').trim()
+  if (!f && !requestedInstance && !source) return
   tab.value = 'installed'
   if (requestedInstance && requestedInstance !== store.activeInstanceId) {
     store.activeInstanceId = requestedInstance
     await store.refreshInstances()
     await refresh()
   }
-  if (String(route.query.showRecovery || '') === '1') {
+  if (String(route.query.showRecovery || '') === '1' || source === 'recovery') {
     showRecovery.value = true
+    await loadRecovery()
   }
-  if (!f) return
+  if (source === 'deps') {
+    // IssueCenter "run dependency audit" lands on the live audit, not just a
+    // pack list that looks unrelated.
+    await runDepsAudit()
+  }
+  if (!f) {
+    void router.replace({ path: '/nodes' })
+    return
+  }
   loadFailedOnly.value = false
   focusTerm.value = f
   const needle = f.toLowerCase()

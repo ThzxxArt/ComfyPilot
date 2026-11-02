@@ -1657,7 +1657,12 @@ export type IpcChannelMap = {
   /** 0.1.18 (WP1/S6): which stored secrets need re-entry (undecryptable). */
   'settings.exportConfig': {
     args: []
-    result: { version: number; exportedAt: number; settings: Partial<AppSettings> }
+    result: {
+      version: number
+      schemaVersion: number
+      exportedAt: number
+      settings: Partial<AppSettings>
+    }
   }
   'settings.importConfig': {
     args: [Record<string, unknown>]

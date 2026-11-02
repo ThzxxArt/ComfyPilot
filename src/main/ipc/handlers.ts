@@ -512,7 +512,8 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       // Never export secrets. The proxy password is the only one stored here.
       const { proxy, ...rest } = s
       return {
-        version: 1,
+        version: 2,
+        schemaVersion: 2,
         exportedAt: Date.now(),
         settings: {
           ...rest,

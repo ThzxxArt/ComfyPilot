@@ -34,7 +34,7 @@ function actionsFor(
       target: nodeLink(instanceId, pack, source)
     }
   ]
-  if (kind === 'deps' || kind === 'startup' || kind === 'node-load') {
+  if (kind === 'deps' || kind === 'startup' || kind === 'node-load' || kind === 'exec') {
     actions.push({
       id: 'run-audit',
       labelKey: 'issues.actionAudit',
@@ -190,6 +190,36 @@ export class IssueHubService {
         }
       } catch {
         /* report is advisory */
+      }
+
+      // Recorded execution failures (WS + log) from the diagnosis service.
+      try {
+        const { execDiagnosticsService } = await import('./execDiagnostics')
+        for (const failure of execDiagnosticsService.list(id)) {
+          const fp = fingerprint([
+            'exec',
+            id,
+            failure.packFolder || failure.nodeType || 'unknown',
+            failure.missingModule || failure.errorType,
+            failure.id
+          ])
+          fresh.push(
+            makeIssue({
+              fingerprint: fp,
+              kind: 'exec',
+              instanceId: id,
+              pack: failure.packFolder,
+              module: failure.missingModule,
+              severity: 'error',
+              title: failure.missingModule
+                ? `Missing module: ${failure.missingModule}`
+                : `Execution failed: ${failure.errorType || failure.nodeType || 'unknown'}`,
+              detail: failure.message
+            })
+          )
+        }
+      } catch {
+        /* exec diagnostics is advisory */
       }
 
       // Dependency audit is network/venv dependent; a failure is not an issue.
