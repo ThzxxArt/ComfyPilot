@@ -41,9 +41,9 @@ function resolveVenvPath(config: ComfyInstanceConfig): string {
   for (const candidate of [join(config.path, '.venv'), join(config.path, 'venv')]) {
     if (existsSync(venvPython(candidate))) return candidate
   }
-  throw new Error(
-    'No virtual environment found for this instance — set venvPath or repair the environment first'
-  )
+  // Embedded-Python installs (AKI/绘世) have no venv. Create one inside the
+  // instance; the old embedded interpreter is left untouched for rollback.
+  return join(config.path, '.venv')
 }
 
 async function versionOf(python: string): Promise<string> {

@@ -96,13 +96,15 @@ const GITHUB_CANDIDATES: Array<{ id: string; label: string; value: string; probe
  */
 async function probeOnce(url: string, method: 'HEAD' | 'GET', timeoutMs: number): Promise<number> {
   const started = Date.now()
+  let sessionUnavailable = false
   try {
     const res = await session.defaultSession.fetch(url, {
       method,
       signal: AbortSignal.timeout(timeoutMs)
     })
     // 0.2.0: an HTTP response alone is not "healthy". 5xx means the endpoint
-    // is broken; a HEAD 405/501 must fall through to GET.
+    // is broken; a HEAD 405/501 must fall through to GET (through the SAME
+    // session, never a proxy-bypassing direct fetch).
     if (res.status >= 500 || (method === 'HEAD' && (res.status === 405 || res.status === 501))) {
       try {
         await res.body?.cancel()
@@ -117,11 +119,16 @@ async function probeOnce(url: string, method: 'HEAD' | 'GET', timeoutMs: number)
       /* ignore */
     }
     return Date.now() - started
-  } catch {
-    // session fetch unavailable — last-resort direct Node fetch. NOTE: Node's
-    // global fetch cannot honour the Electron session proxy, so this path is
-    // deliberately proxy-free; only reached when `session.fetch` itself throws.
+  } catch (err) {
+    // Only a transport/session failure may use the Node fallback. An HTTP
+    // status rejection is a real probe result and must reach probeOne.
+    const message = err instanceof Error ? err.message : String(err)
+    sessionUnavailable =
+      err instanceof TypeError || /fetch failed|ECONN|ENOTFOUND|session/i.test(message)
   }
+  if (!sessionUnavailable) throw new Error('probe failed')
+  // NOTE: Node's global fetch cannot honour the Electron session proxy; this
+  // path is only reached when `session.fetch` itself is unavailable.
   const res = await fetch(url, { method, signal: AbortSignal.timeout(timeoutMs) })
   if (res.status >= 500) throw new Error(`HTTP ${res.status}`)
   try {

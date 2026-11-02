@@ -75,7 +75,7 @@ function makeIssue(input: {
   }
 }
 
-function mergeIssues(fresh: AppIssue[]): AppIssue[] {
+function mergeIssues(fresh: AppIssue[], resolvableKinds: Set<AppIssueKind>): AppIssue[] {
   const now = Date.now()
   const old = new Map(listIssues().map((i) => [i.fingerprint, i]))
   const seen = new Set<string>()
@@ -100,6 +100,10 @@ function mergeIssues(fresh: AppIssue[]): AppIssue[] {
   // user explicitly ignored them.
   for (const [fp, prev] of old) {
     if (seen.has(fp)) continue
+    if (!resolvableKinds.has(prev.kind)) {
+      merged.push(prev)
+      continue
+    }
     merged.push(
       prev.status === 'ignored'
         ? prev
@@ -124,7 +128,10 @@ export class IssueHubService {
 
   async scan(instanceId?: string): Promise<AppIssue[]> {
     const configs = loadInstanceConfigs().filter((c) => !instanceId || c.id === instanceId)
+    if (instanceId && !configs.length) throw new Error(`Instance not found: ${instanceId}`)
     const fresh: AppIssue[] = []
+    // A source that failed to run must NOT resolve its previous issues.
+    const resolvable = new Set<AppIssueKind>(['startup', 'node-load', 'exec'])
     for (const config of configs) {
       const id = config.id
       // Startup traceback issues.
@@ -225,6 +232,9 @@ export class IssueHubService {
       // Dependency audit is network/venv dependent; a failure is not an issue.
       try {
         const audit = await nodePackService.depsAudit(id)
+        // A failed audit (pip missing / env mismatch) says nothing about
+        // whether the old dependency issue was fixed.
+        if (audit.ok) resolvable.add('deps')
         for (const pack of audit.packs || []) {
           const fp = fingerprint([
             'deps',
@@ -259,6 +269,7 @@ export class IssueHubService {
       try {
         const { doctorService } = await import('./doctor')
         const report = await doctorService.run(id)
+        resolvable.add('doctor')
         for (const check of report.checks || []) {
           if (check.severity !== 'fail' && check.severity !== 'warn') continue
           const fp = fingerprint(['doctor', id, check.id, check.detail])
@@ -277,7 +288,7 @@ export class IssueHubService {
         /* doctor is advisory */
       }
     }
-    mergeIssues(fresh)
+    mergeIssues(fresh, resolvable)
     return this.list()
   }
 

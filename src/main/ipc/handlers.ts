@@ -2396,13 +2396,12 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     'shell.reveal',
     wrap(async (path: string) => {
       if (!path || path.includes('\0')) throw new Error('Blocked unsafe path')
-      // Allow-list with per-segment normalization + resolve: blocks `..` hops
-      // and Windows path games (0.1.9). Only locations the app owns/configured.
-      const { resolveInsideAnyRoot } = await import('../services/security')
-      const allowed = resolveInsideAnyRoot(path, await collectRevealRoots())
-      if (!allowed) throw new Error('Blocked revealing path outside allowed areas')
-      // Pass the ORIGINAL path — the resolver may normalize UNC prefixes.
-      shell.showItemInFolder(path)
+      // 0.2.0: realpath containment so a symlink inside an allowed folder
+      // cannot reveal an arbitrary target.
+      const roots = await collectRevealRoots()
+      const real = realpathUnderAnyRoot(path, roots)
+      if (!real) throw new Error('Blocked revealing path outside allowed areas')
+      shell.showItemInFolder(real)
       return true
     })
   )
