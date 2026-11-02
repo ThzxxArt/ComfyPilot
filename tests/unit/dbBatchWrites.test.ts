@@ -55,9 +55,12 @@ describe('db batch + debounced writes (0.1.16)', () => {
     expect(db.listDownloadTasks().map((t) => t.id)).toEqual(['d1', 'd2'])
     db.flushPendingWrites()
     expect(existsSync(join(root, 'data', 'downloads.jsonc'))).toBe(true)
-    const onDisk = JSON.parse(
-      readFileSync(join(root, 'data', 'downloads.jsonc'), 'utf-8')
-    ) as DownloadTask[]
+    const onDisk = (
+      JSON.parse(readFileSync(join(root, 'data', 'downloads.jsonc'), 'utf-8')) as {
+        schemaVersion: number
+        items: DownloadTask[]
+      }
+    ).items
     expect(onDisk.map((t) => t.id).sort()).toEqual(['d1', 'd2'])
   })
 

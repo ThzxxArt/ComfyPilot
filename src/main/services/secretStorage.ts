@@ -15,6 +15,17 @@ import { safeStorage } from 'electron'
 
 const PREFIX = 'enc:'
 
+/** Where credentials currently live — surfaced in Settings, never the secret. */
+export function secretStorageBackend(): 'os-keychain' | 'plaintext' | 'unavailable' {
+  try {
+    if (!safeStorage) return 'unavailable'
+    if (typeof safeStorage.isEncryptionAvailable !== 'function') return 'plaintext'
+    return safeStorage.isEncryptionAvailable() ? 'os-keychain' : 'plaintext'
+  } catch {
+    return 'unavailable'
+  }
+}
+
 export function encryptSecret(secret: string): string {
   if (!secret) return ''
   // Already ciphertext: pass through. Re-encrypting an UNREADABLE ciphertext

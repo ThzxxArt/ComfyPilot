@@ -1,13 +1,17 @@
 import {
+  closeSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
+  openSync,
   writeFileSync,
   readFileSync,
   statSync,
   rmSync,
   renameSync,
   copyFileSync,
-  readdirSync
+  readdirSync,
+  writeSync
 } from 'fs'
 import { join, basename, dirname, relative, isAbsolute } from 'path'
 import { randomUUID } from 'crypto'
@@ -27,6 +31,7 @@ import {
   loadSettings,
   saveSettings,
   listRemotes,
+  flushPendingWrites,
   listModels,
   listWorkflows,
   listNodePacks,
@@ -42,7 +47,9 @@ import {
   assertSafeEndpointSetting,
   assertSafeSettingsPatch,
   assertSafeRelativeFilename,
-  isSafeExternalUrl
+  isSafeExternalUrl,
+  credentialOriginForUrl,
+  proxyCredentialOrigin
 } from './security'
 import { encryptSecret } from './secretStorage'
 
@@ -244,6 +251,24 @@ function snapshotWorkflowFiles(dir: string): { copied: number; missing: number }
  * re-rooted under a trusted directory); the raw `wf.path` from the backup is
  * never used as a write target.
  */
+function fsyncPath(target: string): void {
+  let fd: number | undefined
+  try {
+    fd = openSync(target, 'r+')
+    fsyncSync(fd)
+  } catch {
+    /* filesystems without fsync support */
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd)
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
 function restoreWorkflowFiles(files: PlanFile[]): { restored: number; failed: number } {
   let restored = 0
   let failed = 0
@@ -254,7 +279,9 @@ function restoreWorkflowFiles(files: PlanFile[]): { restored: number; failed: nu
     try {
       mkdirSync(dirname(dest), { recursive: true })
       copyFileSync(file.source, staging)
+      fsyncPath(staging)
       renameSync(staging, dest)
+      fsyncPath(dirname(dest))
       restored += 1
     } catch {
       failed += 1
@@ -266,6 +293,61 @@ function restoreWorkflowFiles(files: PlanFile[]): { restored: number; failed: nu
     }
   }
   return { restored, failed }
+}
+
+// ---------- Crash-safe restore journal (0.2.0) ----------
+interface RestoreJournal {
+  backupId: string
+  preRestoreId: string
+  startedAt: number
+}
+
+function journalPath(): string {
+  return join(userDataDir(), 'restore-journal.json')
+}
+
+function writeJournal(data: RestoreJournal): void {
+  const target = journalPath()
+  const tmp = `${target}.tmp-${process.pid}`
+  let fd: number | undefined
+  try {
+    fd = openSync(tmp, 'w')
+    writeSync(fd, JSON.stringify(data, null, 2), null, 'utf-8')
+    fsyncSync(fd)
+    closeSync(fd)
+    fd = undefined
+    renameSync(tmp, target)
+    fsyncPath(dirname(target))
+  } catch {
+    try {
+      if (fd !== undefined) closeSync(fd)
+    } catch {
+      /* ignore */
+    }
+    try {
+      rmSync(tmp, { force: true })
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function readJournal(): RestoreJournal | null {
+  try {
+    if (!existsSync(journalPath())) return null
+    const parsed = JSON.parse(readFileSync(journalPath(), 'utf-8')) as RestoreJournal
+    return parsed && typeof parsed.preRestoreId === 'string' ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function clearJournal(): void {
+  try {
+    rmSync(journalPath(), { force: true })
+  } catch {
+    /* ignore */
+  }
 }
 
 /**
@@ -338,6 +420,9 @@ function applyRestoreSnapshot(snap: RestoreSnapshot): void {
 }
 
 export class BackupService {
+  /** Guards journal/pre-restore recursion during startup recovery. */
+  private recovering = false
+
   list(): BackupManifest[] {
     return listBackups()
   }
@@ -474,6 +559,7 @@ export class BackupService {
     )
 
     // Settings first: it carries roots used by later operations.
+    flushPendingWrites()
     const snapshot = captureRestoreSnapshot(plan.files)
     let preRestoreId = ''
     try {
@@ -487,15 +573,26 @@ export class BackupService {
         `Restore aborted, nothing applied — could not create the pre-restore backup (${msg})`
       )
     }
+    // 0.2.0: a journal makes the pre-restore backup actionable after a crash.
+    if (!this.recovering) {
+      writeJournal({ backupId: sanitizeId(id), preRestoreId, startedAt: Date.now() })
+    }
 
     try {
       if (sections.has('settings') && plan.settings) {
         const current = loadSettings()
+        const currentProxy = current.proxy || ({} as AppSettings['proxy'])
+        const incomingProxy = plan.settings.proxy || currentProxy
         const nextSettings: AppSettings = { ...plan.settings }
-        // 0.1.17 (WP8): the snapshot never contains credentials. Keep whatever
-        // this machine already had instead of wiping the proxy password.
-        if (!plan.settings.proxy?.password && current.proxy?.password) {
-          nextSettings.proxy = { ...plan.settings.proxy, password: current.proxy.password }
+        // 0.2.0: keep this machine's proxy password only when the restored
+        // settings point at the SAME endpoint. Importing/restoring a profile
+        // for another host must never reuse the old credential.
+        const sameProxyOrigin =
+          proxyCredentialOrigin(incomingProxy) === proxyCredentialOrigin(currentProxy)
+        nextSettings.proxy = {
+          ...incomingProxy,
+          password:
+            !incomingProxy.password && sameProxyOrigin ? String(currentProxy.password || '') : ''
         }
         saveSettings(nextSettings)
       }
@@ -515,15 +612,26 @@ export class BackupService {
         replaceList('node_snapshots', listFor('snapshots') as unknown[])
       }
       if (sections.has('remotes') && listFor('remotes')) {
-        const localKeys = new Map(listRemotes().map((r) => [r.id, r.apiKey]))
+        const local = new Map(listRemotes().map((r) => [r.id, r]))
         const items = (listFor('remotes') as Array<Record<string, unknown>>).map((r) => {
-          // 0.1.17 (review fix): the backup strips apiKey, so the merge brings
-          // back THIS machine's decrypted key — it must be re-encrypted before
-          // hitting disk, otherwise a restore silently degrades the credential
-          // to plaintext (the very thing WP8 removed).
-          const { apiKeyLocked: _ignored, ...rest } = r
-          const plain = String(r.apiKey || '') || localKeys.get(String(r.id)) || ''
-          return { ...rest, apiKey: plain ? encryptSecret(plain) : '' }
+          // 0.2.0: a backup never carries API keys. Reuse THIS machine's key
+          // only when both id and endpoint origin match; otherwise the record
+          // is restored without a credential and must be re-entered.
+          const { apiKeyLocked: _ignored, credentialOrigin: _origin, ...rest } = r
+          const id = String(r.id || '')
+          const incomingOrigin = credentialOriginForUrl(String(r.baseUrl || ''))
+          const prev = local.get(id)
+          const prevOrigin = prev
+            ? prev.credentialOrigin || credentialOriginForUrl(prev.baseUrl)
+            : ''
+          const plain =
+            String(r.apiKey || '') ||
+            (prev && incomingOrigin === prevOrigin ? String(prev.apiKey || '') : '')
+          return {
+            ...rest,
+            credentialOrigin: incomingOrigin,
+            apiKey: plain ? encryptSecret(plain) : ''
+          }
         })
         replaceList('remote_instances', items)
       }
@@ -544,6 +652,8 @@ export class BackupService {
       if (wfResult.failed > 0) {
         throw new Error(`${wfResult.failed} workflow file(s) could not be written`)
       }
+      flushPendingWrites()
+      clearJournal()
 
       return {
         ok: true,
@@ -556,6 +666,8 @@ export class BackupService {
       const msg = err instanceof Error ? err.message : String(err)
       try {
         applyRestoreSnapshot(snapshot)
+        flushPendingWrites()
+        clearJournal()
       } catch (rbErr) {
         const rbMsg = rbErr instanceof Error ? rbErr.message : String(rbErr)
         throw new Error(
@@ -565,6 +677,39 @@ export class BackupService {
       throw new Error(
         `Restore failed and was rolled back: ${msg}. Pre-restore backup: ${preRestoreId}`
       )
+    }
+  }
+
+  /**
+   * 0.2.0: called once on startup. If a restore was interrupted mid-flight,
+   * roll the profile back to the pre-restore backup instead of leaving a
+   * half-applied mix. The journal is only cleared after a successful rollback.
+   */
+  recoverInterruptedRestore(): { recovered: boolean; preRestoreId?: string; error?: string } {
+    const journal = readJournal()
+    if (!journal) return { recovered: false }
+    try {
+      if (!existsSync(resolveBackupDir(journal.preRestoreId))) {
+        return {
+          recovered: false,
+          preRestoreId: journal.preRestoreId,
+          error: 'pre-restore backup is missing; journal kept for manual recovery'
+        }
+      }
+      this.recovering = true
+      try {
+        this.restore(journal.preRestoreId)
+      } finally {
+        this.recovering = false
+      }
+      clearJournal()
+      return { recovered: true, preRestoreId: journal.preRestoreId }
+    } catch (e) {
+      return {
+        recovered: false,
+        preRestoreId: journal.preRestoreId,
+        error: e instanceof Error ? e.message : String(e)
+      }
     }
   }
 
@@ -600,9 +745,16 @@ export class BackupService {
     if (settings) {
       // A backup may not flip the runtime-integrity escape hatch: that is
       // local security state, exactly like settings.importConfig treats it.
-      if ('allowUnverifiedRuntime' in (settings as unknown as Record<string, unknown>)) {
-        delete (settings as unknown as Record<string, unknown>).allowUnverifiedRuntime
-        warnings.push('settings.json: allowUnverifiedRuntime is local security state — ignored')
+      for (const key of [
+        'allowUnverifiedRuntime',
+        'securityLevel',
+        'allowGitUrlInstall',
+        'allowPipInstall'
+      ]) {
+        if (key in (settings as unknown as Record<string, unknown>)) {
+          delete (settings as unknown as Record<string, unknown>)[key]
+          warnings.push(`settings.json: ${key} is local security state — ignored`)
+        }
       }
       const endpointKeys = [
         'githubEndpoint',

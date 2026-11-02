@@ -117,9 +117,11 @@ describe('unreadable secrets are preserved, not erased (review fix)', () => {
     // stored ciphertext.
     db.upsertRemote({ ...read[0], name: 'Renamed' })
     db.flushPendingWrites()
-    const raw = JSON.parse(
-      readFileSync(join(root, 'data', 'remote_instances.jsonc'), 'utf-8')
-    ) as Array<Record<string, unknown>>
+    const raw = (
+      JSON.parse(readFileSync(join(root, 'data', 'remote_instances.jsonc'), 'utf-8')) as {
+        items: Array<Record<string, unknown>>
+      }
+    ).items
     expect(raw[0].apiKey).toBe('enc:%%%')
     expect(raw[0].name).toBe('Renamed')
 

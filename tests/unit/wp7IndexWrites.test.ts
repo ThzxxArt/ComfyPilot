@@ -98,7 +98,9 @@ describe('hot collection write coalescing (0.1.17 WP7)', () => {
 
     db.flushPendingWrites()
     expect(existsSync(file)).toBe(true)
-    const onDisk = JSON.parse(readFileSync(file, 'utf-8')) as ModelRecord[]
+    const onDisk = (
+      JSON.parse(readFileSync(file, 'utf-8')) as { schemaVersion: number; items: ModelRecord[] }
+    ).items
     expect(onDisk.map((m) => m.id)).toEqual(['a', 'b', 'c'])
   })
 
@@ -129,9 +131,12 @@ describe('hot collection write coalescing (0.1.17 WP7)', () => {
     const cleared = db.clearOutputAssetThumbnails(['t1', 't3'])
     expect(cleared).toBe(2)
     db.flushPendingWrites()
-    const rows = JSON.parse(
-      readFileSync(join(root, 'data', 'output_assets.jsonc'), 'utf-8')
-    ) as OutputAsset[]
+    const rows = (
+      JSON.parse(readFileSync(join(root, 'data', 'output_assets.jsonc'), 'utf-8')) as {
+        schemaVersion: number
+        items: OutputAsset[]
+      }
+    ).items
     const byId = new Map(rows.map((r) => [r.id, r.thumbnail]))
     expect(byId.get('t1')).toBeUndefined()
     expect(byId.get('t3')).toBeUndefined()
@@ -202,8 +207,12 @@ describe('persistence failures are not swallowed (review fix)', () => {
     mkdirSync(join(root, 'data'), { recursive: true })
     const second = db.flushPendingWrites()
     expect(second.failed).toEqual([])
-    const onDisk = JSON.parse(readFileSync(join(root, 'data', 'models.jsonc'), 'utf-8'))
-    expect(onDisk.map((m: { id: string }) => m.id)).toEqual(['lost'])
+    const onDisk = (
+      JSON.parse(readFileSync(join(root, 'data', 'models.jsonc'), 'utf-8')) as {
+        items: Array<{ id: string }>
+      }
+    ).items
+    expect(onDisk.map((m) => m.id)).toEqual(['lost'])
   })
 })
 
@@ -227,9 +236,11 @@ describe('node pack deletion vs queued writes (review fix)', () => {
     // Delete inside the 400 ms debounce window: the earlier upsert is still queued.
     expect(db.deleteNodePack('drop')).toBe(true)
     db.flushPendingWrites()
-    const rows = JSON.parse(
-      readFileSync(join(root, 'data', 'node_packs.jsonc'), 'utf-8')
-    ) as Array<{ id: string }>
+    const rows = (
+      JSON.parse(readFileSync(join(root, 'data', 'node_packs.jsonc'), 'utf-8')) as {
+        items: Array<{ id: string }>
+      }
+    ).items
     expect(rows.map((r) => r.id)).toEqual(['keep'])
   })
 })

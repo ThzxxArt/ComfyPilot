@@ -58,10 +58,10 @@ describe('PreflightService (0.1.12)', () => {
     expect(String(r.error)).toContain('object_info unavailable')
   })
 
-  it('workflow(): a parse failure keeps available:true and surfaces the error', async () => {
+  it('workflow(): a parse failure is NOT available and surfaces the error', async () => {
     const svc = await fresh()
     const r = await svc.workflow('C:/wf/bad.json', 'i1')
-    expect(r.available).toBe(true)
+    expect(r.available).toBe(false)
     expect(r.missingTypes).toEqual([])
     expect(String(r.error)).toContain('Cannot parse')
   })

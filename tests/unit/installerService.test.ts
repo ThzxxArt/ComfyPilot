@@ -675,7 +675,7 @@ describe('installer service internals', () => {
         expect(loadInstanceConfigs()).toHaveLength(0)
         await expect(
           installerService.installStarter({ id: 'sd15-v1-5-pruned-emaonly' })
-        ).rejects.toThrow(/No instance registered/)
+        ).rejects.toThrow(/No ComfyUI instance is configured/)
       } finally {
         for (const c of backup) upsertInstanceConfig(c)
       }

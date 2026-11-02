@@ -9,8 +9,20 @@
  *
  * Pure fs + Electron `app` — no windows, no timers.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
-import { join } from 'path'
+import {
+  appendFileSync,
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+  writeSync
+} from 'fs'
+import { dirname, join } from 'path'
 import { app } from 'electron'
 import type { PreviousExitInfo } from '@shared/types'
 import { logsDir, userDataDir } from './db'
@@ -40,11 +52,36 @@ function readSession(): SessionFile | null {
   }
 }
 
+/**
+ * 0.2.0: atomic + fsync. A crash in the middle of `writeFileSync` used to leave
+ * a truncated session.json; the next launch then treated a real crash as a
+ * clean exit (or vice versa). Write to a sibling temp file, fsync it, then
+ * rename over the target.
+ */
 function writeSession(data: SessionFile): void {
+  const target = sessionPath()
+  const tmp = `${target}.tmp-${process.pid}-${Date.now()}`
+  let fd: number | undefined
   try {
-    writeFileSync(sessionPath(), JSON.stringify(data, null, 2), 'utf-8')
+    mkdirSync(dirname(target), { recursive: true })
+    fd = openSync(tmp, 'w')
+    writeSync(fd, JSON.stringify(data, null, 2), null, 'utf-8')
+    fsyncSync(fd)
+    closeSync(fd)
+    fd = undefined
+    renameSync(tmp, target)
   } catch {
     /* best effort — liveness tracking must never break startup/quit */
+    try {
+      if (fd !== undefined) closeSync(fd)
+    } catch {
+      /* ignore */
+    }
+    try {
+      rmSync(tmp, { force: true })
+    } catch {
+      /* ignore */
+    }
   }
 }
 

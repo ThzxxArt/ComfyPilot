@@ -1,6 +1,6 @@
 import { app, BrowserWindow, shell, protocol, net, nativeImage, dialog } from 'electron'
-import { join, resolve, dirname, relative, isAbsolute } from 'path'
-import { pathToFileURL, fileURLToPath } from 'url'
+import { join, resolve } from 'path'
+import { pathToFileURL } from 'url'
 import { existsSync, mkdirSync, appendFileSync } from 'fs'
 import { registerIpcHandlers, broadcast, broadcastNotification } from './ipc/handlers'
 import { instanceService } from './services/instance'
@@ -8,6 +8,7 @@ import { modelService } from './services/model'
 import { monitorService } from './services/monitor'
 import { batchService } from './services/p1p2'
 import { installerService } from './services/installer'
+import { backupService } from './services/backup'
 import { execDiagnosticsService } from './services/execDiagnostics'
 import { proxyAuthFor, syncProxyFromSettings } from './services/proxy'
 import { createTray, destroyTray, refreshTray, hasTray } from './services/tray'
@@ -17,6 +18,7 @@ import {
   loadInstanceConfigs,
   logsDir,
   migrateLegacyLogs,
+  migrateData,
   flushPendingWrites
 } from './services/db'
 import { markSessionStart, markSessionCleanExit, recordCrashDetail } from './services/session'
@@ -26,7 +28,9 @@ import { monitorEventLoopDelay } from 'perf_hooks'
 import { IPC_EVENTS } from '@shared/types'
 import { APP_NAME } from '@shared/constants'
 import { isSafeExternalUrl, safeResolveUnder } from './services/security'
+import { isOwnRendererUrl } from './services/rendererEntry'
 import { bootMark } from './services/bootTiming'
+import { rotateLogIfTooLarge } from './services/logFile'
 
 // Custom schemes must be privileged BEFORE app ready so <img src="comfy-pilot-media:...">
 // and fetch() work inside the renderer.
@@ -57,7 +61,10 @@ function crashLog(msg: string): void {
   try {
     // Single canonical log root (0.1.16) — <userData>/logs, the dir the
     // Settings "open logs dir" button actually opens.
-    appendFileSync(join(logsDir(), 'boot.log'), line)
+    const file = join(logsDir(), 'boot.log')
+    // 0.2.0: boot.log previously grew for the lifetime of the profile.
+    rotateLogIfTooLarge(file, 5 * 1024 * 1024, 2)
+    appendFileSync(file, line)
   } catch {
     try {
       const dir = join(app.getPath('userData'), 'logs')
@@ -169,23 +176,7 @@ function resolveAppIcon(): string {
 
 /** Only the renderer entry we load (dev server or our index.html) may navigate. */
 function isOwnRendererEntry(url: string): boolean {
-  if (process.env.ELECTRON_RENDERER_URL && url.startsWith(process.env.ELECTRON_RENDERER_URL)) {
-    return true
-  }
-  if (!url.startsWith('file:')) return false
-  try {
-    const target = resolve(fileURLToPath(url))
-    const htmlReal = join(process.resourcesPath || '', 'renderer', 'index.html')
-    const htmlAsar = join(__dirname, '../renderer/index.html')
-    const entry = resolve(existsSync(htmlReal) ? htmlReal : htmlAsar)
-    if (target === entry) return true
-    const rendererDir = dirname(entry)
-    const rel = relative(rendererDir, target)
-    if (!rel || rel.startsWith('..') || isAbsolute(rel)) return false
-    return Boolean(safeResolveUnder(rendererDir, rel))
-  } catch {
-    return false
-  }
+  return isOwnRendererUrl(url)
 }
 
 function revealWindow(): void {
@@ -250,7 +241,10 @@ function createWindow(): void {
         }
         return candidates[0]
       })(),
-      sandbox: false,
+      // 0.2.0: the preload bundle only uses contextBridge/ipcRenderer, both
+      // supported in a sandboxed renderer. Keeping contextIsolation + sandbox
+      // means a compromised renderer cannot require Node or touch the FS.
+      sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
       webviewTag: false
@@ -307,6 +301,19 @@ function createWindow(): void {
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (isSafeExternalUrl(url)) void shell.openExternal(url)
     return { action: 'deny' }
+  })
+  // 0.2.0: deny every renderer permission (camera/mic/geolocation/notifications
+  // are not part of this app) and every webview attachment.
+  try {
+    mainWindow.webContents.session.setPermissionRequestHandler((_wc, _permission, callback) =>
+      callback(false)
+    )
+    mainWindow.webContents.session.setPermissionCheckHandler(() => false)
+  } catch {
+    /* older Electron — handler API is best-effort */
+  }
+  mainWindow.webContents.on('will-attach-webview', (event) => {
+    event.preventDefault()
   })
 
   mainWindow.webContents.on('will-navigate', (event, url) => {
@@ -400,6 +407,17 @@ app.whenReady().then(async () => {
   const e2e = process.env.COMFYPILOT_E2E === '1' || process.argv.includes('--e2e-smoke')
   crashLog('whenReady start')
   bootMark('app-ready')
+  // 0.2.0: v1 → v2 is a one-way migration with a pre-upgrade snapshot. It must
+  // run before any service reads data; failures leave the app in a blocking
+  // state instead of silently serving v1 defaults.
+  try {
+    const migration = migrateData()
+    if (!migration.ok) crashLog('data migration failed: ' + (migration.error || 'unknown'))
+    else if (migration.migratedFiles)
+      crashLog(`data migration ok: ${migration.migratedFiles} file(s) -> v2`)
+  } catch (err) {
+    crashLog('data migration threw: ' + (err instanceof Error ? err.message : String(err)))
+  }
 
   /**
    * 0.1.18 (WP1 / S2): `setProxy` deliberately carries no credentials, so an
@@ -435,6 +453,15 @@ app.whenReady().then(async () => {
     }
   } catch {
     /* best effort */
+  }
+  // 0.2.0: a restore interrupted by a crash is rolled back before anyone reads
+  // the profile. The pre-restore backup remains if rollback itself fails.
+  try {
+    const recovery = backupService.recoverInterruptedRestore()
+    if (recovery.recovered) crashLog('recovered interrupted restore: ' + recovery.preRestoreId)
+    else if (recovery.error) crashLog('restore recovery failed: ' + recovery.error)
+  } catch (err) {
+    crashLog('restore recovery threw: ' + (err instanceof Error ? err.message : String(err)))
   }
   startWatchdog()
 
@@ -885,15 +912,42 @@ app.whenReady().then(async () => {
       } catch {
         /* ignore */
       }
+      // 0.2.0: never exit as if everything were saved while a collection is
+      // still stuck in the debounce queue. Retry, and if it still fails record
+      // the failure and tell the user before exiting non-zero.
+      let failed: string[] = []
       try {
-        flushPendingWrites()
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          failed = flushPendingWrites().failed
+          if (!failed.length) break
+          await new Promise((resolve) => setTimeout(resolve, 250))
+        }
         // 0.1.17 (WP7): the prompt→workflow sidecar is debounced too.
         flushPromptLinks()
         // 0.1.18 (regression): batch progress is coalesced for 400 ms; flush it
         // before exit or the last accepted promptIds are lost on quit.
         batchService.flushBatchWrites()
-      } catch {
-        /* ignore */
+      } catch (err) {
+        failed = [...failed, err instanceof Error ? err.message : String(err)]
+      }
+      if (failed.length) {
+        const detail = `exit flush failed: ${failed.join(', ')}`
+        try {
+          crashLog(detail)
+          recordCrashDetail(detail)
+        } catch {
+          /* ignore */
+        }
+        try {
+          dialog.showErrorBox(
+            'ComfyPilot — data not saved',
+            `Some local data could not be written to disk:\n${failed.join('\n')}\n\nThe app will exit. Your existing files were not overwritten.`
+          )
+        } catch {
+          /* ignore */
+        }
+        app.exit(1)
+        return
       }
       app.exit(0)
     })()

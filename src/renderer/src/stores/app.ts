@@ -1,12 +1,12 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import type {
-  AppSettings,
+  AppSettingsView,
   ComfyInstanceInfo,
   SystemSnapshot,
   DoctorReport,
   AppNotification,
-  RemoteInstanceConfig,
+  RemoteInstanceSummary,
   TargetRef
 } from '@shared/types'
 import { ipc, onInstanceStatus, onMonitorTick, onNotification } from '@/composables/useIpc'
@@ -43,11 +43,11 @@ function persistNoticeStore(seq: number, items: AppNotification[]): void {
 
 export const useAppStore = defineStore('app', () => {
   const ready = ref(false)
-  const settings = ref<AppSettings | null>(null)
+  const settings = ref<AppSettingsView | null>(null)
   const instances = ref<ComfyInstanceInfo[]>([])
   const activeInstanceId = ref<string | null>(null)
-  /** Remote ComfyUI instances (LAN / cloud) — read-only targets. */
-  const remotes = ref<RemoteInstanceConfig[]>([])
+  /** Remote ComfyUI instances (LAN / cloud) — read-only targets; keys never cross IPC. */
+  const remotes = ref<RemoteInstanceSummary[]>([])
   const activeRemoteId = ref<string | null>(null)
   /**
    * Bumped whenever activeInstanceId changes. Domain views watch this

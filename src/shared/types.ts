@@ -77,6 +77,27 @@ export interface ProxySettings {
   password: string
   /** Comma/space separated hosts that bypass proxy (localhost always bypassed) */
   bypass: string
+  /**
+   * 0.2.0: endpoint the stored password belongs to. Changing
+   * protocol/host/port/username invalidates the credential instead of silently
+   * reusing it against a new endpoint.
+   */
+  credentialOrigin?: string
+}
+
+/** Renderer-safe proxy view — the password never crosses IPC. */
+export interface ProxySettingsView extends Omit<ProxySettings, 'password'> {
+  hasPassword: boolean
+  backend: 'os-keychain' | 'plaintext' | 'unavailable'
+}
+
+export interface RemoteInstanceSummary extends Omit<RemoteInstanceConfig, 'apiKey'> {
+  apiKeySet: boolean
+}
+
+/** Renderer-safe settings: the proxy password never crosses IPC. */
+export interface AppSettingsView extends Omit<AppSettings, 'proxy'> {
+  proxy: ProxySettingsView
 }
 
 export interface AppSettings {
@@ -836,6 +857,9 @@ export interface NodeDepsAudit {
 export interface WorkflowModelRequirement {
   name: string
   nodeType: string
+  /** Input key (ckpt_name/lora_name/…) used to disambiguate model categories. */
+  inputKey?: string
+  category?: string
   present: boolean
   /** Local basename that matched, when present (helps explain subfolders). */
   matchedFile?: string
@@ -1111,6 +1135,8 @@ export interface RemoteInstanceConfig {
   name: string
   baseUrl: string
   apiKey?: string
+  /** 0.2.0: base URL the apiKey was entered for; a changed endpoint clears it. */
+  credentialOrigin?: string
   label: string
   enabled: boolean
   /**
@@ -1568,8 +1594,10 @@ export interface RegistryIndexStatus {
 
 export type IpcChannelMap = {
   // settings
-  'settings.get': { args: []; result: AppSettings }
-  'settings.set': { args: [Partial<AppSettings>]; result: AppSettings }
+  'settings.get': { args: []; result: AppSettingsView }
+  'settings.set': { args: [Partial<AppSettings>]; result: AppSettingsView }
+  'settings.setProxyPassword': { args: [string]; result: { ok: boolean } }
+  'settings.clearProxyPassword': { args: []; result: { ok: boolean } }
   /** 0.1.18 (WP1/S6): which stored secrets need re-entry (undecryptable). */
   'settings.exportConfig': {
     args: []
@@ -1577,11 +1605,19 @@ export type IpcChannelMap = {
   }
   'settings.importConfig': {
     args: [Record<string, unknown>]
-    result: { settings: AppSettings; applied: string[] }
+    result: { settings: AppSettingsView; applied: string[] }
   }
   'settings.credentialStatus': {
     args: []
-    result: { proxyPasswordUnreadable: boolean; lockedRemoteIds: string[] }
+    result: {
+      proxyPasswordUnreadable: boolean
+      proxyCredentialBackend: ProxySettingsView['backend']
+      lockedRemoteIds: string[]
+    }
+  }
+  'data.migrationState': {
+    args: []
+    result: { ok: boolean; snapshot?: string; migratedFiles: number; error?: string }
   }
   'settings.launchTemplates': { args: []; result: LaunchArgTemplate[] }
   'settings.dataDir': { args: []; result: string }
@@ -1980,8 +2016,10 @@ export type IpcChannelMap = {
   'output.exportZip': { args: [string[], string?]; result: { path: string } }
 
   // remote
-  'remote.list': { args: []; result: RemoteInstanceConfig[] }
-  'remote.save': { args: [RemoteInstanceConfig]; result: RemoteInstanceConfig }
+  'remote.list': { args: []; result: RemoteInstanceSummary[] }
+  'remote.save': { args: [RemoteInstanceConfig]; result: RemoteInstanceSummary }
+  'remote.setApiKey': { args: [string, string]; result: { ok: boolean } }
+  'remote.clearApiKey': { args: [string]; result: { ok: boolean } }
   'remote.remove': { args: [string]; result: boolean }
   'remote.test': { args: [string]; result: RemoteInstanceStatus }
   'remote.listStatus': { args: []; result: RemoteInstanceStatus[] }
@@ -2211,11 +2249,14 @@ export const IPC_CHANNELS = [
   'registry.refreshIndex',
   'remote.freeMemory',
   'remote.list',
+  'remote.clearApiKey',
   'remote.listStatus',
   'remote.remove',
   'remote.save',
+  'remote.setApiKey',
   'remote.test',
   'settings.dataDir',
+  'data.migrationState',
   'settings.get',
   'settings.launchTemplates',
   'settings.logsDir',
@@ -2223,6 +2264,8 @@ export const IPC_CHANNELS = [
   'settings.exportConfig',
   'settings.importConfig',
   'settings.set',
+  'settings.setProxyPassword',
+  'settings.clearProxyPassword',
   'shell.openExternal',
   'shell.openPath',
   'shell.pickDirectory',

@@ -69,6 +69,7 @@ vi.mock('../../src/main/services/db', () => ({
   listWorkflows: () => h.state.workflows,
   listNodePacks: () => h.state.nodes,
   listSnapshots: () => h.state.snaps,
+  flushPendingWrites: () => ({ failed: [] }),
   replaceList: (name: string, items: unknown[]) => {
     if (h.state.failNextReplace === name) {
       h.state.failNextReplace = ''
@@ -342,7 +343,9 @@ describe('BackupService (0.1.10 behaviour)', () => {
     expect(svc.restore(id).ok).toBe(true)
     const saved = h.state.savedSettings as any
     expect(saved.locale).toBe('en-US')
-    expect(saved.proxy).toEqual({ host: 'new', port: 1080, password: 'local-pass' })
+    // 0.2.0: host changed from `old` to `new`, so the local proxy password
+    // must NOT be carried over to the new endpoint.
+    expect(saved.proxy).toEqual({ host: 'new', port: 1080, password: '' })
     const remotes = JSON.parse(
       readFileSync(join(h.state.root, 'remote_instances.jsonc'), 'utf-8')
     ) as Array<Record<string, unknown>>
@@ -388,7 +391,7 @@ describe('restore() validates untrusted settings (review fix)', () => {
     expect(() => svc.restore(id)).toThrow(/credentials/)
   })
 
-  it('rejects an unknown securityLevel instead of weakening the install gate', async () => {
+  it('drops an imported securityLevel instead of weakening the install gate', async () => {
     const svc = await freshBackup()
     const id = 'b-bad-security'
     const dir = join(h.state.root, 'backups', id)
@@ -397,8 +400,11 @@ describe('restore() validates untrusted settings (review fix)', () => {
       join(dir, 'settings.json'),
       JSON.stringify({ securityLevel: 'off', locale: 'en-US' })
     )
-    expect(() => svc.restore(id)).toThrow(/securityLevel/)
-    expect(h.state.savedSettings).toBeNull()
+    expect(svc.restore(id).ok).toBe(true)
+    const saved = h.state.savedSettings as Record<string, unknown>
+    expect(saved.locale).toBe('en-US')
+    // The local security level is never taken from a file.
+    expect(saved.securityLevel).toBeUndefined()
   })
 })
 

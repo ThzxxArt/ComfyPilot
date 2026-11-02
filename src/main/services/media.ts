@@ -24,7 +24,12 @@ import {
   clearOutputAssetThumbnails
 } from './db'
 import { resolveOutputDir } from './p1p2'
-import { assertSafeRelativeFilename, isSafeExternalUrl, isPathInside } from './security'
+import {
+  assertSafeRelativeFilename,
+  isSafeExternalUrl,
+  isPathInside,
+  realpathUnderAnyRoot
+} from './security'
 import { isMediaServable } from '@shared/mediaTypes'
 import type { ModelRecord } from '@shared/types'
 
@@ -284,15 +289,19 @@ export function resolveMediaUrlToPath(url: string): string | null {
       if (!rel || !isMediaServable(rel)) return null
       const root = mediaThumbsRoot()
       const full = join(root, rel)
-      if (!existsSync(full) || !isPathInside(full, root)) return null
-      return full
+      if (!existsSync(full)) return null
+      // 0.2.0: resolve symlinks/junctions. Lexical containment alone let a
+      // link inside the thumbs root expose any readable file.
+      return realpathUnderAnyRoot(full, [root])
     }
     if (clean.startsWith('output/')) {
       const rel = mediaRelativePath(clean.slice('output/'.length))
       if (!rel || !isMediaServable(rel)) return null
       for (const root of mediaOutputRoots()) {
         const full = join(root, rel)
-        if (existsSync(full) && isPathInside(full, root)) return full
+        if (!existsSync(full)) continue
+        const real = realpathUnderAnyRoot(full, [root])
+        if (real) return real
       }
       return null
     }

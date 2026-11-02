@@ -37,9 +37,17 @@ export function readTextTail(file: string, maxBytes: number): string {
     if (size <= 0) return ''
     const start = Math.max(0, size - Math.max(0, maxBytes))
     const length = size - start
-    const buf = Buffer.allocUnsafe(length)
-    readSync(fd, buf, 0, length, start)
-    let text = buf.toString('utf-8')
+    if (length <= 0) return ''
+    const buf = Buffer.alloc(length)
+    // A short read must never expose the zero-filled remainder as if it were
+    // file content. Loop until the requested range is actually read.
+    let read = 0
+    while (read < length) {
+      const n = readSync(fd, buf, read, length - read, start + read)
+      if (n <= 0) break
+      read += n
+    }
+    let text = buf.subarray(0, read).toString('utf-8')
     // If we started mid-file, the first line may be truncated — drop it.
     if (start > 0) {
       const nl = text.indexOf('\n')

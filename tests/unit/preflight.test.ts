@@ -59,8 +59,12 @@ describe('collectPromptModelRefs (0.1.18 / WP7)', () => {
     }
     const refs = collectPromptModelRefs(prompt)
     expect(refs).toEqual([
-      { name: 'SDXL/base.safetensors', nodeType: 'CheckpointLoaderSimple' },
-      { name: 'style.safetensors', nodeType: 'LoraLoader' }
+      {
+        name: 'SDXL/base.safetensors',
+        nodeType: 'CheckpointLoaderSimple',
+        inputKey: 'ckpt_name'
+      },
+      { name: 'style.safetensors', nodeType: 'LoraLoader', inputKey: 'lora_name' }
     ])
   })
 
@@ -71,7 +75,7 @@ describe('collectPromptModelRefs (0.1.18 / WP7)', () => {
       collectPromptModelRefs({
         '1': { class_type: 'X', inputs: { text: 'hello.safetensors' } } // not an extension-only test
       })
-    ).toEqual([{ name: 'hello.safetensors', nodeType: 'X' }])
+    ).toEqual([{ name: 'hello.safetensors', nodeType: 'X', inputKey: 'text' }])
     expect(
       collectPromptModelRefs({ '1': { class_type: 'X', inputs: { seed: 42, image: 'a.png' } } })
     ).toEqual([])

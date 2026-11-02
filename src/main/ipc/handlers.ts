@@ -1,7 +1,7 @@
 import { ipcMain, dialog, shell, BrowserWindow, WebContentsView, clipboard } from 'electron'
 import { existsSync } from 'fs'
 import { homedir } from 'os'
-import { basename, join } from 'path'
+import { basename, isAbsolute, join } from 'path'
 import type {
   IpcResult,
   ComfyInstanceConfig,
@@ -10,6 +10,8 @@ import type {
   EnvCreateRequest,
   WorkflowRecord,
   AppSettings,
+  AppSettingsView,
+  RemoteInstanceSummary,
   InstallPlan,
   LaunchOptions,
   BatchJob
@@ -26,15 +28,26 @@ import {
   normalizeForCompare,
   isSafeDataReadPath,
   assertSafeEndpointSetting,
-  assertSafeSettingsPatch
+  assertSafeSettingsPatch,
+  hasExecutableMagic,
+  realpathUnderAnyRoot,
+  isSafeOpenPathUnderRoots,
+  isSafeExportSourcePath
 } from '../services/security'
 import {
   loadSettings,
   saveSettings,
   loadInstanceConfigs,
+  listRemoteSummaries,
+  setRemoteApiKey,
+  clearRemoteApiKey,
+  setProxyPassword,
+  clearProxyPassword,
+  getDataMigrationState,
   userDataDir,
   workflowLibraryDir
 } from '../services/db'
+import { secretStorageBackend } from '../services/secretStorage'
 import { LAUNCH_TEMPLATES } from '@shared/constants'
 import { instanceService } from '../services/instance'
 import { modelService } from '../services/model'
@@ -64,6 +77,7 @@ import { testProxy, syncProxyFromSettings } from '../services/proxy'
 import { execDiagnosticsService } from '../services/execDiagnostics'
 import { PIP_RECIPES } from '@shared/pipRecipes'
 import { instrumentIpcHandle, setSlowOpListener, FREEZE_OP_MS } from '../services/slowOps'
+import { isOwnRendererUrl } from '../services/rendererEntry'
 
 function ok<T>(data: T): IpcResult<T> {
   // Structured-clone safety: never hand a class instance / Response / Proxy
@@ -100,11 +114,27 @@ function toPlainIpcData<T>(data: T): T {
   }
 }
 
+/**
+ * 0.2.0: every IPC call must originate from this app's own renderer frame.
+ * A webview/iframe that somehow received the preload bridge must not be able
+ * to drive instance lifecycle or filesystem channels.
+ */
+function assertTrustedIpcSender(event: unknown): void {
+  // Unit tests register the handler and call it without a real event. Only
+  // enforce when the event actually carries Electron's senderFrame property.
+  if (!event || typeof event !== 'object' || !('senderFrame' in event)) return
+  const frame = (event as { senderFrame?: { url?: string } | null }).senderFrame
+  if (!frame || !isOwnRendererUrl(String(frame.url || ''))) {
+    throw new Error('Blocked IPC from an untrusted frame')
+  }
+}
+
 function wrap<A extends unknown[], R>(
   fn: (...args: A) => Promise<R> | R
 ): (_event: unknown, ...args: A) => Promise<IpcResult> {
-  return async (_event, ...args) => {
+  return async (event, ...args) => {
     try {
+      assertTrustedIpcSender(event)
       const data = await fn(...args)
       return ok(data)
     } catch (error) {
@@ -159,14 +189,69 @@ function isAllowedEmbedUrl(raw: string): boolean {
 // Anything else must resolve under an app-owned root — the old implementation
 // trusted ANY existing file with a data extension, i.e. the whole disk.
 const approvedReadRoots = new Set<string>()
+/** 0.2.0: executable/interpreter paths explicitly chosen through the OS picker. */
+const approvedExecutablePaths = new Set<string>()
+/** 0.2.0: directories the user picked as write targets. */
+const approvedWriteRoots = new Set<string>()
 
 function approveReadPath(p: string | null | undefined): void {
   if (!p) return
   try {
     approvedReadRoots.add(normalizeForCompare(p))
+    approvedWriteRoots.add(normalizeForCompare(p))
+    approvedExecutablePaths.add(normalizeForCompare(p))
   } catch {
     /* ignore */
   }
+}
+
+function isSystemPythonPath(p: string): boolean {
+  const name = basename(p).toLowerCase()
+  if (!/^python(3(\.\d+)?)?(\.exe)?$/.test(name)) return false
+  const normalized = normalizeForCompare(p).toLowerCase()
+  return (
+    normalized.includes('/windows/system32/') ||
+    normalized.includes('/program files/') ||
+    normalized.includes('/program files (x86)/') ||
+    normalized.startsWith('/usr/bin/') ||
+    normalized.startsWith('/usr/local/bin/') ||
+    normalized.startsWith('/opt/') ||
+    normalized.includes('/appdata/local/programs/python/') ||
+    normalized.includes('/miniconda') ||
+    normalized.includes('/anaconda')
+  )
+}
+
+/** Executable paths must come from the picker, a known system location, or
+ * an instance's own venv. A renderer cannot point the app at a dropped binary. */
+function assertApprovedExecutable(p: string, label: string): void {
+  if (!p) return
+  if (p.includes('\0')) throw new Error(`${label} contains an invalid character`)
+  const normalized = normalizeForCompare(p)
+  if (approvedExecutablePaths.has(normalized)) return
+  if (isSystemPythonPath(p)) return
+  const lower = normalized.toLowerCase()
+  if (/\/\.?venv\/|\/venv\/|\/venv-/.test(lower)) return
+  throw new Error(`${label} must be chosen with the file picker`)
+}
+
+function isPathInsideInstance(p: string): boolean {
+  return loadInstanceConfigs().some((c) => c.path && resolveInsideAnyRoot(p, [c.path]))
+}
+
+/** Install roots are directories. Accept a picked folder, the app's default
+ * runtime root, or a path under the user's home (the normal ComfyUI location). */
+function assertApprovedInstallRoot(p: string): void {
+  if (!p || p.includes('\0')) throw new Error('Invalid install root')
+  if (!isAbsolute(p)) throw new Error('Install root must be absolute')
+  const normalized = normalizeForCompare(p)
+  if (approvedWriteRoots.has(normalized)) return
+  const home = normalizeForCompare(homedir()).toLowerCase()
+  const lower = normalized.toLowerCase()
+  if (lower === home || lower.startsWith(`${home}/`)) return
+  const data = normalizeForCompare(userDataDir()).toLowerCase()
+  if (lower === data || lower.startsWith(`${data}/`)) return
+  throw new Error('Install root must be chosen with the directory picker')
 }
 
 /** App-owned roots the renderer may read data files from. */
@@ -202,6 +287,24 @@ function assertSafeEndpointSettings(patch: Partial<AppSettings>): void {
   for (const key of URL_SETTING_KEYS) {
     assertSafeEndpointSetting(key, (patch as Record<string, unknown>)[key])
   }
+}
+
+/** Renderer-safe settings projection: never leak the proxy password. */
+function settingsView(settings: AppSettings): AppSettingsView {
+  const { password, ...proxy } = settings.proxy
+  return {
+    ...settings,
+    proxy: {
+      ...proxy,
+      hasPassword: Boolean(password),
+      backend: secretStorageBackend()
+    }
+  }
+}
+
+function remoteSummary(remote: RemoteInstanceConfig): RemoteInstanceSummary {
+  const { apiKey, ...rest } = remote
+  return { ...rest, apiKeySet: Boolean(apiKey) && !rest.apiKeyLocked }
 }
 
 function isSafeReadPath(path: string): boolean {
@@ -372,10 +475,34 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     }
   )
 
+  ipcMain.handle(
+    'data.migrationState',
+    wrap(() => getDataMigrationState())
+  )
+
   // settings
   ipcMain.handle(
     'settings.get',
-    wrap(() => loadSettings())
+    wrap(() => settingsView(loadSettings()))
+  )
+  ipcMain.handle(
+    'settings.setProxyPassword',
+    wrap((password: string) => {
+      if (typeof password !== 'string' || /[\r\n\0]/.test(password)) {
+        throw new Error('Invalid proxy password')
+      }
+      setProxyPassword(password)
+      syncProxyFromSettings()
+      return { ok: true }
+    })
+  )
+  ipcMain.handle(
+    'settings.clearProxyPassword',
+    wrap(() => {
+      clearProxyPassword()
+      syncProxyFromSettings()
+      return { ok: true }
+    })
   )
   ipcMain.handle(
     'settings.exportConfig',
@@ -436,7 +563,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       const applied = Object.keys(patch).filter(
         (k) => JSON.stringify(after[k]) !== JSON.stringify(before[k])
       )
-      return { settings: next, applied }
+      return { settings: settingsView(next), applied }
     })
   )
   ipcMain.handle(
@@ -445,6 +572,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       const db = await import('../services/db')
       return {
         proxyPasswordUnreadable: db.isProxyPasswordUnreadable(),
+        proxyCredentialBackend: secretStorageBackend(),
         lockedRemoteIds: db
           .listRemotes()
           .filter((r) => r.apiKeyLocked)
@@ -465,6 +593,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
         throw new Error('settings.set expects an object patch')
       }
       assertSafeSettingsPatch(patch as Record<string, unknown>)
+      if (patch.aria2Path) assertApprovedExecutable(String(patch.aria2Path), 'aria2Path')
       if (
         patch.securityLevel !== undefined &&
         patch.securityLevel !== loadSettings().securityLevel
@@ -494,7 +623,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
           /* ignore */
         }
       }
-      return next
+      return settingsView(next)
     })
   )
   ipcMain.handle(
@@ -535,9 +664,18 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   )
   ipcMain.handle(
     'instance.save',
-    wrap((config: ComfyInstanceConfig) =>
-      instanceService.save({ ...config, id: config.id ? sanitizeId(config.id) : '' })
-    )
+    wrap((config: ComfyInstanceConfig) => {
+      if (!config || typeof config !== 'object') throw new Error('Invalid instance config')
+      if (!config.path || !existsSync(config.path)) throw new Error('Instance path does not exist')
+      if (config.pythonPath) assertApprovedExecutable(config.pythonPath, 'pythonPath')
+      if (config.venvPath) {
+        const normalized = normalizeForCompare(config.venvPath)
+        if (!approvedWriteRoots.has(normalized) && !isPathInsideInstance(config.venvPath)) {
+          throw new Error('venvPath must be inside the instance or chosen with the picker')
+        }
+      }
+      return instanceService.save({ ...config, id: config.id ? sanitizeId(config.id) : '' })
+    })
   )
   ipcMain.handle(
     'instance.remove',
@@ -1522,7 +1660,10 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   // env
   ipcMain.handle(
     'env.probe',
-    wrap((opts: { pythonPath: string; venvPath?: string }) => envService.probe(opts))
+    wrap((opts: { pythonPath: string; venvPath?: string }) => {
+      if (opts?.pythonPath) assertApprovedExecutable(opts.pythonPath, 'pythonPath')
+      return envService.probe(opts)
+    })
   )
   ipcMain.handle(
     'env.createVenv',
@@ -1549,13 +1690,26 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle(
     'installer.preflight',
     wrap(
-      (opts: { installRoot: string; useUv: boolean; pythonPath?: string; torchChannel?: string }) =>
-        installerService.preflight(opts as Parameters<typeof installerService.preflight>[0])
+      (opts: {
+        installRoot: string
+        useUv: boolean
+        pythonPath?: string
+        torchChannel?: string
+      }) => {
+        assertApprovedInstallRoot(opts.installRoot)
+        if (opts.pythonPath) assertApprovedExecutable(opts.pythonPath, 'pythonPath')
+        return installerService.preflight(opts as Parameters<typeof installerService.preflight>[0])
+      }
     )
   )
   ipcMain.handle(
     'installer.start',
-    wrap((plan: InstallPlan) => installerService.start(plan))
+    wrap((plan: InstallPlan) => {
+      if (!plan || typeof plan !== 'object') throw new Error('Invalid install plan')
+      assertApprovedInstallRoot(plan.installRoot)
+      if (plan.pythonPath) assertApprovedExecutable(plan.pythonPath, 'pythonPath')
+      return installerService.start(plan)
+    })
   )
   ipcMain.handle(
     'installer.status',
@@ -1920,19 +2074,24 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle(
     'output.open',
     wrap(async (path: string) => {
-      if (!isSafeOpenPath(path)) throw new Error('Blocked opening executable/script file')
-      return shell.openPath(path).then((r) => r === '')
+      const roots = [...(await collectRevealRoots()), ...approvedReadRoots]
+      const real = realpathUnderAnyRoot(path, roots)
+      if (!real || !isSafeOpenPathUnderRoots(real, roots)) {
+        throw new Error('Blocked opening file outside allowed areas')
+      }
+      return shell.openPath(real).then((r) => r === '')
     })
   )
   ipcMain.handle(
     'output.reveal',
     wrap(async (path: string) => {
       // Same allow-list as shell.reveal — the outputs library must not become
-      // a weaker second door into the filesystem (0.1.9).
-      const { resolveInsideAnyRoot } = await import('../services/security')
-      const allowed = resolveInsideAnyRoot(path, await collectRevealRoots())
-      if (!allowed) throw new Error('Blocked revealing path outside allowed areas')
-      shell.showItemInFolder(path)
+      // a weaker second door into the filesystem (0.1.9). A symlink inside an
+      // output root must resolve to a real target that is still inside a root.
+      const roots = [...(await collectRevealRoots()), ...approvedReadRoots]
+      const real = realpathUnderAnyRoot(path, roots)
+      if (!real) throw new Error('Blocked revealing path outside allowed areas')
+      shell.showItemInFolder(real)
       return true
     })
   )
@@ -1964,9 +2123,14 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     'output.exportZip',
     wrap(async (paths: string[], destDir?: string) => {
       if (!Array.isArray(paths) || !paths.length) throw new Error('No files selected')
+      const sourceRoots = [...(await collectRevealRoots()), ...approvedReadRoots]
       for (const p of paths) {
-        if (!isSafeReadPath(p) && !isSafeOpenPath(p))
+        // 0.2.0: an archive source is a READ of a real file. It must resolve
+        // under an app-owned/output root; the old `isSafeOpenPath` fallback
+        // allowed exporting ANY extension-less file on disk.
+        if (!isSafeExportSourcePath(p, sourceRoots)) {
           throw new Error(`Blocked unsafe path: ${basename(p)}`)
+        }
       }
       if (destDir) {
         if (!existsSync(destDir)) throw new Error('Export directory does not exist')
@@ -1990,7 +2154,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   // remote
   ipcMain.handle(
     'remote.list',
-    wrap(() => remoteService.list())
+    wrap(() => listRemoteSummaries())
   )
   ipcMain.handle(
     'remote.save',
@@ -1998,13 +2162,35 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       if (!config?.baseUrl || !isSafeExternalUrl(config.baseUrl)) {
         throw new Error('Remote baseUrl must be a valid http(s) URL')
       }
+      // The renderer never receives the secret; a blank field therefore means
+      // "keep the existing key" (origin-checked inside upsertRemote), not
+      // "clear it". Clearing has an explicit channel.
       if (config.apiKey && /[\r\n\0]/.test(config.apiKey)) throw new Error('Invalid apiKey')
-      return remoteService.save(config)
+      const { apiKey: _ignored, ...safe } = config
+      const saved = remoteService.save(safe)
+      return remoteSummary(remoteService.list().find((r) => r.id === saved.id) || saved)
+    })
+  )
+  ipcMain.handle(
+    'remote.setApiKey',
+    wrap((id: string, apiKey: string) => {
+      if (typeof apiKey !== 'string' || /[\r\n\0]/.test(apiKey)) {
+        throw new Error('Invalid apiKey')
+      }
+      setRemoteApiKey(sanitizeId(id), apiKey)
+      return { ok: true }
+    })
+  )
+  ipcMain.handle(
+    'remote.clearApiKey',
+    wrap((id: string) => {
+      clearRemoteApiKey(sanitizeId(id))
+      return { ok: true }
     })
   )
   ipcMain.handle(
     'remote.remove',
-    wrap((id: string) => remoteService.remove(id))
+    wrap((id: string) => remoteService.remove(sanitizeId(id)))
   )
   ipcMain.handle(
     'remote.test',
@@ -2117,8 +2303,14 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle(
     'shell.openPath',
     wrap(async (path: string) => {
-      if (!isSafeOpenPath(path)) throw new Error('Blocked opening executable/script file')
-      const result = await shell.openPath(path)
+      if (!isSafeOpenPath(path) || hasExecutableMagic(path)) {
+        throw new Error('Blocked opening executable/script file')
+      }
+      // Opening a file hands it to the OS. Restrict to app-owned/picked roots.
+      const roots = [...(await collectRevealRoots()), ...approvedReadRoots]
+      const real = realpathUnderAnyRoot(path, roots)
+      if (!real) throw new Error('Blocked opening path outside allowed areas')
+      const result = await shell.openPath(real)
       return result === ''
     })
   )

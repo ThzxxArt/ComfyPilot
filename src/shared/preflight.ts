@@ -33,21 +33,40 @@ export function missingNodeTypes(prompt: unknown, availableTypes: Iterable<strin
  */
 const MODEL_FILE_RE = /\.(safetensors|ckpt|pt|pth|bin|gguf|onnx|sft)$/i
 
-export function collectPromptModelRefs(prompt: unknown): Array<{ name: string; nodeType: string }> {
+export function collectPromptModelRefs(
+  prompt: unknown
+): Array<{ name: string; nodeType: string; inputKey: string }> {
   if (!prompt || typeof prompt !== 'object') return []
-  const seen = new Map<string, { name: string; nodeType: string }>()
+  const seen = new Map<string, { name: string; nodeType: string; inputKey: string }>()
   for (const node of Object.values(prompt as Record<string, unknown>)) {
     if (!node || typeof node !== 'object') continue
     const type = String((node as { class_type?: unknown }).class_type || '')
     const inputs = (node as { inputs?: unknown }).inputs
     if (!inputs || typeof inputs !== 'object') continue
-    for (const value of Object.values(inputs as Record<string, unknown>)) {
+    for (const [inputKey, value] of Object.entries(inputs as Record<string, unknown>)) {
       if (typeof value !== 'string') continue
       if (!MODEL_FILE_RE.test(value)) continue
       if (value.includes('\0')) continue
       const key = value.toLowerCase()
-      if (!seen.has(key)) seen.set(key, { name: value, nodeType: type })
+      if (!seen.has(key)) seen.set(key, { name: value, nodeType: type, inputKey })
     }
   }
   return [...seen.values()]
+}
+
+/** Map a ComfyUI model input key to the model-library category it belongs to. */
+export function modelCategoryForInput(inputKey: string): string | undefined {
+  const key = inputKey.toLowerCase()
+  if (key === 'ckpt_name') return 'checkpoints'
+  if (key === 'lora_name') return 'loras'
+  if (key === 'vae_name') return 'vae'
+  if (key === 'control_net_name' || key === 'controlnet_name') return 'controlnet'
+  if (key === 'clip_name' || key === 'clip_name1' || key === 'clip_name2') return 'text_encoders'
+  if (key === 'clip_vision' || key === 'clip_vision_name') return 'clip_vision'
+  if (key === 'unet_name') return 'diffusion_models'
+  if (key === 'upscale_model_name') return 'upscale_models'
+  if (key === 'style_model_name') return 'style_models'
+  if (key === 'gligen_name') return 'gligen'
+  if (key === 'model_name') return 'diffusion_models'
+  return undefined
 }

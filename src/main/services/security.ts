@@ -1,6 +1,6 @@
 import { isAbsolute, normalize, resolve, dirname, basename, extname, join } from 'path'
 import { randomUUID } from 'crypto'
-import { existsSync, realpathSync, statSync } from 'fs'
+import { closeSync, existsSync, openSync, readSync, realpathSync, statSync } from 'fs'
 
 /** Path traversal + allowlist helpers used across main-process services. */
 
@@ -278,6 +278,91 @@ export function isSafeOpenPath(path: string): boolean {
   return true
 }
 
+/**
+ * 0.2.0: resolve an EXISTING path to its real path and require it to stay
+ * under one of the roots (also resolved). This is the only containment check
+ * that is safe against symlinks/junctions; lexical `resolveInsideAnyRoot` is
+ * still used for paths that do not exist yet (write targets).
+ */
+export function realpathUnderAnyRoot(candidate: string, roots: string[]): string | null {
+  if (!candidate || candidate.includes('\0')) return null
+  let real: string
+  try {
+    real = realpathSync(candidate)
+  } catch {
+    return null
+  }
+  for (const root of roots) {
+    if (!root) continue
+    let realRoot: string
+    try {
+      realRoot = realpathSync(root)
+    } catch {
+      continue
+    }
+    if (real === realRoot || isPathInside(real, realRoot)) return real
+  }
+  return null
+}
+
+/**
+ * Executable payload detection for files whose extension is not enough.
+ * Attackers can rename `payload.exe` to `note.png`; `shell.openPath` still
+ * executes it on Windows. We only need the first four bytes.
+ */
+export function hasExecutableMagic(file: string): boolean {
+  let fd: number | undefined
+  try {
+    const st = statSync(file)
+    if (!st.isFile()) return false
+    fd = openSync(file, 'r')
+    const buf = Buffer.alloc(4)
+    const n = readSync(fd, buf, 0, 4, 0)
+    if (n <= 0) return false
+    const b = buf.subarray(0, n)
+    // MZ (PE), ELF, Mach-O (32/64, both endiannesses), shebang, Java class.
+    if (b[0] === 0x4d && b[1] === 0x5a) return true
+    if (b[0] === 0x7f && b[1] === 0x45 && b[2] === 0x4c && b[3] === 0x46) return true
+    if (b[0] === 0xca && b[1] === 0xfe && b[2] === 0xba && b[3] === 0xbe) return true
+    if (b[0] === 0x23 && b[1] === 0x21) return true
+    return false
+  } catch {
+    return false
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd)
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
+/**
+ * Gate for opening a local file with the OS shell. Existing path must resolve
+ * (realpath) under an allowed root, keep a non-executable extension, and not
+ * carry an executable magic number.
+ */
+export function isSafeOpenPathUnderRoots(path: string, roots: string[]): boolean {
+  if (!isSafeOpenPath(path)) return false
+  const real = realpathUnderAnyRoot(path, roots)
+  if (!real) return false
+  if (!isSafeOpenPath(real)) return false
+  if (hasExecutableMagic(real)) return false
+  return true
+}
+
+/** Gate for reading a file into a ZIP export: existing + real path in roots. */
+export function isSafeExportSourcePath(path: string, roots: string[]): boolean {
+  if (!path || path.includes('\0')) return false
+  if (!isSafeOpenPath(path)) return false
+  const real = realpathUnderAnyRoot(path, roots)
+  if (!real) return false
+  if (!isSafeOpenPath(real)) return false
+  return !hasExecutableMagic(real)
+}
+
 export function safeJoinFile(root: string, fileName: string): string {
   const safeName = assertSafeRelativeFilename(basename(fileName))
   const target = join(root, safeName)
@@ -397,6 +482,37 @@ export function assertSafeEndpointSetting(field: string, raw: unknown): void {
  * `backup.restore` accepted the same object from a file, so the validator is
  * shared by both writers.
  */
+/**
+ * 0.2.0: credentials are bound to the endpoint they were entered for.
+ * Moving a settings file / remote to another host must never carry the old
+ * password or API key along. The origin deliberately includes the pathname
+ * (a reverse proxy at `/prod` is a different endpoint from `/dev`).
+ */
+export function credentialOriginForUrl(raw: string): string {
+  try {
+    const u = new URL(raw)
+    const path = u.pathname.replace(/\/+$/, '')
+    return `${u.protocol.toLowerCase()}//${u.host.toLowerCase()}${path}`
+  } catch {
+    return ''
+  }
+}
+
+export function proxyCredentialOrigin(proxy: {
+  protocol?: string
+  host?: string
+  port?: number
+  username?: string
+}): string {
+  const protocol = String(proxy.protocol || 'http').toLowerCase()
+  const host = String(proxy.host || '')
+    .trim()
+    .toLowerCase()
+  const port = Number(proxy.port) || 0
+  const username = String(proxy.username || '')
+  return `${protocol}://${username ? `${username}@` : ''}${host}:${port}`
+}
+
 export const SETTINGS_URL_KEYS = [
   'githubEndpoint',
   'hfEndpoint',
@@ -526,7 +642,13 @@ export function stripImportedSettingsSecrets(raw: Record<string, unknown>): {
     delete proxy.password
     patch.proxy = proxy
   }
+  // 0.2.0: these fields weaken install/execution gates. A downloaded config
+  // may not change them without an interactive confirmation path (none in
+  // 0.2.0), so they are dropped fail-closed.
   delete patch.allowUnverifiedRuntime
+  delete patch.securityLevel
+  delete patch.allowGitUrlInstall
+  delete patch.allowPipInstall
   return { patch, applied: Object.keys(patch) }
 }
 

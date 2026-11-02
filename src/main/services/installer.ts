@@ -34,7 +34,7 @@ import {
   loadLatestInstallRun,
   clearInstallRuns
 } from './db'
-import { resolveReadTarget } from './target'
+import { resolveWriteTarget } from './target'
 import {
   hasParentHop,
   normalizePathEverySegment,
@@ -1533,15 +1533,9 @@ export class InstallerService extends EventEmitter {
   async installStarter(opts: { id: string; instanceId?: string }): Promise<unknown> {
     const starter = STARTER_MODELS.find((s) => s.id === opts.id)
     if (!starter) throw new Error(`Unknown starter model: ${opts.id}`)
-    // Explicit id wins; never silently fall back when an id was given.
-    const config = resolveReadTarget(opts.instanceId)
-    if (!config) {
-      throw new Error(
-        opts.instanceId
-          ? `Instance ${opts.instanceId} not found — finish install first`
-          : 'No instance registered — finish install first'
-      )
-    }
+    // Explicit id wins; never silently fall back when an id was given. A write
+    // target is only obtainable from the strict resolver.
+    const config = resolveWriteTarget(opts.instanceId)
     const destDir = join(config.path, 'models', starter.category)
     mkdirSync(destDir, { recursive: true })
     const { modelService } = await import('./model')

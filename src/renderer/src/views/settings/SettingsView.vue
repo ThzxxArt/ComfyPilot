@@ -26,11 +26,13 @@ import { useAppStore } from '@/stores/app'
 import { ipc, onIpc, IPC_EVENTS } from '@/composables/useIpc'
 import type {
   AppSettings,
+  AppSettingsView,
   AppUpdateStatus,
   RemoteInstanceConfig,
+  RemoteInstanceSummary,
   RemoteInstanceStatus,
   EnvProbe,
-  ProxySettings
+  ProxySettingsView
 } from '@shared/types'
 import {
   APP_VERSION,
@@ -69,17 +71,22 @@ const shortcuts = computed(() => [
   { keys: 'Ctrl+,', desc: t('settings.shortcutSettings') }
 ])
 
-const defaultProxy: ProxySettings = { ...DEFAULT_SETTINGS.proxy }
+const { password: _defaultProxyPassword, ...defaultProxyRest } = DEFAULT_SETTINGS.proxy
+const defaultProxy: ProxySettingsView = {
+  ...defaultProxyRest,
+  hasPassword: false,
+  backend: 'plaintext'
+}
 
-function cloneSettings(s: Partial<AppSettings> | null | undefined): AppSettings {
+function cloneSettings(s: Partial<AppSettingsView> | null | undefined): AppSettingsView {
   const base = (
     s && typeof s === 'object' ? JSON.parse(JSON.stringify(s)) : {}
-  ) as Partial<AppSettings>
+  ) as Partial<AppSettingsView>
   return {
-    ...(DEFAULT_SETTINGS as AppSettings),
-    ...(base as AppSettings),
+    ...(DEFAULT_SETTINGS as unknown as AppSettingsView),
+    ...(base as AppSettingsView),
     proxy: { ...defaultProxy, ...(base.proxy || {}) }
-  } as AppSettings
+  } as AppSettingsView
 }
 
 const store = useAppStore()
@@ -99,12 +106,19 @@ async function setLocale(loc: 'zh-CN' | 'en-US'): Promise<void> {
   await save({ silent: true })
 }
 
-const form = ref<AppSettings>(cloneSettings(store.settings))
+const form = ref<AppSettingsView>(cloneSettings(store.settings))
 const saving = ref(false)
-const remotes = ref<RemoteInstanceConfig[]>([])
+/** 0.2.0: the stored password never leaves main; this is a write-only draft. */
+const proxyPasswordDraft = ref('')
+const remotes = ref<RemoteInstanceSummary[]>([])
 /** 0.1.18 (WP1/S6): stored secrets that cannot be decrypted need re-entry. */
-const credStatus = ref<{ proxyPasswordUnreadable: boolean; lockedRemoteIds: string[] }>({
+const credStatus = ref<{
+  proxyPasswordUnreadable: boolean
+  proxyCredentialBackend: 'os-keychain' | 'plaintext' | 'unavailable'
+  lockedRemoteIds: string[]
+}>({
   proxyPasswordUnreadable: false,
+  proxyCredentialBackend: 'plaintext',
   lockedRemoteIds: []
 })
 const showRemote = ref(false)
@@ -174,7 +188,7 @@ watch(
   form,
   () => {
     if (applyingIncoming || suppressSettingsWatch) return
-    const saved = store.settings as AppSettings | undefined
+    const saved = store.settings as AppSettingsView | undefined
     for (const key of Object.keys(form.value) as Array<keyof AppSettings>) {
       if (!saved || !sameValue(form.value[key], saved[key])) editedKeys.add(key)
       else editedKeys.delete(key)
@@ -208,7 +222,16 @@ async function save(opts?: { silent?: boolean }): Promise<boolean> {
   saving.value = true
   suppressSettingsWatch = true
   try {
-    const next = await ipc('settings.set', form.value)
+    // Never send the password field through the generic settings patch: it is
+    // write-only and bound to the endpoint that was current when entered.
+    const { proxy, ...rest } = form.value
+    const { hasPassword: _hp, backend: _be, ...proxyFields } = proxy
+    await ipc('settings.set', { ...rest, proxy: proxyFields } as Partial<AppSettings>)
+    if (proxyPasswordDraft.value) {
+      await ipc('settings.setProxyPassword', proxyPasswordDraft.value)
+      proxyPasswordDraft.value = ''
+    }
+    const next = await ipc('settings.get')
     store.settings = next
     applyingIncoming = true
     try {
@@ -251,6 +274,23 @@ onBeforeRouteLeave(async () => {
     })
   })
 })
+
+async function clearProxyPassword(): Promise<void> {
+  saving.value = true
+  try {
+    await ipc('settings.clearProxyPassword')
+    const next = await ipc('settings.get')
+    store.settings = next
+    const merged = cloneSettings(next)
+    form.value.proxy = merged.proxy
+    proxyPasswordDraft.value = ''
+    message.success(t('settings.proxyPasswordCleared'))
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    saving.value = false
+  }
+}
 
 async function testProxy(): Promise<void> {
   testingProxy.value = true
@@ -368,10 +408,26 @@ async function loadRemotes(): Promise<void> {
 async function saveRemote(): Promise<void> {
   try {
     if (!remoteDraft.value.id) remoteDraft.value.id = `remote-${Date.now()}`
-    await ipc('remote.save', remoteDraft.value)
+    const id = remoteDraft.value.id
+    const apiKey = remoteDraft.value.apiKey || ''
+    const { apiKey: _ignored, ...fields } = remoteDraft.value
+    await ipc('remote.save', fields as RemoteInstanceConfig)
+    // The key is a separate write so a generic save can never overwrite it by
+    // omission, and changing baseUrl never carries the old key over.
+    if (apiKey) await ipc('remote.setApiKey', id, apiKey)
     showRemote.value = false
     remoteDraft.value = emptyRemote()
     message.success(t('settings.remoteSaved'))
+    await loadRemotes()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function clearRemoteKey(r: RemoteInstanceSummary): Promise<void> {
+  try {
+    await ipc('remote.clearApiKey', r.id)
+    message.success(t('settings.remoteKeyCleared'))
     await loadRemotes()
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
@@ -387,8 +443,15 @@ function openRemoteDialog(): void {
  * 0.1.18 (regression): the "credential needs re-entry" tag had no edit path —
  * delete + re-add was the only way, losing the whole configuration.
  */
-function editRemote(r: RemoteInstanceConfig): void {
-  remoteDraft.value = { ...r, apiKey: r.apiKey || '' }
+function editRemote(r: RemoteInstanceSummary): void {
+  remoteDraft.value = {
+    id: r.id,
+    name: r.name,
+    baseUrl: r.baseUrl,
+    label: r.label,
+    enabled: r.enabled,
+    apiKey: ''
+  }
   showRemote.value = true
 }
 
@@ -432,7 +495,7 @@ async function freeRemoteMemory(id: string): Promise<void> {
 }
 
 /** Open a remote instance's frontend (remote maintenance companion action). */
-function openRemoteFrontend(r: RemoteInstanceConfig): void {
+function openRemoteFrontend(r: RemoteInstanceSummary): void {
   if (!r.baseUrl) return
   void ipc('shell.openExternal', r.baseUrl).catch(() => undefined)
 }
@@ -726,12 +789,29 @@ onUnmounted(() => {
                 <NInput v-model:value="form.proxy.username" :disabled="!form.proxy.enabled" />
               </NFormItem>
               <NFormItem :label="t('settings.proxyPassword')">
-                <NInput
-                  v-model:value="form.proxy.password"
-                  type="password"
-                  show-password-on="click"
-                  :disabled="!form.proxy.enabled"
-                />
+                <NSpace vertical style="width: 100%">
+                  <NInput
+                    v-model:value="proxyPasswordDraft"
+                    type="password"
+                    show-password-on="click"
+                    :disabled="!form.proxy.enabled"
+                    :placeholder="
+                      form.proxy.hasPassword
+                        ? t('settings.proxyPasswordSet')
+                        : t('settings.proxyPasswordPlaceholder')
+                    "
+                  />
+                  <NButton
+                    v-if="form.proxy.hasPassword"
+                    size="tiny"
+                    secondary
+                    type="warning"
+                    :disabled="!form.proxy.enabled || saving"
+                    @click="clearProxyPassword"
+                  >
+                    {{ t('settings.proxyPasswordClear') }}
+                  </NButton>
+                </NSpace>
               </NFormItem>
               <NFormItem :label="t('settings.proxyBypass')">
                 <NInput
@@ -823,6 +903,9 @@ onUnmounted(() => {
                   <NTag v-if="r.apiKeyLocked" size="tiny" type="warning">
                     {{ t('settings.credNeedsReentry') }}
                   </NTag>
+                  <NTag v-else-if="r.apiKeySet" size="tiny" type="success">
+                    {{ t('settings.remoteKeySet') }}
+                  </NTag>
                   <div v-if="remoteStatusOf(r.id)" class="remote-status">
                     <NTag
                       size="tiny"
@@ -861,6 +944,15 @@ onUnmounted(() => {
                   }}</NButton>
                   <NButton size="tiny" secondary @click="editRemote(r)">
                     {{ t('common.edit') }}
+                  </NButton>
+                  <NButton
+                    v-if="r.apiKeySet || r.apiKeyLocked"
+                    size="tiny"
+                    secondary
+                    type="warning"
+                    @click="clearRemoteKey(r)"
+                  >
+                    {{ t('settings.remoteKeyClear') }}
                   </NButton>
                   <NButton size="tiny" secondary @click="openRemoteFrontend(r)">
                     {{ t('settings.remoteOpen') }}

@@ -17,7 +17,7 @@ import type {
   WorkflowModelRequirement,
   WorkflowPreflight
 } from '@shared/types'
-import { collectPromptModelRefs, missingNodeTypes } from '@shared/preflight'
+import { collectPromptModelRefs, missingNodeTypes, modelCategoryForInput } from '@shared/preflight'
 import { capabilityService } from './capabilities'
 import { resolveReadTarget } from './target'
 import { workflowService } from './workflow'
@@ -41,8 +41,10 @@ export class PreflightService {
         nodeTypes: map.types.size
       }
     } catch (e) {
+      // 0.2.0: a workflow that cannot be parsed is NOT "available" — callers
+      // used to show zero missing nodes and start a run that could never work.
       return {
-        available: true,
+        available: false,
         missingTypes: [],
         nodeTypes: map.types.size,
         error: e instanceof Error ? e.message : String(e)
@@ -98,22 +100,28 @@ export class PreflightService {
       const { modelService } = await import('./model')
       const local = await modelService.list()
       const byBase = new Map<string, string>()
+      const byCategory = new Map<string, Map<string, string>>()
       for (const m of local) {
+        const category = String(m.category || '')
+        if (category && !byCategory.has(category)) byCategory.set(category, new Map())
         for (const candidate of [m.fileName, m.name, basename(m.path)]) {
           if (!candidate) continue
           byBase.set(candidate.toLowerCase(), m.fileName)
+          if (category) byCategory.get(category)!.set(candidate.toLowerCase(), m.fileName)
         }
       }
       // 0.1.18 (regression): the index is machine-global, so a model that only
       // exists in ANOTHER instance was reported "present" and the run failed
       // later. For a named target, also look in that instance's models/ dir.
       const instanceRoot = instanceId ? resolveReadTarget(instanceId)?.path : undefined
-      const modelsDir = instanceRoot ? join(instanceRoot, 'models') : ''
       const localMatches = new Map<string, string>()
-      const findLocal = (name: string): string | undefined => {
-        if (!modelsDir || !existsSync(modelsDir)) return undefined
+      const findLocal = (name: string, category?: string): string | undefined => {
+        if (!instanceRoot) return undefined
+        const modelsDir = join(instanceRoot, 'models', category || '')
+        if (!existsSync(modelsDir)) return undefined
         const target = basename(name).toLowerCase()
-        if (localMatches.has(target)) return localMatches.get(target)
+        const cacheKey = `${category || '*'}:${target}`
+        if (localMatches.has(cacheKey)) return localMatches.get(cacheKey) || undefined
         const queue: Array<{ dir: string; depth: number }> = [{ dir: modelsDir, depth: 0 }]
         let visited = 0
         while (queue.length && visited < 5000) {
@@ -143,15 +151,38 @@ export class PreflightService {
             }
           }
         }
-        localMatches.set(target, '')
+        localMatches.set(cacheKey, '')
         return undefined
       }
       const result: WorkflowModelRequirement[] = refs.map((r) => {
-        const base = basename(r.name).toLowerCase()
-        const matched = byBase.get(base) || byBase.get(r.name.toLowerCase()) || findLocal(r.name)
+        const normalized = r.name.replace(/\\/g, '/').toLowerCase()
+        const base = basename(normalized)
+        const category = modelCategoryForInput(r.inputKey)
+        // 0.2.0: a category-scoped reference must match a model in the SAME
+        // category. A global basename map let `SDXL/model` satisfy `SD15/model`
+        // and started a run that failed at execution time.
+        let matched: string | undefined
+        if (category) {
+          matched = byCategory.get(category)?.get(base)
+          if (!matched) {
+            for (const m of local) {
+              if (String(m.category || '') !== category) continue
+              const rel = m.path.replace(/\\/g, '/').toLowerCase()
+              if (rel.endsWith(`/${category}/${normalized}`) || rel.endsWith(`/${normalized}`)) {
+                matched = m.fileName
+                break
+              }
+            }
+          }
+        } else {
+          matched = byBase.get(base) || byBase.get(normalized)
+        }
+        if (!matched) matched = findLocal(r.name, category)
         return {
           name: r.name,
           nodeType: r.nodeType,
+          inputKey: r.inputKey,
+          category,
           present: Boolean(matched),
           matchedFile: matched
         }

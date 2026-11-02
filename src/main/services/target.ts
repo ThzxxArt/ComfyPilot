@@ -81,3 +81,15 @@ export function resolveReadTarget(instanceId?: string | null): ComfyInstanceConf
   if (instanceId) return configs.find((c) => c.id === instanceId)
   return configs.find((c) => c.enabled !== false) || configs[0]
 }
+
+declare const WRITE_TARGET: unique symbol
+/**
+ * 0.2.0: a write target can only be produced by the strict resolver. A read
+ * fallback (`resolveReadTarget`) is intentionally not assignable to it, so a
+ * destructive action cannot accidentally use the first instance.
+ */
+export type WriteTarget = ComfyInstanceConfig & { readonly [WRITE_TARGET]: true }
+
+export function resolveWriteTarget(instanceId?: string | null): WriteTarget {
+  return resolveLocalInstance(instanceId) as WriteTarget
+}

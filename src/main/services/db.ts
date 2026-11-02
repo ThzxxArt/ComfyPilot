@@ -10,6 +10,7 @@ import { join, basename, dirname } from 'path'
 import {
   appendFileSync,
   closeSync,
+  copyFileSync,
   existsSync,
   fsyncSync,
   mkdirSync,
@@ -25,6 +26,7 @@ import {
 import { randomUUID } from 'crypto'
 import { DEFAULT_SETTINGS } from '@shared/constants'
 import { decryptSecretSafe, encryptSecret, isEncryptedSecret } from './secretStorage'
+import { credentialOriginForUrl, proxyCredentialOrigin } from './security'
 import type {
   AppSettings,
   BatchJob,
@@ -253,12 +255,157 @@ function fileFor(name: string): string {
   return join(userDataDir(), `${name}.jsonc`)
 }
 
+/**
+ * 0.2.0 data schema. Files are written as:
+ *   arrays:  { "schemaVersion": 2, "items": [...] }
+ *   objects: { "schemaVersion": 2, ...object }
+ * v1 files are migrated exactly once; after that 0.2.0 refuses to read them.
+ */
+export const DATA_SCHEMA_VERSION = 2
+
+interface DataMigrationState {
+  checked: boolean
+  ok: boolean
+  snapshot?: string
+  migratedFiles: number
+  error?: string
+}
+
+const dataMigration: DataMigrationState = {
+  checked: false,
+  ok: true,
+  migratedFiles: 0
+}
+
+function isV2Envelope(value: unknown): value is Record<string, unknown> {
+  return (
+    Boolean(value) &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    (value as Record<string, unknown>).schemaVersion === DATA_SCHEMA_VERSION
+  )
+}
+
+/** Wrap any value into the v2 on-disk envelope. */
+function toV2(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return { schemaVersion: DATA_SCHEMA_VERSION, items: value }
+  }
+  if (value && typeof value === 'object') {
+    return { schemaVersion: DATA_SCHEMA_VERSION, ...(value as Record<string, unknown>) }
+  }
+  return { schemaVersion: DATA_SCHEMA_VERSION, value }
+}
+
+/** Unwrap a v2 envelope back to the in-memory shape. */
+function fromV2<T>(value: unknown): T {
+  if (Array.isArray(value)) return value as T
+  if (isV2Envelope(value)) {
+    if (Array.isArray(value.items)) return value.items as T
+    const { schemaVersion: _schema, ...rest } = value
+    return rest as T
+  }
+  throw new Error('DATA_SCHEMA_V1_REJECTED')
+}
+
+/**
+ * One-shot v1 → v2 migration with a full pre-upgrade snapshot. The snapshot is
+ * written before the first file is touched; a failure restores every file and
+ * leaves the app in a blocking `failed` state rather than silently reading v1.
+ */
+export function migrateData(): {
+  ok: boolean
+  snapshot?: string
+  migratedFiles: number
+  error?: string
+} {
+  if (dataMigration.checked) return dataMigration
+  dataMigration.checked = true
+  const dir = userDataDir()
+  let files: string[] = []
+  try {
+    files = readdirSync(dir).filter((f) => f.endsWith('.jsonc'))
+  } catch (e) {
+    dataMigration.ok = false
+    dataMigration.error = e instanceof Error ? e.message : String(e)
+    return dataMigration
+  }
+  const legacy: Array<{ file: string; name: string; value: unknown }> = []
+  for (const file of files) {
+    try {
+      const parsed = parseJsonc<unknown>(readFileSync(join(dir, file), 'utf-8'))
+      if (!isV2Envelope(parsed)) {
+        legacy.push({ file, name: file.replace(/\.jsonc$/, ''), value: parsed })
+      }
+    } catch {
+      // Parse failures are handled by readJsonc (.bad-<ts>), not migration.
+    }
+  }
+  if (!legacy.length) {
+    dataMigration.ok = true
+    return dataMigration
+  }
+  const snapshot = join(dir, `pre-upgrade-${new Date().toISOString().replace(/[:.]/g, '-')}`)
+  try {
+    mkdirSync(snapshot, { recursive: true })
+    for (const file of files) {
+      copyFileSync(join(dir, file), join(snapshot, file))
+    }
+    dataMigration.snapshot = snapshot
+  } catch (e) {
+    dataMigration.ok = false
+    dataMigration.error = `pre-upgrade snapshot failed: ${e instanceof Error ? e.message : String(e)}`
+    return dataMigration
+  }
+  try {
+    for (const entry of legacy) {
+      writeJsonc(entry.name, entry.value)
+      dataMigration.migratedFiles += 1
+    }
+    dataMigration.ok = true
+  } catch (e) {
+    // Restore the exact pre-migration bytes. The snapshot remains for manual
+    // recovery even if the restore itself partially fails.
+    for (const file of files) {
+      try {
+        copyFileSync(join(snapshot, file), join(dir, file))
+      } catch {
+        /* keep the snapshot as the source of truth */
+      }
+    }
+    dataMigration.ok = false
+    dataMigration.error = e instanceof Error ? e.message : String(e)
+  }
+  return dataMigration
+}
+
+export function getDataMigrationState(): {
+  ok: boolean
+  snapshot?: string
+  migratedFiles: number
+  error?: string
+} {
+  migrateData()
+  return { ...dataMigration }
+}
+
+function ensureDataMigrated(): void {
+  migrateData()
+  if (!dataMigration.ok) {
+    throw new Error(
+      `DATA_MIGRATION_FAILED: ${dataMigration.error || 'unknown error'} (snapshot: ${dataMigration.snapshot || 'none'})`
+    )
+  }
+}
+
 function readJsonc<T>(name: string, fallback: T): T {
+  ensureDataMigrated()
   const p = fileFor(name)
   try {
     if (!existsSync(p)) return fallback
     try {
-      return parseJsonc<T>(readFileSync(p, 'utf-8'))
+      const parsed = parseJsonc<unknown>(readFileSync(p, 'utf-8'))
+      return fromV2<T>(parsed)
     } catch (err) {
       console.error('jsonc parse fail', basename(p), err)
       // Keep the unparseable file; defaults must not overwrite user data.
@@ -267,9 +414,10 @@ function readJsonc<T>(name: string, fallback: T): T {
       } catch {
         /* ignore */
       }
-      return fallback
+      throw new Error(`DATA_FILE_CORRUPT: ${basename(p)} — restore a pre-upgrade snapshot`)
     }
   } catch (err) {
+    if (err instanceof Error && err.message.startsWith('DATA_')) throw err
     console.error('jsonc read fail', basename(p), err)
     return fallback
   }
@@ -360,7 +508,7 @@ function writeJsonc(name: string, value: unknown, header?: string): void {
   const p = fileFor(name)
   const tmp = `${p}.tmp-${process.pid}-${++tmpSeq}`
   try {
-    writeFileSync(tmp, stringifyJsonc(value, header), 'utf-8')
+    writeFileSync(tmp, stringifyJsonc(toV2(value), header), 'utf-8')
     fsyncFile(tmp)
     renameWithRetry(tmp, p)
     fsyncDir(dirname(p))
@@ -635,19 +783,29 @@ export function saveSettings(patch: Partial<AppSettings>): AppSettings {
   for (const [k, v] of Object.entries(patch)) {
     if (KNOWN_SETTINGS_KEYS.has(k)) cleanPatch[k] = v
   }
+  const incomingProxy = (cleanPatch.proxy || {}) as Partial<AppSettings['proxy']>
+  const nextProxy = { ...current.proxy, ...incomingProxy }
+  // 0.2.0: a credential belongs to one endpoint. Never carry the stored
+  // password to a different protocol/host/port/username.
+  const currentOrigin = proxyCredentialOrigin(current.proxy)
+  const nextOrigin = proxyCredentialOrigin(nextProxy)
+  const suppliedPassword =
+    typeof incomingProxy.password === 'string' && incomingProxy.password.length > 0
+  let password = suppliedPassword ? String(incomingProxy.password) : ''
+  if (!suppliedPassword) {
+    if (nextOrigin === currentOrigin) password = current.proxy.password
+    // 0.1.17: an unreadable secret must never be replaced by the empty string
+    // the UI shows. Keep the stored ciphertext unless a new password arrived.
+    if (!password && proxyPasswordUnreadable && nextOrigin === currentOrigin) {
+      const stored = readJsonc<Partial<AppSettings>>('settings', {})
+      const raw = String(stored.proxy?.password || '')
+      if (isEncryptedSecret(raw)) password = raw
+    }
+  }
   const next: AppSettings = {
     ...current,
     ...cleanPatch,
-    proxy: { ...current.proxy, ...((cleanPatch.proxy as Partial<AppSettings['proxy']>) || {}) }
-  }
-  // 0.1.17 (review fix): an unreadable secret must never be replaced by the
-  // empty string the UI shows. Keep the stored ciphertext unless the caller
-  // supplied a new password.
-  let password = next.proxy.password
-  if (!password && proxyPasswordUnreadable) {
-    const stored = readJsonc<Partial<AppSettings>>('settings', {})
-    const raw = String(stored.proxy?.password || '')
-    if (isEncryptedSecret(raw)) password = raw
+    proxy: { ...nextProxy, password, credentialOrigin: nextOrigin }
   }
   // Encrypt the password before persisting.
   const toWrite: AppSettings = {
@@ -656,6 +814,30 @@ export function saveSettings(patch: Partial<AppSettings>): AppSettings {
   }
   writeJsonc('settings', toWrite, SETTINGS_HEADER)
   return next
+}
+
+/**
+ * 0.2.0: explicit proxy password write/clear. Kept separate from
+ * `saveSettings` so a generic settings patch can never overwrite a credential
+ * by omission, and the renderer never needs to receive the current password.
+ */
+export function setProxyPassword(password: string): void {
+  const current = loadSettings()
+  const origin = proxyCredentialOrigin(current.proxy)
+  const toWrite: AppSettings = {
+    ...current,
+    proxy: {
+      ...current.proxy,
+      password: encryptSecret(String(password || '')),
+      credentialOrigin: origin
+    }
+  }
+  writeJsonc('settings', toWrite, SETTINGS_HEADER)
+  proxyPasswordUnreadable = false
+}
+
+export function clearProxyPassword(): void {
+  setProxyPassword('')
 }
 
 // ---------- Instances ----------
@@ -1035,23 +1217,62 @@ export function listRemotes(): RemoteInstanceConfig[] {
 export function upsertRemote(c: RemoteInstanceConfig): void {
   // Encrypt before persisting — `upsertInList` compares by id only, so the
   // stored representation may differ from the in-memory one.
-  let apiKey = c.apiKey
-  if (!apiKey && lockedRemoteApiKeys.has(c.id)) {
-    const prev = readJsonc<RemoteInstanceConfig[]>('remote_instances', []).find(
-      (r) => r.id === c.id
-    )
-    if (prev?.apiKey && isEncryptedSecret(prev.apiKey)) {
-      // Unreadable on this machine — keep the ciphertext instead of erasing it.
-      apiKey = prev.apiKey
+  const previous = readJsonc<RemoteInstanceConfig[]>('remote_instances', []).find(
+    (r) => r.id === c.id
+  )
+  const newOrigin = credentialOriginForUrl(c.baseUrl)
+  const previousOrigin = previous
+    ? previous.credentialOrigin || credentialOriginForUrl(previous.baseUrl)
+    : ''
+  let apiKey = String(c.apiKey || '')
+  if (!apiKey && previous) {
+    // 0.2.0: preserve the existing secret only for the SAME endpoint. A remote
+    // renamed to another host/base path must not inherit the old API key.
+    if (previousOrigin && previousOrigin === newOrigin) {
+      apiKey = previous.apiKey || ''
     }
   }
-  const { apiKeyLocked: _ignored, ...rest } = c
+  const { apiKeyLocked: _ignored, credentialOrigin: _origin, ...rest } = c
   const stored: RemoteInstanceConfig = {
     ...rest,
-    ...(apiKey ? { apiKey: encryptSecret(apiKey) } : { apiKey })
+    credentialOrigin: newOrigin,
+    ...(apiKey
+      ? { apiKey: isEncryptedSecret(apiKey) ? apiKey : encryptSecret(apiKey) }
+      : { apiKey: '' })
   }
   if (apiKey) lockedRemoteApiKeys.delete(c.id)
   upsertInList('remote_instances', stored, (a, b) => a.id === b.id)
+}
+
+/** Renderer-safe list: never exposes the API key or its ciphertext. */
+export function listRemoteSummaries(): import('@shared/types').RemoteInstanceSummary[] {
+  return listRemotes().map(({ apiKey, ...rest }) => ({
+    ...rest,
+    apiKeySet: Boolean(apiKey) && !rest.apiKeyLocked
+  }))
+}
+
+/** Explicit credential write (never part of a generic settings/remote save). */
+export function setRemoteApiKey(id: string, apiKey: string): void {
+  const list = readJsonc<RemoteInstanceConfig[]>('remote_instances', [])
+  const remote = list.find((r) => r.id === id)
+  if (!remote) throw new Error('Remote not found')
+  const next = list.map((r) =>
+    r.id === id
+      ? {
+          ...r,
+          apiKey: apiKey ? encryptSecret(String(apiKey)) : '',
+          credentialOrigin: credentialOriginForUrl(r.baseUrl),
+          apiKeyLocked: false
+        }
+      : r
+  )
+  writeJsonc('remote_instances', next, 'ComfyPilot remote instances')
+  lockedRemoteApiKeys.delete(id)
+}
+
+export function clearRemoteApiKey(id: string): void {
+  setRemoteApiKey(id, '')
 }
 
 export function deleteRemote(id: string): boolean {
