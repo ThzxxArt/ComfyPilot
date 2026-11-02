@@ -2378,6 +2378,8 @@ export const IPC_CHANNELS = [
 export const IPC_EVENTS = {
   instanceStatus: 'event:instance-status',
   instanceLog: 'event:instance-log',
+  /** Batched log lines (0.2.0) — one IPC message per 100ms instead of per line. */
+  instanceLogBatch: 'event:instance-log-batch',
   modelScanProgress: 'event:model-scan-progress',
   downloadProgress: 'event:download-progress',
   monitorTick: 'event:monitor-tick',

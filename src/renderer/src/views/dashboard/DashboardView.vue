@@ -19,7 +19,7 @@ import {
 import { NButton, NIcon, NSpace, NTag, NProgress, NSpin, useDialog, useMessage } from 'naive-ui'
 import StatCard from '@/components/StatCard.vue'
 import { useAppStore } from '@/stores/app'
-import { ipc, onIpc, IPC_EVENTS } from '@/composables/useIpc'
+import { ipc, onInstanceLogBatch } from '@/composables/useIpc'
 import { useLaunch } from '@/composables/useLaunch'
 import { useI18n } from 'vue-i18n'
 import { clampPercent, formatBytes, formatPercent } from '@/utils/format'
@@ -219,11 +219,11 @@ onMounted(async () => {
   if (disposed) return
   queueTimer = setInterval(() => void refreshQueue(), 5000)
   if (activeStatus.value === 'starting') void refreshTailLogs()
-  offLog = onIpc(IPC_EVENTS.instanceLog, (payload) => {
-    const p = payload as { id: string; line: ComfyLogLine }
+  offLog = onInstanceLogBatch((payload) => {
+    const p = payload as { id: string; lines: ComfyLogLine[] }
     const inst = store.activeInstance
-    if (!inst || p?.id !== inst.id || !p.line) return
-    tailLogs.value = [...tailLogs.value, p.line].slice(-3)
+    if (!inst || p?.id !== inst.id || !p.lines?.length) return
+    tailLogs.value = [...tailLogs.value, ...p.lines].slice(-3)
   })
 })
 

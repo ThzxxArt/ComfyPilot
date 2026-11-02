@@ -57,6 +57,10 @@ export function onInstanceStatus<T>(fn: (info: T) => void): () => void {
   return onIpc(IPC_EVENTS.instanceStatus, (payload) => fn(payload as T))
 }
 
+export function onInstanceLogBatch<T>(fn: (payload: T) => void): () => void {
+  return onIpc(IPC_EVENTS.instanceLogBatch, (payload) => fn(payload as T))
+}
+
 export function onMonitorTick<T>(fn: (snap: T) => void): () => void {
   return onIpc(IPC_EVENTS.monitorTick, (payload) => fn(payload as T))
 }

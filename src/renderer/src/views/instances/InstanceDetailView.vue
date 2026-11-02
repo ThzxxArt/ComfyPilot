@@ -37,7 +37,7 @@ import {
   useDialog
 } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
-import { ipc, onInstanceStatus, onIpc, IPC_EVENTS } from '@/composables/useIpc'
+import { ipc, onInstanceStatus, onInstanceLogBatch } from '@/composables/useIpc'
 import { useLaunch } from '@/composables/useLaunch'
 import { useComfyUpdate } from '@/composables/useComfyUpdate'
 import { useAutoFollow } from '@/composables/useAutoFollow'
@@ -1022,10 +1022,10 @@ onMounted(() => {
     void refresh()
   })
   // Live log tail — append without full refresh (bounded, with auto-follow).
-  offLog = onIpc(IPC_EVENTS.instanceLog, (payload) => {
-    const p = payload as { id: string; line: ComfyLogLine }
-    if (p?.id === id.value && p.line) {
-      logs.value = [...logs.value.slice(-(LOG_KEEP_MAX - 1)), p.line]
+  offLog = onInstanceLogBatch((payload) => {
+    const p = payload as { id: string; lines: ComfyLogLine[] }
+    if (p?.id === id.value && p.lines?.length) {
+      logs.value = [...logs.value, ...p.lines].slice(-LOG_KEEP_MAX)
       requestLogScroll()
     }
   })

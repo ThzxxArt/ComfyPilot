@@ -57,6 +57,32 @@ let mainWindow: BrowserWindow | null = null
 /** Set when the user actually quit — close then destroys instead of hiding. */
 let forceQuit = false
 
+// ---------- batched instance-log IPC (0.2.0) ----------
+const pendingLogBatches = new Map<string, Array<{ ts: number; level: string; message: string }>>()
+let logBatchTimer: NodeJS.Timeout | null = null
+
+function flushLogBatches(): void {
+  if (logBatchTimer) {
+    clearTimeout(logBatchTimer)
+    logBatchTimer = null
+  }
+  for (const [id, lines] of pendingLogBatches) {
+    if (lines.length) broadcast(IPC_EVENTS.instanceLogBatch, { id, lines })
+  }
+  pendingLogBatches.clear()
+}
+
+function queueLogBatch(id: string, line: { ts: number; level: string; message: string }): void {
+  const list = pendingLogBatches.get(id) || []
+  list.push({ ts: line.ts, level: line.level, message: line.message })
+  pendingLogBatches.set(id, list)
+  if (logBatchTimer) return
+  logBatchTimer = setTimeout(flushLogBatches, 100)
+  if (typeof (logBatchTimer as { unref?: () => void }).unref === 'function') {
+    ;(logBatchTimer as unknown as { unref: () => void }).unref()
+  }
+}
+
 function crashLog(msg: string): void {
   const line = `[${new Date().toISOString()}] ${msg}\n`
   try {
@@ -650,7 +676,10 @@ app.whenReady().then(async () => {
     void refreshTray()
   })
   instanceService.on('log', (id, line) => {
-    broadcast(IPC_EVENTS.instanceLog, { id, line })
+    // 0.2.0: coalesce bursts into one IPC message per 100ms. ComfyUI startup
+    // can emit thousands of lines in seconds; one IPC per line flooded the
+    // renderer and made the whole UI stutter.
+    queueLogBatch(id, line)
     // 0.1.12: runtime-failure watcher — a `!!! Exception during processing`
     // banner schedules a parse of the traceback that follows (covers runs
     // started from the ComfyUI frontend, which never reach our WS).
@@ -939,6 +968,7 @@ app.whenReady().then(async () => {
       } catch (err) {
         failed = [...failed, err instanceof Error ? err.message : String(err)]
       }
+      flushLogBatches()
       if (failed.length) {
         const detail = `exit flush failed: ${failed.join(', ')}`
         try {
