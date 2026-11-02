@@ -136,7 +136,7 @@ node node_modules/electron/install.js
 npm run dev          # 开发模式
 npm run typecheck    # vue-tsc + tsc
 npm run typecheck:test # 测试源码 tsc（CI 门禁）
-npm run test         # 单元 + 集成（1725 tests）
+npm run test         # 单元 + 集成（1779 tests）
 npm run test:coverage
 npm run lint         # ESLint（含 --fix）
 npm run lint:check   # ESLint 只检查（CI 门禁）
@@ -271,7 +271,7 @@ Python 版本、Torch / CUDA、`extra_model_paths.yaml`、端口、磁盘、Regi
 
 ```text
 ComfyPilot/
-├── package.json                 # v0.1.18 · MIT · ThzxxArt
+├── package.json                 # v0.2.0 · MIT · ThzxxArt
 ├── electron.vite.config.ts
 ├── electron-builder.yml         # Win NSIS（已发布）；macOS/Linux 目标存在但未验证
 ├── vitest.config.ts             # 覆盖率门禁（0.1.8 按实测定档，见文件内说明）
@@ -282,18 +282,20 @@ ComfyPilot/
 │   └── diag-*.cjs               # 排障探针
 ├── resources/                   # 应用图标
 ├── src/
-│   ├── shared/                  # types.ts + constants.ts
+│   ├── shared/                  # types/ 领域类型 + constants.ts
 │   ├── main/
 │   │   ├── bootstrap.cjs
 │   │   ├── index.ts
-│   │   ├── ipc/handlers.ts
+│   │   ├── ipc/                 # handlers.ts 装配层 + context + domains/
 │   │   └── services/
 │   │       ├── bootstrap.ts     # 零预装运行时自举
 │   │       ├── installer.ts     # 一键装机
-│   │       ├── instance.ts      # 实例生命周期
+│   │       ├── instance/        # 实例生命周期/日志/启动/发现
+│   │       ├── db/              # JSONC v2 持久化领域模块
+│   │       ├── p1p2/            # batch/output/remote/market
+│   │       ├── nodePack/        # 节点包列表/安装/更新/依赖/恢复
 │   │       ├── netProbe.ts      # 镜像测速
 │   │       ├── model.ts         # 模型扫描/下载/校验
-│   │       ├── nodePack.ts      # 节点包
 │   │       └── …
 │   ├── preload/
 │   └── renderer/
@@ -301,7 +303,7 @@ ComfyPilot/
 │           ├── styles/tokens.ts # JS 侧设计 token
 │           └── views/           # dashboard/instances/install/models/…
 ├── tests/
-│   ├── unit/                    # 121 文件 · 1725 用例 · 含 DOM 组件测试
+│   ├── unit/                    # 137 文件 · 1779 用例 · 含 DOM 组件测试
 │   ├── integration/
 │   └── e2e/
 └── .github/workflows/ci.yml
@@ -316,7 +318,7 @@ npm run dev / typecheck / test / test:coverage / test:e2e / test:all
 node scripts/check-version.cjs   # 版本号五处一致（CI + release 必跑）
 ```
 
-**测试：** 1744 用例（126 文件，含 `@vue/test-utils` 组件测试；0.2.0 新增 argv、数据迁移、环境标记、凭据端点绑定与启动问题回归测试）+ e2e 冒烟（真实 Electron 启动、preload 桥、一次真实 IPC、渲染层 console 错误置红）。覆盖率门禁分三层：**全局下限**（statements 82 / branches 74 / functions 83 / lines 84，实测值 −2pp）、**测试行为占比**（`npm run test:behavior`，纯源码文本断言占比 >40% 直接失败）与 **每文件下限**（`coverage-baseline.json` 的实测 −2pp，`scripts/coverage-ratchet.cjs` 对任一文件掉 >1pp 失败）；`handlers.ts`/`index.ts` 等装配层仍未纳入 include（覆盖率数字不代表全仓）。测试源码纳入 tsc 门禁（`typecheck:test`）。
+**测试：** 1779 用例（137 文件，含 `@vue/test-utils` 组件测试；0.2.0 新增 argv、数据迁移、环境标记、凭据端点绑定、IssueCenter、IPC 契约与启动问题回归测试）+ e2e 冒烟（真实 Electron 启动、preload 桥、一次真实 IPC、渲染层 console 错误置红）。覆盖率门禁分三层：**全局下限**（statements 83 / branches 73 / functions 84 / lines 85，按 0.2.0 新分母实测）、**测试行为占比**（`npm run test:behavior`，纯源码文本断言占比 >40% 直接失败）与 **每文件下限**（`coverage-baseline.json` 的实测 −2pp，`scripts/coverage-ratchet.cjs` 对任一文件掉 >1pp 失败）；`handlers.ts`/`index.ts` 等装配层仍未纳入 include（覆盖率数字不代表全仓）。测试源码纳入 tsc 门禁（`typecheck:test`）。
 
 **技术栈（0.2.0 升级）：** Electron **45.2.1** · electron-vite **6** · Vite **8** · Vitest **5** · Node **24**（CI/构建）· TypeScript **6.0.3** · Pinia **4** · Vue Router **5** · vue-i18n **11** · ESLint **10**。TypeScript 7（native）与 vue-tsc 3.x 仍报 `ERR_PACKAGE_PATH_NOT_EXPORTED`，已实测并记录，0.2.0 固定 TS 6.0.3。
 

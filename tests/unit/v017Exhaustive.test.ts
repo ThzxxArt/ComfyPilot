@@ -493,7 +493,7 @@ describe('comfyApi', () => {
 // ============ Source code quality checks ============
 describe('source quality: no TODO/FIXME in production code', () => {
   const prodFiles = [
-    'src/main/services/nodePack.ts',
+    'src/main/services/nodePack/index.ts',
     'src/main/services/model.ts',
     'src/main/services/workflow.ts',
     'src/main/services/p1p2/index.ts',

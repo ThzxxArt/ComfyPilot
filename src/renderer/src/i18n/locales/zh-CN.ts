@@ -1626,6 +1626,8 @@ export default {
     appFreeze: '主进程繁忙',
     appFreezeMsg: '{channel} 占用 {ms} ms',
     nodeInstalled: '节点包已安装',
+    nodeInstalledDepsFailed: '节点包已安装，但依赖安装失败',
+    nodeUpdatedDepsFailed: '节点包已更新，但依赖安装失败',
     nodeUninstalled: '节点包已卸载',
     nodeUpdated: '节点包已更新',
     nodeBatchDone: '节点批量更新完成',

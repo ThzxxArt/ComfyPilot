@@ -10,9 +10,9 @@
     "functions": 100
   },
   "src/main/services/backup.ts": {
-    "lines": 87.34,
+    "lines": 88.01,
     "branches": 67.48,
-    "functions": 80
+    "functions": 84
   },
   "src/main/services/capabilities.ts": {
     "lines": 67.03,
@@ -116,7 +116,7 @@
   },
   "src/main/services/env.ts": {
     "lines": 54.24,
-    "branches": 45.07,
+    "branches": 44.37,
     "functions": 52.73
   },
   "src/main/services/envLock.ts": {
@@ -134,10 +134,60 @@
     "branches": 81.82,
     "functions": 85.54
   },
-  "src/main/services/instance.ts": {
-    "lines": 89.84,
-    "branches": 78.18,
-    "functions": 89.86
+  "src/main/services/instance/diagnostics.ts": {
+    "lines": 87.1,
+    "branches": 70,
+    "functions": 66.67
+  },
+  "src/main/services/instance/discovery.ts": {
+    "lines": 95,
+    "branches": 98.57,
+    "functions": 100
+  },
+  "src/main/services/instance/envProbe.ts": {
+    "lines": 97.3,
+    "branches": 90.91,
+    "functions": 100
+  },
+  "src/main/services/instance/index.ts": {
+    "lines": 94.23,
+    "branches": 66.67,
+    "functions": 93.33
+  },
+  "src/main/services/instance/launchArgs.ts": {
+    "lines": 100,
+    "branches": 92.06,
+    "functions": 100
+  },
+  "src/main/services/instance/lifecycle.ts": {
+    "lines": 89.09,
+    "branches": 71.24,
+    "functions": 88.73
+  },
+  "src/main/services/instance/logs.ts": {
+    "lines": 98.15,
+    "branches": 90.7,
+    "functions": 100
+  },
+  "src/main/services/instance/python.ts": {
+    "lines": 96.3,
+    "branches": 88.89,
+    "functions": 100
+  },
+  "src/main/services/instance/runtime.ts": {
+    "lines": 93.33,
+    "branches": 90.2,
+    "functions": 77.78
+  },
+  "src/main/services/instance/selfcheck.ts": {
+    "lines": 55.56,
+    "branches": 52.38,
+    "functions": 66.67
+  },
+  "src/main/services/instance/types.ts": {
+    "lines": 100,
+    "branches": 100,
+    "functions": 100
   },
   "src/main/services/issueHub.ts": {
     "lines": 77.56,
@@ -179,10 +229,55 @@
     "branches": 62.07,
     "functions": 87.5
   },
-  "src/main/services/nodePack.ts": {
-    "lines": 89.09,
-    "branches": 78.15,
-    "functions": 91.56
+  "src/main/services/nodePack/common.ts": {
+    "lines": 92.24,
+    "branches": 83.33,
+    "functions": 92
+  },
+  "src/main/services/nodePack/deps.ts": {
+    "lines": 82.43,
+    "branches": 62.32,
+    "functions": 87.5
+  },
+  "src/main/services/nodePack/host.ts": {
+    "lines": 100,
+    "branches": 100,
+    "functions": 100
+  },
+  "src/main/services/nodePack/index.ts": {
+    "lines": 100,
+    "branches": 100,
+    "functions": 100
+  },
+  "src/main/services/nodePack/install.ts": {
+    "lines": 91.08,
+    "branches": 74.81,
+    "functions": 80
+  },
+  "src/main/services/nodePack/list.ts": {
+    "lines": 85.6,
+    "branches": 80.95,
+    "functions": 95
+  },
+  "src/main/services/nodePack/ops.ts": {
+    "lines": 100,
+    "branches": 81.82,
+    "functions": 100
+  },
+  "src/main/services/nodePack/recovery.ts": {
+    "lines": 65.74,
+    "branches": 64.1,
+    "functions": 90.91
+  },
+  "src/main/services/nodePack/types.ts": {
+    "lines": 100,
+    "branches": 100,
+    "functions": 100
+  },
+  "src/main/services/nodePack/update.ts": {
+    "lines": 93.39,
+    "branches": 83.43,
+    "functions": 91.49
   },
   "src/main/services/p1p2/batch.ts": {
     "lines": 90.82,

@@ -61,6 +61,7 @@ const kindOptions = computed(() => [
 const visible = computed(() =>
   issues.value.filter(
     (i) =>
+      (!instanceFilter.value || i.instanceId === instanceFilter.value) &&
       (severityFilter.value === 'all' || i.severity === severityFilter.value) &&
       (kindFilter.value === 'all' || i.kind === kindFilter.value)
   )

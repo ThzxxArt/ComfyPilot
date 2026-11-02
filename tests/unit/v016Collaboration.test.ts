@@ -152,7 +152,7 @@ describe('git-prefer install path', () => {
   })
 
   it('resolveGitBinary prefers PATH git over portable MinGit', async () => {
-    const src = read('src/main/services/nodePack.ts')
+    const src = read('src/main/services/nodePack/common.ts')
     const fn = src.slice(src.indexOf('export function resolveGitBinary'))
     // Must probe system git first and only fall back to findInRuntimes
     expect(fn.slice(0, 500)).toContain('git --version')
@@ -160,7 +160,7 @@ describe('git-prefer install path', () => {
   })
 
   it('registry install git path bypasses allowGitUrlInstall gate', async () => {
-    const src = read('src/main/services/nodePack.ts')
+    const src = read('src/main/services/nodePack/install.ts')
     // The registry install path must call installInner (not install) for the
     // internal git clone — install() would re-check assertInstallAllowed('git')
     // which is gated by allowGitUrlInstall (default false).

@@ -248,7 +248,7 @@ describe('proxy: redactProxyUrl', () => {
 describe('version comparison logic (source contract)', () => {
   it('nodePack has isUpdateAvailable or version compare', () => {
     const src = readFileSync(
-      join(__dirname, '..', '..', 'src', 'main', 'services', 'nodePack.ts'),
+      join(__dirname, '..', '..', 'src', 'main', 'services', 'nodePack', 'index.ts'),
       'utf-8'
     )
     expect(src).toContain('isUpdateAvailable')

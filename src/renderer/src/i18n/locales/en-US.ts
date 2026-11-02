@@ -1696,6 +1696,8 @@ export default {
     appFreeze: 'Main process was busy',
     appFreezeMsg: '{channel} took {ms} ms',
     nodeInstalled: 'Node pack installed',
+    nodeInstalledDepsFailed: 'Node pack installed, but its dependencies failed',
+    nodeUpdatedDepsFailed: 'Node pack updated, but its dependencies failed',
     nodeUninstalled: 'Node pack uninstalled',
     nodeUpdated: 'Node pack updated',
     nodeBatchDone: 'Node batch update complete',

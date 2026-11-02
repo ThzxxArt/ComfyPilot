@@ -96,7 +96,11 @@ describe('0.1.9 node-op modal contracts', () => {
   })
 
   it('nodePack streams git progress + batch context', () => {
-    const src = read('src/main/services/nodePack.ts')
+    const src = [
+      read('src/main/services/nodePack/update.ts'),
+      read('src/main/services/nodePack/ops.ts'),
+      read('src/main/services/nodePack/install.ts')
+    ].join('\n')
     expect(src).toContain('aggregatePercent')
     expect(src).toContain('cancelUpdateBatch')
     expect(src).toContain("emit('op-log'")
