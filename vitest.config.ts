@@ -63,12 +63,17 @@ export default defineConfig({
     // 0.1.18 (WP0): with Vitest 5 + Vite 8 a cold first run spawns a worker per
     // test file; the default 5 s budget is enough for the assertions but not
     // always for the very first module import. Behaviour is unchanged.
-    testTimeout: 15000,
-    hookTimeout: 15000,
+    // Istanbul adds instrumentation overhead to heavily dynamic imports
+    // (IPC registration); 15s was too close to the edge on slower runners.
+    testTimeout: 30000,
+    hookTimeout: 30000,
     include: ['tests/**/*.test.ts'],
     exclude: ['tests/e2e/**', 'node_modules/**', 'out/**'],
     coverage: {
-      provider: 'v8',
+      // Istanbul is deterministic across workers/runners. The V8 provider
+      // under-counted anonymous functions on GitHub Actions (a test-only
+      // environment difference), which made the per-file floors flaky.
+      provider: 'istanbul',
       reporter: ['text', 'html', 'lcov'],
       reportsDirectory: 'coverage',
       include: [

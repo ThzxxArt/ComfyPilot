@@ -10,9 +10,9 @@
     "functions": 100
   },
   "src/main/services/backup.ts": {
-    "lines": 88.01,
-    "branches": 67.48,
-    "functions": 84
+    "lines": 87.76,
+    "branches": 66.78,
+    "functions": 82
   },
   "src/main/services/capabilities.ts": {
     "lines": 67.03,
@@ -26,7 +26,7 @@
   },
   "src/main/services/comfyApi.ts": {
     "lines": 89.91,
-    "branches": 70,
+    "branches": 69.09,
     "functions": 88.89
   },
   "src/main/services/db/backups.ts": {
@@ -37,11 +37,6 @@
   "src/main/services/db/batch.ts": {
     "lines": 95.24,
     "branches": 77.78,
-    "functions": 100
-  },
-  "src/main/services/db/index.ts": {
-    "lines": 100,
-    "branches": 100,
     "functions": 100
   },
   "src/main/services/db/instances.ts": {
@@ -105,19 +100,19 @@
     "functions": 100
   },
   "src/main/services/depsAudit.ts": {
-    "lines": 92.66,
-    "branches": 75.86,
-    "functions": 83.33
+    "lines": 97.62,
+    "branches": 81.73,
+    "functions": 92.86
   },
   "src/main/services/doctor.ts": {
-    "lines": 85.71,
-    "branches": 66.01,
-    "functions": 82.61
+    "lines": 87.77,
+    "branches": 72.6,
+    "functions": 87.5
   },
   "src/main/services/env.ts": {
-    "lines": 54.24,
-    "branches": 44.37,
-    "functions": 52.73
+    "lines": 58.07,
+    "branches": 49.57,
+    "functions": 54.55
   },
   "src/main/services/envLock.ts": {
     "lines": 100,
@@ -131,11 +126,11 @@
   },
   "src/main/services/installer.ts": {
     "lines": 90.3,
-    "branches": 81.82,
+    "branches": 81.65,
     "functions": 85.54
   },
   "src/main/services/instance/diagnostics.ts": {
-    "lines": 87.1,
+    "lines": 82.26,
     "branches": 70,
     "functions": 66.67
   },
@@ -160,13 +155,13 @@
     "functions": 100
   },
   "src/main/services/instance/lifecycle.ts": {
-    "lines": 89.09,
-    "branches": 71.24,
+    "lines": 89.25,
+    "branches": 70.73,
     "functions": 88.73
   },
   "src/main/services/instance/logs.ts": {
     "lines": 98.15,
-    "branches": 90.7,
+    "branches": 88.37,
     "functions": 100
   },
   "src/main/services/instance/python.ts": {
@@ -195,8 +190,8 @@
     "functions": 80
   },
   "src/main/services/launchArgCatalog.ts": {
-    "lines": 60,
-    "branches": 50,
+    "lines": 100,
+    "branches": 75,
     "functions": 100
   },
   "src/main/services/logFile.ts": {
@@ -211,12 +206,12 @@
   },
   "src/main/services/media.ts": {
     "lines": 95.78,
-    "branches": 85,
+    "branches": 83.75,
     "functions": 93.75
   },
   "src/main/services/model.ts": {
     "lines": 55.91,
-    "branches": 48.85,
+    "branches": 47.61,
     "functions": 54.84
   },
   "src/main/services/monitor.ts": {
@@ -236,13 +231,8 @@
   },
   "src/main/services/nodePack/deps.ts": {
     "lines": 82.43,
-    "branches": 62.32,
+    "branches": 63.38,
     "functions": 87.5
-  },
-  "src/main/services/nodePack/host.ts": {
-    "lines": 100,
-    "branches": 100,
-    "functions": 100
   },
   "src/main/services/nodePack/index.ts": {
     "lines": 100,
@@ -251,7 +241,7 @@
   },
   "src/main/services/nodePack/install.ts": {
     "lines": 91.08,
-    "branches": 74.81,
+    "branches": 74.31,
     "functions": 80
   },
   "src/main/services/nodePack/list.ts": {
@@ -289,11 +279,6 @@
     "branches": 91.67,
     "functions": 100
   },
-  "src/main/services/p1p2/index.ts": {
-    "lines": 100,
-    "branches": 100,
-    "functions": 100
-  },
   "src/main/services/p1p2/market.ts": {
     "lines": 96.77,
     "branches": 76.92,
@@ -301,7 +286,7 @@
   },
   "src/main/services/p1p2/output.ts": {
     "lines": 87.25,
-    "branches": 80.73,
+    "branches": 80.28,
     "functions": 90.32
   },
   "src/main/services/p1p2/remote.ts": {
@@ -310,9 +295,9 @@
     "functions": 100
   },
   "src/main/services/pipOps.ts": {
-    "lines": 92.44,
-    "branches": 73.46,
-    "functions": 83.33
+    "lines": 94.65,
+    "branches": 77.13,
+    "functions": 95.16
   },
   "src/main/services/preflight.ts": {
     "lines": 78.82,
@@ -320,7 +305,7 @@
     "functions": 100
   },
   "src/main/services/processTree.ts": {
-    "lines": 95.35,
+    "lines": 94.19,
     "branches": 73.68,
     "functions": 100
   },
@@ -330,8 +315,8 @@
     "functions": 86.36
   },
   "src/main/services/pythonMigration.ts": {
-    "lines": 74.16,
-    "branches": 41.18,
+    "lines": 73.03,
+    "branches": 40,
     "functions": 80
   },
   "src/main/services/registry.ts": {
@@ -340,13 +325,13 @@
     "functions": 83.33
   },
   "src/main/services/registryIndex.ts": {
-    "lines": 96.71,
-    "branches": 70.47,
+    "lines": 92.76,
+    "branches": 67.11,
     "functions": 88
   },
   "src/main/services/rendererEntry.ts": {
-    "lines": 42.86,
-    "branches": 35.29,
+    "lines": 21.43,
+    "branches": 29.41,
     "functions": 100
   },
   "src/main/services/secretStorage.ts": {
@@ -361,12 +346,12 @@
   },
   "src/main/services/session.ts": {
     "lines": 86.79,
-    "branches": 72.41,
+    "branches": 62.07,
     "functions": 100
   },
   "src/main/services/slowOps.ts": {
     "lines": 90.83,
-    "branches": 81.63,
+    "branches": 78.57,
     "functions": 96
   },
   "src/main/services/startupIssues.ts": {
@@ -375,9 +360,9 @@
     "functions": 100
   },
   "src/main/services/updater.ts": {
-    "lines": 91.92,
-    "branches": 76.65,
-    "functions": 86.46
+    "lines": 91.7,
+    "branches": 75.87,
+    "functions": 86.6
   },
   "src/main/services/workPool.ts": {
     "lines": 100,
@@ -385,8 +370,8 @@
     "functions": 100
   },
   "src/main/services/workflow.ts": {
-    "lines": 85.09,
-    "branches": 71.52,
+    "lines": 84.32,
+    "branches": 70.9,
     "functions": 96.3
   },
   "src/main/services/workflowConvert.ts": {
@@ -396,7 +381,7 @@
   },
   "src/main/services/workflowFingerprint.ts": {
     "lines": 93.75,
-    "branches": 75,
+    "branches": 73.21,
     "functions": 90.91
   },
   "src/main/services/zipSafe.ts": {
@@ -410,7 +395,7 @@
     "functions": 100
   },
   "src/renderer/src/components/ErrorBoundary.vue": {
-    "lines": 61.54,
+    "lines": 57.14,
     "branches": 25,
     "functions": 0
   },
@@ -506,7 +491,7 @@
   },
   "src/shared/outputDir.ts": {
     "lines": 94.12,
-    "branches": 82.61,
+    "branches": 86.96,
     "functions": 100
   },
   "src/shared/pipRecipes.ts": {
@@ -515,8 +500,8 @@
     "functions": 100
   },
   "src/shared/pipVersion.ts": {
-    "lines": 92.18,
-    "branches": 74.62,
+    "lines": 92.96,
+    "branches": 74.32,
     "functions": 100
   },
   "src/shared/preflight.ts": {
