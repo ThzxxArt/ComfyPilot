@@ -142,7 +142,7 @@ describe.skipIf(skip)('electron app smoke (real bundle)', () => {
             : result.text.includes('[e2e] renderer-probe-failed')
               ? '[e2e] renderer-probe-failed'
               : 'no marker'
-        }; output tail: ${result.text.slice(-400)}`
+        }; output tail: ${result.text.slice(-4000)}`
       )
     }
     // 0.1.18 (WP8): the preload bridge and one real IPC round-trip must work —
