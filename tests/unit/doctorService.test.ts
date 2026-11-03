@@ -2,10 +2,8 @@
  * DoctorService behaviour (0.1.10): the whole checkup matrix + every fix.
  * Real filesystem via tmpdir; only db/model/instance/proxy/child_process mocked.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from 'fs'
-import { createServer } from 'http'
-import type { AddressInfo } from 'net'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -25,7 +23,8 @@ const h = vi.hoisted(() => {
       version: '3.13.18'
     } as Record<string, unknown>,
     uvComponent: null as null | Record<string, unknown>,
-    empPaths: [] as string[]
+    empPaths: [] as string[],
+    portBusy: false
   }
   return { state }
 })
@@ -38,6 +37,34 @@ vi.mock('../../src/main/services/db', () => ({
 vi.mock('../../src/main/services/model', () => ({
   parseExtraModelPaths: () => h.state.empPaths
 }))
+
+// Port availability is host state. Make it controllable so the doctor port
+// branches are identical on Linux and Windows (binding 0.0.0.0 does not
+// reliably conflict with a 127.0.0.1 listener on Windows).
+vi.mock('net', () => {
+  const createServer = () => {
+    const handlers: Record<string, (...a: unknown[]) => void> = {}
+    const server = {
+      once(event: string, cb: (...a: unknown[]) => void) {
+        handlers[event] = cb
+        return server
+      },
+      listen() {
+        queueMicrotask(() => {
+          if (h.state.portBusy) {
+            handlers.error?.(Object.assign(new Error('busy'), { code: 'EADDRINUSE' }))
+          } else handlers.listening?.()
+        })
+        return server
+      },
+      close(cb?: () => void) {
+        cb?.()
+      }
+    }
+    return server
+  }
+  return { default: { createServer }, createServer }
+})
 
 vi.mock('../../src/main/services/instance', () => ({
   resolveInstancePythonPath: () => 'python',
@@ -166,6 +193,11 @@ describe('DoctorService (0.1.10 behaviour)', () => {
     }
     h.state.uvComponent = null
     h.state.empPaths = []
+    h.state.portBusy = false
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
   })
 
   it('run() produces the full check matrix on a healthy install', async () => {
@@ -207,22 +239,32 @@ describe('DoctorService (0.1.10 behaviour)', () => {
 
   it('recognizes a running ComfyUI on a busy port instead of warning', async () => {
     seedMinimalInstall('port-own')
-    const server = createServer((_req, res) => {
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ system: { os: 'test' } }))
-    })
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
-    const port = (server.address() as AddressInfo).port
-    ;(h.state.instances[0] as { port: number }).port = port
-    try {
-      const svc = await freshDoctor()
-      const report = await svc.run('inst-1')
-      const check = report.checks.find((c: any) => c.id === 'port')!
-      expect(check.severity).toBe('info')
-      expect(check.detail).toContain('ComfyUI already running')
-    } finally {
-      await new Promise<void>((resolve) => server.close(() => resolve()))
-    }
+    h.state.portBusy = true
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ system: { os: 'test' } }), { status: 200 }))
+    )
+    const svc = await freshDoctor()
+    const report = await svc.run('inst-1')
+    const check = report.checks.find((c: any) => c.id === 'port')!
+    expect(check.severity).toBe('info')
+    expect(check.detail).toContain('ComfyUI already running')
+  })
+
+  it('warns when a busy port is not our ComfyUI', async () => {
+    seedMinimalInstall('port-other')
+    h.state.portBusy = true
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('ECONNREFUSED')
+      })
+    )
+    const svc = await freshDoctor()
+    const report = await svc.run('inst-1')
+    const check = report.checks.find((c: any) => c.id === 'port')!
+    expect(check.severity).toBe('warn')
+    expect(check.detail).toContain('currently in use')
   })
 
   it('emits honest progress events — checked count, no fabricated total (0.1.15)', async () => {
