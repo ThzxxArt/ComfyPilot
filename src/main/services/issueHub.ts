@@ -15,6 +15,7 @@
 import { existsSync, statSync } from 'fs'
 import type { AppIssue, AppIssueAction, AppIssueKind } from '@shared/types'
 import { resolvePipAlias } from '@shared/pipAliases'
+import { recipeForModule, recipeSupportsPlatform } from '@shared/pipRecipes'
 import { loadInstanceConfigs, listIssues, replaceIssues } from './db'
 import { instanceService } from './instance'
 import { nodePackService } from './nodePack'
@@ -433,17 +434,26 @@ export class IssueHubService {
     if (!issue.module) throw new Error('This issue has no missing module')
     const moduleName = String(issue.module).split('.')[0]
     const spec = resolvePipAlias(moduleName)
+    // Some missing modules have a curated fix (triton-windows, the verified
+    // SageAttention wheel, onnx). Plain `pip install triton` has no Windows
+    // wheel, so the generic path would fail where the recipe succeeds.
+    // Platform-gated recipes fall back to the generic spec elsewhere.
+    const recipe = recipeForModule(moduleName)
+    const useRecipe = recipe && recipeSupportsPlatform(recipe) ? recipe : undefined
     const { pipOpsService } = await import('./pipOps')
-    const result = await pipOpsService.installSpec(issue.instanceId, spec)
+    const result = useRecipe
+      ? await pipOpsService.installRecipe(issue.instanceId, useRecipe.id)
+      : await pipOpsService.installSpec(issue.instanceId, spec)
     if (result.ok) {
       // Do not immediately re-scan the old boot log: it still contains the
       // pre-install traceback, which would make a successful fix look open
       // again. The next boot/scan is the honest verification point.
       this.setStatus(id, 'resolved')
     }
+    const label = useRecipe ? `${useRecipe.id} recipe` : spec
     return {
       ok: result.ok,
-      message: result.ok ? `Installed ${spec}` : result.error || `Could not install ${spec}`
+      message: result.ok ? `Installed ${label}` : result.error || `Could not install ${label}`
     }
   }
 

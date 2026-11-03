@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
   startup: [] as Array<Record<string, unknown>>,
   recovery: [] as Array<Record<string, unknown>>,
   installed: [] as string[],
+  recipes: [] as string[],
   cleaned: [] as string[]
 }))
 
@@ -61,6 +62,10 @@ vi.mock('../../src/main/services/pipOps', () => ({
     installSpec: async (_id: string, spec: string) => {
       h.installed.push(spec)
       return { ok: true, instanceId: 'i1', requested: [spec], installed: [spec] }
+    },
+    installRecipe: async (_id: string, recipeId: string) => {
+      h.recipes.push(recipeId)
+      return { ok: true, instanceId: 'i1', requested: [recipeId], installed: [recipeId] }
     }
   }
 }))
@@ -81,6 +86,7 @@ beforeEach(() => {
   ]
   h.recovery = []
   h.installed = []
+  h.recipes = []
   h.cleaned = []
 })
 
@@ -100,6 +106,20 @@ describe('IssueHubService (0.2.0)', () => {
     h.packs = []
     const { issueHubService } = await import('../../src/main/services/issueHub')
     expect(await issueHubService.scan('i1')).toEqual([])
+  })
+
+  it('uses a curated recipe when the missing module has one', async () => {
+    h.startup = [
+      { pack: 'Pack', summary: 'Missing dependency: triton', missingModules: ['triton'] }
+    ]
+    const { issueHubService } = await import('../../src/main/services/issueHub')
+    const [issue] = await issueHubService.scan('i1')
+    const result = await issueHubService.installModule(issue.id)
+    expect(result.ok).toBe(true)
+    // `pip install triton` has no Windows wheel; the recipe installs
+    // triton-windows (and any follow-up wheel) instead.
+    expect(h.recipes).toEqual(['triton'])
+    expect(h.installed).toEqual([])
   })
 
   it('persists ignore/restore/resolve lifecycle', async () => {
