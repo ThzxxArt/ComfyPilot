@@ -42,6 +42,12 @@ describe('JSONC store (integration)', () => {
     expect(parseJsonc<{ s: string }>('{"s":"a/*b*/c"}').s).toBe('a/*b*/c')
   })
 
+  it('parseJsonc rejects malformed JSON instead of guessing', async () => {
+    const { parseJsonc } = await import('../../src/main/services/db')
+    expect(() => parseJsonc('{ "a": 1,, }')).toThrow()
+    expect(() => parseJsonc('not json')).toThrow()
+  })
+
   it('settings round-trip writes jsonc with header', async () => {
     const db = await import('../../src/main/services/db')
     const s0 = db.loadSettings()
@@ -93,6 +99,9 @@ describe('JSONC store (integration)', () => {
     })
     expect(db.listModels().some((m) => m.id === 'm1')).toBe(true)
     expect(db.deleteModel('m1')).toBe(true)
+    // Deleting an unknown id must report false, not pretend it removed a row.
+    expect(db.deleteInstanceConfig('missing-instance')).toBe(false)
+    expect(db.deleteModel('missing-model')).toBe(false)
   })
 
   it('logsDir ensures the global log directory (0.1.15 settings.logsDir)', async () => {

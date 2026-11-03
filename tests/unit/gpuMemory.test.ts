@@ -63,4 +63,8 @@ describe('mergeGpuMemory', () => {
     const out = mergeGpuMemory([{ vram: 0 }], [])
     expect(out[0]).toEqual({ vramTotal: 0, vramUsed: 0 })
   })
+
+  it('does not fabricate adapters when both sources are empty', () => {
+    expect(mergeGpuMemory([], [])).toEqual([])
+  })
 })

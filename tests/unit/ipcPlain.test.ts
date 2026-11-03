@@ -41,4 +41,10 @@ describe('toPlainIpcArg — Electron IPC structured-clone safety', () => {
     const result = { ok: true, via: 'http://127.0.0.1:7897', ms: 12 }
     expect(toPlainIpcArg(result)).toEqual(result)
   })
+
+  it('returns null for circular payloads instead of throwing across the bridge', () => {
+    const circular: Record<string, unknown> = { ok: true }
+    circular.self = circular
+    expect(toPlainIpcArg(circular)).toBeNull()
+  })
 })

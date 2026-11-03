@@ -23,4 +23,10 @@ describe('resolveOutputDir (0.2.0 shared)', () => {
   it('falls back to <instance>/output', () => {
     expect(resolveOutputDir({ path: 'C:\\ComfyUI', extraArgs: [] })).toBe('C:\\ComfyUI\\output')
   })
+
+  it('ignores an empty --output-directory value instead of resolving to an empty path', () => {
+    const out = resolveOutputDir({ path: '/x/ComfyUI', extraArgs: ['--output-directory='] })
+    expect(out).not.toBe('')
+    expect(out).toBe('/x/ComfyUI/output')
+  })
 })

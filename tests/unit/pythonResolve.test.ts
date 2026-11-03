@@ -97,4 +97,18 @@ describe('resolveInstancePythonPath', () => {
     const { resolveInstancePythonPath } = await import('../../src/main/services/instance')
     expect(resolveInstancePythonPath(cfg({ path: join(dir, 'missing-install') }))).toBe('python')
   })
+
+  it('does not select a configured venv that has no interpreter', async () => {
+    const { resolveInstancePythonPath } = await import('../../src/main/services/instance')
+    const akiRoot = join(dir, 'aki-no-venv')
+    const comfy = join(akiRoot, 'ComfyUI')
+    const configuredVenv = join(akiRoot, 'configured-venv')
+    mkdirSync(join(akiRoot, 'python'), { recursive: true })
+    mkdirSync(comfy, { recursive: true })
+    mkdirSync(configuredVenv, { recursive: true })
+    writeFileSync(join(akiRoot, 'python', 'python.exe'), '')
+    const resolved = resolveInstancePythonPath(cfg({ path: comfy, venvPath: configuredVenv }))
+    expect(resolved).not.toContain('configured-venv')
+    expect(resolved).toBe(join(akiRoot, 'python', 'python.exe'))
+  })
 })

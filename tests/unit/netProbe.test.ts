@@ -63,4 +63,13 @@ describe('launch script export', () => {
       .join(' ')
     expect(line).toBe('C:\\py\\python.exe main.py --listen 127.0.0.1')
   })
+
+  it('does not leave spaces or quotes unquoted in a preview command', async () => {
+    const { quoteCommandLineArg } = await import('../../src/main/services/instance')
+    const raw = 'D:\\My Models\\run "x".bat'
+    const quoted = quoteCommandLineArg(raw)
+    expect(quoted).not.toBe(raw)
+    expect(quoted.startsWith('"')).toBe(true)
+    expect(quoted).toContain('\\"x\\"')
+  })
 })

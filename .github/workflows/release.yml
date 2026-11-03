@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: npm
       - run: npm ci
       - run: npm run typecheck
@@ -32,7 +32,10 @@ jobs:
       - run: npm run lint:check
       - run: npm run format:check
       - run: npm audit --omit=dev --audit-level=high --registry=https://registry.npmjs.org
-      - run: npm run test
+      - run: node scripts/check-test-polarity.cjs
+      # Same coverage thresholds + ratchet as CI. Node 24.19.0 is pinned via
+      # .nvmrc so V8 function counts match the baseline.
+      - run: npm run test:coverage
       - run: npm run test:behavior
       - run: node scripts/check-i18n.cjs
       - run: node scripts/check-hardcoded-zh.cjs
@@ -55,7 +58,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: npm
       - run: npm ci
       - run: npm rebuild electron
@@ -80,7 +83,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: npm
       - run: npm ci
       - run: npm rebuild electron

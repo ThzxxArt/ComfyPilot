@@ -42,6 +42,12 @@ describe('launch script escaping (command-injection regression)', () => {
     expect(q).toBe("'$(calc)'")
     expect(escapeForSh("it's")).toBe("'it'\\''s'")
   })
+
+  it('never returns an unescaped metacharacter payload unchanged', async () => {
+    const { escapeForBat, escapeForSh } = await import('../../src/main/services/instance')
+    expect(escapeForBat('a&b')).not.toBe('a&b')
+    expect(escapeForSh('a$(b)')).not.toBe('a$(b)')
+  })
 })
 
 describe('resolveTorchIndex mirror layout', () => {

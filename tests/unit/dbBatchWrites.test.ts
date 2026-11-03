@@ -64,6 +64,14 @@ describe('db batch + debounced writes (0.1.16)', () => {
     expect(onDisk.map((t) => t.id).sort()).toEqual(['d1', 'd2'])
   })
 
+  it('deleting unknown batch records is a false no-op', async () => {
+    vi.resetModules()
+    const db = await import('../../src/main/services/db')
+    expect(db.deleteModel('missing-model')).toBe(false)
+    expect(db.deleteBatchJob('missing-job')).toBe(false)
+    expect(db.listModels()).toEqual([])
+  })
+
   it('install-run save is debounced but immediately readable', async () => {
     vi.resetModules()
     const db = await import('../../src/main/services/db')

@@ -24,7 +24,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Install dependencies
@@ -62,21 +62,26 @@ jobs:
       - name: Dependency audit (production, high+)
         run: npm audit --omit=dev --audit-level=high --registry=https://registry.npmjs.org
 
-      - name: Unit & integration tests
-        run: npx vitest run --coverage
+      - name: Test polarity gate (no positive-only files)
+        run: node scripts/check-test-polarity.cjs
+
+      - name: Unit & integration tests (coverage, Linux)
+        if: runner.os == 'Linux'
+        # Vitest thresholds + coverage-baseline ratchet. Node is pinned via
+        # .nvmrc so V8 function counts do not drift between CI and local runs.
+        run: npm run test:coverage
+
+      - name: Unit & integration tests (Windows, no coverage thresholds)
+        if: runner.os == 'Windows'
+        # V8 coverage counters differ on Windows; running the same thresholds
+        # there produces false regressions. Coverage is enforced on Linux.
+        run: npm run test
 
       - name: Test-behaviour ratio gate
         run: npm run test:behavior
 
-      - name: Coverage ratchet
-        # The baseline is measured on Linux; per-file V8 numbers differ enough
-        # on Windows (path shims, native helpers) that a cross-platform ratchet
-        # produces false regressions. Windows still uploads its own coverage.
-        if: runner.os == 'Linux'
-        run: node scripts/coverage-ratchet.cjs
-
       - name: Upload coverage report
-        if: always()
+        if: always() && runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-${{ matrix.os }}
@@ -86,6 +91,9 @@ jobs:
 
       - name: Build (includes postbuild bootstrap copy)
         run: npm run build
+
+      - name: Asar packaging config assertion
+        run: node scripts/check-asar.cjs
 
       - name: E2E smoke
         if: runner.os == 'Windows'
