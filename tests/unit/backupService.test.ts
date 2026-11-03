@@ -30,6 +30,24 @@ const h = vi.hoisted(() => {
   return { state }
 })
 
+const sideEffects = vi.hoisted(() => ({
+  syncProxy: vi.fn(),
+  setLaunchOnBoot: vi.fn(),
+  refreshTray: vi.fn()
+}))
+
+// Restore fires these via dynamic imports. Mocking them makes the callbacks
+// deterministic on CI instead of depending on whether Electron modules load.
+vi.mock('../../src/main/services/proxy', () => ({
+  syncProxyFromSettings: sideEffects.syncProxy
+}))
+vi.mock('../../src/main/services/desktop', () => ({
+  setLaunchOnBoot: sideEffects.setLaunchOnBoot
+}))
+vi.mock('../../src/main/services/tray', () => ({
+  refreshTray: sideEffects.refreshTray
+}))
+
 // 0.1.17 (review fix): prove the restore path re-encrypts instead of writing
 // whatever `listRemotes()` handed it (which is decrypted plaintext).
 vi.mock('../../src/main/services/secretStorage', () => ({
@@ -104,6 +122,9 @@ describe('BackupService (0.1.10 behaviour)', () => {
     h.state.nodes = []
     h.state.snaps = []
     h.state.remotes = []
+    sideEffects.syncProxy.mockClear()
+    sideEffects.setLaunchOnBoot.mockClear()
+    sideEffects.refreshTray.mockClear()
   })
 
   afterAll(() => {
@@ -184,6 +205,11 @@ describe('BackupService (0.1.10 behaviour)', () => {
       readFileSync(join(h.state.root, 'workflows.jsonc'), 'utf-8')
     ) as Array<Record<string, unknown>>
     expect(restoredWfs[0].path).toBe(safeDest)
+    // Fire-and-forget hooks must run after the restored settings are applied.
+    await new Promise((r) => setTimeout(r, 0))
+    expect(sideEffects.syncProxy).toHaveBeenCalled()
+    expect(sideEffects.setLaunchOnBoot).toHaveBeenCalled()
+    expect(sideEffects.refreshTray).toHaveBeenCalled()
   })
 
   it('restore() rolls back to the captured state when a list write fails', async () => {

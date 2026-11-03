@@ -1812,7 +1812,7 @@ describe('venvPython / pipArgs (via pipeline)', () => {
       return { stdout: '' }
     }
     await runUpdate({})
-    expect(cmds[0]).toBe(join(VENV, 'Scripts', 'python.exe'))
+    expect(pathKey(cmds[0])).toBe(pathKey(join(VENV, 'Scripts', 'python.exe')))
 
     // Unix venv layout
     h.rmPath(join(VENV, 'Scripts', 'python.exe'))
@@ -1820,7 +1820,7 @@ describe('venvPython / pipArgs (via pipeline)', () => {
     h.writeFile(join(VENV, 'bin', 'python'), '')
     cmds.length = 0
     await runUpdate({})
-    expect(cmds[0]).toBe(join(VENV, 'bin', 'python'))
+    expect(pathKey(cmds[0])).toBe(pathKey(join(VENV, 'bin', 'python')))
   })
 
   it('pip path appends -i and --trusted-host for a valid mirror', async () => {

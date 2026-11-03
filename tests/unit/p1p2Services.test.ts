@@ -2119,12 +2119,11 @@ describe('batch resumability (0.1.17 WP5)', () => {
     expect(
       resolveOutputDir({ path: '/x/ComfyUI', extraArgs: ['--output-directory', 'D:/renders'] })
     ).toBe('D:/renders')
+    // POSIX input stays POSIX even when the test itself runs on Windows.
     expect(
       resolveOutputDir({ path: '/x/ComfyUI', extraArgs: ['--output-directory', 'out2'] })
-    ).toBe(join('/x/ComfyUI', 'out2'))
-    expect(resolveOutputDir({ path: '/x/ComfyUI', extraArgs: [] })).toBe(
-      join('/x/ComfyUI', 'output')
-    )
+    ).toBe('/x/ComfyUI/out2')
+    expect(resolveOutputDir({ path: '/x/ComfyUI', extraArgs: [] })).toBe('/x/ComfyUI/output')
   })
 })
 

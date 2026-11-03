@@ -1793,16 +1793,31 @@ describe('forceKill()', () => {
     expect(svc.list()[0].status).toBe('stopped')
   })
 
-  it('falls back to process.kill(pid) when the child handle is gone', async () => {
+  it('falls back to the OS kill path when the child handle is gone', async () => {
     register(cfg({ id: 'fk-pid' }))
     h.state.fetchImpl = okStats
     await svc.start('fk-pid')
     const child = childOf(svc, 'fk-pid')
     pokeRuntime(svc, 'fk-pid', { process: undefined, pid: child.pid, managed: true })
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
-    await svc.forceKill('fk-pid')
-    expect(killSpy).toHaveBeenCalledWith(child.pid, 'SIGKILL')
-    killSpy.mockRestore()
+    if (process.platform === 'win32') {
+      // Windows uses taskkill /T /F so grandchildren (ComfyUI) die too.
+      const calls: string[] = []
+      h.state.execHandler = (cmd, args) => {
+        calls.push(`${cmd} ${args.join(' ')}`)
+        return { stdout: '' }
+      }
+      await svc.forceKill('fk-pid')
+      expect(
+        calls.some(
+          (c) => /taskkill/i.test(c) && c.includes('/PID') && c.includes(String(child.pid))
+        )
+      ).toBe(true)
+    } else {
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
+      await svc.forceKill('fk-pid')
+      expect(killSpy).toHaveBeenCalledWith(child.pid, 'SIGKILL')
+      killSpy.mockRestore()
+    }
   })
 
   it('refuses to kill an adopted external process', async () => {

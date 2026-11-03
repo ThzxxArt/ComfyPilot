@@ -72,6 +72,19 @@ describe('db batch + debounced writes (0.1.16)', () => {
     expect(db.listModels()).toEqual([])
   })
 
+  it('the debounce timer flushes pending writes even without an explicit flush', async () => {
+    vi.resetModules()
+    vi.useFakeTimers()
+    try {
+      const db = await import('../../src/main/services/db')
+      db.upsertModel(model('timer'))
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(existsSync(join(root, 'data', 'models.jsonc'))).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('install-run save is debounced but immediately readable', async () => {
     vi.resetModules()
     const db = await import('../../src/main/services/db')

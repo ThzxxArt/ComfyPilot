@@ -88,7 +88,8 @@ describe('comparePipVersions', () => {
     expect(evaluateMarker('extra == "cuda"')).toBeNull()
     expect(
       evaluateMarker('python_version < "3.12" or sys_platform == "linux"', {
-        pythonVersion: '3.13'
+        pythonVersion: '3.13',
+        sysPlatform: 'linux'
       })
     ).toBe(true)
     expect(evaluateMarker('sys_platform != "win32"', { sysPlatform: 'linux' })).toBe(true)
