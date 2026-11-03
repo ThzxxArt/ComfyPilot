@@ -215,13 +215,13 @@
     "functions": 7.69
   },
   "src/main/services/doctor.ts": {
-    "lines": 88.4,
-    "branches": 74,
-    "functions": 87.5
+    "lines": 91.6,
+    "branches": 74.67,
+    "functions": 95.83
   },
   "src/main/services/env.ts": {
     "lines": 58.87,
-    "branches": 50.7,
+    "branches": 50.14,
     "functions": 55.88
   },
   "src/main/services/envLock.ts": {
