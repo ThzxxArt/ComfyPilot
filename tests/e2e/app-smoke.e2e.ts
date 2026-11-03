@@ -78,6 +78,11 @@ describe.skipIf(skip)('electron app smoke (real bundle)', () => {
               // Headless CI has no keyring/DBUS; basic storage removes a
               // transient safeStorage/keyring startup dependency.
               '--password-store=basic',
+              // GitHub runners have a 64MB /dev/shm; Chromium renderers can
+              // crash before mounting without this (the classic Electron CI
+              // "renderer never mounted" flake).
+              '--disable-dev-shm-usage',
+              '--disable-gpu',
               'out/main/bootstrap.cjs',
               '--e2e-smoke'
             ]
