@@ -11,6 +11,7 @@ import {
   cpSync
 } from 'fs'
 import { join, dirname, resolve } from 'path'
+import { homedir } from 'os'
 import { execFile, type ChildProcess } from 'child_process'
 import { randomUUID } from 'crypto'
 import si from 'systeminformation'
@@ -66,6 +67,28 @@ const TORCH_INDEX: Record<TorchChannel, string> = {
 // every reference off the old comfyanonymous/ URL, which only worked via
 // GitHub redirects).
 const COMFY_REPO = 'https://github.com/Comfy-Org/ComfyUI.git'
+
+/**
+ * Nearest directory that actually exists. Install roots frequently point at a
+ * folder whose parent is also not created yet (`<home>/ComfyPilotRuntimes/
+ * comfy-main`, `D:\\ComfyPilotRuntimes\\comfy-main`). Probing only `dirname()`
+ * made preflight call a perfectly writable target "not writable" and report
+ * 0 GB free — blocking the default one-click install.
+ */
+function nearestExistingDir(target: string): string | null {
+  let cur = target
+  for (let i = 0; i < 64; i++) {
+    try {
+      if (existsSync(cur)) return cur
+    } catch {
+      /* inaccessible path — keep walking up */
+    }
+    const parent = dirname(cur)
+    if (!parent || parent === cur) return null
+    cur = parent
+  }
+  return null
+}
 
 function nowStep(
   id: InstallStepId,
@@ -714,11 +737,14 @@ export class InstallerService extends EventEmitter {
     if (rootOk) {
       // Writability: a read-only / protected folder used to fail after the
       // runtime downloads, when the venv could not be created. Probe the
-      // nearest EXISTING directory — preflight must not create anything.
-      const probeDir = existsSync(root) ? root : dirname(root)
+      // nearest EXISTING ancestor — preflight must not create anything.
+      const probeDir = nearestExistingDir(root)
       try {
-        if (!existsSync(probeDir)) throw new Error(`Directory does not exist: ${probeDir}`)
-        const probe = join(probeDir, `.cp-write-probe-${Date.now()}`)
+        if (!probeDir) throw new Error(`No existing ancestor for: ${root}`)
+        const probe = join(
+          probeDir,
+          `.cp-write-probe-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+        )
         writeFileSync(probe, 'ok')
         rmSync(probe, { force: true })
         checks.push({
@@ -732,9 +758,9 @@ export class InstallerService extends EventEmitter {
         checks.push({
           id: 'writable',
           ok: false,
-          detail: `Cannot write to ${probeDir}: ${e instanceof Error ? e.message : String(e)}`,
+          detail: `Cannot write to ${probeDir || root}: ${e instanceof Error ? e.message : String(e)}`,
           detailKey: 'preflight.notWritable',
-          detailParams: { root: probeDir }
+          detailParams: { root: probeDir || root }
         })
       }
     }
@@ -742,16 +768,20 @@ export class InstallerService extends EventEmitter {
     // Disk — require torch estimate + 4GB margin for ComfyUI/venv
     const needGb = (TORCH_DISK_GB[opts.torchChannel || 'cpu'] || 3) + 4
     let freeGb = 0
+    let diskProbed = false
     try {
       const { statfsSync } = await import('fs')
-      const probeDir = existsSync(root) ? root : dirname(root)
-      if (existsSync(probeDir)) {
+      const probeDir = nearestExistingDir(root)
+      if (probeDir) {
         const st = statfsSync(probeDir)
+        diskProbed = true
         freeGb = (Number(st.bsize) * Number(st.bavail)) / 1024 ** 3
         checks.push({
           id: 'disk',
           ok: freeGb > needGb,
-          detail: `Free ${freeGb.toFixed(1)} GB / need ~${needGb} GB (torch + deps)`,
+          detail: `Free ${freeGb.toFixed(1)} GB / need ~${needGb} GB (torch + deps)${
+            existsSync(root) ? '' : ' — target dir will be created'
+          }`,
           detailKey: 'preflight.disk',
           detailParams: { free: freeGb.toFixed(1), need: needGb }
         })
@@ -860,21 +890,40 @@ export class InstallerService extends EventEmitter {
     }
 
     const hardFail = checks.some((c) => !c.ok && !c.fixId)
-    return { ok: !hardFail, checks, diskNeedGb: needGb, diskFreeGb: freeGb }
+    return {
+      ok: !hardFail,
+      checks,
+      diskNeedGb: needGb,
+      // `0` is a real "disk is full" answer only when statfs succeeded. When no
+      // ancestor exists at all, the honest value is "unknown", not zero.
+      diskFreeGb: diskProbed ? freeGb : undefined
+    }
   }
 
-  /** Suggested install root: largest free-space fixed drive + default folder. */
+  /** Suggested install root: largest WRITABLE free-space drive + default folder. */
   async suggestInstallRoot(): Promise<{ path: string; freeGb: number }> {
     const candidates: Array<{ path: string; freeGb: number }> = []
     const roots =
       process.platform === 'win32'
         ? ['D:\\', 'C:\\', 'E:\\', 'F:\\']
-        : [join(process.env.HOME || '', 'ComfyPilotRuntimes'), '/opt/comfypilot', '/tmp']
+        : [join(homedir(), 'ComfyPilotRuntimes'), '/opt/comfypilot', '/tmp']
     for (const r of roots) {
       try {
         const { statfsSync } = await import('fs')
-        const probe = existsSync(r) ? r : dirname(r)
-        if (!existsSync(probe)) continue
+        // Prefer the nearest existing ancestor: the default folder itself is
+        // usually not created yet.
+        const probe = nearestExistingDir(r)
+        if (!probe) continue
+        // A drive with free space but no write permission (e.g. C:\ for a
+        // standard Windows user) must never be suggested — otherwise the
+        // first preflight fails and one-click install is dead on arrival.
+        const test = join(probe, `.cp-root-probe-${process.pid}-${Date.now()}`)
+        try {
+          writeFileSync(test, 'ok')
+          rmSync(test, { force: true })
+        } catch {
+          continue
+        }
         const st = statfsSync(probe)
         const freeGb = (Number(st.bsize) * Number(st.bavail)) / 1024 ** 3
         candidates.push({ path: r, freeGb })
@@ -885,8 +934,17 @@ export class InstallerService extends EventEmitter {
     candidates.sort((a, b) => b.freeGb - a.freeGb)
     const best = candidates[0]
     if (!best) {
+      // userData is always writable by this user, so install never dead-ends.
       const fallback = join(userDataDir(), 'Runtimes', 'comfy-main')
-      return { path: fallback, freeGb: 0 }
+      let freeGb = 0
+      try {
+        const { statfsSync } = await import('fs')
+        const st = statfsSync(userDataDir())
+        freeGb = (Number(st.bsize) * Number(st.bavail)) / 1024 ** 3
+      } catch {
+        /* unknown — the UI will fall back to the preflight value */
+      }
+      return { path: fallback, freeGb }
     }
     const base =
       process.platform === 'win32'

@@ -38,6 +38,16 @@ export function compareSemver(a: string, b: string): number {
   return 0
 }
 
+/**
+ * What the UI should show for an install stamp. `'detected'` is an internal
+ * sentinel meaning "main.py exists but no version was readable" — never a
+ * version a user should see.
+ */
+export function visibleVersion(v: unknown): string {
+  const s = String(v ?? '').trim()
+  return s === 'detected' ? '' : s
+}
+
 /** True only when both sides are comparable AND actually differ. */
 export function versionMismatch(installed: unknown, online: unknown): boolean {
   const a = String(installed ?? '').trim()

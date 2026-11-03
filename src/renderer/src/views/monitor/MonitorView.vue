@@ -349,10 +349,19 @@ const gpuHigh = computed(() => {
 let off: (() => void) | null = null
 let offWs: (() => void) | null = null
 let queueTimer: ReturnType<typeof setInterval> | null = null
+/**
+ * A route can unmount while `onMounted` is still awaiting bootstrap/IPC.
+ * Without this latch the continuation registers a 3 s poller and listeners
+ * AFTER onUnmounted already ran, leaking them for the rest of the session.
+ */
+let disposed = false
 
 onMounted(async () => {
+  disposed = false
   await store.bootstrap({ keepSelection: true })
+  if (disposed) return
   const snap = await ipc('monitor.system').catch(() => null)
+  if (disposed) return
   if (snap) {
     store.system = snap
     history.value.push(snap.cpuUsage)
@@ -369,6 +378,7 @@ onMounted(async () => {
   // WS is owned by the app store (bound to the active instance) — do not
   // connect/disconnect it here or leaving this page would kill other pages' streams.
   await refreshQueue()
+  if (disposed) return
   void refreshHistory()
   void refreshJobs()
   void refreshFailures()
@@ -419,6 +429,7 @@ watch(
 )
 
 onUnmounted(() => {
+  disposed = true
   off?.()
   offWs?.()
   document.removeEventListener('visibilitychange', onVisibility)

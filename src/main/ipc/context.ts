@@ -1,5 +1,5 @@
 import { BrowserWindow, WebContentsView, shell } from 'electron'
-import { basename, isAbsolute, join } from 'path'
+import { basename, dirname, isAbsolute, join } from 'path'
 import { homedir } from 'os'
 import type {
   AppSettings,
@@ -185,9 +185,17 @@ export function approveReadPath(p: string | null | undefined): void {
 }
 
 function isSystemPythonPath(p: string): boolean {
-  const name = basename(p).toLowerCase()
+  // A bare command name (`python`, `python3`, `py`) is resolved by the OS and
+  // is not a renderer-supplied executable path. It is what EnvCreateRequest
+  // and the manual instance dialog legitimately use when the user has not
+  // chosen a specific interpreter.
+  const raw = String(p || '').trim()
+  if (!raw.includes('/') && !raw.includes('\\')) {
+    return /^(python(3(\.\d+)?)?|py)(\.exe)?$/i.test(raw)
+  }
+  const name = basename(raw).toLowerCase()
   if (!/^python(3(\.\d+)?)?(\.exe)?$/.test(name)) return false
-  const normalized = normalizeForCompare(p).toLowerCase()
+  const normalized = normalizeForCompare(raw).toLowerCase()
   return (
     normalized.includes('/windows/system32/') ||
     normalized.includes('/program files/') ||
@@ -209,10 +217,64 @@ export function assertApprovedExecutable(p: string, label: string, instanceRoot?
   const normalized = normalizeForCompare(p)
   if (approvedExecutablePaths.has(normalized)) return
   if (isSystemPythonPath(p)) return
-  if (instanceRoot && resolveInsideAnyRoot(p, [instanceRoot])) return
+  if (instanceRoot) {
+    if (resolveInsideAnyRoot(p, [instanceRoot])) return
+    // AKI / 绘世 layout: `<root>/python/python.exe` sits BESIDE the
+    // `<root>/ComfyUI` directory. Rejecting the parent made the documented
+    // integration layout impossible to save unless the user re-picked the
+    // exact file. Only python-shaped basenames get this exception.
+    if (
+      /^python(3(\.\d+)?)?(\.exe)?$/i.test(basename(p)) &&
+      resolveInsideAnyRoot(p, [dirname(instanceRoot)])
+    ) {
+      return
+    }
+  }
   const lower = normalized.toLowerCase()
-  if (/\/\.?venv\/|\/venv\/|\/venv-/.test(lower)) return
+  // Only an interpreter-shaped file inside a venv is implicitly trusted.
+  // A directory merely NAMED `venv` must not turn an arbitrary dropped binary
+  // into an approved executable.
+  if (
+    /\/(?:\.?venv|venv-[^/]+)\/(?:bin\/python(?:3(?:\.\d+)?)?|scripts\/python(?:\.exe)?)$/.test(
+      lower
+    )
+  ) {
+    return
+  }
   throw new Error(`${label} must be chosen with the file picker`)
+}
+
+/**
+ * A venv may live inside the instance (`<ComfyUI>/.venv`) or beside it
+ * (`<root>/.venv`, the repair/installer default). Both are legitimate; an
+ * arbitrary directory is not.
+ */
+export function assertApprovedVenvPath(venvPath: string, instanceRoot?: string): void {
+  if (!venvPath) return
+  if (venvPath.includes('\0')) throw new Error('venvPath contains an invalid character')
+  const normalized = normalizeForCompare(venvPath)
+  if (approvedWriteRoots.has(normalized)) return
+  if (isPathInsideInstance(venvPath)) return
+  if (instanceRoot && resolveInsideAnyRoot(venvPath, [instanceRoot, dirname(instanceRoot)])) return
+  throw new Error('venvPath must be inside the instance or chosen with the picker')
+}
+
+/** Base directory for `env.createVenv`: instance-owned, home, or user-picked. */
+export function assertApprovedVenvBase(basePath: string): void {
+  if (!basePath || basePath.includes('\0')) throw new Error('Invalid venv base path')
+  if (!isAbsolute(basePath)) throw new Error('venv base path must be absolute')
+  const normalized = normalizeForCompare(basePath)
+  if (approvedWriteRoots.has(normalized)) return
+  const home = normalizeForCompare(homedir()).toLowerCase()
+  const data = normalizeForCompare(userDataDir()).toLowerCase()
+  const lower = normalized.toLowerCase()
+  if (lower === home || lower.startsWith(`${home}/`)) return
+  if (lower === data || lower.startsWith(`${data}/`)) return
+  for (const c of loadInstanceConfigs()) {
+    if (!c.path) continue
+    if (resolveInsideAnyRoot(basePath, [c.path, dirname(c.path)])) return
+  }
+  throw new Error('venv base path must be inside an instance, home, or chosen with the picker')
 }
 
 export function isPathInsideInstance(p: string): boolean {

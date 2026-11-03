@@ -174,7 +174,12 @@ onUnmounted(() => offProgress?.())
         <p class="page-subtitle">{{ t('doctor.subtitle') }}</p>
       </div>
       <NSpace>
-        <NButton type="primary" :loading="running" :disabled="running" @click="run">
+        <NButton
+          type="primary"
+          :loading="running"
+          :disabled="running || !store.localTargetId"
+          @click="run"
+        >
           <template #icon><NIcon :component="FlashOutline" /></template>
           {{ t('doctor.run') }}
         </NButton>

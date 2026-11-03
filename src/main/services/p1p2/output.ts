@@ -1,5 +1,5 @@
 import { createHash } from 'crypto'
-import { existsSync, readdirSync, statSync, mkdirSync, unlinkSync } from 'fs'
+import { existsSync, lstatSync, readdirSync, statSync, mkdirSync, unlinkSync } from 'fs'
 import type { Stats } from 'fs'
 import { join, extname, basename, dirname } from 'path'
 import type { OutputAsset } from '@shared/types'
@@ -25,6 +25,15 @@ import { resolveOutputDir } from '@shared/outputDir'
 import { LruCache } from '../lru'
 
 // ---------- Output ----------
+
+/** True for a symbolic link/junction, including links whose target is missing. */
+function isSymlink(p: string): boolean {
+  try {
+    return lstatSync(p).isSymbolicLink()
+  } catch {
+    return false
+  }
+}
 
 export class OutputService {
   /**
@@ -188,6 +197,10 @@ export class OutputService {
     for (const name of entries) {
       const full = join(dir, name)
       try {
+        // Never follow links during an output walk. A symlinked directory can
+        // point anywhere on disk, which would index (and later let the UI
+        // delete) files outside the approved output root.
+        if (isSymlink(full)) continue
         const st = statSync(full)
         if (st.isDirectory()) {
           this.walk(full, out, depth + 1, maxDepth)
@@ -242,6 +255,8 @@ export class OutputService {
         }
         const full = join(dir, name)
         try {
+          // Same containment rule as the synchronous walk (see above).
+          if (isSymlink(full)) continue
           const st = statSync(full)
           if (st.isDirectory()) {
             await walkDir(full, depth + 1)

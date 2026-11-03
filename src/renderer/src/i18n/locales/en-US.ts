@@ -52,6 +52,7 @@ export default {
     copy: 'Copy',
     copyFailed: 'Copy failed — please select the text manually',
     loadFailed: 'Failed to load',
+    loading: 'Loading…',
     details: 'Details',
     dismiss: 'Got it'
   },
@@ -173,10 +174,18 @@ export default {
     networkMode: 'Network mode',
     networkModeHint:
       'Offline blocks every remote install (Market / Git / node updates). Blocked actions are reported, never skipped silently.',
+    networkModePublic: 'Public (public)',
+    networkModePrivate: 'Private (private)',
+    networkModeOffline: 'Offline (offline)',
+    networkModePersonalCloud: 'Personal cloud (personal_cloud)',
     security: 'Security policy (Manager semantics)',
     securityLevelLabel: 'Security level (security_level)',
     securityLevelHint:
       'strong forbids all remote node installs — attempts are blocked and reported. normal and below are for regular use.',
+    securityStrong: 'Strict (strong)',
+    securityNormal: 'Normal (normal)',
+    securityNormalMinus: 'Normal- (normal-)',
+    securityWeak: 'Permissive (weak)',
     allowGitLabel: 'Allow Git URL install (allow_git_url_install)',
     allowGitHint:
       'When off, installing nodes via a Git URL is blocked and the install tells you where to turn it on.',
@@ -558,6 +567,8 @@ export default {
     needDisk: '~{n}GB needed',
     freeDisk: '{n}GB free',
     gpuDetected: 'Detected {model} — selected {channel}',
+    gpuNoDevice: 'No discrete GPU detected — selected {channel}',
+    gpuDetectFailed: 'GPU detection failed — selected {channel}',
     fixPython: 'Download portable Python',
     fixGit: 'Download portable Git',
     fixUv: 'Download uv',

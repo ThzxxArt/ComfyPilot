@@ -1793,6 +1793,16 @@ describe('forceKill()', () => {
     expect(svc.list()[0].status).toBe('stopped')
   })
 
+  it('reports a timed-out force-kill instead of claiming the process stopped', async () => {
+    register(cfg({ id: 'fk-stuck' }))
+    h.state.fetchImpl = okStats
+    h.state.childIgnoresKill = true
+    await svc.start('fk-stuck')
+    const info = await svc.forceKill('fk-stuck')
+    expect(info.exited).toBe(false)
+    expect(svc.list()[0].status).toBe('error')
+  })
+
   it('falls back to the OS kill path when the child handle is gone', async () => {
     register(cfg({ id: 'fk-pid' }))
     h.state.fetchImpl = okStats

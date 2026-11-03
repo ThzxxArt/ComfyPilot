@@ -1000,7 +1000,12 @@ watch(
         <p class="page-subtitle">{{ $t('nodes.subtitle') }}</p>
       </div>
       <NSpace>
-        <NButton secondary :loading="checking" @click="checkUpdates">
+        <NButton
+          secondary
+          :loading="checking"
+          :disabled="!store.localTargetId"
+          @click="checkUpdates"
+        >
           <template #icon><NIcon :component="CloudDownloadOutline" /></template
           >{{
             checking
@@ -1066,8 +1071,12 @@ watch(
         <NButton secondary @click="refresh">
           <template #icon><NIcon :component="RefreshOutline" /></template>{{ $t('nodes.refresh') }}
         </NButton>
-        <NButton secondary @click="createSnapshot">{{ $t('nodes.createSnapshot') }}</NButton>
-        <NButton type="primary" @click="showInstall = true">{{ $t('nodes.gitInstall') }}</NButton>
+        <NButton secondary :disabled="!store.localTargetId" @click="createSnapshot">
+          {{ $t('nodes.createSnapshot') }}
+        </NButton>
+        <NButton type="primary" :disabled="!store.localTargetId" @click="showInstall = true">
+          {{ $t('nodes.gitInstall') }}
+        </NButton>
       </NSpace>
     </div>
 

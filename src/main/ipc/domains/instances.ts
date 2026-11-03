@@ -1,4 +1,4 @@
-import { existsSync } from 'fs'
+import { existsSync, statSync } from 'fs'
 import { clipboard, shell } from 'electron'
 import type {
   ComfyInstanceConfig,
@@ -7,30 +7,65 @@ import type {
   LaunchOptions
 } from '@shared/types'
 import { bootstrapService } from '../../services/bootstrap'
-import { loadInstanceConfigs } from '../../services/db'
+import { loadInstanceConfigs, loadSettings } from '../../services/db'
 import { envService } from '../../services/env'
 import { execDiagnosticsService } from '../../services/execDiagnostics'
 import { instanceService } from '../../services/instance'
 import { installerService, listStarterModels } from '../../services/installer'
 import {
+  assertSafeEndpointSetting,
   isSafeExternalUrl,
   normalizeForCompare,
   resolveInsideAnyRoot,
   sanitizeId
 } from '../../services/security'
 import {
-  approvedWriteRoots,
+  approveReadPath,
   assertApprovedExecutable,
   assertApprovedInstallRoot,
+  assertApprovedVenvBase,
+  assertApprovedVenvPath,
   broadcastNotification,
   collectRevealRoots,
-  isPathInsideInstance,
   notifyPipResult,
   openEmbedInternal,
   wrap,
   type IpcContext
 } from '../context'
 import { requireLocalInstanceId, safeInstanceId, safeInstanceTarget } from '../trust'
+
+/** ComfyUI locations the discovery flow is allowed to find. */
+function discoveredComfyRoots(): string[] {
+  return [
+    process.env.COMFYUI_PATH,
+    'D:\\ComfyUI',
+    'C:\\ComfyUI',
+    'D:\\AI\\ComfyUI',
+    ...(loadSettings().modelScanRoots || [])
+  ].filter(Boolean) as string[]
+}
+
+/**
+ * An instance path is a launch target (`<path>/main.py`). Do not let a
+ * renderer register an arbitrary directory it can write to (e.g. via a model
+ * download) and then execute a script from it. Home/userData, a directory
+ * chosen in the OS picker, the known discovery roots, or the instance's own
+ * existing path are accepted.
+ */
+function assertApprovedInstancePath(path: string, id?: string): void {
+  const existing = id ? loadInstanceConfigs().find((c) => c.id === id) : undefined
+  if (existing && normalizeForCompare(existing.path) === normalizeForCompare(path)) return
+  try {
+    assertApprovedInstallRoot(path)
+    return
+  } catch {
+    /* fall through to the discovery allow-list */
+  }
+  if (resolveInsideAnyRoot(path, discoveredComfyRoots())) return
+  throw new Error(
+    'Instance path must be inside home, a known ComfyUI location, or chosen with the picker'
+  )
+}
 
 export function createInstanceHandlers(ctx: IpcContext) {
   return {
@@ -39,13 +74,10 @@ export function createInstanceHandlers(ctx: IpcContext) {
     save: wrap((config: ComfyInstanceConfig) => {
       if (!config || typeof config !== 'object') throw new Error('Invalid instance config')
       if (!config.path || !existsSync(config.path)) throw new Error('Instance path does not exist')
+      if (!statSync(config.path).isDirectory()) throw new Error('Instance path must be a directory')
+      assertApprovedInstancePath(config.path, config.id || undefined)
       if (config.pythonPath) assertApprovedExecutable(config.pythonPath, 'pythonPath', config.path)
-      if (config.venvPath) {
-        const normalized = normalizeForCompare(config.venvPath)
-        if (!approvedWriteRoots.has(normalized) && !isPathInsideInstance(config.venvPath)) {
-          throw new Error('venvPath must be inside the instance or chosen with the picker')
-        }
-      }
+      assertApprovedVenvPath(config.venvPath, config.path)
       return instanceService.save({ ...config, id: config.id ? sanitizeId(config.id) : '' })
     }),
     migratePython: wrap(async (id: string) => {
@@ -225,11 +257,23 @@ export function createInstanceHandlers(ctx: IpcContext) {
       if (opts?.pythonPath) assertApprovedExecutable(opts.pythonPath, 'pythonPath')
       return envService.probe(opts)
     }),
-    createVenv: wrap((req: EnvCreateRequest) => envService.createVenv(req)),
+    createVenv: wrap((req: EnvCreateRequest) => {
+      // A renderer-supplied basePath + interpreter is an arbitrary file-write
+      // and process-execution primitive unless both are anchored to an
+      // instance/home/picked directory.
+      if (!req?.pythonPath) throw new Error('pythonPath is required')
+      assertApprovedExecutable(req.pythonPath, 'pythonPath')
+      assertApprovedVenvBase(req.basePath)
+      if (req.torchIndex) assertSafeEndpointSetting('torchIndex', req.torchIndex)
+      return envService.createVenv(req)
+    }),
     listPythons: wrap(() => envService.listPythons()),
-    installTorch: wrap((opts: { pythonPath: string; index: string }) =>
-      envService.installTorch(opts)
-    ),
+    installTorch: wrap((opts: { pythonPath: string; index: string }) => {
+      if (!opts?.pythonPath) throw new Error('pythonPath is required')
+      assertApprovedExecutable(opts.pythonPath, 'pythonPath')
+      assertSafeEndpointSetting('torch index', opts.index)
+      return envService.installTorch(opts)
+    }),
 
     // installer
     detectGpu: wrap(() => installerService.detectGpu()),
@@ -260,7 +304,15 @@ export function createInstanceHandlers(ctx: IpcContext) {
       installerService.reset()
       return true
     }),
-    suggestInstallRoot: wrap(() => installerService.suggestInstallRoot()),
+    suggestInstallRoot: wrap(async () => {
+      const suggested = await installerService.suggestInstallRoot()
+      // 0.2.3: the suggested root is frequently on D:/E: (not under the user's
+      // home) or under a not-yet-created folder. Approve exactly this path so
+      // the following preflight/start gate accepts it without forcing a second
+      // manual pick; an arbitrary renderer-supplied root still is not approved.
+      approveReadPath(suggested.path)
+      return suggested
+    }),
     starterModels: wrap(() => listStarterModels()),
     installStarter: wrap((opts: { id: string; instanceId?: string }) =>
       installerService.installStarter(opts)

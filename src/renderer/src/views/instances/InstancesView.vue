@@ -55,7 +55,7 @@ import ComfyUpdateProgressModal from '@/components/ComfyUpdateProgressModal.vue'
 import LaunchProfileEditor from '@/components/LaunchProfileEditor.vue'
 import { useI18n } from 'vue-i18n'
 import { formatDate, formatUptime } from '@/utils/format'
-import { versionMismatch } from '@/utils/versionDisplay'
+import { versionMismatch, visibleVersion } from '@/utils/versionDisplay'
 import type {
   ComfyInstanceConfig,
   ComfyInstanceInfo,
@@ -861,7 +861,7 @@ function statusClass(s: string): string {
         </NInputGroup>
         <NTooltip trigger="hover">
           <template #trigger>
-            <NButton secondary @click="confirmStartAll">
+            <NButton secondary :disabled="!store.instances.length" @click="confirmStartAll">
               <template #icon><NIcon :component="PlayOutline" /></template>
               {{ $t('instance.startAll') }}
             </NButton>
@@ -935,9 +935,9 @@ function statusClass(s: string): string {
                 >{{ $t('instance.listen') }}
                 <b class="mono">{{ item.listen }}:{{ item.port }}</b></span
               >
-              <span v-if="item.version || item.onlineVersion"
+              <span v-if="visibleVersion(item.version) || item.onlineVersion"
                 >{{ $t('instance.versionLabel') }}
-                <b>{{ item.onlineVersion || item.version }}</b>
+                <b>{{ item.onlineVersion || visibleVersion(item.version) }}</b>
                 <NTag
                   v-if="item.onlineVersion"
                   size="tiny"
@@ -946,7 +946,7 @@ function statusClass(s: string): string {
                   :title="
                     versionMismatch(item.version, item.onlineVersion)
                       ? $t('instance.onlineVersionMismatch', {
-                          installed: item.version,
+                          installed: visibleVersion(item.version) || '—',
                           online: item.onlineVersion
                         })
                       : $t('instance.onlineVersionTip')

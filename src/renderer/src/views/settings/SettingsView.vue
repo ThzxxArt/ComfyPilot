@@ -66,6 +66,18 @@ const torchIndexOptions = computed(() =>
     value: p.value
   }))
 )
+const networkModeOptions = computed(() => [
+  { label: t('settings.networkModePublic'), value: 'public' },
+  { label: t('settings.networkModePrivate'), value: 'private' },
+  { label: t('settings.networkModeOffline'), value: 'offline' },
+  { label: t('settings.networkModePersonalCloud'), value: 'personal_cloud' }
+])
+const securityLevelOptions = computed(() => [
+  { label: t('settings.securityStrong'), value: 'strong' },
+  { label: t('settings.securityNormal'), value: 'normal' },
+  { label: t('settings.securityNormalMinus'), value: 'normal-' },
+  { label: t('settings.securityWeak'), value: 'weak' }
+])
 
 const shortcuts = computed(() => [
   { keys: 'Ctrl+1 … Ctrl+9', desc: t('settings.shortcutNav') },
@@ -198,7 +210,11 @@ watch(
       else editedKeys.delete(key)
     }
   },
-  { deep: true }
+  // flush:'sync' is required: the store watcher below assigns incoming values
+  // inside `applyingIncoming`; an async flush ran after that flag was reset and
+  // marked the freshly loaded settings as user edits (spurious "unsaved
+  // changes" dialog on leave).
+  { deep: true, flush: 'sync' }
 )
 
 watch(
@@ -620,9 +636,13 @@ async function removeRemote(id: string): Promise<void> {
   }
 }
 
+let settingsDisposed = false
 onMounted(async () => {
+  settingsDisposed = false
   await store.bootstrap({ keepSelection: true })
+  if (settingsDisposed) return
   await loadRemotes()
+  if (settingsDisposed) return
   try {
     runtimeStatus.value = await ipc('bootstrap.status')
   } catch {
@@ -633,6 +653,7 @@ onMounted(async () => {
   } catch {
     /* ignore */
   }
+  if (settingsDisposed) return
   // Live self-update status stream (0.1.11).
   offAppUpdate = onIpc(IPC_EVENTS.appUpdate, (p) => {
     appUpdate.value = p as AppUpdateStatus
@@ -647,6 +668,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  settingsDisposed = true
   offAppUpdate?.()
 })
 </script>
@@ -725,15 +747,7 @@ onUnmounted(() => {
               <div class="hint">{{ t('settings.torchIndexHint') }}</div>
             </NFormItem>
             <NFormItem :label="t('settings.networkMode')">
-              <NSelect
-                v-model:value="form.networkMode"
-                :options="[
-                  { label: 'public', value: 'public' },
-                  { label: 'private', value: 'private' },
-                  { label: 'offline', value: 'offline' },
-                  { label: 'personal_cloud', value: 'personal_cloud' }
-                ]"
-              />
+              <NSelect v-model:value="form.networkMode" :options="networkModeOptions" />
               <div class="hint">{{ t('settings.networkModeHint') }}</div>
             </NFormItem>
           </NForm>
@@ -742,15 +756,7 @@ onUnmounted(() => {
         <NCard :title="t('settings.security')" class="card" size="small">
           <NForm label-placement="top">
             <NFormItem :label="t('settings.securityLevelLabel')">
-              <NSelect
-                v-model:value="form.securityLevel"
-                :options="[
-                  { label: 'strong', value: 'strong' },
-                  { label: 'normal', value: 'normal' },
-                  { label: 'normal-', value: 'normal-' },
-                  { label: 'weak', value: 'weak' }
-                ]"
-              />
+              <NSelect v-model:value="form.securityLevel" :options="securityLevelOptions" />
               <div class="hint">{{ t('settings.securityLevelHint') }}</div>
             </NFormItem>
             <NFormItem :label="t('settings.allowGitLabel')">
@@ -1180,6 +1186,9 @@ onUnmounted(() => {
 @use '@/styles/variables.scss' as *;
 .settings-grid {
   grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  /* Cards should hug their content. Stretching the short "Paths" card to the
+     tall "Network" card left ~300px of empty white inside the card. */
+  align-items: start;
 }
 .hint {
   font-size: 12px;

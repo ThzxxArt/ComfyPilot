@@ -1,8 +1,32 @@
+import { join } from 'path'
 import { bootMarkFirstList } from '../../services/bootTiming'
 import { modelService } from '../../services/model'
-import { sanitizeId } from '../../services/security'
-import { broadcastNotification, isSafeReadPath, wrap } from '../context'
+import { loadInstanceConfigs, loadSettings } from '../../services/db'
+import { resolveInsideAnyRoot, sanitizeId } from '../../services/security'
+import { approvedReadRoots, broadcastNotification, isSafeReadPath, wrap } from '../context'
 import { safeInstanceId } from '../trust'
+
+/**
+ * Model scanning walks a directory tree and returns every matching file name.
+ * The renderer may only scan roots the user configured (Settings), the active
+ * instances' own models/ folders, or a folder explicitly chosen in the OS
+ * picker — never an arbitrary path supplied over IPC.
+ */
+function assertAllowedScanRoots(roots: string[]): void {
+  if (!roots.length) return
+  const allowed = [
+    ...(loadSettings().modelScanRoots || []),
+    ...loadInstanceConfigs()
+      .map((c) => (c.path ? join(c.path, 'models') : ''))
+      .filter(Boolean),
+    ...approvedReadRoots
+  ]
+  for (const root of roots) {
+    if (!resolveInsideAnyRoot(root, allowed)) {
+      throw new Error(`Blocked model scan root outside the configured model directories: ${root}`)
+    }
+  }
+}
 
 export function createModelHandlers() {
   return {
@@ -15,7 +39,10 @@ export function createModelHandlers() {
         thumbnail: thumbnailDisplayUrl(m.thumbnail) || undefined
       }))
     }),
-    scan: wrap((opts?: { roots?: string[]; hash?: boolean }) => modelService.scan(opts)),
+    scan: wrap((opts?: { roots?: string[]; hash?: boolean }) => {
+      if (opts?.roots?.length) assertAllowedScanRoots(opts.roots)
+      return modelService.scan(opts)
+    }),
     remove: wrap((id: string, deleteFile: boolean) => modelService.remove(id, deleteFile)),
     move: wrap((id: string, destDir: string) => modelService.move(id, destDir)),
     symlink: wrap((id: string, destDir: string) => modelService.symlink(id, destDir)),

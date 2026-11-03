@@ -77,6 +77,8 @@ const selected = ref<Set<string>>(new Set())
 let selectionPageKey = ''
 /** True while onMounted assigns the initial root (skip the watcher's rescan). */
 let initRoot = false
+/** Guards async onMounted continuations against an unmount in flight. */
+let disposed = false
 
 const typeOptions = computed(() => [
   { label: t('output.typeAll'), value: 'all' },
@@ -792,7 +794,9 @@ watch(
 )
 
 onMounted(async () => {
+  disposed = false
   await store.bootstrap({ keepSelection: true })
+  if (disposed) return
   const q = route.query
   if (typeof q.batchJobId === 'string' && q.batchJobId) {
     batchFilter.value = q.batchJobId
@@ -805,6 +809,7 @@ onMounted(async () => {
   } catch {
     /* non-fatal  -filter dropdown just stays empty */
   }
+  if (disposed) return
   try {
     // Default to the active instance's output dir (honours --output-directory)
     // — no global setting needed.
@@ -840,10 +845,12 @@ onMounted(async () => {
   initRoot = true
   await refresh()
   initRoot = false
+  if (disposed) return
   void scanOutputs().then(() => refresh())
 })
 
 onUnmounted(() => {
+  disposed = true
   offBatch?.()
   offScan?.()
   if (rootScanTimer) clearTimeout(rootScanTimer)
@@ -889,10 +896,15 @@ onUnmounted(() => {
           :end-placeholder="$t('output.dateTo')"
           style="width: 280px"
         />
-        <NSwitch v-model:value="onlyFavorites">
-          <template #checked>{{ $t('output.favOnly') }}</template>
-          <template #unchecked>{{ $t('output.favAll') }}</template>
-        </NSwitch>
+        <!-- Naive's checked/unchecked slots render INSIDE the rail; Chinese
+             labels are clipped at the 1180px minimum width. Keep the label
+             outside so it stays readable at every window size. -->
+        <NSpace align="center" :size="6">
+          <NText depth="3" style="font-size: 12px">
+            {{ onlyFavorites ? $t('output.favOnly') : $t('output.favAll') }}
+          </NText>
+          <NSwitch v-model:value="onlyFavorites" />
+        </NSpace>
         <NTag v-if="scanning" size="small" type="info" round class="scan-chip">
           {{ $t('output.scanning', { n: scanProgress?.scanned || 0 }) }}
           <NButton text size="tiny" type="warning" @click="cancelScan">

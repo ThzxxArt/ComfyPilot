@@ -247,6 +247,10 @@ export function useLaunch() {
       await store.refreshInstances()
       if (result.adopted) {
         ui().message.warning(t('launch.signalledExternal', { name: info.name }))
+      } else if (result.exited === false) {
+        ui().message.warning(t('launch.stopIncomplete', { name: info.name }), {
+          duration: 8000
+        })
       } else {
         ui().message.warning(t('launch.forceKilled', { name: info.name }))
       }

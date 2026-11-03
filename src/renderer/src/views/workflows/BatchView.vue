@@ -474,6 +474,8 @@ function seedModeLabel(mode?: string): string {
 }
 
 let offBatch: (() => void) | null = null
+/** Guard the async onMounted continuation against an unmount in flight. */
+let batchDisposed = false
 
 let highlightTimer: number | ReturnType<typeof setTimeout> | null = null
 
@@ -515,8 +517,11 @@ useInstanceScope(() => {
 })
 
 onMounted(async () => {
+  batchDisposed = false
   await store.bootstrap({ keepSelection: true })
+  if (batchDisposed) return
   await refresh()
+  if (batchDisposed) return
   if (pendingHighlight) {
     highlightJob(pendingHighlight)
     pendingHighlight = ''
@@ -527,6 +532,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  batchDisposed = true
   offBatch?.()
   if (highlightTimer) {
     clearTimeout(highlightTimer)

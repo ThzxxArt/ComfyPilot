@@ -471,7 +471,7 @@ export type IpcChannelMap = {
   'installer.detectGpu': { args: []; result: GpuCapability[] }
   'installer.preflight': {
     args: [
-      { installRoot: string; useUv: boolean; pythonPath?: string; torchChannel?: TorchChannel }?
+      { installRoot: string; useUv: boolean; pythonPath?: string; torchChannel?: TorchChannel }
     ]
     result: {
       ok: boolean

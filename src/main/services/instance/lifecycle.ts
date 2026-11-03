@@ -1116,8 +1116,12 @@ export async function forceKill(
   clearReadyProbe(ctx, rt, 'Force killed')
   capabilityService.invalidate(id)
   let adopted = false
+  let exited = true
   if (child) {
     await killProcessTree(child, { timeoutMs: 5000 })
+    // killProcessTree is bounded. A process that ignored SIGKILL/taskkill is
+    // still running; reporting a plain "stopped" would be a lie.
+    exited = child.exitCode !== null
   } else if (pid && wasManaged) {
     // Only kill PID if we spawned it and no longer own a live child handle (avoid PID reuse races).
     try {
@@ -1132,22 +1136,29 @@ export async function forceKill(
     } catch {
       /* ignore */
     }
+    exited = !isPidAlive(pid)
   } else if (!wasManaged && (wasReady || rt.status === 'running')) {
     // Live external ComfyUI we refused to kill — tell the UI we only signalled state.
     adopted = true
+    exited = false
     ctx.pushLog(
       rt,
       'warn',
       'Force-kill requested for an adopted external process — refusing to kill an unowned PID'
     )
   }
-  rt.status = 'stopped'
+  rt.status = exited ? 'stopped' : 'error'
   rt.managed = false
-  ctx.pushLog(rt, 'warn', 'Force killed')
+  ctx.pushLog(
+    rt,
+    exited ? 'warn' : 'error',
+    exited ? 'Force killed' : 'Force kill timed out — the process may still be running'
+  )
   ctx.emitStatus(rt)
-  forgetPid(id)
+  if (exited) forgetPid(id)
   const info = ctx.toInfo(rt) as InstanceStopResult
   if (adopted) info.adopted = true
+  info.exited = exited
   return info
 }
 

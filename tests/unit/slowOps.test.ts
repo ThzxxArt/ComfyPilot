@@ -126,6 +126,28 @@ describe('slowOps recording', () => {
     expect(seen).toEqual(['x'])
   })
 
+  it('classifies long user-facing operations without false freeze warnings', async () => {
+    const m = await load()
+    expect(m.isLongOp('instance.startAll')).toBe(true)
+    expect(m.isLongOp('instance.stopAll')).toBe(true)
+    expect(m.isLongOp('doctor.run')).toBe(true)
+    expect(m.isLongOp('settings.get')).toBe(false)
+  })
+
+  it('treats mirror probing as a long op instead of a freeze', async () => {
+    const m = await load()
+    const seen: string[] = []
+    m.setSlowOpListener((e) => seen.push(e.channel))
+    const entry = m.recordSlowOp('net.recommendMirrors', 8013, [])
+    expect(entry?.long).toBe(true)
+    expect(entry?.freeze).toBe(false)
+    // Network waits must not raise the “main process was busy” toast.
+    expect(seen).toEqual([])
+    // The negative control: a normal channel at the same duration still warns.
+    m.recordSlowOp('settings.get', 8013, [])
+    expect(seen).toEqual(['settings.get'])
+  })
+
   it('honours the configurable threshold', async () => {
     const m = await load()
     expect(m.getSlowOpThreshold()).toBe(m.DEFAULT_SLOW_OP_MS)

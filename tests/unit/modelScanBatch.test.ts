@@ -5,7 +5,7 @@
  * This exercises the real scan on a temp models tree.
  */
 import { describe, it, expect, vi, afterAll } from 'vitest'
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs'
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -43,5 +43,34 @@ describe('modelService.scan (0.1.16 batch write)', () => {
     const rec = listModels().find((m) => m.fileName === 'sd15.safetensors')
     expect(rec).toBeTruthy()
     expect(rec?.category).toBe('checkpoints')
+  })
+
+  it('follows a symlinked directory that stays inside the scan root', async () => {
+    const inside = join(modelsDir, 'inside-models')
+    mkdirSync(inside, { recursive: true })
+    writeFileSync(join(inside, 'kept.safetensors'), Buffer.from([0, 0, 0, 0, 0, 0, 0, 0]))
+    try {
+      symlinkSync(inside, join(modelsDir, 'linked-inside'), 'dir')
+    } catch {
+      return // platform without symlink permission (Windows without developer mode)
+    }
+    const { modelService } = await import('../../src/main/services/model')
+    const list = await modelService.scan({ roots: [modelsDir], hash: false })
+    expect(list.some((m) => m.fileName === 'kept.safetensors')).toBe(true)
+  })
+
+  it('does not descend into a symlinked directory outside the scan root', async () => {
+    const outside = join(root, 'outside-models')
+    mkdirSync(outside, { recursive: true })
+    writeFileSync(join(outside, 'secret.safetensors'), Buffer.from([0, 0, 0, 0, 0, 0, 0, 0]))
+    try {
+      symlinkSync(outside, join(modelsDir, 'linked-models'), 'dir')
+    } catch {
+      return // platform without symlink permission (Windows without developer mode)
+    }
+    const { modelService } = await import('../../src/main/services/model')
+    const list = await modelService.scan({ roots: [modelsDir], hash: false })
+    expect(list.some((m) => m.fileName === 'sd15.safetensors')).toBe(true)
+    expect(list.some((m) => m.fileName === 'secret.safetensors')).toBe(false)
   })
 })

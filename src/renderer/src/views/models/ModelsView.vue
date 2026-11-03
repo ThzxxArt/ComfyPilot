@@ -907,14 +907,18 @@ async function startDownload(): Promise<void> {
 
 let offScan: (() => void) | null = null
 let offDl: (() => void) | null = null
+let modelsDisposed = false
 
 onMounted(async () => {
+  modelsDisposed = false
   // Deep links from other views: /models?q=<model|node type> (0.1.11).
   const q = route.query.q
   if (typeof q === 'string' && q) keyword.value = q
   extraPathsFile.value = defaultExtraPathsFile()
   await refresh()
+  if (modelsDisposed) return
   downloads.value = await ipc('model.downloads')
+  if (modelsDisposed) return
   offScan = onModelScanProgress((p) => {
     const prog = p as { scanned: number; total: number; phase: string }
     scanProgress.value = `${prog.phase} ${prog.scanned}/${prog.total}`
@@ -925,6 +929,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  modelsDisposed = true
   offScan?.()
   offDl?.()
 })

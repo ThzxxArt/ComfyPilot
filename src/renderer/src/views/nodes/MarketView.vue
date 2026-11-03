@@ -183,6 +183,9 @@ const displayPages = computed(() =>
 )
 
 function hint(): string {
+  // While the skeleton is visible, “0 plugins · page 1/1” is a lie: the first
+  // page has not arrived yet.
+  if (loading.value) return t('common.loading')
   if (activeQuery.value) {
     return t('market.hintMatch', {
       query: activeQuery.value,
@@ -785,7 +788,9 @@ onUnmounted(() => offProgress?.())
                     <NButton
                       size="small"
                       secondary
-                      :disabled="updatingItem !== null && updatingItem !== item.id"
+                      :disabled="
+                        !store.localTargetId || (updatingItem !== null && updatingItem !== item.id)
+                      "
                       :loading="
                         updatingItem === item.id ||
                         (nodeUpdatingPack !== null && nodeUpdatingPack === item.name)
@@ -801,7 +806,9 @@ onUnmounted(() => offProgress?.())
                   type="primary"
                   secondary
                   :disabled="
-                    isInstalled(item) || (installingItem !== null && installingItem !== item.id)
+                    !store.localTargetId ||
+                    isInstalled(item) ||
+                    (installingItem !== null && installingItem !== item.id)
                   "
                   :loading="
                     installingItem === item.id ||

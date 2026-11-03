@@ -73,7 +73,7 @@ describe('slowOps long-operation classification (WP5)', () => {
     mod.resetSlowOpsForTest()
     const listener = vi.fn()
     mod.setSlowOpListener(listener)
-    const entry = mod.recordSlowOp('backup.restore', 7000, [])
+    const entry = mod.recordSlowOp('settings.importConfig', 7000, [])
     expect(entry?.freeze).toBe(true)
     expect(entry?.long).toBeFalsy()
     expect(listener).toHaveBeenCalledTimes(1)

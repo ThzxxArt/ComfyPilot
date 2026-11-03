@@ -61,7 +61,7 @@ import type {
 } from '@shared/types'
 import LaunchProfileEditor from '@/components/LaunchProfileEditor.vue'
 import { LAUNCH_ARG_ERROR_KEYS, launchArgWarningKey } from '@shared/launchArgs'
-import { versionMismatch } from '@/utils/versionDisplay'
+import { versionMismatch, visibleVersion } from '@/utils/versionDisplay'
 import { frontendAlignSpec, frontendPkgStatus } from '@/utils/frontendAlign'
 import { formatDate, formatDateTime, formatTime } from '@/utils/format'
 import { formatExecErrorReport } from '@shared/execError'
@@ -1247,7 +1247,9 @@ watch(
                 >
                 <NDescriptionsItem :label="$t('common.version')">
                   <NSpace align="center" :size="6">
-                    <span>{{ instance?.onlineVersion || instance?.version || '—' }}</span>
+                    <span>{{
+                      instance?.onlineVersion || visibleVersion(instance?.version) || '—'
+                    }}</span>
                     <NTag
                       v-if="onlineVersion"
                       size="tiny"
@@ -1256,7 +1258,7 @@ watch(
                       :title="
                         onlineVersionMismatch
                           ? $t('instance.onlineVersionMismatch', {
-                              installed: instance?.version || '—',
+                              installed: visibleVersion(instance?.version) || '—',
                               online: onlineVersion
                             })
                           : $t('instance.onlineVersionTip')

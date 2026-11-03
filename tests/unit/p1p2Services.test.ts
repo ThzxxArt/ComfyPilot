@@ -4,7 +4,7 @@
  * MarketService.list offline fallback, normalizeLegacyJob / readWorkflowGraph.
  */
 import { describe, expect, it, vi, beforeAll, beforeEach, afterEach } from 'vitest'
-import { mkdirSync, writeFileSync, rmSync, existsSync } from 'fs'
+import { mkdirSync, writeFileSync, rmSync, existsSync, symlinkSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -2147,6 +2147,28 @@ describe('output scanAsync (review fix)', () => {
         .items.map((i) => i.fileName)
         .sort()
     ).toEqual(['a.png', 'b.png'])
+  })
+
+  it('does not follow a symlinked directory outside the scan root', async () => {
+    const { outputService } = await freshP1p2()
+    const dir = join(ROOT, 'scan-symlink')
+    const outside = join(ROOT, 'scan-symlink-outside')
+    mkdirSync(dir, { recursive: true })
+    mkdirSync(outside, { recursive: true })
+    writeFileSync(join(dir, 'inside.png'), 'x')
+    writeFileSync(join(outside, 'secret.png'), 'x')
+    try {
+      symlinkSync(outside, join(dir, 'linked'), 'dir')
+    } catch {
+      return // platform without symlink permission (Windows without developer mode)
+    }
+    await outputService.scanAsync(dir)
+    const names = outputService
+      .list({ root: dir })
+      .items.map((i) => i.fileName)
+      .sort()
+    expect(names).toContain('inside.png')
+    expect(names).not.toContain('secret.png')
   })
 
   it('can be cancelled and keeps the partial result', async () => {

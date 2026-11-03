@@ -2,7 +2,9 @@ import { EventEmitter } from 'events'
 import { createHash } from 'crypto'
 import {
   existsSync,
+  lstatSync,
   readdirSync,
+  realpathSync,
   statSync,
   unlinkSync,
   createWriteStream,
@@ -340,6 +342,15 @@ export async function sha256File(filePath: string): Promise<string> {
   })
 }
 
+/** realpathSync that degrades to null for a broken/inaccessible link. */
+function realpathSafe(p: string): string | null {
+  try {
+    return realpathSync(p)
+  } catch {
+    return null
+  }
+}
+
 export class ModelService extends EventEmitter {
   private downloads = new Map<string, DownloadTask>()
   private abortControllers = new Map<string, AbortController>()
@@ -437,8 +448,9 @@ export class ModelService extends EventEmitter {
     return [...map.values(), total]
   }
 
-  private walk(dir: string, out: string[], depth = 0): void {
+  private walk(dir: string, out: string[], depth = 0, rootReal?: string | null): void {
     if (depth > 10 || out.length > 50000) return
+    const realRoot = rootReal ?? realpathSafe(dir)
     let entries: string[] = []
     try {
       entries = readdirSync(dir)
@@ -449,9 +461,23 @@ export class ModelService extends EventEmitter {
       if (name.startsWith('.')) continue
       const full = join(dir, name)
       try {
+        const link = lstatSync(full).isSymbolicLink()
         const st = statSync(full)
-        if (st.isDirectory()) this.walk(full, out, depth + 1)
-        else if (MODEL_EXT.has(extname(name).toLowerCase())) out.push(full)
+        if (st.isDirectory()) {
+          // Following a directory link that escapes the scan root would index
+          // files outside it (and a later delete could reach them). Links that
+          // stay inside the configured root are legitimate (e.g. a shared
+          // `checkpoints` folder) and are followed.
+          if (link) {
+            const real = realpathSafe(full)
+            if (!realRoot || !real || !isPathInside(real, realRoot)) continue
+          }
+          this.walk(full, out, depth + 1, realRoot)
+        } else if (MODEL_EXT.has(extname(name).toLowerCase())) {
+          // File symlinks are a common "models live on another drive" setup;
+          // unlinking the record removes the link, not the target.
+          out.push(full)
+        }
       } catch {
         /* skip */
       }

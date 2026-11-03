@@ -157,14 +157,19 @@ function severityType(s: AppIssue['severity']): 'error' | 'warning' | 'info' {
 }
 
 let offIssues: (() => void) | null = null
+let issuesDisposed = false
 onMounted(async () => {
+  issuesDisposed = false
   await store.refreshInstances()
+  if (issuesDisposed) return
   await load()
+  if (issuesDisposed) return
   offIssues = onIssuesChanged(() => {
     void load()
   })
 })
 onUnmounted(() => {
+  issuesDisposed = true
   offIssues?.()
 })
 </script>

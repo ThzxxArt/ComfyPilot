@@ -343,8 +343,12 @@ function createWindow(): void {
   mainWindow.webContents.on('preload-error', (_e, path, err) => {
     crashLog('PRELOAD ERROR ' + path + ' ' + err)
   })
-  mainWindow.webContents.on('console-message', (_e, level, message) => {
-    if (level >= 2) crashLog('renderer console: ' + message)
+  mainWindow.webContents.on('console-message', (details) => {
+    // Electron 45 moved level/message onto the event object. The deprecated
+    // positional arguments no longer describe the message reliably.
+    const level = String((details as { level?: string }).level || '')
+    const message = String((details as { message?: string }).message || '')
+    if (level === 'warning' || level === 'error') crashLog('renderer console: ' + message)
   })
   crashLog('window constructed')
 
@@ -596,8 +600,10 @@ app.whenReady().then(async () => {
       setTimeout(() => app.quit(), 300)
     }
     const wc = mainWindow?.webContents
-    wc?.on('console-message', (_e, level, message) => {
-      if (level >= 3) console.log(`[e2e] console-error: ${message}`)
+    wc?.on('console-message', (details) => {
+      const level = String((details as { level?: string }).level || '')
+      const message = String((details as { message?: string }).message || '')
+      if (level === 'error') console.log(`[e2e] console-error: ${message}`)
     })
     wc?.on('preload-error', (_e, path, err) => {
       console.log(`[e2e] preload-error: ${path} ${err?.message || ''}`)

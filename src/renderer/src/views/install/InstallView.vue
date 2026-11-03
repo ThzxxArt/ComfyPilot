@@ -391,11 +391,20 @@ async function detectGpu(): Promise<void> {
     gpus.value = await ipc('installer.detectGpu')
     const rec = gpus.value[0]?.recommendedTorch
     if (rec) {
+      const gpu = gpus.value[0]
+      // The main process returns stable English sentinels for "none"/"failed"
+      // (its fallback text is not a GPU model). Use dedicated sentences so the
+      // result never reads "检测到 未检测到…"; real model names pass through.
       plan.value.torchChannel = rec
-      gpuSentence.value = t('install.gpuDetected', {
-        model: gpus.value[0]?.model || rec,
-        channel: torchLabel(rec)
-      })
+      gpuSentence.value =
+        gpu?.vendor === 'none'
+          ? t('install.gpuNoDevice', { channel: torchLabel(rec) })
+          : gpu?.vendor === 'unknown'
+            ? t('install.gpuDetectFailed', { channel: torchLabel(rec) })
+            : t('install.gpuDetected', {
+                model: gpu?.model || rec,
+                channel: torchLabel(rec)
+              })
     }
   } catch (err) {
     message.error(errText(err))
@@ -413,6 +422,8 @@ async function runPreflight(): Promise<void> {
       torchChannel: plan.value.torchChannel
     })
   } catch (err) {
+    // Never leave green checks from a previous path beside the new one.
+    preflight.value = null
     message.error(errText(err))
   } finally {
     preflighting.value = false
@@ -570,11 +581,21 @@ function logExpandedNames(stepId: string): string[] {
   return expandedLogIds.value.includes(stepId) ? [stepId] : []
 }
 
+/** Keep the shared store in sync with settings this view writes. */
+async function syncStoreSettings(): Promise<void> {
+  try {
+    store.settings = await ipc('settings.get')
+  } catch {
+    /* the saved value is authoritative on disk; store refresh is best-effort */
+  }
+}
+
 async function savePipIndex(v: string): Promise<void> {
   pipIndex.value = v
   userChoseMirror.value = true
   try {
     await ipc('settings.set', { pipIndex: v })
+    await syncStoreSettings()
   } catch (err) {
     message.error(errText(err))
   }
@@ -584,6 +605,7 @@ async function saveTorchIndex(v: string): Promise<void> {
   torchIndexMirror.value = v
   try {
     await ipc('settings.set', { torchIndexMirror: v })
+    await syncStoreSettings()
   } catch (err) {
     message.error(errText(err))
   }
@@ -653,8 +675,11 @@ async function installStarter(s: StarterModel): Promise<void> {
 }
 
 const offHandlers: Array<() => void> = []
+/** The install view can be left while onMounted is still awaiting IPC. */
+let installDisposed = false
 
 onMounted(async () => {
+  installDisposed = false
   offHandlers.push(onIpc(IPC_EVENTS.installProgress, onProgress))
   offHandlers.push(onIpc(IPC_EVENTS.runtimeProgress, onRuntimeProgress))
 
@@ -673,6 +698,7 @@ onMounted(async () => {
   } catch {
     /* no in-flight install */
   }
+  if (installDisposed) return
 
   try {
     const sug = await ipc('installer.suggestInstallRoot')
@@ -695,6 +721,7 @@ onMounted(async () => {
   } catch {
     /* defaults stay empty */
   }
+  if (installDisposed) return
 
   // Auto-recommend mirrors ONLY when the user has never chosen any.
   if (!userChoseMirror.value) {
@@ -707,8 +734,10 @@ onMounted(async () => {
   } catch {
     /* fall back to bundled STARTER_MODELS */
   }
+  if (installDisposed) return
 
   await detectGpu()
+  if (installDisposed) return
   schedulePreflight(120)
   void loadRuntimeStatus()
 })
@@ -733,6 +762,7 @@ async function probeAndRecommendMirrors(auto = false): Promise<void> {
           pipIndex: pipIndex.value,
           torchIndexMirror: torchIndexMirror.value
         })
+        await syncStoreSettings()
       }
       // rec.*Label are i18n key fragments under settings.*
       const tr = (k: string): string => {
@@ -758,6 +788,7 @@ async function probeAndRecommendMirrors(auto = false): Promise<void> {
 }
 
 onUnmounted(() => {
+  installDisposed = true
   for (const off of offHandlers) off()
   if (preflightTimer) clearTimeout(preflightTimer)
 })

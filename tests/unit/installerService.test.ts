@@ -321,7 +321,22 @@ describe('installer service internals', () => {
         installRoot: missing,
         useUv: false
       })
-      expect(res.checks.find((c) => c.id === 'disk')?.detail).toContain('will be created')
+      const byId = Object.fromEntries(res.checks.map((c) => [c.id, c]))
+      // A missing parent must not be mistaken for a missing disk / read-only
+      // tree: preflight probes the nearest existing ancestor instead.
+      expect(byId.disk.detail).toContain('will be created')
+      expect(byId.writable.ok).toBe(true)
+      expect(res.diskFreeGb).toBeGreaterThan(0)
+      expect(res.ok).toBe(true)
+    })
+
+    it('a file used as installRoot fails the writable gate', async () => {
+      const { installerService } = await import('../../src/main/services/installer')
+      const notADir = join(ROOT, 'install-root-is-a-file.txt')
+      writeFileSync(notADir, 'x')
+      const res = await installerService.preflight({ installRoot: notADir, useUv: false })
+      expect(res.checks.find((c) => c.id === 'writable')?.ok).toBe(false)
+      expect(res.ok).toBe(false)
     })
 
     it('git missing → soft fail with mingit fixId; uv missing → fixId', async () => {

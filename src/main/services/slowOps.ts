@@ -52,6 +52,16 @@ export const LONG_OP_CHANNELS: ReadonlySet<string> = new Set([
   'instance.launch',
   'instance.stop',
   'instance.restart',
+  'instance.startAll',
+  'instance.stopAll',
+  'instance.runStartupSelfCheck',
+  'instance.checkComfyUpdate',
+  'instance.exportDiagnostics',
+  'doctor.run',
+  'backup.create',
+  'backup.restore',
+  'node.depsAudit',
+  'node.installDeps',
   'instance.repairEnv',
   'instance.updateComfy',
   'node.checkUpdates',
@@ -65,6 +75,10 @@ export const LONG_OP_CHANNELS: ReadonlySet<string> = new Set([
   'model.scan',
   'registry.ensureIndex',
   'registry.refreshIndex',
+  // Mirror probing is network-bound (up to 8 s on a slow link) and runs
+  // automatically when the install page opens. It is not a frozen main
+  // process, so it must not trigger the "app was busy" warning.
+  'net.recommendMirrors',
   'env.probe',
   'env.createVenv',
   'env.repair'
