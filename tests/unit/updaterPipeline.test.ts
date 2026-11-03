@@ -2469,4 +2469,42 @@ describe('update journal lifecycle (review fix)', () => {
     svc.clearJournal(COMFY)
     expect(comfyUpdaterService.readJournal('inst-1')).toBeNull()
   })
+
+  it('drops a stale verify-failed journal when the git backup equals current HEAD', () => {
+    const backup = 'C:/fake/.cp-backups/stale'
+    h.mkdirPath(backup)
+    h.writeFile(
+      join(backup, 'manifest.json'),
+      JSON.stringify({ kind: 'git', sha: '4d988b64deadbeef' })
+    )
+    const journal = {
+      instanceId: 'inst-1',
+      comfyDir: COMFY,
+      backupPath: backup,
+      backupKind: 'git' as const,
+      startedAt: 1,
+      status: 'verify-failed' as const
+    }
+    svc.writeJournal(journal)
+    h.state.execSyncOut = '4d988b64deadbeef\n'
+    expect(comfyUpdaterService.readJournal('inst-1')).toBeNull()
+    expect(fhas('C:/fake/.cp-update-journal.json')).toBe(false)
+  })
+
+  it('keeps a verify-failed journal when the backup points at a different HEAD', () => {
+    const backup = 'C:/fake/.cp-backups/real-failure'
+    h.mkdirPath(backup)
+    h.writeFile(join(backup, 'manifest.json'), JSON.stringify({ kind: 'git', sha: 'old-sha' }))
+    svc.writeJournal({
+      instanceId: 'inst-1',
+      comfyDir: COMFY,
+      backupPath: backup,
+      backupKind: 'git',
+      startedAt: 1,
+      status: 'verify-failed'
+    })
+    h.state.execSyncOut = 'new-sha\n'
+    expect(comfyUpdaterService.readJournal('inst-1')?.backupPath).toBe(backup)
+    expect(fhas('C:/fake/.cp-update-journal.json')).toBe(true)
+  })
 })

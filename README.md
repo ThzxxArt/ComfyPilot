@@ -1,7 +1,7 @@
 # ComfyPilot
 
 > **ComfyUI 全能管理器** — 本机 ComfyUI 生产线的控制塔  
-> TypeScript · Vue 3 · Electron 45 · Naive UI · MIT · v0.2.0
+> TypeScript · Vue 3 · Electron 45 · Naive UI · MIT · v0.2.1
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-4f6ef7)](./LICENSE)
 
@@ -119,7 +119,9 @@ ComfyPilot **不替代** ComfyUI 节点工作台，而是管理它的整套生�
 
 **0.2.0 破坏性变更：** IPC 通道/类型、JSONC 数据格式（`schemaVersion: 2`）、备份格式、Python 运行时均已升级且**不向下兼容**。首次启动会生成 `pre-upgrade-<ts>` 快照并做一次性 v1→v2 迁移；迁移后 0.1.18 不能直接读 v2 数据。0.2.0 只支持 Python **3.13.x**，旧 3.12 实例会被阻断并进入迁移向导；cu124 通道已移除。旧版本回退只能靠迁移前快照 + 重装 0.1.18。
 
-**安装包与签名（0.2.0）：** 目前发布产物**未做代码签名**。首次运行 Windows 会弹 SmartScreen，选择“更多信息 → 仍要运行”即可；发布页同时附 `SHA256SUMS.txt`，可用 `Get-FileHash` 或 `sha256sum` 核对后再安装。tag 触发的 release 流水线（`.github/workflows/release.yml`）会生成草稿 Release，人工确认安装/卸载无 Application Error 后再发布。
+**0.2.1 修复（2026-11-03）：** 修复 0.2.0 更新/修复环境的三个根因：① Doctor 现在同时识别 `pyvenv.cfg` 的 `version` 与 uv 写入的 `version_info`，不再把正常 venv 误判为损坏；② `requirements.txt` 中的 `torch` / `torchvision` / `torchaudio` 由 PyTorch 通道独占管理，更新与修复时自动跳过，不再用 PyPI CPU 轮子覆盖 CUDA 版；③ “修复环境”会自动识别现有 CUDA / ROCm / XPU / MPS，或检测 GPU 选择通道，切换通道时强制重装并校验 CUDA 构建。受 0.2.0 影响的用户安装 0.2.1 后运行一次“修复环境”即可恢复；已手工恢复的本机环境可直接启动。
+
+**安装包与签名（0.2.1）：** 目前发布产物**未做代码签名**。首次运行 Windows 会弹 SmartScreen，选择“更多信息 → 仍要运行”即可；发布页同时附 `SHA256SUMS.txt`，可用 `Get-FileHash` 或 `sha256sum` 核对后再安装。tag 触发的 release 流水线（`.github/workflows/release.yml`）会生成草稿 Release，人工确认安装/卸载无 Application Error 后再发布。
 
 ### 开发环境
 
@@ -271,7 +273,7 @@ Python 版本、Torch / CUDA、`extra_model_paths.yaml`、端口、磁盘、Regi
 
 ```text
 ComfyPilot/
-├── package.json                 # v0.2.0 · MIT · ThzxxArt
+├── package.json                 # v0.2.1 · MIT · ThzxxArt
 ├── electron.vite.config.ts
 ├── electron-builder.yml         # Win NSIS（已发布）；macOS/Linux 目标存在但未验证
 ├── vitest.config.ts             # 覆盖率门禁（0.1.8 按实测定档，见文件内说明）
@@ -318,7 +320,7 @@ npm run dev / typecheck / test / test:coverage / test:e2e / test:all
 node scripts/check-version.cjs   # 版本号五处一致（CI + release 必跑）
 ```
 
-**测试：** 1779 用例（137 文件，含 `@vue/test-utils` 组件测试；0.2.0 新增 argv、数据迁移、环境标记、凭据端点绑定、IssueCenter、IPC 契约与启动问题回归测试）+ e2e 冒烟（真实 Electron 启动、preload 桥、一次真实 IPC、渲染层 console 错误置红）。覆盖率门禁分三层：**全局下限**（statements 83 / branches 73 / functions 84 / lines 85，按 0.2.0 新分母实测）、**测试行为占比**（`npm run test:behavior`，纯源码文本断言占比 >40% 直接失败）与 **每文件下限**（`coverage-baseline.json` 的实测 −2pp，`scripts/coverage-ratchet.cjs` 对任一文件掉 >1pp 失败）；`handlers.ts`/`index.ts` 等装配层仍未纳入 include（覆盖率数字不代表全仓）。测试源码纳入 tsc 门禁（`typecheck:test`）。
+**测试：** 1798 用例（139 文件，含 `@vue/test-utils` 组件测试；0.2.0 新增 argv、数据迁移、环境标记、凭据端点绑定、IssueCenter、IPC 契约与启动问题回归测试；0.2.1 新增 uv `version_info`、requirements torch 过滤、repair 通道选择与 CUDA 校验回归测试）+ e2e 冒烟（真实 Electron 启动、preload 桥、一次真实 IPC、渲染层 console 错误置红）。覆盖率门禁分三层：**全局下限**（statements 83 / branches 73 / functions 84 / lines 85，按 0.2.0 新分母实测）、**测试行为占比**（`npm run test:behavior`，纯源码文本断言占比 >40% 直接失败）与 **每文件下限**（`coverage-baseline.json` 的实测 −2pp，`scripts/coverage-ratchet.cjs` 对任一文件掉 >1pp 失败）；`handlers.ts`/`index.ts` 等装配层仍未纳入 include（覆盖率数字不代表全仓）。测试源码纳入 tsc 门禁（`typecheck:test`）。
 
 **技术栈（0.2.0 升级）：** Electron **45.2.1** · electron-vite **6** · Vite **8** · Vitest **5** · Node **24**（CI/构建）· TypeScript **6.0.3** · Pinia **4** · Vue Router **5** · vue-i18n **11** · ESLint **10**。TypeScript 7（native）与 vue-tsc 3.x 仍报 `ERR_PACKAGE_PATH_NOT_EXPORTED`，已实测并记录，0.2.0 固定 TS 6.0.3。
 

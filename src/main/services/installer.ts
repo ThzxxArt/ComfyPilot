@@ -1281,10 +1281,10 @@ export class InstallerService extends EventEmitter {
               'install',
               '--python',
               vpy,
-              // 0.1.17 (WP2): --upgrade is required — without it a CPU torch
-              // already present in the venv is "satisfied" and the channel
-              // switch silently keeps the old wheel (env.ts always upgrades).
+              // 0.2.1: force the channel build. PyPI's CPU wheel can be newer
+              // than the CUDA index, so --upgrade alone can keep CPU torch.
               '--upgrade',
+              '--reinstall',
               'torch',
               'torchvision',
               'torchaudio',
@@ -1307,6 +1307,7 @@ export class InstallerService extends EventEmitter {
               'pip',
               'install',
               '--upgrade',
+              '--force-reinstall',
               'torch',
               'torchvision',
               'torchaudio',

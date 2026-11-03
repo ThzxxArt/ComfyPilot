@@ -125,6 +125,35 @@ describe('EnvService (0.1.10 behaviour)', () => {
     ).rejects.toThrow(/pip install torch failed/)
   })
 
+  it('installTorch verifies that a CUDA channel really produced a CUDA build', async () => {
+    const { envService } = await import('../../src/main/services/env')
+    h.state.handler = (_cmd, args) => {
+      if (args[0] === '-c') return { stdout: '2.14.1+cu130 13.0' }
+      return { stdout: 'Successfully installed torch-2.14.1+cu130' }
+    }
+    await expect(
+      envService.installTorch({
+        pythonPath: 'python',
+        index: 'https://download.pytorch.org/whl/cu130'
+      })
+    ).resolves.toBe(true)
+
+    // The CPU wheel is newer than the CUDA index; --force-reinstall must be
+    // used and a CPU result must fail loudly instead of silently disabling CUDA.
+    h.state.handler = (_cmd, args) => {
+      if (args[0] === '-c') return { stdout: '2.15.0+cpu None' }
+      return { stdout: 'Successfully installed torch-2.15.0+cpu' }
+    }
+    await expect(
+      envService.installTorch({
+        pythonPath: 'python',
+        index: 'https://download.pytorch.org/whl/cu130'
+      })
+    ).rejects.toThrow(/channel verification failed/)
+    const installCall = h.state.calls.find((c) => c.args.includes('torch'))
+    expect(installCall!.args).toContain('--force-reinstall')
+  })
+
   it('listPythons aggregates found interpreters incl. the managed runtime', async () => {
     const { envService } = await import('../../src/main/services/env')
     h.state.handler = (cmd) => {

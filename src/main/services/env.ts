@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { execFile, spawn } from 'child_process'
 import { promisify } from 'util'
@@ -14,6 +14,7 @@ import type {
 import { loadSettings } from './db'
 import { killProcessTree } from './processTree'
 import { comfyChildEnv } from './childEnv'
+import { parsePipRequirement } from '@shared/pipVersion'
 
 const execFileAsync = promisify(execFile)
 
@@ -242,6 +243,73 @@ export async function ensurePip(pythonPath: string, exec: ExecLike): Promise<voi
 }
 
 /**
+ * 0.2.1: ComfyUI's requirements.txt contains `torch`, `torchvision` and
+ * `torchaudio`. Installing that file from PyPI silently replaces a CUDA build
+ * with the CPU wheel (PyPI's CPU build is often *newer* than the CUDA index,
+ * so `--upgrade` does not fix it either). Torch is managed separately by the
+ * channel installer; every requirements install must skip these distributions.
+ */
+const TORCH_DISTRIBUTIONS = new Set([
+  'torch',
+  'torchvision',
+  'torchaudio',
+  'torchtext',
+  'torchdata'
+])
+
+export function filterTorchRequirements(reqFile: string): {
+  file: string
+  removed: string[]
+  cleanup: () => void
+} {
+  let text = ''
+  try {
+    text = readFileSync(reqFile, 'utf-8')
+  } catch {
+    return { file: reqFile, removed: [], cleanup: () => undefined }
+  }
+  const kept: string[] = []
+  const removed: string[] = []
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) {
+      kept.push(line)
+      continue
+    }
+    const parsed = parsePipRequirement(trimmed)
+    if (parsed && TORCH_DISTRIBUTIONS.has(parsed.name)) {
+      removed.push(trimmed)
+      continue
+    }
+    kept.push(line)
+  }
+  if (!removed.length) return { file: reqFile, removed, cleanup: () => undefined }
+  const file = `${reqFile}.comfypilot-no-torch-${process.pid}-${Date.now()}.txt`
+  try {
+    writeFileSync(file, kept.join('\n'), 'utf-8')
+  } catch (err) {
+    // Falling back to the original file would silently reinstall PyPI's CPU
+    // torch over the CUDA build. Fail loudly instead.
+    throw new Error(
+      `Cannot prepare a torch-free requirements file next to ${reqFile}: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    )
+  }
+  return {
+    file,
+    removed,
+    cleanup: () => {
+      try {
+        rmSync(file, { force: true })
+      } catch {
+        /* best-effort */
+      }
+    }
+  }
+}
+
+/**
  * Install requirements.txt into a venv.
  * 1. uv (when present) — works even without pip in the venv
  * 2. ensurepip + python -m pip
@@ -257,6 +325,14 @@ export async function installRequirements(
   const pipIndex = String(opts?.pipIndex || '').trim()
   const uvPath = opts?.uvPath
   const onLine = opts?.onLine
+  // Protect the channel-managed torch build from requirements.txt.
+  const filtered = filterTorchRequirements(reqFile)
+  const installFile = filtered.file
+  if (filtered.removed.length) {
+    onLine?.(
+      `Skipping torch packages from requirements (managed by the PyTorch channel): ${filtered.removed.join(', ')}`
+    )
+  }
   const run = (c: string, a: string[], o?: { cwd?: string; timeout?: number }): Promise<string> =>
     runStreaming(c, a, { ...o, onLine, signal: opts?.signal }, exec).then((out) => {
       // pip/uv can print ERROR: and still exit 0 — treat that as failure too.
@@ -270,7 +346,7 @@ export async function installRequirements(
 
   const uvInstall = async (index?: string): Promise<void> => {
     if (!uvPath) throw new Error('uv not available')
-    const args = ['pip', 'install', '--python', pythonPath, '-r', reqFile]
+    const args = ['pip', 'install', '--python', pythonPath, '-r', installFile]
     if (index) {
       args.push('--index-url', index)
       if (index !== OFFICIAL_PYPI) args.push('--extra-index-url', OFFICIAL_PYPI)
@@ -279,7 +355,7 @@ export async function installRequirements(
   }
   const pipInstall = async (index?: string): Promise<void> => {
     await ensurePip(pythonPath, run)
-    const args = ['-m', 'pip', 'install', '-r', reqFile]
+    const args = ['-m', 'pip', 'install', '-r', installFile]
     if (index) {
       args.push('-i', index)
       try {
@@ -316,7 +392,61 @@ export async function installRequirements(
       }
     }
     throw new Error(`requirements install failed: ${msg.slice(0, 400)}`)
+  } finally {
+    filtered.cleanup()
   }
+}
+
+/**
+ * Map an EnvProbe to the channel its torch build belongs to. Used by repair to
+ * decide whether the existing build can be preserved.
+ */
+export function torchChannelFromProbe(
+  probe:
+    | Pick<
+        EnvProbe,
+        'cudaVersion' | 'rocmVersion' | 'npuAvailable' | 'mpsAvailable' | 'torchVersion'
+      >
+    | null
+    | undefined
+): string {
+  if (!probe) return ''
+  if (probe.cudaVersion) {
+    if (probe.cudaVersion.startsWith('13')) return 'cu130'
+    if (probe.cudaVersion.startsWith('12')) return 'cu126'
+    return 'cpu'
+  }
+  if (probe.rocmVersion) return 'rocm'
+  if (probe.npuAvailable) return 'xpu'
+  if (probe.mpsAvailable) return 'mps'
+  if (probe.torchVersion) return 'cpu'
+  return ''
+}
+
+/**
+ * Choose the repair channel:
+ * - an explicit request always wins;
+ * - a working GPU build is preserved (returns '');
+ * - CPU/missing torch is replaced with a detected GPU channel when available;
+ * - a machine without a usable GPU gets CPU torch only when torch is missing.
+ */
+export function chooseTorchChannel(opts: {
+  requested?: string
+  probe:
+    | Pick<
+        EnvProbe,
+        'cudaVersion' | 'rocmVersion' | 'npuAvailable' | 'mpsAvailable' | 'torchVersion'
+      >
+    | null
+    | undefined
+  recommendations?: string[]
+}): string {
+  if (opts.requested) return opts.requested
+  const current = torchChannelFromProbe(opts.probe)
+  if (opts.probe?.torchVersion && current !== 'cpu') return ''
+  const recommended = (opts.recommendations || []).find((r) => r && r !== 'cpu')
+  if (recommended) return recommended
+  return opts.probe?.torchVersion ? '' : 'cpu'
 }
 
 export class EnvService extends EventEmitter {
@@ -584,15 +714,39 @@ export class EnvService extends EventEmitter {
   }
 
   async installTorch(opts: { pythonPath: string; index: string }): Promise<boolean> {
+    // `--force-reinstall` is essential: PyPI's CPU wheel is often NEWER than
+    // the CUDA index build, so plain `pip install` / `--upgrade` reports
+    // "already satisfied" and leaves CPU torch installed.
     const out = await safeExec(
       opts.pythonPath,
-      ['-m', 'pip', 'install', 'torch', 'torchvision', 'torchaudio', '--index-url', opts.index],
+      [
+        '-m',
+        'pip',
+        'install',
+        '--force-reinstall',
+        'torch',
+        'torchvision',
+        'torchaudio',
+        '--index-url',
+        opts.index
+      ],
       undefined,
       LONG_TIMEOUT_MS
     )
     const ok = /Successfully installed|already satisfied|Requirement already satisfied/i.test(out)
     if (!ok) {
       throw new Error(`pip install torch failed: ${out.slice(0, 300)}`)
+    }
+    const check = await safeExec(
+      opts.pythonPath,
+      ['-c', 'import torch;print(torch.__version__, torch.version.cuda)'],
+      undefined,
+      60000
+    ).catch(() => '')
+    if (/cu\d+/i.test(opts.index) && !/\+cu\d+/i.test(check)) {
+      throw new Error(
+        `PyTorch channel verification failed — expected a CUDA build, got: ${check.trim() || 'unknown'}`
+      )
     }
     return true
   }
@@ -749,21 +903,38 @@ export class EnvService extends EventEmitter {
         )
       }
 
-      // Optional torch
-      if (opts.torchChannel) {
+      // Torch: explicit channel wins; otherwise preserve a working CUDA/ROCm/
+      // XPU/MPS build, and auto-install the GPU channel when torch is missing
+      // or is a CPU build on a machine with a usable GPU. requirements.txt no
+      // longer overwrites torch (filterTorchRequirements), so repair is safe.
+      const beforeTorch = await this.probe({ pythonPath: pythonInVenv, venvPath }).catch(() => null)
+      const currentChannel = torchChannelFromProbe(beforeTorch)
+      let recommendations: string[] | undefined
+      if (!opts.torchChannel && (!beforeTorch?.torchVersion || currentChannel === 'cpu')) {
+        const { installerService } = await import('./installer')
+        const gpus = await installerService.detectGpu().catch(() => [])
+        recommendations = gpus.map((g) => g.recommendedTorch)
+      }
+      const torchChannel = chooseTorchChannel({
+        requested: opts.torchChannel,
+        probe: beforeTorch,
+        recommendations
+      })
+      const forceTorchReinstall = Boolean(torchChannel && currentChannel !== torchChannel)
+      if (torchChannel) {
         this.emitRepair(
           id,
           'torch',
           'running',
-          `Installing PyTorch (${opts.torchChannel})…`,
+          `Installing PyTorch (${torchChannel})…`,
           undefined,
           'update.msgTorchRun',
           {
-            channel: opts.torchChannel
+            channel: torchChannel
           }
         )
         const { resolveTorchIndex, officialTorchIndex } = await import('./installer')
-        const channel = opts.torchChannel as Parameters<typeof resolveTorchIndex>[0]
+        const channel = torchChannel as Parameters<typeof resolveTorchIndex>[0]
         const index = resolveTorchIndex(channel)
         const official = officialTorchIndex(channel)
         const { bootstrapService } = await import('./bootstrap')
@@ -780,6 +951,7 @@ export class EnvService extends EventEmitter {
                 '--python',
                 pythonInVenv,
                 '--upgrade',
+                ...(forceTorchReinstall ? ['--reinstall'] : []),
                 'torch',
                 'torchvision',
                 'torchaudio',
@@ -798,6 +970,7 @@ export class EnvService extends EventEmitter {
                 'pip',
                 'install',
                 '--upgrade',
+                ...(forceTorchReinstall ? ['--force-reinstall'] : []),
                 'torch',
                 'torchvision',
                 'torchaudio',
@@ -816,9 +989,17 @@ export class EnvService extends EventEmitter {
           this.repairLog(`index ${index} failed — retrying official`)
           await tryInstall(official)
         }
-        this.emitRepair(id, 'torch', 'done', opts.torchChannel, undefined, 'update.msgTorchDone')
+        // Verify the requested channel actually landed. This is the check that
+        // catches "CPU wheel is newer, so --upgrade kept it" forever.
+        const afterTorch = await this.probe({ pythonPath: pythonInVenv, venvPath })
+        if (torchChannel.startsWith('cu') && !afterTorch.cudaVersion) {
+          throw new Error(
+            `PyTorch ${afterTorch.torchVersion || '?'} installed, but CUDA is still unavailable — check the NVIDIA driver or choose another channel`
+          )
+        }
+        this.emitRepair(id, 'torch', 'done', torchChannel, undefined, 'update.msgTorchDone')
       } else {
-        this.emitRepair(id, 'torch', 'skipped', 'No torch channel requested')
+        this.emitRepair(id, 'torch', 'skipped', 'Existing PyTorch build preserved')
       }
 
       // requirements

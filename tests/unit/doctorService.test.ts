@@ -224,6 +224,20 @@ describe('DoctorService (0.1.10 behaviour)', () => {
     expect(torch.detail).toContain('cuda none')
   })
 
+  it('accepts uv pyvenv.cfg version_info as a valid 3.13 venv', async () => {
+    const dir = seedMinimalInstall('uv-venv')
+    const venv = join(dir, 'venv')
+    mkdirSync(venv, { recursive: true })
+    // uv writes version_info, not version.
+    writeFileSync(join(venv, 'pyvenv.cfg'), 'version_info = 3.13.18\nuv = 0.13.6\n')
+    ;(h.state.instances[0] as { venvPath: string }).venvPath = venv
+    const svc = await freshDoctor()
+    const report = await svc.run('inst-1')
+    const byId = new Map<string, any>(report.checks.map((c: any) => [c.id, c]))
+    expect(byId.get('venv')?.severity).toBe('pass')
+    expect(byId.get('venv')?.detail).toContain('3.13.18')
+  })
+
   it('run() fails torch below 2.7 and exposes the managed runtime/vven checks', async () => {
     const dir = seedMinimalInstall('old-torch')
     const venv = join(dir, 'venv')

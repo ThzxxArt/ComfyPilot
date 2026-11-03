@@ -538,6 +538,33 @@ export class ComfyUpdaterService extends EventEmitter {
     }
   }
 
+  /**
+   * 0.2.1: 0.2.0 could write a `verify-failed` journal after a false-positive
+   * venv check. When the git backup still points at the current HEAD, the
+   * update never changed the source; there is nothing to roll back and the
+   * banner would be a permanent dead end.
+   */
+  private journalBackupMatchesHead(j: UpdateJournal): boolean {
+    if (j.backupKind !== 'git') return false
+    try {
+      const manifest = JSON.parse(readFileSync(join(j.backupPath, 'manifest.json'), 'utf-8')) as {
+        sha?: string
+      }
+      const sha = String(manifest.sha || '').trim()
+      if (!sha) return false
+      const head = String(
+        execFileSync(resolveGitBinary(), ['-C', j.comfyDir, 'rev-parse', 'HEAD'], {
+          encoding: 'utf-8',
+          timeout: 5000,
+          windowsHide: true
+        })
+      ).trim()
+      return head === sha
+    } catch {
+      return false
+    }
+  }
+
   /** An unfinished update recorded on disk (app died mid-update), if any. */
   readJournal(instanceId: string): UpdateJournal | null {
     let config: ComfyInstanceConfig
@@ -556,6 +583,10 @@ export class ComfyUpdaterService extends EventEmitter {
       // parent. Never offer instance B a rollback that belongs to A.
       if (j.instanceId !== instanceId) return null
       if (resolve(normalizePathEverySegment(String(j.comfyDir || ''))) !== comfyDir) return null
+      if (j.status === 'verify-failed' && this.journalBackupMatchesHead(j)) {
+        this.clearJournal(comfyDir)
+        return null
+      }
       return j
     } catch {
       return null
@@ -979,9 +1010,20 @@ export class ComfyUpdaterService extends EventEmitter {
             downloadIfMissing: false
           })
           const uvComp = bootstrap.components.find((c) => c.kind === 'uv' && c.installed)
+          // 0.2.1: requirements.txt contains torch/torchvision/torchaudio.
+          // Installing it from PyPI replaced a working CUDA build with CPU
+          // torch. Torch is channel-managed; skip it here and keep the build.
+          const { filterTorchRequirements } = await import('./env')
+          const filteredReq = filterTorchRequirements(reqFile)
+          if (filteredReq.removed.length) {
+            this.log(
+              'requirements',
+              `Skipping torch packages from requirements (channel-managed): ${filteredReq.removed.join(', ')}`
+            )
+          }
           const installReq = async (): Promise<void> => {
             if (uvComp?.path) {
-              const uvArgs = ['pip', 'install', '--python', vpy2, '-r', reqFile]
+              const uvArgs = ['pip', 'install', '--python', vpy2, '-r', filteredReq.file]
               if (pipIndex) {
                 uvArgs.push('--index-url', pipIndex)
                 if (pipIndex !== OFFICIAL_PYPI) uvArgs.push('--extra-index-url', OFFICIAL_PYPI)
@@ -991,7 +1033,7 @@ export class ComfyUpdaterService extends EventEmitter {
               // uv-created venvs have no pip — seed it first.
               const { ensurePip } = await import('./env')
               await ensurePip(vpy2, (c, a, o) => this.run(c, a, o))
-              const args = ['-m', 'pip', 'install', '-r', reqFile]
+              const args = ['-m', 'pip', 'install', '-r', filteredReq.file]
               if (pipIndex) {
                 args.push('-i', pipIndex)
                 try {
@@ -1025,7 +1067,7 @@ export class ComfyUpdaterService extends EventEmitter {
                       '--python',
                       vpy2,
                       '-r',
-                      reqFile,
+                      filteredReq.file,
                       '--index-url',
                       OFFICIAL_PYPI
                     ],
@@ -1039,7 +1081,7 @@ export class ComfyUpdaterService extends EventEmitter {
                       'pip',
                       'install',
                       '-r',
-                      reqFile,
+                      filteredReq.file,
                       '-i',
                       OFFICIAL_PYPI,
                       '--trusted-host',
@@ -1063,6 +1105,8 @@ export class ComfyUpdaterService extends EventEmitter {
                   `Use "Repair env" (or pip install -r ${reqFile}) to retry.`
               )
             }
+          } finally {
+            filteredReq.cleanup()
           }
           this.setStep(
             'requirements',
@@ -1105,6 +1149,7 @@ export class ComfyUpdaterService extends EventEmitter {
                   '--python',
                   vpy3,
                   '--upgrade',
+                  '--reinstall',
                   'torch',
                   'torchvision',
                   'torchaudio',
@@ -1125,6 +1170,7 @@ export class ComfyUpdaterService extends EventEmitter {
                 'pip',
                 'install',
                 '--upgrade',
+                '--force-reinstall',
                 'torch',
                 'torchvision',
                 'torchaudio',

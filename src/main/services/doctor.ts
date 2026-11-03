@@ -134,7 +134,12 @@ export class DoctorService extends EventEmitter {
       try {
         if (existsSync(cfgFile)) {
           const text = readFileSync(cfgFile, 'utf-8')
-          venvVersion = (text.match(/version\s*=\s*([^\r\n]+)/i) || [])[1]?.trim() || ''
+          // uv writes `version_info = 3.13.18`; CPython's venv writes
+          // `version = 3.13.18`. The old regex only accepted the latter and
+          // mislabeled every uv-created venv as broken.
+          venvVersion =
+            (text.match(/^\s*version(?:_info)?\s*=\s*(\d+\.\d+(?:\.\d+)?)/im) || [])[1]?.trim() ||
+            ''
         }
       } catch {
         /* unreadable cfg is reported below */
@@ -189,7 +194,9 @@ export class DoctorService extends EventEmitter {
     const torchLine = torchOut.trim().split(/\r?\n/).filter(Boolean).pop() || ''
     const tripleMatch = torchLine.match(/^(\S+)\s+(\S+)\s+(True|False)\s*$/i)
     const importFailed = /Error|Traceback|No module/i.test(torchOut) || !tripleMatch
-    let torchSeverity: DoctorSeverity = 'warn'
+    // Missing/broken torch is a hard failure (ComfyUI cannot import); CPU-only
+    // torch remains a warning so a CPU deployment is not falsely blocked.
+    let torchSeverity: DoctorSeverity = importFailed ? 'fail' : 'warn'
     let torchDetail = torchOut || 'torch not importable'
     let torchSuggestion: string | undefined =
       'Install a torch build matching your GPU driver (cu130+ recommended for NVIDIA 20+).'
@@ -208,7 +215,8 @@ export class DoctorService extends EventEmitter {
         torchSeverity = 'pass'
         torchSuggestion = undefined
       } else if (!cudaVersion) {
-        torchSuggestion = 'CPU-only torch build — install a CUDA build matching your GPU driver.'
+        torchSuggestion =
+          'CPU-only torch build — run “Repair env” to reinstall the CUDA channel (ROCm/XPU/MPS on the matching platform).'
       } else {
         torchSuggestion = `CUDA ${cudaVersion} build but torch.cuda.is_available() is False — check the NVIDIA driver.`
       }

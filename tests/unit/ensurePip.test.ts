@@ -3,7 +3,7 @@
  * uv-created venvs have no pip; every `python -m pip` path must survive that.
  */
 import { describe, it, expect, vi, afterAll } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -167,5 +167,55 @@ describe('installRequirements', () => {
     })
     expect(calls).toHaveLength(2)
     expect(calls[1]).toContain('pypi.org/simple')
+  })
+
+  it('reports both mirror and official failures without claiming success', async () => {
+    let calls = 0
+    const exec = async (): Promise<string> => {
+      calls++
+      throw new Error(calls === 1 ? 'mirror down' : 'official down')
+    }
+    await expect(
+      installRequirements('C:/venv/python.exe', 'C:/req.txt', exec, {
+        uvPath: 'C:/uv.exe',
+        pipIndex: 'https://pypi.tuna.tsinghua.edu.cn/simple'
+      })
+    ).rejects.toThrow(/mirror and official.*official down/)
+  })
+
+  it('never wraps cancellation as a requirements failure', async () => {
+    const exec = async (): Promise<string> => {
+      const err = new Error('aborted')
+      err.name = 'AbortError'
+      throw err
+    }
+    await expect(
+      installRequirements('C:/venv/python.exe', 'C:/req.txt', exec, {
+        uvPath: 'C:/uv.exe',
+        pipIndex: 'https://pypi.tuna.tsinghua.edu.cn/simple'
+      })
+    ).rejects.toThrow(/^aborted$/)
+  })
+
+  it('installs a torch-free requirements copy so CUDA torch is never replaced', async () => {
+    const req = join(h.dir, 'requirements-torch.txt')
+    writeFileSync(
+      req,
+      'torch\ntorchvision==0.29.2\ntorchaudio>=2.9\nnumpy>=1.25\ncomfyui-frontend-package==1.57.6\n'
+    )
+    let installedFile = ''
+    const exec = async (_cmd: string, a: string[]): Promise<string> => {
+      const i = a.indexOf('-r')
+      installedFile = readFileSync(a[i + 1], 'utf-8')
+      return 'Successfully installed'
+    }
+    await installRequirements('C:/venv/python.exe', req, exec, { uvPath: 'C:/uv.exe' })
+    expect(installedFile).toContain('numpy>=1.25')
+    expect(installedFile).toContain('comfyui-frontend-package')
+    expect(installedFile.split('\n').map((l) => l.trim())).not.toContain('torch')
+    expect(installedFile).not.toContain('torchvision')
+    expect(installedFile).not.toContain('torchaudio')
+    // The original ComfyUI requirements file must stay untouched.
+    expect(readFileSync(req, 'utf-8')).toContain('torch\ntorchvision')
   })
 })
