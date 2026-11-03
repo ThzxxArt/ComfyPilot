@@ -152,13 +152,14 @@ export async function depsAudit(this: NodePackHost, instanceId?: string): Promis
         error: 'No package manager available (pip missing and uv unavailable)'
       }
     }
-    const auditPacks = auditPackRequirements(targets, installed)
+    const audit = auditPackRequirements(targets, installed)
     const check = await pipCheck(vpy)
     return {
       ok: true,
       pipAvailable: true,
       checkedPacks: targets.length,
-      packs: auditPacks,
+      packs: audit.packs,
+      unverifiable: audit.unverifiable.length ? audit.unverifiable : undefined,
       pipCheck: check
     }
   } finally {

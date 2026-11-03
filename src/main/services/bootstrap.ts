@@ -165,6 +165,16 @@ async function safeVersion(
   }
 }
 
+/**
+ * 0.2.2: the single-runtime policy must be enforced at the probe, not only in
+ * the UI. A system Python 3.14 on PATH used to be reported as installed and
+ * passed the Doctor's “managed runtime” check even though 0.2.x only supports
+ * 3.13.x.
+ */
+export function isSupportedPythonVersion(version: string | undefined): boolean {
+  return /(?:^|\s)3\.13(?:\.|$)/.test(String(version || '').trim())
+}
+
 /** Find an executable on PATH (or already in runtimes/). */
 async function which(cmd: string): Promise<string | null> {
   try {
@@ -410,35 +420,33 @@ export class BootstrapService extends EventEmitter {
   }
 
   private async probeKind(kind: RuntimeKind): Promise<RuntimeComponentStatus> {
+    /** Last unsupported Python version seen, shown honestly in Doctor/status. */
+    let unsupportedPython: string | undefined
     // 1) already inside runtimes/
     const local = findInRuntimes(runtimeBinName(kind))
     if (local) {
       const cmd = kind === 'mingit' ? join(dirname(local), 'git.exe') : local
       const real = existsSync(cmd) ? cmd : local
-      return {
-        kind,
-        path: real,
-        installed: true,
-        version: await safeVersion(real),
-        origin: 'runtimes'
+      const version = await safeVersion(real)
+      if (kind !== 'python' || isSupportedPythonVersion(version)) {
+        return { kind, path: real, installed: true, version, origin: 'runtimes' }
       }
+      unsupportedPython = version
     }
     // 2) system PATH
     const sysName =
       kind === 'mingit' ? 'git' : kind === 'python' ? 'python' : kind === 'uv' ? 'uv' : 'aria2c'
     const sys = await which(sysName)
     if (sys) {
-      return {
-        kind,
-        path: sys,
-        installed: true,
-        version: await safeVersion(sys),
-        origin: 'system'
+      const version = await safeVersion(sys)
+      if (kind !== 'python' || isSupportedPythonVersion(version)) {
+        return { kind, path: sys, installed: true, version, origin: 'system' }
       }
+      unsupportedPython = unsupportedPython || version
     }
     // 3) common Windows python installs (so we don't needlessly download).
-    // 0.2.0 only accepts 3.13.x; finding a 3.12 install is reported as legacy
-    // and never returned as a usable runtime.
+    // 0.2.x only accepts 3.13.x; a 3.14 on PATH must not hide a real 3.13
+    // install, and 3.12/3.11 are reported as legacy, never as usable.
     if (kind === 'python') {
       const candidates = [
         join(process.env.LOCALAPPDATA || '', 'Programs', 'Python', 'Python313', 'python.exe'),
@@ -447,7 +455,7 @@ export class BootstrapService extends EventEmitter {
       for (const p of candidates) {
         if (p && existsSync(p)) {
           const version = await safeVersion(p)
-          if (version && /Python\s+3\.13(\.|$)/i.test(version)) {
+          if (isSupportedPythonVersion(version)) {
             return { kind, path: p, installed: true, version, origin: 'system' }
           }
         }
@@ -476,7 +484,7 @@ export class BootstrapService extends EventEmitter {
       path: '',
       installed: false,
       origin: 'missing',
-      version: undefined
+      version: unsupportedPython
     }
   }
 

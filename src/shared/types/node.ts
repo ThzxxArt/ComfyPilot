@@ -119,12 +119,22 @@ export interface NodeDepsAuditPack {
   unsupported?: string[]
 }
 
+/** A pack whose remaining requirements are Git/URL/local refs (not verifiable). */
+export interface NodeDepsAuditUnverifiable {
+  id: string
+  name: string
+  lines: string[]
+}
+
 /** Node-pack dependency audit result (requirements.txt vs venv pip list). */
 export interface NodeDepsAudit {
   ok: boolean
   pipAvailable: boolean
   checkedPacks: number
+  /** Actionable packs: missing or version-mismatched declarations only. */
   packs: NodeDepsAuditPack[]
+  /** 0.2.2: unverifiable Git/URL/local refs, informational (not failures). */
+  unverifiable?: NodeDepsAuditUnverifiable[]
   error?: string
   /** 0.2.0: `pip check` conflicts (transitive, not just declared). */
   pipCheck?: { ok: boolean; broken: string[] }

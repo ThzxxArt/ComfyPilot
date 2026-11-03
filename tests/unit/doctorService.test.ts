@@ -15,7 +15,14 @@ const h = vi.hoisted(() => {
     instances: [] as Array<Record<string, unknown>>,
     settings: { networkMode: 'public', modelScanRoots: [] as string[] },
     execHandler: null as ((cmd: string, args: string[]) => { stdout: string } | Error) | null,
-    proxyOk: true
+    proxyOk: true,
+    runtimeComponent: {
+      kind: 'python',
+      installed: true,
+      path: '/runtimes/python-3.13.18/python',
+      version: '3.13.18'
+    } as Record<string, unknown>,
+    uvComponent: null as null | Record<string, unknown>
   }
   return { state }
 })
@@ -39,14 +46,9 @@ vi.mock('../../src/main/services/instance', () => ({
 vi.mock('../../src/main/services/bootstrap', () => ({
   bootstrapService: {
     status: async () => ({
-      components: [
-        {
-          kind: 'python',
-          installed: true,
-          path: '/runtimes/python-3.13.18/python',
-          version: '3.13.18'
-        }
-      ],
+      components: h.state.uvComponent
+        ? [h.state.runtimeComponent, h.state.uvComponent]
+        : [h.state.runtimeComponent],
       pythonVersion: '3.13.18',
       supportedPython: '3.13'
     })
@@ -153,6 +155,13 @@ describe('DoctorService (0.1.10 behaviour)', () => {
     h.state.root = mkdtempSync(join(tmpdir(), 'cp-doctor-'))
     h.state.execHandler = defaultExec
     h.state.proxyOk = true
+    h.state.runtimeComponent = {
+      kind: 'python',
+      installed: true,
+      path: '/runtimes/python-3.13.18/python',
+      version: '3.13.18'
+    }
+    h.state.uvComponent = null
   })
 
   it('run() produces the full check matrix on a healthy install', async () => {
@@ -236,6 +245,119 @@ describe('DoctorService (0.1.10 behaviour)', () => {
     const byId = new Map<string, any>(report.checks.map((c: any) => [c.id, c]))
     expect(byId.get('venv')?.severity).toBe('pass')
     expect(byId.get('venv')?.detail).toContain('3.13.18')
+  })
+
+  it('rejects a uv pyvenv.cfg version_info that is not 3.13', async () => {
+    const dir = seedMinimalInstall('uv-venv-old')
+    const venv = join(dir, 'venv')
+    mkdirSync(venv, { recursive: true })
+    writeFileSync(join(venv, 'pyvenv.cfg'), 'version_info = 3.12.10\nuv = 0.13.6\n')
+    ;(h.state.instances[0] as { venvPath: string }).venvPath = venv
+    const svc = await freshDoctor()
+    const report = await svc.run('inst-1')
+    const byId = new Map<string, any>(report.checks.map((c: any) => [c.id, c]))
+    expect(byId.get('venv')?.severity).toBe('fail')
+    expect(byId.get('venv')?.fixId).toBe('migrate-python-313')
+  })
+
+  it('run() does not pass a non-3.13 managed runtime', async () => {
+    seedMinimalInstall('runtime-314')
+    h.state.runtimeComponent = {
+      kind: 'python',
+      installed: true,
+      path: 'C:/Python314/python.exe',
+      version: 'Python 3.14.5'
+    }
+    const svc = await freshDoctor()
+    const report = await svc.run('inst-1')
+    const check = report.checks.find((c: any) => c.id === 'runtime-integrity')!
+    expect(check.severity).toBe('warn')
+    expect(check.detail).toContain('only 3.13.x is supported')
+  })
+
+  it('accepts a uv-managed 3.13 runtime when the portable runtime is missing', async () => {
+    seedMinimalInstall('runtime-uv-ok')
+    const uvPython = join(h.state.root, 'uv-python313.exe')
+    writeFileSync(uvPython, 'x')
+    h.state.runtimeComponent = {
+      kind: 'python',
+      installed: false,
+      path: '',
+      version: 'Python 3.14.5'
+    }
+    h.state.uvComponent = {
+      kind: 'uv',
+      installed: true,
+      path: 'C:/uv/uv.exe',
+      version: 'uv 0.13.6'
+    }
+    h.state.execHandler = (cmd, args) => {
+      if (cmd === 'C:/uv/uv.exe' && args[0] === 'python' && args[1] === 'find') {
+        return { stdout: uvPython }
+      }
+      return defaultExec(cmd, args)
+    }
+    const svc = await freshDoctor()
+    const report = await svc.run('inst-1')
+    const check = report.checks.find((c: any) => c.id === 'runtime-integrity')!
+    expect(check.severity).toBe('pass')
+    expect(check.detail).toContain('uv-managed')
+  })
+
+  it('rejects a uv-managed runtime that is not 3.13', async () => {
+    seedMinimalInstall('runtime-uv-bad')
+    const uvPython = join(h.state.root, 'uv-python314.exe')
+    writeFileSync(uvPython, 'x')
+    h.state.runtimeComponent = {
+      kind: 'python',
+      installed: false,
+      path: '',
+      version: 'Python 3.14.5'
+    }
+    h.state.uvComponent = {
+      kind: 'uv',
+      installed: true,
+      path: 'C:/uv/uv.exe',
+      version: 'uv 0.13.6'
+    }
+    h.state.execHandler = (cmd, args) => {
+      if (cmd === 'C:/uv/uv.exe' && args[0] === 'python' && args[1] === 'find') {
+        return { stdout: uvPython }
+      }
+      if (cmd === uvPython && args[0] === '--version') return { stdout: 'Python 3.14.5' }
+      return defaultExec(cmd, args)
+    }
+    const svc = await freshDoctor()
+    const report = await svc.run('inst-1')
+    const check = report.checks.find((c: any) => c.id === 'runtime-integrity')!
+    expect(check.severity).toBe('warn')
+    expect(check.detail).toContain('only 3.13.x is supported')
+  })
+
+  it('run() ignores plain files when counting custom node packs', async () => {
+    const dir = seedMinimalInstall('cn-files')
+    const pack = join(dir, 'custom_nodes', 'GoodPack')
+    mkdirSync(pack, { recursive: true })
+    writeFileSync(join(pack, '__init__.py'), '')
+    // ComfyUI ships this as a plain example file, not a pack directory.
+    writeFileSync(join(dir, 'custom_nodes', 'example_node.py.example'), 'x')
+    // Interpreter cache is not a node pack either.
+    mkdirSync(join(dir, 'custom_nodes', '__pycache__'), { recursive: true })
+    const svc = await freshDoctor()
+    const report = await svc.run('inst-1')
+    const check = report.checks.find((c: any) => c.id === 'cn-count')!
+    expect(check.severity).toBe('pass')
+    expect(check.detail).toContain('1 packs found')
+  })
+
+  it('run() still warns about a real directory with no entry file', async () => {
+    const dir = seedMinimalInstall('cn-broken')
+    mkdirSync(join(dir, 'custom_nodes', 'BrokenPack'), { recursive: true })
+    const svc = await freshDoctor()
+    const report = await svc.run('inst-1')
+    const check = report.checks.find((c: any) => c.id === 'cn-count')!
+    expect(check.severity).toBe('warn')
+    expect(check.detail).toContain('BrokenPack')
   })
 
   it('run() fails torch below 2.7 and exposes the managed runtime/vven checks', async () => {

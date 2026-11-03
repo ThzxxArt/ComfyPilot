@@ -775,6 +775,9 @@ async function runDepsAudit(): Promise<void> {
  *  invisible and the modal stuck as an empty 0% shell). */
 async function fixPackDeps(p: NodeDepsAuditPack): Promise<void> {
   try {
+    // Unverifiable Git/URL lines are informational, not an install action.
+    // Only missing / mismatched declarations can be repaired automatically.
+    if (!p.missing.length && !p.mismatched.length) return
     const target = store.localTargetId
     if (!target) {
       message.warning(t('target.required'))
@@ -1643,55 +1646,87 @@ watch(
             <NTag size="small" type="error" round>{{ $t('nodes.depsAuditUnavailable') }}</NTag>
             <div class="issue-msg" style="margin-top: 6px">{{ depsAudit.error || '' }}</div>
           </div>
-          <div v-else-if="!depsAudit.packs.length" class="deps-empty">
-            <NEmpty :description="$t('nodes.depsAuditEmpty')" />
-          </div>
           <div v-else class="deps-list">
-            <div class="deps-summary meta">
-              {{
-                $t('nodes.depsAuditSummary', {
-                  checked: depsAudit.checkedPacks,
-                  bad: depsAudit.packs.length
-                })
-              }}
+            <div
+              v-if="
+                !depsAudit.packs.length &&
+                !depsAudit.unverifiable?.length &&
+                depsAudit.pipCheck?.ok !== false
+              "
+              class="deps-empty"
+            >
+              <NEmpty :description="$t('nodes.depsAuditEmpty')" />
             </div>
-            <div v-for="p in depsAudit.packs" :key="p.id" class="deps-pack">
-              <div class="deps-pack-head">
-                <span class="deps-pack-name mono" :title="p.name">{{ p.name }}</span>
-                <NButton size="tiny" type="primary" secondary @click="fixPackDeps(p)">
-                  {{ $t('nodes.depsReinstall') }}
-                </NButton>
+            <template v-else>
+              <div class="deps-summary meta">
+                {{
+                  $t('nodes.depsAuditSummary', {
+                    checked: depsAudit.checkedPacks,
+                    bad: depsAudit.packs.length
+                  })
+                }}
               </div>
-              <div v-if="p.missing.length" class="deps-line">
-                <NTag size="tiny" round type="error">{{ $t('nodes.depsMissing') }}</NTag>
-                <span class="mono deps-items">{{ p.missing.join(', ') }}</span>
+              <div v-for="p in depsAudit.packs" :key="p.id" class="deps-pack">
+                <div class="deps-pack-head">
+                  <span class="deps-pack-name mono" :title="p.name">{{ p.name }}</span>
+                  <NButton
+                    v-if="p.missing.length || p.mismatched.length"
+                    size="tiny"
+                    type="primary"
+                    secondary
+                    @click="fixPackDeps(p)"
+                  >
+                    {{ $t('nodes.depsReinstall') }}
+                  </NButton>
+                </div>
+                <div v-if="p.missing.length" class="deps-line">
+                  <NTag size="tiny" round type="error">{{ $t('nodes.depsMissing') }}</NTag>
+                  <span class="mono deps-items">{{ p.missing.join(', ') }}</span>
+                </div>
+                <div v-if="p.mismatched.length" class="deps-line">
+                  <NTag size="tiny" round type="warning">{{ $t('nodes.depsMismatch') }}</NTag>
+                  <span class="mono deps-items">
+                    {{
+                      p.mismatched
+                        .map((m) => `${m.name}${m.required} (installed ${m.installed})`)
+                        .join(', ')
+                    }}
+                  </span>
+                </div>
+                <div v-if="p.skipped?.length" class="deps-line">
+                  <NTag size="tiny" round type="info">{{ $t('nodes.depsSkipped') }}</NTag>
+                  <span class="mono deps-items">{{ p.skipped.join(', ') }}</span>
+                </div>
+                <div v-if="p.unsupported?.length" class="deps-line">
+                  <NTag size="tiny" round type="warning">{{ $t('nodes.depsUnsupported') }}</NTag>
+                  <span class="mono deps-items">{{ p.unsupported.join(', ') }}</span>
+                </div>
               </div>
-              <div v-if="p.mismatched.length" class="deps-line">
-                <NTag size="tiny" round type="warning">{{ $t('nodes.depsMismatch') }}</NTag>
-                <span class="mono deps-items">
-                  {{
-                    p.mismatched
-                      .map((m) => `${m.name}${m.required} (installed ${m.installed})`)
-                      .join(', ')
-                  }}
-                </span>
+              <div v-if="depsAudit.unverifiable?.length" class="deps-pack deps-unverifiable">
+                <div class="deps-pack-head">
+                  <span class="deps-pack-name">{{ $t('nodes.depsUnverifiableTitle') }}</span>
+                  <NTag size="tiny" round type="info">
+                    {{
+                      $t('nodes.depsUnverifiableCount', {
+                        n: depsAudit.unverifiable.length
+                      })
+                    }}
+                  </NTag>
+                </div>
+                <div v-for="u in depsAudit.unverifiable" :key="u.id" class="deps-line">
+                  <span class="deps-pack-name mono">{{ u.name }}</span>
+                  <span class="mono deps-items">{{ u.lines.join(', ') }}</span>
+                </div>
+                <div class="deps-scope hint">{{ $t('nodes.depsUnverifiableHint') }}</div>
               </div>
-              <div v-if="p.skipped?.length" class="deps-line">
-                <NTag size="tiny" round type="info">{{ $t('nodes.depsSkipped') }}</NTag>
-                <span class="mono deps-items">{{ p.skipped.join(', ') }}</span>
+              <div v-if="depsAudit.pipCheck && !depsAudit.pipCheck.ok" class="deps-pack">
+                <div class="deps-pack-head">
+                  <span class="deps-pack-name">{{ $t('nodes.depsPipCheck') }}</span>
+                </div>
+                <div class="mono deps-items">{{ depsAudit.pipCheck.broken.join('\n') }}</div>
               </div>
-              <div v-if="p.unsupported?.length" class="deps-line">
-                <NTag size="tiny" round type="warning">{{ $t('nodes.depsUnsupported') }}</NTag>
-                <span class="mono deps-items">{{ p.unsupported.join(', ') }}</span>
-              </div>
-            </div>
-            <div v-if="depsAudit.pipCheck && !depsAudit.pipCheck.ok" class="deps-pack">
-              <div class="deps-pack-head">
-                <span class="deps-pack-name">{{ $t('nodes.depsPipCheck') }}</span>
-              </div>
-              <div class="mono deps-items">{{ depsAudit.pipCheck.broken.join('\n') }}</div>
-            </div>
-            <div class="deps-scope hint">{{ $t('nodes.depsAuditScope') }}</div>
+              <div class="deps-scope hint">{{ $t('nodes.depsAuditScope') }}</div>
+            </template>
           </div>
         </template>
       </NSpin>

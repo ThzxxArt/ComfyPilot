@@ -237,17 +237,46 @@ export class DoctorService extends EventEmitter {
       const { bootstrapService } = await import('./bootstrap')
       const status = await bootstrapService.status()
       const py = status.components.find((c) => c.kind === 'python')
+      // installed=true alone is not enough: 0.2.x supports exactly 3.13.x.
+      // A system Python 3.14 on PATH used to pass this check silently.
+      const pyVersion = String(py?.version || '')
+      const supported = Boolean(py?.installed) && /(?:^|\s)3\.13(?:\.|$)/.test(pyVersion)
+      // uv can provide a supported 3.13 runtime even when the portable runtime
+      // directory is empty. Check it before warning so a healthy uv-managed
+      // installation is not reported as missing.
+      let uvRuntimePath = ''
+      let uvRuntimeVersion = ''
+      if (!supported) {
+        const uv = status.components.find((c) => c.kind === 'uv' && c.installed)
+        if (uv?.path) {
+          const found = (
+            await safeExec(uv.path, ['python', 'find', '3.13'], undefined, 8000)
+          ).trim()
+          if (found && existsSync(found)) {
+            const version = await safeExec(found, ['--version'], undefined, 8000)
+            if (/(?:^|\s)3\.13(?:\.|$)/.test(version)) {
+              uvRuntimePath = found
+              uvRuntimeVersion = version
+            }
+          }
+        }
+      }
+      const runtimeOk = supported || Boolean(uvRuntimePath)
       checks.push({
         id: 'runtime-integrity',
         group: 'Runtime',
         title: 'Managed Python runtime',
-        severity: py?.installed ? 'pass' : 'warn',
-        detail: py?.installed
-          ? `${py.path} (${py.version || status.pythonVersion})`
-          : status.legacyPython
-            ? `legacy ${status.legacyPython} is archived; no 3.13 runtime installed`
-            : 'No managed Python 3.13 runtime installed',
-        suggestion: py?.installed
+        severity: runtimeOk ? 'pass' : 'warn',
+        detail: supported
+          ? `${py?.path} (${pyVersion})`
+          : uvRuntimePath
+            ? `${uvRuntimePath} (${uvRuntimeVersion}, uv-managed)`
+            : pyVersion
+              ? `${py?.path || 'Python on PATH'} reports ${pyVersion} — only 3.13.x is supported`
+              : status.legacyPython
+                ? `legacy ${status.legacyPython} is archived; no 3.13 runtime installed`
+                : 'No managed Python 3.13 runtime installed',
+        suggestion: runtimeOk
           ? undefined
           : 'Run the installer or download the Python 3.13.18 runtime in Settings.',
         fixable: false
@@ -349,9 +378,20 @@ export class DoctorService extends EventEmitter {
     if (hasCN && customNodes) {
       try {
         const { readdirSync } = await import('fs')
-        const packs = readdirSync(customNodes).filter((n) => !n.startsWith('.'))
+        // Only directories are packs. A plain `example_node.py.example` file
+        // at the root used to be counted as a broken pack forever, and
+        // __pycache__ is interpreter output, not a pack.
+        const nonPackDirs = new Set(['__pycache__'])
+        const packs = readdirSync(customNodes).filter((n) => {
+          if (n.startsWith('.') || nonPackDirs.has(n.toLowerCase())) return false
+          try {
+            return statSync(join(customNodes, n)).isDirectory()
+          } catch {
+            return false
+          }
+        })
         const broken: string[] = []
-        for (const name of packs.slice(0, 30)) {
+        for (const name of packs) {
           const dir = join(customNodes, name)
           const hasEntry =
             existsSync(join(dir, '__init__.py')) ||

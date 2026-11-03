@@ -20,7 +20,10 @@ const ALIASES: Record<string, string> = {
   torch_npu: 'torch-npu',
   'torch-npu': 'torch-npu',
   onnxruntime_gpu: 'onnxruntime-gpu',
-  tensorflow_gpu: 'tensorflow-gpu'
+  tensorflow_gpu: 'tensorflow-gpu',
+  // SAM 2 publishes the distribution as `SAM-2`, while Impact Pack's direct
+  // Git requirement is named `sam2`.
+  sam2: 'sam-2'
 }
 
 export function resolvePipAlias(name: string): string {

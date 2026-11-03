@@ -25,6 +25,12 @@ export interface PipRequirement {
   marker?: string
   /** Original (trimmed) line. */
   raw: string
+  /**
+   * 0.2.2: PEP 508 direct reference (`name @ git+https://…`) or a bare VCS /
+   * wheel URL. These can be installed by pip but cannot be version-checked
+   * like a PyPI requirement; the audit verifies the distribution name only.
+   */
+  directUrl?: string
 }
 
 /** PEP 503 normalization: lowercase, runs of `-_.` → single `-`. */
@@ -54,9 +60,27 @@ const NAME_RE = /^([A-Za-z0-9][A-Za-z0-9._-]*)/
 const EXTRAS_RE = /\[([^\]]*)\]/
 const SPEC_RE = /(===|==|~=|!=|<=|>=|<|>)\s*([A-Za-z0-9.*+!_-]+)/g
 
+/** Infer a distribution name from a direct URL/VCS line (best effort). */
+function inferDirectName(line: string): string | null {
+  const egg = line.match(/[#&]egg=([A-Za-z0-9._-]+)/i)
+  if (egg) return normalizePipName(egg[1])
+  const noHash = line.split('#')[0].split('?')[0].replace(/\/+$/, '')
+  const base = decodeURIComponent(noHash.split(/[\\/]/).pop() || '')
+  if (!base || base === '.' || base === '..') return null
+  if (/\.whl$/i.test(base)) {
+    const wheel = base.replace(/\.whl$/i, '').split('-')[0]
+    return wheel ? normalizePipName(wheel) : null
+  }
+  // git+https://host/org/repo.git@ref → repo
+  const repo = base.replace(/@.*$/, '').replace(/\.git$/i, '')
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(repo) ? normalizePipName(repo) : null
+}
+
 /**
- * Parse one requirements.txt line. Returns null for comments / options / bare
- * URLs / VCS lines / editable installs — those cannot be audited by name.
+ * Parse one requirements.txt line. Returns null for comments / options /
+ * editable installs / unnameable URLs. Named direct references and VCS or
+ * wheel URLs keep their inferred distribution name so the audit can check
+ * whether they are installed instead of reporting them as permanently missing.
  */
 export function parsePipRequirement(line: string): PipRequirement | null {
   let raw = String(line || '').trim()
@@ -64,7 +88,7 @@ export function parsePipRequirement(line: string): PipRequirement | null {
   // Inline comment (a `#` after whitespace is a comment per pip's grammar).
   const hash = raw.indexOf(' #')
   if (hash >= 0) raw = raw.slice(0, hash).trim()
-  if (!raw || raw.includes('://') || raw.startsWith('.') || raw.startsWith('/')) return null
+  if (!raw) return null
   // 0.2.0: keep the environment marker for evaluation by the target
   // interpreter. Dropping it made every platform-specific requirement look
   // missing forever.
@@ -74,6 +98,31 @@ export function parsePipRequirement(line: string): PipRequirement | null {
     marker = raw.slice(semi + 1).trim() || undefined
     raw = raw.slice(0, semi).trim()
   }
+  if (!raw) return null
+
+  // PEP 508 direct reference: name[extras] @ URL.
+  const direct = raw.match(/^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[([^\]]*)\])?\s*@\s*(\S+)$/)
+  if (direct) {
+    return {
+      name: normalizePipName(direct[1]),
+      extras: (direct[2] || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+      specifier: '',
+      marker,
+      raw,
+      directUrl: direct[3]
+    }
+  }
+  // Bare VCS or wheel URL. Other URLs stay unsupported because their package
+  // name cannot be inferred reliably.
+  if (/^(?:git|hg|svn|bzr)\+/i.test(raw) || /^https?:\/\/\S+\.whl(?:#.*)?$/i.test(raw)) {
+    const name = inferDirectName(raw)
+    if (!name) return null
+    return { name, extras: [], specifier: '', marker, raw, directUrl: raw }
+  }
+  if (raw.includes('://') || raw.startsWith('.') || raw.startsWith('/')) return null
 
   const nameMatch = raw.match(NAME_RE)
   if (!nameMatch) return null

@@ -157,7 +157,16 @@ export class PipOpsService extends EventEmitter {
       ctx.step('requirements', 'running', `Installing ${s}…`)
       await this.pipInstallTargets(ctx, [s])
       ctx.step('requirements', 'done', `pip install ${s} finished`)
-      return this.verifyAndFinalize(ctx, [s])
+      const verified = await this.verifyAndFinalize(ctx, [s])
+      return {
+        ok: verified.missing.length === 0,
+        installed: verified.installed,
+        unresolved: verified.missing,
+        warning: verified.warning,
+        error: verified.missing.length
+          ? `Still missing after install: ${verified.missing.join(', ')}`
+          : undefined
+      }
     })
   }
 
@@ -179,7 +188,16 @@ export class PipOpsService extends EventEmitter {
       ctx.step('requirements', 'running', `Installing ${valid.join(', ')}…`)
       await this.pipInstallTargets(ctx, valid)
       ctx.step('requirements', 'done', 'pip install finished')
-      return this.verifyAndFinalize(ctx, valid)
+      const verified = await this.verifyAndFinalize(ctx, valid)
+      return {
+        ok: verified.missing.length === 0,
+        installed: verified.installed,
+        unresolved: verified.missing,
+        warning: verified.warning,
+        error: verified.missing.length
+          ? `Still missing after install: ${verified.missing.join(', ')}`
+          : undefined
+      }
     })
   }
 
@@ -248,15 +266,23 @@ export class PipOpsService extends EventEmitter {
   ): Promise<PipOpResult> {
     const target = this.resolveInstanceId(instanceId)
     const settings = loadSettings()
+    let lines: string[] = []
     let reqs: Array<NonNullable<ReturnType<typeof parsePipRequirement>>> = []
     try {
-      reqs = readRequirementLines(reqFile)
+      lines = readRequirementLines(reqFile)
+      reqs = lines
         .map((line) => parsePipRequirement(line))
         .filter((r): r is NonNullable<typeof r> => Boolean(r))
     } catch {
       // The caller normally checks existence; keep the install command working
       // for a path that disappears between the check and this call.
     }
+    // These lines are installed by the raw requirements command but cannot be
+    // proven by `pip show`; surface them as a warning instead of silently
+    // claiming a fully verified install.
+    const unsupported = [
+      ...new Set(lines.filter((line) => line.trim() && !parsePipRequirement(line)))
+    ]
     const requested = reqs.map((r) => (r.specifier ? `${r.name}${r.specifier}` : r.name))
     // Unknown markers are deliberately not verified (unknown ≠ missing).
     const applicable = reqs.filter((r) => !r.marker || evaluateMarker(r.marker) === true)
@@ -288,15 +314,27 @@ export class PipOpsService extends EventEmitter {
       const unresolved = applicable
         .filter((r) => !verified.installed.includes(r.name))
         .map((r) => (r.specifier ? `${r.name}${r.specifier}` : r.name))
+      const warnings = [
+        verified.warning,
+        unsupported.length
+          ? `Installed, but ${unsupported.length} direct/URL requirement(s) cannot be verified with pip show: ${unsupported.join(', ')}`
+          : undefined
+      ].filter(Boolean)
       if (unresolved.length) {
         return {
           ok: false,
           installed: verified.installed,
           unresolved,
+          warning: warnings.join('; ') || undefined,
           error: `Still missing after install: ${unresolved.join(', ')}`
         }
       }
-      return { ok: true, installed: verified.installed }
+      return {
+        ok: true,
+        installed: verified.installed,
+        unresolved: [],
+        warning: warnings.join('; ') || undefined
+      }
     })
   }
 
@@ -569,13 +607,15 @@ export class PipOpsService extends EventEmitter {
     specs: string[]
   ): Promise<{
     installed: string[]
+    missing: string[]
     warning?: string
   }> {
     ctx.step('verify', 'running', 'Verifying installed packages…')
+    const expected = [
+      ...new Set(specs.map((s) => parsePipRequirement(s)?.name || normalizePipName(s)))
+    ]
     const installed = await this.verifyPackages(ctx, specs)
-    const missing = specs.filter(
-      (s) => !installed.includes(parsePipRequirement(s)?.name || normalizePipName(s))
-    )
+    const missing = expected.filter((name) => !installed.includes(name))
     if (installed.length) {
       ctx.step('verify', 'done', `Verified: ${installed.join(', ')}`)
     } else {
@@ -583,6 +623,7 @@ export class PipOpsService extends EventEmitter {
     }
     return {
       installed,
+      missing,
       warning: missing.length
         ? `installed, but pip show did not list: ${missing.join(', ')}`
         : undefined

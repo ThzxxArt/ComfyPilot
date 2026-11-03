@@ -63,6 +63,7 @@ export type {
   NodeRecoveryKind,
   NodeRecoveryEntry,
   NodeDepsAuditPack,
+  NodeDepsAuditUnverifiable,
   NodeDepsAudit,
   NodeCheckStatus,
   NodeUpdateCheckResult,

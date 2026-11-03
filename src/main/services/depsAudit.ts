@@ -7,7 +7,7 @@
  */
 import { existsSync, readFileSync } from 'fs'
 import { dirname, join } from 'path'
-import type { NodeDepsAuditPack, NodePackRecord } from '@shared/types'
+import type { NodeDepsAuditPack, NodeDepsAuditUnverifiable, NodePackRecord } from '@shared/types'
 import {
   evaluateMarker,
   parsePipRequirement,
@@ -42,6 +42,14 @@ export function parsePipListJson(text: string): Map<string, string> | null {
 }
 
 /**
+ * pip options that configure the installer rather than name a package. They
+ * must not become “unsupported dependencies” and keep a pack in the audit
+ * forever.
+ */
+const PIP_OPTION_RE =
+  /^(?:-i|--index-url|--extra-index-url|--no-index|-f|--find-links|--trusted-host|--no-binary|--only-binary|--prefer-binary|--pre|--require-hashes|--hash|--no-deps|--upgrade|--force-reinstall|--no-cache-dir|--timeout|--retries|--proxy|--cert|--client-cert)\b/i
+
+/**
  * Read requirements recursively: comments, backslash continuations, `-r` and
  * `-c` includes. URL/VCS lines are returned raw so the caller can report them
  * as unsupported instead of silently dropping them.
@@ -70,6 +78,7 @@ export function readRequirementLines(file: string, depth = 0, seen = new Set<str
       continue
     }
     if (/^(?:-c|--constraint)\s+/i.test(trimmed)) continue
+    if (PIP_OPTION_RE.test(trimmed)) continue
     out.push(line)
   }
   return out
@@ -152,9 +161,21 @@ export interface PipCheckResult {
 
 /** `pip check` catches transitive conflicts that a per-requirement audit misses. */
 export async function pipCheck(python: string, uvPath?: string): Promise<PipCheckResult> {
+  // uv-created venvs may have no pip at all. Prefer uv when the caller did not
+  // supply it instead of silently returning "no conflicts" for a check that
+  // never ran (0.2.2).
+  let uv = uvPath
+  if (!uv) {
+    try {
+      const bootstrap = await bootstrapService.ensure({ kinds: ['uv'], downloadIfMissing: false })
+      uv = bootstrap.components.find((c) => c.kind === 'uv' && c.installed)?.path
+    } catch {
+      /* pip fallback below */
+    }
+  }
   try {
-    const out = uvPath
-      ? await throwingExec(uvPath, ['pip', 'check', '--python', python], { timeout: 60000 })
+    const out = uv
+      ? await throwingExec(uv, ['pip', 'check', '--python', python], { timeout: 60000 })
       : await throwingExec(python, ['-m', 'pip', 'check'], { timeout: 60000 })
     const broken = String(out || '')
       .split(/\r?\n/)
@@ -165,6 +186,11 @@ export async function pipCheck(python: string, uvPath?: string): Promise<PipChec
     // A non-zero exit includes the broken lines in stderr on pip; throwingExec
     // rejects. Treat the message as the report rather than as "unknown".
     const text = err instanceof Error ? err.message : String(err)
+    const unavailable =
+      /No module named ['"]?pip|pip is not available|\bENOENT\b|not recognized/i.test(text)
+    if (unavailable) {
+      return { ok: false, broken: [`pip check unavailable: ${text.slice(0, 240)}`] }
+    }
     const broken = text
       .split(/\r?\n/)
       .map((l) => l.trim())
@@ -173,15 +199,24 @@ export async function pipCheck(python: string, uvPath?: string): Promise<PipChec
   }
 }
 
+export interface AuditPackResult {
+  /** Packs with actionable missing / mismatched declarations. */
+  packs: NodeDepsAuditPack[]
+  /** Packs whose only leftovers are Git/URL/local refs we cannot verify. */
+  unverifiable: NodeDepsAuditUnverifiable[]
+}
+
 export function auditPackRequirements(
   targets: Array<{ pack: NodePackRecord; reqs: PipRequirement[]; unsupported?: string[] }>,
   installed: Map<string, string>
-): NodeDepsAuditPack[] {
-  const auditPacks: NodeDepsAuditPack[] = []
+): AuditPackResult {
+  const packs: NodeDepsAuditPack[] = []
+  const unverifiable: NodeDepsAuditUnverifiable[] = []
   for (const { pack, reqs, unsupported } of targets) {
     const missing: string[] = []
     const mismatched: NodeDepsAuditPack['mismatched'] = []
     const skipped: string[] = []
+    const unsupportedLines = [...new Set((unsupported || []).map((s) => s.trim()).filter(Boolean))]
     for (const r of reqs) {
       if (r.marker) {
         const applies = evaluateMarker(r.marker)
@@ -201,6 +236,14 @@ export function auditPackRequirements(
         have = installed.get(candidate)
         if (have) break
       }
+      if (r.directUrl) {
+        // Direct refs can be installed by pip, but their version cannot be
+        // compared. If the inferred distribution is absent, report it as
+        // unverifiable instead of "missing" so the audit never promises that
+        // clicking “Install deps” can clear it.
+        if (!have) unsupportedLines.push(r.raw)
+        continue
+      }
       if (!have) {
         missing.push(r.specifier ? `${r.name}${r.specifier}` : r.name)
         continue
@@ -209,17 +252,19 @@ export function auditPackRequirements(
         mismatched.push({ name: r.name, required: r.specifier, installed: have })
       }
     }
-    if (missing.length || mismatched.length || unsupported?.length) {
-      auditPacks.push({
+    if (missing.length || mismatched.length) {
+      packs.push({
         id: pack.id,
         name: pack.name,
         declared: reqs.map((r) => r.raw),
         missing,
         mismatched,
         skipped,
-        unsupported
+        unsupported: unsupportedLines.length ? [...new Set(unsupportedLines)] : undefined
       })
+    } else if (unsupportedLines.length) {
+      unverifiable.push({ id: pack.id, name: pack.name, lines: [...new Set(unsupportedLines)] })
     }
   }
-  return auditPacks
+  return { packs, unverifiable }
 }

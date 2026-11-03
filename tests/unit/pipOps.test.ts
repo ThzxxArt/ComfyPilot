@@ -4,6 +4,9 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createHash } from 'crypto'
+import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
 import type { PipRecipe } from '../../src/shared/pipRecipes'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -141,6 +144,28 @@ describe('PipOpsService (0.1.12)', () => {
     const install = h.execCalls.find((c) => c.args.includes('install'))
     expect(install!.args).toContain('onnx')
     expect(install!.args).toContain('triton')
+  })
+
+  it('fails installSpec when pip show cannot confirm the package', async () => {
+    h.showImpl = () => new Error('Package(s) not found: onnx')
+    const svc = await fresh()
+    const r = await svc.installSpec('i1', 'onnx')
+    expect(r.ok).toBe(false)
+    expect(r.installed).toEqual([])
+    expect(r.unresolved).toEqual(['onnx'])
+    expect(r.error).toMatch(/Still missing after install: onnx/)
+  })
+
+  it('fails installSpecs when any installed spec cannot be verified', async () => {
+    h.showImpl = (_cmd, args) =>
+      args.includes('triton')
+        ? 'Name: triton\nVersion: 3.0'
+        : new Error('Package(s) not found: onnx')
+    const svc = await fresh()
+    const r = await svc.installSpecs('i1', ['onnx', 'triton'])
+    expect(r.ok).toBe(false)
+    expect(r.installed).toEqual(['triton'])
+    expect(r.unresolved).toEqual(['onnx'])
   })
 
   it('installSpecs refuses when another env operation holds the lock', async () => {
@@ -352,6 +377,38 @@ describe('PipOpsService (0.1.12)', () => {
     const byId = Object.fromEntries((snap?.steps || []).map((s: any) => [s.id, s.status]))
     expect(byId.download).toBe('skipped')
     expect(byId.preflight).toBe('done')
+  })
+
+  it('installRequirementsFor reports success only when every applicable requirement verifies', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cp-pipops-req-'))
+    try {
+      const req = join(dir, 'requirements.txt')
+      writeFileSync(req, 'onnx>=1.10\n')
+      h.showImpl = () => 'Name: onnx\nVersion: 1.17.0'
+      const svc = await fresh()
+      const r = await svc.installRequirementsFor('i1', req, 'Foo')
+      expect(r.ok).toBe(true)
+      expect(r.installed).toEqual(['onnx'])
+      expect(r.unresolved).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('installRequirementsFor fails with the unresolved list when verification is missing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cp-pipops-req-'))
+    try {
+      const req = join(dir, 'requirements.txt')
+      writeFileSync(req, 'onnx>=1.10\n')
+      h.showImpl = () => new Error('Package(s) not found: onnx')
+      const svc = await fresh()
+      const r = await svc.installRequirementsFor('i1', req, 'Foo')
+      expect(r.ok).toBe(false)
+      expect(r.unresolved).toEqual(['onnx>=1.10'])
+      expect(r.error).toMatch(/Still missing after install/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('rejects while a node-pack operation is running (cross-guard, 0.1.12)', async () => {

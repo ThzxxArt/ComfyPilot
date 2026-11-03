@@ -23,12 +23,20 @@ describe('parsePipRequirement', () => {
     expect(r?.specifier).toBe('>=2.6.0,<3')
   })
 
-  it('rejects comments, options, URLs, paths and editable installs', () => {
+  it('parses named, VCS and wheel direct references by inferred name', () => {
+    const named = parsePipRequirement('sam2 @ git+https://github.com/facebookresearch/sam2')
+    expect(named?.name).toBe('sam2')
+    expect(named?.directUrl).toContain('facebookresearch/sam2')
+    expect(parsePipRequirement('git+https://github.com/a/b.git')?.name).toBe('b')
+    expect(parsePipRequirement('https://example.com/pkg-1.0-py3-none-any.whl')?.name).toBe('pkg')
+  })
+
+  it('rejects comments, options, paths, unnameable URLs and editable installs', () => {
     expect(parsePipRequirement('# comment')).toBeNull()
     expect(parsePipRequirement('-r other.txt')).toBeNull()
-    expect(parsePipRequirement('https://example.com/pkg.whl')).toBeNull()
     expect(parsePipRequirement('./local-pkg')).toBeNull()
-    expect(parsePipRequirement('git+https://github.com/a/b.git')).toBeNull()
+    expect(parsePipRequirement('https://example.com/a.zip')).toBeNull()
+    expect(parsePipRequirement('-e ./local-pkg')).toBeNull()
     expect(parsePipRequirement('')).toBeNull()
   })
 
@@ -112,7 +120,10 @@ describe('comparePipVersions', () => {
     expect(req?.extras).toEqual(['cuda'])
     expect(req?.specifier).toBe('>=2.0,<3')
     expect(parsePipRequirement('-r other.txt')).toBeNull()
-    expect(parsePipRequirement('https://example.com/a.whl')).toBeNull()
+    expect(parsePipRequirement('https://example.com/a.whl')?.directUrl).toBe(
+      'https://example.com/a.whl'
+    )
+    expect(parsePipRequirement('https://example.com/a.zip')).toBeNull()
   })
 
   it('handles token-count mismatch, alpha-vs-numeric and local ordering', () => {

@@ -202,6 +202,65 @@ describe('NodePackService.depsAudit (0.1.12)', () => {
     ])
   })
 
+  it('keeps an unsupported-only pack out of the actionable list (0.2.2)', async () => {
+    seedPack('GitPack', 'git+https://github.com/example/bar\n')
+    h.execHandler = (_cmd, args) => {
+      if (args[0] === 'pip' && args[1] === 'list') {
+        return { stdout: JSON.stringify([]) }
+      }
+      return { stdout: '' }
+    }
+    const svc = await fresh()
+    const audit = await svc.depsAudit('i1')
+    expect(audit.ok).toBe(true)
+    expect(audit.packs).toEqual([])
+    expect(audit.unverifiable).toHaveLength(1)
+    expect(audit.unverifiable[0].name).toBe('GitPack')
+    expect(audit.unverifiable[0].lines[0]).toContain('example/bar')
+  })
+
+  it('still reports an actionable missing dependency next to an unsupported pack', async () => {
+    seedPack('MixedPack', 'missing-pkg\ngit+https://github.com/example/bar\n')
+    h.execHandler = (_cmd, args) => {
+      if (args[0] === 'pip' && args[1] === 'list') {
+        return { stdout: JSON.stringify([]) }
+      }
+      return { stdout: '' }
+    }
+    const svc = await fresh()
+    const audit = await svc.depsAudit('i1')
+    expect(audit.packs).toHaveLength(1)
+    expect(audit.packs[0].missing).toEqual(['missing-pkg'])
+    expect(audit.packs[0].unsupported?.[0]).toContain('example/bar')
+    expect(audit.unverifiable).toBeUndefined()
+  })
+
+  it('reports a clean pip check as ok', async () => {
+    h.execHandler = () => ({ stdout: '' })
+    const { pipCheck } = await import('../../src/main/services/depsAudit')
+    const result = await pipCheck('C:/comfy/.venv/Scripts/python.exe')
+    expect(result.ok).toBe(true)
+    expect(result.broken).toEqual([])
+  })
+
+  it('reports real pip check conflicts from the failed command output', async () => {
+    h.uvInstalled = false
+    h.execHandler = () => new Error('requests 2.0 requires urllib3, which is not installed')
+    const { pipCheck } = await import('../../src/main/services/depsAudit')
+    const result = await pipCheck('C:/comfy/.venv/Scripts/python.exe')
+    expect(result.ok).toBe(false)
+    expect(result.broken[0]).toContain('requires urllib3')
+  })
+
+  it('does not report ok when pip check could not run at all', async () => {
+    h.uvInstalled = false
+    h.execHandler = () => new Error('No module named pip')
+    const { pipCheck } = await import('../../src/main/services/depsAudit')
+    const result = await pipCheck('C:/comfy/.venv/Scripts/python.exe')
+    expect(result.ok).toBe(false)
+    expect(result.broken[0]).toContain('pip check unavailable')
+  })
+
   it('returns ok:false + pipAvailable:false when no package manager works', async () => {
     seedPack('Foo', 'onnx\n')
     h.uvInstalled = false
