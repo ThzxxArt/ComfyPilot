@@ -4,6 +4,8 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from 'fs'
+import { createServer } from 'http'
+import type { AddressInfo } from 'net'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -22,7 +24,8 @@ const h = vi.hoisted(() => {
       path: '/runtimes/python-3.13.18/python',
       version: '3.13.18'
     } as Record<string, unknown>,
-    uvComponent: null as null | Record<string, unknown>
+    uvComponent: null as null | Record<string, unknown>,
+    empPaths: [] as string[]
   }
   return { state }
 })
@@ -33,7 +36,7 @@ vi.mock('../../src/main/services/db', () => ({
 }))
 
 vi.mock('../../src/main/services/model', () => ({
-  parseExtraModelPaths: () => []
+  parseExtraModelPaths: () => h.state.empPaths
 }))
 
 vi.mock('../../src/main/services/instance', () => ({
@@ -162,6 +165,7 @@ describe('DoctorService (0.1.10 behaviour)', () => {
       version: '3.13.18'
     }
     h.state.uvComponent = null
+    h.state.empPaths = []
   })
 
   it('run() produces the full check matrix on a healthy install', async () => {
@@ -182,6 +186,43 @@ describe('DoctorService (0.1.10 behaviour)', () => {
     expect(byId.get('registry')?.severity).toBe('pass')
     expect(report.summary.pass).toBeGreaterThan(5)
     expect(report.durationMs).toBeGreaterThanOrEqual(0)
+  })
+
+  it('reports broken extra_model_paths entries and accepts a valid one', async () => {
+    const dir = seedMinimalInstall('extra-paths')
+    writeFileSync(join(dir, 'extra_model_paths.yaml'), 'comfyui:\n  base_path: .\n')
+    h.state.empPaths = [join(dir, 'models'), join(dir, 'missing-root')]
+    const svc = await freshDoctor()
+    let report = await svc.run('inst-1')
+    let check = report.checks.find((c: any) => c.id === 'extra-paths')!
+    expect(check.severity).toBe('warn')
+    expect(check.detail).toContain('Broken paths (1)')
+
+    h.state.empPaths = [join(dir, 'models')]
+    report = await svc.run('inst-1')
+    check = report.checks.find((c: any) => c.id === 'extra-paths')!
+    expect(check.severity).toBe('pass')
+    expect(check.detail).toContain('1 extra roots')
+  })
+
+  it('recognizes a running ComfyUI on a busy port instead of warning', async () => {
+    seedMinimalInstall('port-own')
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ system: { os: 'test' } }))
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
+    const port = (server.address() as AddressInfo).port
+    ;(h.state.instances[0] as { port: number }).port = port
+    try {
+      const svc = await freshDoctor()
+      const report = await svc.run('inst-1')
+      const check = report.checks.find((c: any) => c.id === 'port')!
+      expect(check.severity).toBe('info')
+      expect(check.detail).toContain('ComfyUI already running')
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
   })
 
   it('emits honest progress events — checked count, no fabricated total (0.1.15)', async () => {
