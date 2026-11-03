@@ -10,21 +10,32 @@ import { join } from 'path'
 import { staticLaunchFlags } from '@shared/launchArgs'
 import { resolveReadTarget } from './target'
 
+/**
+ * Flags declared by one installed ComfyUI tree, read from its own
+ * `comfy/cli_args.py`. Empty when the file is missing/unreadable — callers
+ * then fall back to the version gate.
+ */
+export function readCliArgsFlags(installPath: string): string[] {
+  if (!installPath) return []
+  const file = join(installPath, 'comfy', 'cli_args.py')
+  if (!existsSync(file)) return []
+  const flags = new Set<string>()
+  try {
+    const text = readFileSync(file, 'utf-8')
+    const re = /add_argument\(\s*['"](--[a-zA-Z0-9][a-zA-Z0-9-]*)['"]/g
+    let m: RegExpExecArray | null
+    while ((m = re.exec(text))) flags.add(m[1])
+  } catch {
+    return []
+  }
+  return [...flags].sort()
+}
+
 export function launchArgCatalog(instanceId?: string): string[] {
   const config = resolveReadTarget(instanceId)
   const flags = new Set<string>(staticLaunchFlags())
   if (config?.path) {
-    const file = join(config.path, 'comfy', 'cli_args.py')
-    if (existsSync(file)) {
-      try {
-        const text = readFileSync(file, 'utf-8')
-        const re = /add_argument\(\s*['"](--[a-zA-Z0-9][a-zA-Z0-9-]*)['"]/g
-        let m: RegExpExecArray | null
-        while ((m = re.exec(text))) flags.add(m[1])
-      } catch {
-        /* fall back to static */
-      }
-    }
+    for (const flag of readCliArgsFlags(config.path)) flags.add(flag)
   }
   return [...flags].sort()
 }

@@ -108,6 +108,22 @@ describe('findInRuntimes nested install_only layout', () => {
     )
     expect(findInRuntimes('uv')).toBeTruthy()
     expect(findInRuntimes('definitely-missing-binary-xyz')).toBeNull()
+
+    // 0.2.3: uv's managed CPython lives under our own runtimes tree when
+    // UV_PYTHON_INSTALL_DIR is set; findInRuntimes must resolve it too.
+    // Remove the portable runtime first — the walk returns the first match and
+    // `python-3.13.18` sorts before `uv-python`.
+    fs.rmSync(path.join(root, 'python-3.13.18'), { recursive: true, force: true })
+    const uvPyDir =
+      process.platform === 'win32'
+        ? path.join(root, 'uv-python', 'cpython-3.13.18-windows-x86_64-none')
+        : path.join(root, 'uv-python', 'cpython-3.13.18-linux-x86_64-gnu', 'bin')
+    fs.mkdirSync(uvPyDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(uvPyDir, process.platform === 'win32' ? 'python.exe' : 'python3.13'),
+      ''
+    )
+    expect(findInRuntimes('python')?.replace(/\\/g, '/')).toContain('uv-python/')
   })
 })
 

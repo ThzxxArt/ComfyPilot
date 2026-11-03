@@ -114,13 +114,18 @@ export function readLogFile(id: string): ComfyLogLine[] {
         // the level. A greedy `\s+` would swallow leading spaces from the
         // message and break ts|message dedupe against in-memory lines
         // (Python traceback indent lines would be duplicated).
-        const m = line.match(/^\[([^\]]+)\] (\w+) (.*)$/)
+        // `[\s\S]` (not `.`) because old logs written before the stream
+        // splitter treated bare `\r` as a separator contain CR inside the
+        // message. The previous `.` regex failed to match, fell back to
+        // `Date.now()` + the whole raw line, and duplicated the entry against
+        // the in-memory copy (the `ts|message` dedupe key differed).
+        const m = line.match(/^\[([^\]]+)\] (\w+) ([\s\S]*)$/)
         return {
           ts: m ? Date.parse(m[1]) : Date.now(),
           level: (m?.[2]?.toLowerCase() as ComfyLogLine['level']) || 'info',
-          // `??` (not `||`) so an empty message stays empty instead of
-          // falling back to the raw line and missing the dedupe key.
-          message: m ? m[3] : line
+          // Keep an empty message empty (never fall back to the raw line) so
+          // the `ts|message` dedupe key still matches the in-memory copy.
+          message: (m ? m[3] : line).replace(/\r/g, '')
         }
       })
   } catch {

@@ -925,6 +925,48 @@ describe('spawn argv contract', () => {
     expect(h.state.spawnCount).toBeGreaterThanOrEqual(1)
   })
 
+  it('does not warn about recent flags the installed cli_args.py declares', async () => {
+    write(
+      join(COMFY, 'comfy', 'cli_args.py'),
+      "parser.add_argument('--fast-disk')\n" +
+        "parser.add_argument('--enable-assets')\n" +
+        "parser.add_argument('--enable-asset-hashing')\n"
+    )
+    register(
+      cfg({
+        id: 'spawnrecent',
+        launchProfile: { fastDisk: true, assets: true, assetHashing: true }
+      })
+    )
+    h.state.fetchImpl = okStats
+    await svc.start('spawnrecent')
+    const logs = svc.getLogs('spawnrecent')
+    expect(logs.some((l) => l.message.includes('requires a recent ComfyUI build'))).toBe(false)
+    expect(h.state.spawnCount).toBeGreaterThanOrEqual(1)
+  })
+
+  it('still warns for a recent flag on a build that does not declare it', async () => {
+    write(join(COMFY, 'comfy', 'cli_args.py'), "parser.add_argument('--listen')\n")
+    write(join(COMFY, 'comfyui_version.py'), '__version__ = "0.30.0"\n')
+    register(cfg({ id: 'spawnold', launchProfile: { fastDisk: true } }))
+    h.state.fetchImpl = okStats
+    await svc.start('spawnold')
+    const logs = svc.getLogs('spawnold')
+    const warning = logs.find((l) => l.message.includes('--fast-disk requires a recent'))
+    expect(warning?.level).toBe('warn')
+  })
+
+  it('writes unknown-version advisories at info level, not warn', async () => {
+    write(join(COMFY, 'main.py'), 'print(1)\n')
+    write(join(COMFY, 'comfy', 'cli_args.py'), "parser.add_argument('--listen')\n")
+    register(cfg({ id: 'spawninfo', launchProfile: { fastDisk: true } }))
+    h.state.fetchImpl = okStats
+    await svc.start('spawninfo')
+    const logs = svc.getLogs('spawninfo')
+    const advisory = logs.find((l) => l.message.includes('--fast-disk requires a recent'))
+    expect(advisory?.level).toBe('info')
+  })
+
   it('warns when a path-valued flag points nowhere (still starts)', async () => {
     register(cfg({ id: 'badpath', extraArgs: ['--output-directory', 'no-such-dir-xyz'] }))
     h.state.fetchImpl = okStats
@@ -1102,6 +1144,34 @@ describe('version probe + cache', () => {
     expect(svc.list()[0].version).toBe('0.0.9')
   })
 
+  it('prefers comfyui_version.py over a bare commit stamp', () => {
+    write(join(COMFY, 'comfyui_version.py'), '__version__ = "0.43.0"\n')
+    write(join(COMFY, '.comfypilot-env.json'), JSON.stringify({ comfyCommit: 'ab08f7b2' }))
+    register(cfg({ id: 'ver' }))
+    expect(svc.list()[0].version).toBe('0.43.0')
+  })
+
+  it('keeps an explicit comfyVersion stamp above the build file', () => {
+    write(join(COMFY, 'comfyui_version.py'), '__version__ = "0.43.0"\n')
+    write(join(COMFY, '.comfypilot-env.json'), JSON.stringify({ comfyVersion: '0.44.1' }))
+    register(cfg({ id: 'ver' }))
+    expect(svc.list()[0].version).toBe('0.44.1')
+  })
+
+  it('ignores a corrupt stamp and falls through to the build version', () => {
+    write(join(COMFY, '.comfypilot-env.json'), '{bad json')
+    write(join(COMFY, 'comfyui_version.py'), '__version__ = "0.42.0"\n')
+    register(cfg({ id: 'ver' }))
+    expect(svc.list()[0].version).toBe('0.42.0')
+  })
+
+  it('ignores a malformed comfyui_version.py and still uses pyproject', () => {
+    write(join(COMFY, 'comfyui_version.py'), 'not python at all\n')
+    write(join(COMFY, 'pyproject.toml'), '[project]\nversion = "0.41.2"\n')
+    register(cfg({ id: 'ver' }))
+    expect(svc.list()[0].version).toBe('0.41.2')
+  })
+
   it('does not match version= that is not at line start', () => {
     write(join(COMFY, 'pyproject.toml'), 'name = "version = \\"1.0.0\\""\n')
     write(join(COMFY, 'main.py'), 'print(1)')
@@ -1144,6 +1214,20 @@ describe('version probe + cache', () => {
     write(join(COMFY, '.comfypilot-env.json'), JSON.stringify({ comfyVersion: 'fresh' }))
     svc.invalidateVersionCache()
     expect(svc.list()[0].version).toBe('fresh')
+  })
+})
+
+// ===========================================================================
+// getCapabilities
+// ===========================================================================
+describe('getCapabilities()', () => {
+  it('rejects an unknown instance and probes a registered one', async () => {
+    register(cfg({ id: 'caps' }))
+    h.state.fetchImpl = failFetch
+    await expect(svc.getCapabilities('missing-id')).rejects.toThrow('Instance not found')
+    const caps = await svc.getCapabilities('caps')
+    expect(caps?.instanceId).toBe('caps')
+    expect(caps?.online).toBe(false)
   })
 })
 
@@ -1910,6 +1994,32 @@ describe('getLogs / clearLogs', () => {
     expect(svc.clearLogs('clr')).toBe(true)
     expect(svc.getLogs('clr')).toEqual([])
     expect(svc.clearLogs('ghost')).toBe(false)
+  })
+
+  it('round-trips a bare-CR progress line without duplicating it', async () => {
+    register(cfg({ id: 'cr' }))
+    h.state.fetchImpl = failFetch
+    await svc.start('cr')
+    const child = childOf(svc, 'cr')
+    child.stdout.emit('data', Buffer.from('progress 10%\rEfficiency Nodes:\n'))
+    const logs = svc.getLogs('cr').filter((l) => l.message.includes('Efficiency Nodes'))
+    expect(logs).toHaveLength(1)
+    expect(logs[0].message).toBe('Efficiency Nodes:')
+    expect(logs[0].message).not.toContain('\r')
+  })
+
+  it('parses a legacy log line containing a bare CR with the original timestamp', async () => {
+    register(cfg({ id: 'crlegacy' }))
+    const ts = Date.UTC(2026, 10, 3, 11, 59, 19, 932)
+    mkdirSync(h.state.logs, { recursive: true })
+    writeFileSync(
+      join(h.state.logs, 'crlegacy.log'),
+      `[${new Date(ts).toISOString()}] INFO \rEfficiency Nodes:\n`
+    )
+    const logs = svc.getLogs('crlegacy')
+    expect(logs).toHaveLength(1)
+    expect(logs[0].ts).toBe(ts)
+    expect(logs[0].message).toBe('Efficiency Nodes:')
   })
 
   it('clearLogs also removes the rotated generation (0.1.17 WP10)', async () => {

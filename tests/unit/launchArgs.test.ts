@@ -249,6 +249,22 @@ describe('warnLaunchArgs', () => {
     ])
   })
 
+  it('silences flags declared by the installed cli_args.py on a cold start', () => {
+    const supportedFlags = ['--fast-disk', '--enable-assets', '--brand-new-flag']
+    // No version at all (cold start): the build's own argparse table is proof.
+    expect(warnLaunchArgs(['--fast-disk', '--enable-assets'], { supportedFlags })).toEqual([])
+    // A flag the static catalogue has never heard of is also supported when
+    // the installed build declares it.
+    expect(warnLaunchArgs(['--brand-new-flag'], { supportedFlags })).toEqual([])
+    // The on-disk declaration wins over an old version string: the build that
+    // will actually parse the argv is authoritative.
+    expect(warnLaunchArgs(['--fast-disk'], { version: '0.30.0', supportedFlags })).toEqual([])
+    // A flag absent from both sources still warns.
+    expect(warnLaunchArgs(['--nope'], { supportedFlags })).toEqual([
+      { code: 'unknown-flag', flag: '--nope', level: 'warning' }
+    ])
+  })
+
   it('exposes the confirmed-version constant used for warning tightening', async () => {
     const mod = await import('../../src/shared/launchArgs')
     expect(mod.RECENT_FLAGS_SINCE).toBe('0.39.0')

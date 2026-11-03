@@ -32,10 +32,12 @@ import {
   upsertInstanceConfig,
   loadSettings,
   userDataDir,
+  uvPythonInstallDir,
   saveInstallRun,
   loadLatestInstallRun,
   clearInstallRuns
 } from './db'
+import { readComfyVersion } from './comfyVersion'
 import { resolveWriteTarget } from './target'
 import {
   hasParentHop,
@@ -529,7 +531,13 @@ export class InstallerService extends EventEmitter {
           timeout: opts?.timeout ?? EXEC_OPTS.timeout,
           windowsHide: true,
           maxBuffer: EXEC_OPTS.maxBuffer,
-          env: comfyChildEnv(loadSettings())
+          // uv installs its managed CPython into ComfyPilot's own runtimes
+          // tree instead of the global `%APPDATA%/uv/python` store, so the
+          // venv base interpreter is covered by the app's lifecycle.
+          env: {
+            ...comfyChildEnv(loadSettings()),
+            UV_PYTHON_INSTALL_DIR: uvPythonInstallDir()
+          }
         },
         (err, stdout, stderr) => {
           if (trackable) {
@@ -1461,6 +1469,9 @@ export class InstallerService extends EventEmitter {
             createdAt: Date.now(),
             isolated: true,
             comfySource,
+            // Semantic version of the tree we actually installed. Without it
+            // the instance card fell back to the short commit sha.
+            comfyVersion: readComfyVersion(comfyDir),
             // Only a real fetch updates this timestamp; reusing an existing
             // tree must not pretend it was just downloaded.
             ...(comfyFetched ? { comfyFetchedAt: Date.now() } : {})

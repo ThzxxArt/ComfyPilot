@@ -245,6 +245,26 @@ describe('DoctorService (0.1.10 behaviour)', () => {
     const byId = new Map<string, any>(report.checks.map((c: any) => [c.id, c]))
     expect(byId.get('venv')?.severity).toBe('pass')
     expect(byId.get('venv')?.detail).toContain('3.13.18')
+    // No `home` line: nothing to flag about the base interpreter.
+    expect(byId.get('venv-base')).toBeUndefined()
+  })
+
+  it('warns when the venv base interpreter is uv’s global store', async () => {
+    const dir = seedMinimalInstall('uv-venv-global')
+    const venv = join(dir, 'venv')
+    mkdirSync(venv, { recursive: true })
+    writeFileSync(
+      join(venv, 'pyvenv.cfg'),
+      'home = C:\\Users\\t\\AppData\\Roaming\\uv\\python\\cpython-3.13.18-windows-x86_64-none\n' +
+        'version_info = 3.13.18\n'
+    )
+    ;(h.state.instances[0] as { venvPath: string }).venvPath = venv
+    const svc = await freshDoctor()
+    const report = await svc.run('inst-1')
+    const byId = new Map<string, any>(report.checks.map((c: any) => [c.id, c]))
+    expect(byId.get('venv')?.severity).toBe('pass')
+    expect(byId.get('venv-base')?.severity).toBe('warn')
+    expect(byId.get('venv-base')?.detail).toContain('uv global store')
   })
 
   it('rejects a uv pyvenv.cfg version_info that is not 3.13', async () => {
@@ -448,6 +468,43 @@ describe('DoctorService (0.1.10 behaviour)', () => {
     const res = await svc.fix('inst-1', 'create-custom-nodes')
     expect(res.ok).toBe(true)
     expect(existsSync(join(dir, 'custom_nodes'))).toBe(true)
+  })
+
+  it('detects and repairs a missing Impact Pack config', async () => {
+    const dir = seedMinimalInstall('impact-config')
+    const pack = join(dir, 'custom_nodes', 'ComfyUI-Impact-Pack')
+    mkdirSync(pack, { recursive: true })
+    const svc = await freshDoctor()
+    const report = await svc.run('inst-1')
+    const check = report.checks.find((c: any) => c.id === 'impact-pack-config')!
+    expect(check.severity).toBe('warn')
+    expect(check.fixId).toBe('repair-impact-pack-config')
+
+    const res = await svc.fix('inst-1', 'repair-impact-pack-config')
+    expect(res.ok).toBe(true)
+    const text = readFileSync(join(pack, 'impact-pack.ini'), 'utf-8')
+    expect(text).toContain('[default]')
+    expect(text).toContain('custom_wildcards =')
+    expect(text).toContain('wildcard_cache_limit_mb = 50')
+    expect(existsSync(join(pack, 'custom_wildcards'))).toBe(true)
+
+    const after = await svc.run('inst-1')
+    expect(after.checks.some((c: any) => c.id === 'impact-pack-config')).toBe(false)
+  })
+
+  it('does not flag a valid Impact Pack config', async () => {
+    const dir = seedMinimalInstall('impact-ok')
+    const pack = join(dir, 'custom_nodes', 'ComfyUI-Impact-Pack')
+    mkdirSync(pack, { recursive: true })
+    writeFileSync(join(pack, 'impact-pack.ini'), '[default]\nsam_editor_cpu = False\n')
+    const svc = await freshDoctor()
+    const report = await svc.run('inst-1')
+    expect(report.checks.some((c: any) => c.id === 'impact-pack-config')).toBe(false)
+
+    // The fix must refuse when the pack itself is not installed.
+    rmSync(pack, { recursive: true, force: true })
+    const missing = await svc.fix('inst-1', 'repair-impact-pack-config')
+    expect(missing.ok).toBe(false)
   })
 
   it('fix unpin-torch rewrites exact torch pins in custom node requirements', async () => {

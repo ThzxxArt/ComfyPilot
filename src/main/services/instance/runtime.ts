@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'fs'
 import { join, dirname } from 'path'
 import type { ComfyInstanceConfig, ComfyInstanceInfo, InstanceCapabilities } from '@shared/types'
 import { capabilityService } from '../capabilities'
+import { readComfyVersion } from '../comfyVersion'
 import { loadInstanceConfigs } from '../db'
 import type { InstanceServiceContext, RuntimeEntry } from './types'
 
@@ -43,39 +44,34 @@ export function invalidateVersionCache(ctx: InstanceServiceContext, installPath?
 export function probeVersion(ctx: InstanceServiceContext, installPath: string): string | undefined {
   if (ctx.versionCache.has(installPath)) return ctx.versionCache.get(installPath)
   let version: string | undefined
+  const stamps: Array<{
+    comfyVersion?: string
+    comfyCommit?: string
+    comfyFetchedAt?: number
+  }> = []
   try {
-    // Prefer the install stamp written by installer/updater (commit sha or fetch date).
     const envCandidates = [
       join(installPath, '.comfypilot-env.json'),
       join(dirname(installPath), '.comfypilot-env.json')
     ]
     for (const f of envCandidates) {
       if (!existsSync(f)) continue
-      const data = JSON.parse(readFileSync(f, 'utf-8')) as {
-        comfyVersion?: string
-        comfyCommit?: string
-        comfyFetchedAt?: number
-      }
-      if (data.comfyVersion) {
-        version = data.comfyVersion
-        break
-      }
-      if (data.comfyCommit) {
-        version = data.comfyCommit.slice(0, 12)
-        break
-      }
-      if (data.comfyFetchedAt) {
-        version = new Date(data.comfyFetchedAt).toISOString().slice(0, 10)
-        break
+      try {
+        stamps.push(JSON.parse(readFileSync(f, 'utf-8')))
+      } catch {
+        /* corrupt stamp — keep looking */
       }
     }
+    // Priority: explicit stamp > build's own version file > pyproject >
+    // commit/date fallback. The old order put `comfyCommit` first, so a normal
+    // git install displayed `ab08f7b2` instead of `0.43.0`.
+    version = stamps.find((s) => s.comfyVersion)?.comfyVersion
+    if (!version) version = readComfyVersion(installPath)
     if (!version) {
-      const pyproject = join(installPath, 'pyproject.toml')
-      if (existsSync(pyproject)) {
-        const text = readFileSync(pyproject, 'utf-8')
-        const m = text.match(/^\s*version\s*=\s*["']([^"']+)["']/m)
-        if (m) version = m[1]
-      }
+      const commit = stamps.find((s) => s.comfyCommit)?.comfyCommit
+      const fetchedAt = stamps.find((s) => s.comfyFetchedAt)?.comfyFetchedAt
+      if (commit) version = commit.slice(0, 12)
+      else if (fetchedAt) version = new Date(fetchedAt).toISOString().slice(0, 10)
     }
     if (!version && existsSync(join(installPath, 'main.py'))) version = 'detected'
     if (!version && existsSync(join(installPath, 'requirements.txt'))) version = 'detected'

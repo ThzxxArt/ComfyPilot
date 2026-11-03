@@ -131,6 +131,7 @@ export class DoctorService extends EventEmitter {
     if (config?.venvPath) {
       const cfgFile = join(config.venvPath, 'pyvenv.cfg')
       let venvVersion = ''
+      let venvHome = ''
       try {
         if (existsSync(cfgFile)) {
           const text = readFileSync(cfgFile, 'utf-8')
@@ -140,6 +141,7 @@ export class DoctorService extends EventEmitter {
           venvVersion =
             (text.match(/^\s*version(?:_info)?\s*=\s*(\d+\.\d+(?:\.\d+)?)/im) || [])[1]?.trim() ||
             ''
+          venvHome = (text.match(/^\s*home\s*=\s*(.+)$/im) || [])[1]?.trim() || ''
         }
       } catch {
         /* unreadable cfg is reported below */
@@ -158,6 +160,22 @@ export class DoctorService extends EventEmitter {
         fixable: !venvVersion.startsWith('3.13'),
         fixId: venvVersion.startsWith('3.13') ? undefined : 'migrate-python-313'
       })
+      // 0.2.3: a venv whose base interpreter lives in uv's *global* store
+      // breaks if the user uninstalls/cleans uv. New installs pin
+      // UV_PYTHON_INSTALL_DIR to ComfyPilot's runtimes tree; surface legacy
+      // ones so a repair can move them.
+      if (/[\\/]uv[\\/]python[\\/]/i.test(venvHome)) {
+        checks.push({
+          id: 'venv-base',
+          group: 'Environment',
+          title: 'Venv base interpreter',
+          severity: 'warn',
+          detail: `uv global store: ${venvHome}`,
+          suggestion:
+            'This venv depends on uv’s global Python store. Run “Repair environment” with “recreate venv” to move it under ComfyPilot-managed runtimes.',
+          fixable: false
+        })
+      }
     }
 
     // 2b. pip availability (0.1.12 WP4) — uv-created venvs ship without pip
@@ -313,6 +331,39 @@ export class DoctorService extends EventEmitter {
       fixable: !hasCN && Boolean(installPath),
       fixId: 'create-custom-nodes'
     })
+
+    // 5a. Impact Pack writes `impact-pack.ini` from install.py. Git-based
+    // installs that skipped that script log a KeyError('default') traceback on
+    // every boot, then silently fall back to hardcoded defaults. Detect it so
+    // the config can be regenerated deliberately instead of leaving a
+    // permanent ERROR in the startup log.
+    if (hasCN) {
+      const impactDir = join(customNodes, 'ComfyUI-Impact-Pack')
+      if (existsSync(impactDir)) {
+        const ini = join(impactDir, 'impact-pack.ini')
+        let valid = false
+        try {
+          valid = existsSync(ini) && /^\s*\[default\]/im.test(readFileSync(ini, 'utf-8'))
+        } catch {
+          valid = false
+        }
+        if (!valid) {
+          checks.push({
+            id: 'impact-pack-config',
+            group: 'Extensions',
+            title: 'ComfyUI-Impact-Pack config',
+            severity: 'warn',
+            detail: existsSync(ini)
+              ? 'impact-pack.ini has no [default] section'
+              : 'impact-pack.ini is missing (install.py was not run)',
+            suggestion:
+              'Regenerate impact-pack.ini with the pack’s documented defaults. Until then the pack logs a KeyError traceback on every boot and uses hardcoded defaults.',
+            fixable: true,
+            fixId: 'repair-impact-pack-config'
+          })
+        }
+      }
+    }
 
     // 6. extra_model_paths.yaml validity
     const emp = installPath ? join(installPath, 'extra_model_paths.yaml') : ''
@@ -622,6 +673,32 @@ export class DoctorService extends EventEmitter {
         const dir = join(installPath, 'custom_nodes')
         mkdirSync(dir, { recursive: true })
         return { ok: true, message: `Created ${dir}` }
+      }
+      case 'repair-impact-pack-config': {
+        const packDir = join(installPath, 'custom_nodes', 'ComfyUI-Impact-Pack')
+        if (!existsSync(packDir)) {
+          return { ok: false, message: 'ComfyUI-Impact-Pack is not installed' }
+        }
+        const wildcards = join(packDir, 'custom_wildcards')
+        mkdirSync(wildcards, { recursive: true })
+        // Mirrors ComfyUI-Impact-Pack's own install.py/write_config defaults.
+        writeFileSync(
+          join(packDir, 'impact-pack.ini'),
+          [
+            '[default]',
+            'sam_editor_cpu = False',
+            'sam_editor_model = sam_vit_b_01ec64.pth',
+            `custom_wildcards = ${wildcards}`,
+            'disable_gpu_opencv = True',
+            'gpu_gaussian_blur = False',
+            'wildcard_cache_limit_mb = 50',
+            ''
+          ].join('\n')
+        )
+        return {
+          ok: true,
+          message: `Regenerated ${join(packDir, 'impact-pack.ini')} with the pack's default settings`
+        }
       }
       case 'unpin-torch': {
         // Real fix: rewrite requirements.txt to relax exact torch pins

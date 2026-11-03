@@ -110,12 +110,12 @@
     "functions": 0
   },
   "src/main/services/bootstrap.ts": {
-    "lines": 68.77,
-    "branches": 54.77,
+    "lines": 69.11,
+    "branches": 54.39,
     "functions": 88.64
   },
   "src/main/services/capabilities.ts": {
-    "lines": 67.03,
+    "lines": 68.13,
     "branches": 66.3,
     "functions": 75
   },
@@ -128,6 +128,11 @@
     "lines": 90.83,
     "branches": 69.09,
     "functions": 88.89
+  },
+  "src/main/services/comfyVersion.ts": {
+    "lines": 100,
+    "branches": 100,
+    "functions": 100
   },
   "src/main/services/db/backups.ts": {
     "lines": 12.5,
@@ -175,9 +180,9 @@
     "functions": 61.54
   },
   "src/main/services/db/paths.ts": {
-    "lines": 93.1,
+    "lines": 93.55,
     "branches": 100,
-    "functions": 80
+    "functions": 83.33
   },
   "src/main/services/db/remote.ts": {
     "lines": 73.53,
@@ -210,14 +215,14 @@
     "functions": 7.69
   },
   "src/main/services/doctor.ts": {
-    "lines": 87.77,
-    "branches": 72.6,
+    "lines": 88.4,
+    "branches": 74,
     "functions": 87.5
   },
   "src/main/services/env.ts": {
-    "lines": 58.07,
-    "branches": 49.57,
-    "functions": 54.55
+    "lines": 58.87,
+    "branches": 50.7,
+    "functions": 55.88
   },
   "src/main/services/envLock.ts": {
     "lines": 100,
@@ -250,9 +255,9 @@
     "functions": 100
   },
   "src/main/services/instance/index.ts": {
-    "lines": 94.23,
+    "lines": 96.15,
     "branches": 66.67,
-    "functions": 93.33
+    "functions": 95.56
   },
   "src/main/services/instance/launchArgs.ts": {
     "lines": 100,
@@ -260,13 +265,13 @@
     "functions": 100
   },
   "src/main/services/instance/lifecycle.ts": {
-    "lines": 89.34,
-    "branches": 71.32,
+    "lines": 89.4,
+    "branches": 71.75,
     "functions": 88.73
   },
   "src/main/services/instance/logs.ts": {
     "lines": 98.15,
-    "branches": 88.37,
+    "branches": 90.7,
     "functions": 100
   },
   "src/main/services/instance/python.ts": {
@@ -275,9 +280,9 @@
     "functions": 100
   },
   "src/main/services/instance/runtime.ts": {
-    "lines": 93.33,
-    "branches": 90.2,
-    "functions": 77.78
+    "lines": 100,
+    "branches": 95.74,
+    "functions": 100
   },
   "src/main/services/instance/selfcheck.ts": {
     "lines": 55.56,
@@ -466,7 +471,7 @@
   },
   "src/main/services/startupIssues.ts": {
     "lines": 100,
-    "branches": 82,
+    "branches": 96,
     "functions": 100
   },
   "src/main/services/target.ts": {
@@ -800,8 +805,8 @@
     "functions": 100
   },
   "src/shared/launchArgs.ts": {
-    "lines": 98.77,
-    "branches": 94.14,
+    "lines": 98.78,
+    "branches": 94.25,
     "functions": 100
   },
   "src/shared/logLine.ts": {

@@ -21,6 +21,26 @@ export function userDataDir(): string {
 }
 
 /**
+ * ComfyPilot-managed portable runtimes (uv, portable CPython, MinGit).
+ * Lives next to `data/`, not inside it: these are large binaries, not
+ * user-editable configuration.
+ */
+export function runtimesDir(): string {
+  return ensureDir(join(app.getPath('userData'), 'runtimes'))
+}
+
+/**
+ * uv's managed CPython store, pinned inside ComfyPilot's runtimes tree.
+ *
+ * Without this, `uv python install` writes to the user's global uv store and
+ * an instance venv silently depends on a directory ComfyPilot does not own
+ * (or back up). New installs/repairs set `UV_PYTHON_INSTALL_DIR` to this path.
+ */
+export function uvPythonInstallDir(): string {
+  return ensureDir(join(runtimesDir(), 'uv-python'))
+}
+
+/**
  * Cache root for regenerable ComfyPilot data (thumbnails, registry index).
  *
  * MUST NOT be `<userData>/cache`: on Windows/macOS the filesystem is

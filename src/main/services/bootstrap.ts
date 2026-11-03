@@ -27,7 +27,6 @@ import { join, dirname, resolve, basename } from 'path'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { createHash } from 'crypto'
-import { app } from 'electron'
 import type {
   BootstrapStatus,
   RuntimeComponentStatus,
@@ -35,18 +34,12 @@ import type {
   RuntimeKind
 } from '@shared/types'
 import { PYTHON_RUNTIME_VERSION, RUNTIME_SOURCES } from '@shared/constants'
-import { loadSettings } from './db'
+import { loadSettings, runtimesDir } from './db'
 import { comfyChildEnv } from './childEnv'
 import { isPathInside, normalizePathEverySegment } from './security'
 import { assertExtractedInside, safeUnzip } from './zipSafe'
 
 const execFileAsync = promisify(execFile)
-
-function runtimesDir(): string {
-  const dir = join(app.getPath('userData'), 'runtimes')
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-  return dir
-}
 
 function downloadCacheDir(): string {
   const dir = join(runtimesDir(), 'downloads')
@@ -344,6 +337,23 @@ export function findInRuntimes(name: string): string | null {
     for (const entry of candidates) {
       const found = walk(join(root, entry), 0)
       if (found) return found
+    }
+    // 0.2.3: new installs pin uv's managed CPython under our own runtimes
+    // tree (`UV_PYTHON_INSTALL_DIR`). It is a real managed 3.13 runtime and
+    // must be visible to Doctor / "repair environment" instead of being
+    // mistaken for "no Python installed".
+    const uvRoot = join(root, 'uv-python')
+    try {
+      const uvEntries = readdirSync(uvRoot)
+        .filter((e) => /^cpython-3\.13\b/.test(e) || /^cpython-3\.13\./.test(e))
+        .sort()
+        .reverse()
+      for (const entry of uvEntries) {
+        const found = walk(join(uvRoot, entry), 0)
+        if (found) return found
+      }
+    } catch {
+      /* uv-python not present */
     }
     return null
   }

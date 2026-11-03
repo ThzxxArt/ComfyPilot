@@ -14,6 +14,7 @@ const h = vi.hoisted(() => {
     root: '',
     calls: [] as Array<{ cmd: string; args: string[] }>,
     handler: null as ((cmd: string, args: string[]) => { stdout: string } | Error) | null,
+    envs: [] as Array<Record<string, string> | undefined>,
     portablePython: null as string | null
   }
   return { state }
@@ -48,14 +49,20 @@ vi.mock('child_process', () => {
     })
     return { pid: 1 }
   }
-  execFile[PROMISIFY_CUSTOM] = (cmd: string, args: string[]) =>
-    new Promise((resolve, reject) => {
+  execFile[PROMISIFY_CUSTOM] = (
+    cmd: string,
+    args: string[],
+    opts?: { env?: Record<string, string> }
+  ) => {
+    h.state.envs.push(opts?.env)
+    return new Promise((resolve, reject) => {
       const result = runHandler(cmd, args)
       queueMicrotask(() => {
         if (result instanceof Error) reject(result)
         else resolve({ stdout: result.stdout, stderr: '' })
       })
     })
+  }
   return { execFile, execFileSync: () => '', spawn: () => ({ pid: 1, kill: () => undefined }) }
 })
 
@@ -65,6 +72,7 @@ describe('EnvService (0.1.10 behaviour)', () => {
     if (h.state.root) rmSync(h.state.root, { recursive: true, force: true })
     h.state.root = mkdtempSync(join(tmpdir(), 'cp-env-'))
     h.state.calls = []
+    h.state.envs = []
     h.state.handler = null
     h.state.portablePython = null
     vi.resetModules()
@@ -110,6 +118,37 @@ describe('EnvService (0.1.10 behaviour)', () => {
     })
     expect(probe.pythonVersion).toContain('Python')
     expect(h.state.calls.some((c) => c.args.includes('venv'))).toBe(true)
+  })
+
+  it('pins uv-managed CPython into ComfyPilot runtimes', async () => {
+    const { envService } = await import('../../src/main/services/env')
+    h.state.handler = (_cmd, args) => {
+      if (args.includes('venv')) {
+        const dir = args[args.indexOf('venv') + 1]
+        mkdirSync(join(dir, 'bin'), { recursive: true })
+        writeFileSync(join(dir, 'bin', 'python'), 'x')
+      }
+      if (args[0] === '--version') return { stdout: 'Python 3.13.0' }
+      if (args[0] === '-c') return { stdout: '{"torch":"2.9.0"}' }
+      if (args.includes('list')) return { stdout: '[]' }
+      return { stdout: '' }
+    }
+    await envService.createVenv({
+      basePath: h.state.root,
+      name: 'venv-uv',
+      pythonPath: 'python',
+      useUv: true
+    })
+    const uvVenv = h.state.calls.find((c) => c.cmd === 'uv' && c.args.includes('venv'))
+    expect(uvVenv).toBeTruthy()
+    // The venv base interpreter must be app-owned, not `%APPDATA%/uv/python`.
+    expect(
+      h.state.envs.some((env) =>
+        String(env?.UV_PYTHON_INSTALL_DIR || '')
+          .replace(/\\/g, '/')
+          .endsWith('/uv-python')
+      )
+    ).toBe(true)
   })
 
   it('installTorch reports success and failure truthfully', async () => {

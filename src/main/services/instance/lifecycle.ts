@@ -19,7 +19,9 @@ import { killProcessTree } from '../processTree'
 import { COMFY_DEFAULT_PORTS } from '@shared/constants'
 import { warnLaunchArgs } from '@shared/launchArgs'
 import { capabilityService } from '../capabilities'
+import { readCliArgsFlags } from '../launchArgCatalog'
 import { pythonVersionText } from './python'
+import { probeVersion } from './runtime'
 import {
   READY_EXTEND_MS,
   READY_POLL_MS,
@@ -510,15 +512,22 @@ async function startInner(
   // Refuse argparse-fatal combos (mutually exclusive groups) BEFORE spawn —
   // ComfyUI would otherwise exit instantly with an opaque usage error.
   ctx.assertLaunchArgsValid(rt, args)
-  // Advisories never block: unknown/recent flags may still be perfectly valid
-  // (version drift), so they only land in the instance log. When the online
-  // version is known, confirmed-recent flags are silenced entirely.
-  for (const w of warnLaunchArgs(args, {
-    version: capabilityService.cachedForInstance(rt.config.id)?.version
-  })) {
+  // Advisories never block. Two independent sources of truth keep them
+  // honest on a cold start (no online version cached yet):
+  //  1. the installed build's own `comfy/cli_args.py` — flag exists ⇒ supported;
+  //  2. a semantic version read from disk (comfyui_version.py / pyproject)
+  //     — only used when the build did not expose the flag.
+  // A commit sha or `detected` must not be fed to versionAtLeast: it would
+  // either warn as "old" or, for a sha starting with digits, silently pass.
+  const onDiskVersion = probeVersion(ctx, rt.config.path)
+  const version = /^v?\d+\.\d+/.test(onDiskVersion || '')
+    ? onDiskVersion
+    : capabilityService.cachedForInstance(rt.config.id)?.version
+  const supportedFlags = readCliArgsFlags(rt.config.path)
+  for (const w of warnLaunchArgs(args, { version, supportedFlags })) {
     ctx.pushLog(
       rt,
-      'warn',
+      w.level === 'warning' ? 'warn' : 'info',
       w.code === 'unknown-flag'
         ? `Unrecognized flag ${w.flag}`
         : w.code === 'duplicate-listen'
@@ -568,9 +577,14 @@ async function startInner(
       (stream: 'stdout' | 'stderr') =>
       (buf: Buffer): void => {
         if (rt.generation !== gen) return
+        // Bare `\r` is a real line separator in child output: ComfyUI and node
+        // packs use it for progress rewrites. Leaving it inside the message
+        // wrote `[ts] INFO \rtext` to disk, which readLogFile could not parse
+        // (JS `.` does not match `\r`) and re-emitted with a fabricated
+        // timestamp — a duplicated, double-prefixed line.
         buf
           .toString('utf-8')
-          .split(/\r?\n/)
+          .split(/\r\n|\r|\n/)
           .forEach((raw) => {
             if (!raw.trim()) return
             const line = stripAnsi(raw)

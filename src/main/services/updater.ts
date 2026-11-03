@@ -49,6 +49,7 @@ import type {
 import { loadInstanceConfigs, loadSettings } from './db'
 import { normalizePathEverySegment, hasParentHop, isSafeExternalUrl } from './security'
 import { comfyChildEnv } from './childEnv'
+import { readComfyVersion } from './comfyVersion'
 import { killProcessTree } from './processTree'
 import { resolveTorchIndex, officialTorchIndex, applyGithubMirror } from './installer'
 import { resolveGitBinary } from './nodePack'
@@ -956,6 +957,9 @@ export class ComfyUpdaterService extends EventEmitter {
         ).trim()
         stampInstallMeta(comfyDir, {
           comfyCommit: sha,
+          // Semantic version from the updated tree, so the instance card and
+          // the launch-flag gate never fall back to a bare commit sha.
+          comfyVersion: readComfyVersion(comfyDir),
           comfyFetchedAt: Date.now(),
           comfySource: 'git'
         })
@@ -969,6 +973,7 @@ export class ComfyUpdaterService extends EventEmitter {
         stampInstallMeta(comfyDir, {
           comfyFetchedAt: Date.now(),
           comfyCommit: undefined,
+          comfyVersion: readComfyVersion(comfyDir),
           comfySource: 'zip'
         })
         this.setStep('fetch', 'done', 'Archive overlaid', undefined, 'update.msgFetchZipDone')

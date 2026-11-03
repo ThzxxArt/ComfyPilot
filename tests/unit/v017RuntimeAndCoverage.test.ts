@@ -163,6 +163,14 @@ describe('DB: path helpers', () => {
     expect(typeof backupDir()).toBe('string')
   })
 
+  it('runtimesDir and uvPythonInstallDir live under userData (app-owned)', async () => {
+    const { uvPythonInstallDir, runtimesDir } = await import('@main/services/db')
+    const root = runtimesDir().replace(/\\/g, '/')
+    const uv = uvPythonInstallDir().replace(/\\/g, '/')
+    expect(root.endsWith('/runtimes')).toBe(true)
+    expect(uv).toBe(`${root}/uv-python`)
+  })
+
   it('workflowLibraryDir returns a string', async () => {
     const { workflowLibraryDir } = await import('@main/services/db')
     expect(typeof workflowLibraryDir()).toBe('string')

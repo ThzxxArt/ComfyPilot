@@ -373,6 +373,15 @@ export const RECENT_FLAGS_SINCE = '0.39.0'
 export interface WarnLaunchArgsOptions {
   /** Running instance version (from capability probing), when known. */
   version?: string
+  /**
+   * Flags declared by the instance's own `comfy/cli_args.py`.
+   *
+   * A cold start has no running version yet, so the version-only gate used to
+   * warn about flags the installed build demonstrably supports. Reading the
+   * build's own argparse table is authoritative: if the flag is declared
+   * there, silence the advisory even when the version is unknown.
+   */
+  supportedFlags?: Iterable<string>
 }
 
 /**
@@ -386,9 +395,13 @@ export function warnLaunchArgs(args: string[], opts?: WarnLaunchArgsOptions): La
   const version = String(opts?.version || '').trim()
   // true: confirmed supported here; false: confirmed older; undefined: unknown.
   const recentSupported = version ? versionAtLeast(version, RECENT_FLAGS_SINCE) : undefined
+  const supported = opts?.supportedFlags ? new Set(opts.supportedFlags) : null
   for (const a of args) {
     if (!a.startsWith('--') || seen.has(a)) continue
     seen.add(a)
+    // The build's own cli_args.py is the strongest evidence: the flag exists
+    // in the code that will parse this argv, so no version guess applies.
+    if (supported?.has(a)) continue
     const entry = CATALOG_MAP.get(a)
     if (!entry) {
       out.push({ code: 'unknown-flag', flag: a, level: 'warning' })

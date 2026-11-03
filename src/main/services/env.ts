@@ -18,12 +18,38 @@ import { parsePipRequirement } from '@shared/pipVersion'
 
 const execFileAsync = promisify(execFile)
 
+function childEnv(): NodeJS.ProcessEnv {
+  return comfyChildEnv(loadSettings())
+}
+
+/**
+ * Child env for uv commands that create/install a Python. Keeping
+ * `UV_PYTHON_INSTALL_DIR` inside ComfyPilot's runtimes tree means the venv
+ * base interpreter is app-owned, not a hidden dependency on the user's global
+ * `%APPDATA%/uv/python` store.
+ *
+ * The dynamic import keeps partial `db` mocks used by unit tests from
+ * throwing on a missing named export.
+ */
+async function uvChildEnv(): Promise<NodeJS.ProcessEnv> {
+  const env = childEnv()
+  try {
+    const db = await import('./db')
+    const dir = (db as { uvPythonInstallDir?: () => string }).uvPythonInstallDir
+    if (typeof dir === 'function') env.UV_PYTHON_INSTALL_DIR = dir()
+  } catch {
+    /* partial db mock — tests still exercise the uv command itself */
+  }
+  return env
+}
+
 async function safeExec(
   cmd: string,
   args: string[],
   cwd?: string,
   timeoutMs = 20000,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  env?: NodeJS.ProcessEnv
 ): Promise<string> {
   try {
     // Must inherit app proxy settings — previously env-created venv/pip ignored them
@@ -34,7 +60,7 @@ async function safeExec(
       windowsHide: true,
       maxBuffer: 20 * 1024 * 1024,
       signal,
-      env: comfyChildEnv(loadSettings())
+      env: env ?? childEnv()
     })
     return stdout.trim()
   } catch (err) {
@@ -63,7 +89,7 @@ export const throwingExec: ExecLike = async (cmd, args, opts) => {
     timeout: opts?.timeout,
     windowsHide: true,
     maxBuffer: 20 * 1024 * 1024,
-    env: comfyChildEnv(loadSettings())
+    env: childEnv()
   })
   return `${stdout || ''}${stderr || ''}`.trim()
 }
@@ -641,7 +667,9 @@ export class EnvService extends EventEmitter {
         'uv',
         ['venv', venvPath, '--python', req.pythonPath, '--seed'],
         undefined,
-        LONG_TIMEOUT_MS
+        LONG_TIMEOUT_MS,
+        undefined,
+        await uvChildEnv()
       )
     } else {
       await safeExec(req.pythonPath, ['-m', 'venv', venvPath], undefined, LONG_TIMEOUT_MS)
@@ -849,8 +877,16 @@ export class EnvService extends EventEmitter {
         mkdirSync(venvPath, { recursive: true })
         mkdirSync(join(venvPath, '..'), { recursive: true })
         if (uvComp?.path) {
+          const uvEnv = await uvChildEnv()
           try {
-            await safeExec(uvComp.path, ['python', 'install', '3.13.18'], undefined, 180000, signal)
+            await safeExec(
+              uvComp.path,
+              ['python', 'install', '3.13.18'],
+              undefined,
+              180000,
+              signal,
+              uvEnv
+            )
           } catch (err) {
             if (signal.aborted || (err as Error)?.name === 'AbortError') throw err
             /* interpreter may already be present */
@@ -862,7 +898,8 @@ export class EnvService extends EventEmitter {
             ['venv', venvPath, '--python', '3.13.18', '--seed'],
             undefined,
             180000,
-            signal
+            signal,
+            uvEnv
           )
         } else {
           const basePython =
