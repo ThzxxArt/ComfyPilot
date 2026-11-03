@@ -585,51 +585,71 @@ app.whenReady().then(async () => {
     // 0.1.18 (WP8): the smoke test must prove more than "a window appeared".
     // It now checks the preload bridge, performs one REAL IPC round-trip, and
     // fails the run on any renderer console error / unhandled rejection.
-    const quitE2e = (): void => app.quit()
-    mainWindow?.webContents.on('console-message', (_e, level, message) => {
+    // 0.2.3: no fixed 150ms delay + `once('did-finish-load')` race. On fast
+    // CI runners the load event had already fired, so the probe never ran and
+    // the 3s fallback exited with "renderer did not mount".
+    let probeStarted = false
+    let quitting = false
+    const quitE2e = (): void => {
+      if (quitting) return
+      quitting = true
+      setTimeout(() => app.quit(), 300)
+    }
+    const wc = mainWindow?.webContents
+    wc?.on('console-message', (_e, level, message) => {
       if (level >= 3) console.log(`[e2e] console-error: ${message}`)
     })
-    mainWindow?.webContents.on('preload-error', (_e, path, err) => {
+    wc?.on('preload-error', (_e, path, err) => {
       console.log(`[e2e] preload-error: ${path} ${err?.message || ''}`)
     })
-    setTimeout(() => {
-      try {
-        mainWindow?.webContents.once('did-finish-load', () => {
-          void mainWindow?.webContents
-            .executeJavaScript(
-              `(async () => {
-                const app = document.getElementById('app')
-                const mounted = Boolean(app && app.childElementCount > 0)
-                const api = window.comfyPilot
-                const bridgeOk = Boolean(api && typeof api.invoke === 'function' && typeof api.on === 'function' && Boolean(api.events) && typeof api.events === 'object')
-                let ipcOk = false
-                let version = ''
-                try {
-                  const res = await api.invoke('app.previousExit')
-                  ipcOk = Boolean(res && res.ok)
-                  const v = await api.invoke('settings.get')
-                  version = String(v && v.data && v.data.locale || '')
-                } catch { ipcOk = false }
-                return { mounted, bridgeOk, ipcOk, version }
-              })()`
-            )
-            .then(
-              (r: { mounted?: boolean; bridgeOk?: boolean; ipcOk?: boolean; version?: string }) => {
-                console.log(r?.mounted ? '[e2e] renderer-mounted' : '[e2e] renderer-empty')
-                console.log(
-                  r?.bridgeOk ? '[e2e] preload-bridge-ok' : '[e2e] preload-bridge-missing'
-                )
-                console.log(r?.ipcOk ? '[e2e] ipc-ok' : '[e2e] ipc-failed')
-              }
-            )
-            .catch(() => console.log('[e2e] renderer-probe-failed'))
-            .finally(() => setTimeout(quitE2e, 300))
+    const startProbe = (): void => {
+      if (probeStarted) return
+      probeStarted = true
+      void wc
+        ?.executeJavaScript(
+          `(async () => {
+            // Vue mounts after did-finish-load; poll instead of assuming it
+            // won the race with this probe.
+            const deadline = Date.now() + 8000
+            let app = document.getElementById('app')
+            while (Date.now() < deadline && !(app && app.childElementCount > 0)) {
+              await new Promise((r) => setTimeout(r, 100))
+              app = document.getElementById('app')
+            }
+            const mounted = Boolean(app && app.childElementCount > 0)
+            const api = window.comfyPilot
+            const bridgeOk = Boolean(api && typeof api.invoke === 'function' && typeof api.on === 'function' && Boolean(api.events) && typeof api.events === 'object')
+            let ipcOk = false
+            let version = ''
+            try {
+              const res = await api.invoke('app.previousExit')
+              ipcOk = Boolean(res && res.ok)
+              const v = await api.invoke('settings.get')
+              version = String(v && v.data && v.data.locale || '')
+            } catch { ipcOk = false }
+            return { mounted, bridgeOk, ipcOk, version }
+          })()`
+        )
+        .then((r: { mounted?: boolean; bridgeOk?: boolean; ipcOk?: boolean; version?: string }) => {
+          console.log(r?.mounted ? '[e2e] renderer-mounted' : '[e2e] renderer-empty')
+          console.log(r?.bridgeOk ? '[e2e] preload-bridge-ok' : '[e2e] preload-bridge-missing')
+          console.log(r?.ipcOk ? '[e2e] ipc-ok' : '[e2e] ipc-failed')
         })
-      } catch {
-        /* ignore */
+        .catch(() => console.log('[e2e] renderer-probe-failed'))
+        .finally(quitE2e)
+    }
+    if (wc) {
+      wc.once('did-finish-load', startProbe)
+      // The event may have fired before this block was reached.
+      if (!wc.isLoadingMainFrame()) startProbe()
+    }
+    // Last-resort exit; never races a probe that is already running.
+    setTimeout(() => {
+      if (!probeStarted) {
+        console.log('[e2e] renderer-load-timeout')
+        quitE2e()
       }
-      setTimeout(quitE2e, 3000)
-    }, 150)
+    }, 20000)
   }
 
   if (app.isPackaged) {
