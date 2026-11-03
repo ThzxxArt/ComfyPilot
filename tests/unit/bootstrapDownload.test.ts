@@ -340,4 +340,17 @@ describe('bootstrap resumable download (0.1.13)', () => {
     // status() probes every kind afterwards; the ensure() itself started at uv.
     expect(probed[0]).toBe('uv')
   })
+
+  it('status() reads the version of a portable runtime from runtimes/', async () => {
+    if (process.platform === 'win32') return // shell shim is POSIX-only
+    const dir = join(h.root, 'runtimes', 'uv-0.13.6')
+    mkdirSync(dir, { recursive: true })
+    const uv = join(dir, 'uv')
+    writeFileSync(uv, '#!/bin/sh\necho "uv 0.13.6"\n', { mode: 0o755 })
+    const svc = await freshService()
+    const status = await svc.status()
+    const component = status.components.find((c: { kind: string }) => c.kind === 'uv')
+    expect(component?.installed).toBe(true)
+    expect(component?.version).toContain('0.13.6')
+  })
 })

@@ -110,8 +110,8 @@
     "functions": 0
   },
   "src/main/services/bootstrap.ts": {
-    "lines": 67.4,
-    "branches": 50.53,
+    "lines": 68.77,
+    "branches": 54.77,
     "functions": 88.64
   },
   "src/main/services/capabilities.ts": {
