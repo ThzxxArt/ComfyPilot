@@ -1,4 +1,94 @@
 {
+  "src/main/index.ts": {
+    "lines": 46.98,
+    "branches": 25.66,
+    "functions": 19.83
+  },
+  "src/main/ipc/context.ts": {
+    "lines": 41.24,
+    "branches": 22.44,
+    "functions": 55.26
+  },
+  "src/main/ipc/contract.ts": {
+    "lines": 99.24,
+    "branches": 72.97,
+    "functions": 100
+  },
+  "src/main/ipc/domains/backup.ts": {
+    "lines": 100,
+    "branches": 50,
+    "functions": 100
+  },
+  "src/main/ipc/domains/batch.ts": {
+    "lines": 14.58,
+    "branches": 11.36,
+    "functions": 22.73
+  },
+  "src/main/ipc/domains/doctor.ts": {
+    "lines": 66.67,
+    "branches": 50,
+    "functions": 100
+  },
+  "src/main/ipc/domains/instances.ts": {
+    "lines": 5.77,
+    "branches": 7.61,
+    "functions": 9.09
+  },
+  "src/main/ipc/domains/issues.ts": {
+    "lines": 100,
+    "branches": 50,
+    "functions": 100
+  },
+  "src/main/ipc/domains/models.ts": {
+    "lines": 42.11,
+    "branches": 37.5,
+    "functions": 29.63
+  },
+  "src/main/ipc/domains/monitor.ts": {
+    "lines": 100,
+    "branches": 68.18,
+    "functions": 100
+  },
+  "src/main/ipc/domains/nodes.ts": {
+    "lines": 13.85,
+    "branches": 16.98,
+    "functions": 11.9
+  },
+  "src/main/ipc/domains/output.ts": {
+    "lines": 50.6,
+    "branches": 23.44,
+    "functions": 54.55
+  },
+  "src/main/ipc/domains/remote.ts": {
+    "lines": 95.45,
+    "branches": 70,
+    "functions": 100
+  },
+  "src/main/ipc/domains/settings.ts": {
+    "lines": 62.86,
+    "branches": 55,
+    "functions": 61.11
+  },
+  "src/main/ipc/domains/shell.ts": {
+    "lines": 77.55,
+    "branches": 65.38,
+    "functions": 68.75
+  },
+  "src/main/ipc/domains/workflows.ts": {
+    "lines": 31.82,
+    "branches": 12.12,
+    "functions": 57.14
+  },
+  "src/main/ipc/handlers.ts": {
+    "lines": 96.37,
+    "branches": 0,
+    "functions": 20
+  },
+  "src/main/ipc/trust.ts": {
+    "lines": 100,
+    "branches": 97.06,
+    "functions": 100
+  },
   "src/main/services/appUpdate.ts": {
     "lines": 92.77,
     "branches": 70.97,
@@ -14,6 +104,16 @@
     "branches": 66.78,
     "functions": 84
   },
+  "src/main/services/bootTiming.ts": {
+    "lines": 20,
+    "branches": 0,
+    "functions": 0
+  },
+  "src/main/services/bootstrap.ts": {
+    "lines": 67.4,
+    "branches": 50.53,
+    "functions": 88.64
+  },
   "src/main/services/capabilities.ts": {
     "lines": 67.03,
     "branches": 66.3,
@@ -25,7 +125,7 @@
     "functions": 100
   },
   "src/main/services/comfyApi.ts": {
-    "lines": 89.91,
+    "lines": 90.83,
     "branches": 69.09,
     "functions": 88.89
   },
@@ -104,6 +204,11 @@
     "branches": 81.73,
     "functions": 92.86
   },
+  "src/main/services/desktop.ts": {
+    "lines": 4.41,
+    "branches": 4.41,
+    "functions": 7.69
+  },
   "src/main/services/doctor.ts": {
     "lines": 87.77,
     "branches": 72.6,
@@ -125,9 +230,9 @@
     "functions": 94.12
   },
   "src/main/services/installer.ts": {
-    "lines": 90.3,
-    "branches": 81.65,
-    "functions": 85.54
+    "lines": 89.57,
+    "branches": 80.98,
+    "functions": 85.71
   },
   "src/main/services/instance/diagnostics.ts": {
     "lines": 82.26,
@@ -155,8 +260,8 @@
     "functions": 100
   },
   "src/main/services/instance/lifecycle.ts": {
-    "lines": 89.25,
-    "branches": 70.73,
+    "lines": 89.34,
+    "branches": 71.32,
     "functions": 88.73
   },
   "src/main/services/instance/logs.ts": {
@@ -191,7 +296,7 @@
   },
   "src/main/services/launchArgCatalog.ts": {
     "lines": 100,
-    "branches": 75,
+    "branches": 100,
     "functions": 100
   },
   "src/main/services/logFile.ts": {
@@ -210,9 +315,9 @@
     "functions": 93.75
   },
   "src/main/services/model.ts": {
-    "lines": 55.91,
-    "branches": 47.61,
-    "functions": 54.84
+    "lines": 56.5,
+    "branches": 50.35,
+    "functions": 56.38
   },
   "src/main/services/monitor.ts": {
     "lines": 73.72,
@@ -269,6 +374,11 @@
     "branches": 83.43,
     "functions": 91.49
   },
+  "src/main/services/ops.ts": {
+    "lines": 32.53,
+    "branches": 23.6,
+    "functions": 36.84
+  },
   "src/main/services/p1p2/batch.ts": {
     "lines": 90.82,
     "branches": 77.97,
@@ -285,9 +395,9 @@
     "functions": 100
   },
   "src/main/services/p1p2/output.ts": {
-    "lines": 87.25,
-    "branches": 80.28,
-    "functions": 90.32
+    "lines": 87.08,
+    "branches": 80.18,
+    "functions": 90.63
   },
   "src/main/services/p1p2/remote.ts": {
     "lines": 100,
@@ -300,8 +410,8 @@
     "functions": 95.16
   },
   "src/main/services/preflight.ts": {
-    "lines": 78.82,
-    "branches": 37.93,
+    "lines": 80,
+    "branches": 39.66,
     "functions": 100
   },
   "src/main/services/processTree.ts": {
@@ -340,9 +450,9 @@
     "functions": 80
   },
   "src/main/services/security.ts": {
-    "lines": 85.14,
-    "branches": 77.44,
-    "functions": 90
+    "lines": 94.78,
+    "branches": 83.5,
+    "functions": 96.67
   },
   "src/main/services/session.ts": {
     "lines": 86.79,
@@ -358,6 +468,16 @@
     "lines": 100,
     "branches": 82,
     "functions": 100
+  },
+  "src/main/services/target.ts": {
+    "lines": 66.67,
+    "branches": 56,
+    "functions": 60
+  },
+  "src/main/services/tray.ts": {
+    "lines": 56.86,
+    "branches": 47.83,
+    "functions": 47.22
   },
   "src/main/services/updater.ts": {
     "lines": 91.7,
@@ -394,6 +514,26 @@
     "branches": 75.86,
     "functions": 100
   },
+  "src/preload/index.ts": {
+    "lines": 95.45,
+    "branches": 76.92,
+    "functions": 100
+  },
+  "src/renderer/src/App.vue": {
+    "lines": 56.54,
+    "branches": 32.43,
+    "functions": 56.84
+  },
+  "src/renderer/src/components/ComfyUpdateProgressModal.vue": {
+    "lines": 55.88,
+    "branches": 37.35,
+    "functions": 48.72
+  },
+  "src/renderer/src/components/CommandPalette.vue": {
+    "lines": 21.74,
+    "branches": 5.13,
+    "functions": 9.52
+  },
   "src/renderer/src/components/ErrorBoundary.vue": {
     "lines": 57.14,
     "branches": 25,
@@ -404,19 +544,69 @@
     "branches": 100,
     "functions": 100
   },
+  "src/renderer/src/components/LaunchProfileEditor.vue": {
+    "lines": 71.95,
+    "branches": 58.82,
+    "functions": 54.47
+  },
+  "src/renderer/src/components/ListSkeleton.vue": {
+    "lines": 100,
+    "branches": 100,
+    "functions": 100
+  },
   "src/renderer/src/components/ListState.vue": {
     "lines": 100,
     "branches": 100,
     "functions": 100
+  },
+  "src/renderer/src/components/NodeOpProgressModal.vue": {
+    "lines": 46.58,
+    "branches": 26.42,
+    "functions": 49.06
+  },
+  "src/renderer/src/components/NotificationCenter.vue": {
+    "lines": 40.63,
+    "branches": 6.25,
+    "functions": 21.05
+  },
+  "src/renderer/src/components/PipOpModal.vue": {
+    "lines": 34.15,
+    "branches": 2.56,
+    "functions": 4.55
+  },
+  "src/renderer/src/components/StatCard.vue": {
+    "lines": 100,
+    "branches": 100,
+    "functions": 100
+  },
+  "src/renderer/src/components/TargetBanner.vue": {
+    "lines": 87.5,
+    "branches": 57.14,
+    "functions": 100
+  },
+  "src/renderer/src/components/TaskCenter.vue": {
+    "lines": 44,
+    "branches": 8.51,
+    "functions": 30
   },
   "src/renderer/src/composables/useAsyncAction.ts": {
     "lines": 100,
     "branches": 66.67,
     "functions": 100
   },
+  "src/renderer/src/composables/useAutoFollow.ts": {
+    "lines": 100,
+    "branches": 76.92,
+    "functions": 100
+  },
+  "src/renderer/src/composables/useComfyUpdate.ts": {
+    "lines": 56.92,
+    "branches": 47.97,
+    "functions": 59.46
+  },
   "src/renderer/src/composables/useExecDiagnostics.ts": {
     "lines": 93.33,
-    "branches": 66.67,
+    "branches": 72.22,
     "functions": 72.73
   },
   "src/renderer/src/composables/useInstanceScope.ts": {
@@ -424,9 +614,19 @@
     "branches": 100,
     "functions": 100
   },
+  "src/renderer/src/composables/useIpc.ts": {
+    "lines": 64.71,
+    "branches": 73.68,
+    "functions": 46.15
+  },
+  "src/renderer/src/composables/useLaunch.ts": {
+    "lines": 6.48,
+    "branches": 0,
+    "functions": 6.25
+  },
   "src/renderer/src/composables/usePipOps.ts": {
     "lines": 91.38,
-    "branches": 76.92,
+    "branches": 80,
     "functions": 68.18
   },
   "src/renderer/src/composables/useScopedResource.ts": {
@@ -439,10 +639,45 @@
     "branches": 33.33,
     "functions": 78.57
   },
+  "src/renderer/src/i18n/index.ts": {
+    "lines": 100,
+    "branches": 100,
+    "functions": 100
+  },
+  "src/renderer/src/main.ts": {
+    "lines": 100,
+    "branches": 100,
+    "functions": 100
+  },
+  "src/renderer/src/router/index.ts": {
+    "lines": 0,
+    "branches": 100,
+    "functions": 0
+  },
+  "src/renderer/src/stores/app.ts": {
+    "lines": 76.86,
+    "branches": 52.22,
+    "functions": 80
+  },
+  "src/renderer/src/styles/tokens.ts": {
+    "lines": 16.67,
+    "branches": 0,
+    "functions": 0
+  },
   "src/renderer/src/utils/batchOps.ts": {
     "lines": 100,
     "branches": 100,
     "functions": 100
+  },
+  "src/renderer/src/utils/categoryIcons.ts": {
+    "lines": 50,
+    "branches": 0,
+    "functions": 0
+  },
+  "src/renderer/src/utils/format.ts": {
+    "lines": 70.59,
+    "branches": 62.32,
+    "functions": 75
   },
   "src/renderer/src/utils/frontendAlign.ts": {
     "lines": 100,
@@ -453,6 +688,101 @@
     "lines": 100,
     "branches": 83.33,
     "functions": 100
+  },
+  "src/renderer/src/utils/progress.ts": {
+    "lines": 100,
+    "branches": 100,
+    "functions": 100
+  },
+  "src/renderer/src/utils/queueView.ts": {
+    "lines": 100,
+    "branches": 92.86,
+    "functions": 100
+  },
+  "src/renderer/src/utils/versionDisplay.ts": {
+    "lines": 100,
+    "branches": 86.67,
+    "functions": 100
+  },
+  "src/renderer/src/views/backup/BackupView.vue": {
+    "lines": 36.43,
+    "branches": 20.73,
+    "functions": 15
+  },
+  "src/renderer/src/views/dashboard/DashboardView.vue": {
+    "lines": 56.16,
+    "branches": 32.95,
+    "functions": 33.33
+  },
+  "src/renderer/src/views/doctor/DoctorView.vue": {
+    "lines": 40.54,
+    "branches": 13.16,
+    "functions": 28
+  },
+  "src/renderer/src/views/embed/EmbedView.vue": {
+    "lines": 63.06,
+    "branches": 40,
+    "functions": 57.89
+  },
+  "src/renderer/src/views/install/InstallView.vue": {
+    "lines": 47.53,
+    "branches": 28.94,
+    "functions": 28.67
+  },
+  "src/renderer/src/views/instances/InstanceDetailView.vue": {
+    "lines": 36.89,
+    "branches": 18.54,
+    "functions": 34.58
+  },
+  "src/renderer/src/views/instances/InstancesView.vue": {
+    "lines": 22.43,
+    "branches": 13.02,
+    "functions": 15.42
+  },
+  "src/renderer/src/views/issues/IssueCenterView.vue": {
+    "lines": 48.65,
+    "branches": 23.91,
+    "functions": 32.65
+  },
+  "src/renderer/src/views/models/ModelsView.vue": {
+    "lines": 33.65,
+    "branches": 18.42,
+    "functions": 16.16
+  },
+  "src/renderer/src/views/monitor/MonitorView.vue": {
+    "lines": 53.43,
+    "branches": 26.58,
+    "functions": 28.87
+  },
+  "src/renderer/src/views/nodes/MarketView.vue": {
+    "lines": 33.94,
+    "branches": 21.17,
+    "functions": 26.19
+  },
+  "src/renderer/src/views/nodes/NodesView.vue": {
+    "lines": 24.64,
+    "branches": 10.8,
+    "functions": 14.4
+  },
+  "src/renderer/src/views/output/OutputView.vue": {
+    "lines": 33.02,
+    "branches": 17.12,
+    "functions": 17.51
+  },
+  "src/renderer/src/views/settings/SettingsView.vue": {
+    "lines": 41.48,
+    "branches": 32.21,
+    "functions": 41.18
+  },
+  "src/renderer/src/views/workflows/BatchView.vue": {
+    "lines": 24.51,
+    "branches": 8.15,
+    "functions": 10.24
+  },
+  "src/renderer/src/views/workflows/WorkflowsView.vue": {
+    "lines": 26.43,
+    "branches": 15.6,
+    "functions": 11.5
   },
   "src/shared/argv.ts": {
     "lines": 92,
@@ -494,6 +824,11 @@
     "branches": 86.96,
     "functions": 100
   },
+  "src/shared/pipAliases.ts": {
+    "lines": 100,
+    "branches": 76.92,
+    "functions": 100
+  },
   "src/shared/pipRecipes.ts": {
     "lines": 100,
     "branches": 85,
@@ -507,6 +842,16 @@
   "src/shared/preflight.ts": {
     "lines": 100,
     "branches": 93.65,
+    "functions": 100
+  },
+  "src/shared/types/ipc.ts": {
+    "lines": 100,
+    "branches": 100,
+    "functions": 100
+  },
+  "src/shared/version.ts": {
+    "lines": 100,
+    "branches": 100,
     "functions": 100
   }
 }

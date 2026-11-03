@@ -76,94 +76,35 @@ export default defineConfig({
       provider: 'istanbul',
       reporter: ['text', 'html', 'lcov'],
       reportsDirectory: 'coverage',
+      // 0.2.3: measure the WHOLE runtime surface, not a hand-picked subset.
+      // Every main/preload/shared/renderer module and Vue component is in the
+      // denominator. Only type declarations and the CJS process bootstrap
+      // (exercised by the real-Electron E2E) are excluded.
       include: [
-        'src/main/services/security.ts',
-        'src/main/services/zipSafe.ts',
-        'src/main/services/zipWrite.ts',
-        'src/main/services/workflowConvert.ts',
-        'src/main/services/workflow.ts',
-        'src/main/services/p1p2/**/*.ts',
-        'src/main/services/proxy.ts',
-        'src/main/services/installer.ts',
-        'src/main/services/media.ts',
-        'src/main/services/nodePack/**/*.ts',
-        'src/main/services/updater.ts',
-        'src/main/services/instance/**/*.ts',
-        'src/main/services/db/**/*.ts',
-        'src/main/services/backup.ts',
-        'src/main/services/doctor.ts',
-        'src/main/services/monitor.ts',
-        'src/main/services/registry.ts',
-        'src/main/services/registryIndex.ts',
-        'src/main/services/netProbe.ts',
-        'src/main/services/comfyApi.ts',
-        'src/main/services/capabilities.ts',
-        'src/main/services/workflowFingerprint.ts',
-        'src/main/services/appUpdate.ts',
-        'src/main/services/pipOps.ts',
-        'src/main/services/execDiagnostics.ts',
-        'src/main/services/preflight.ts',
-        'src/main/services/env.ts',
-        'src/shared/constants.ts',
-        'src/shared/launchArgs.ts',
-        'src/shared/nodeLoadReport.ts',
-        'src/shared/execError.ts',
-        'src/shared/pipVersion.ts',
-        'src/shared/pipRecipes.ts',
-        'src/shared/preflight.ts',
-        // ── 0.1.14: unified catalogue + assets read-only bridge ──
-        'src/shared/mediaTypes.ts',
-        'src/main/services/assetsApi.ts',
-        // ── 0.1.13: renderer composables with real behaviour tests ──
-        'src/renderer/src/composables/usePipOps.ts',
-        'src/renderer/src/composables/useExecDiagnostics.ts',
-        // ── 0.1.15: renderer utils with real behaviour tests ──
-        // 0.1.18 (WP8): only components with real DOM tests are measured.
-        'src/renderer/src/components/ListState.vue',
-        'src/renderer/src/components/IndeterminateBar.vue',
-        'src/renderer/src/utils/monitorOps.ts',
-        'src/renderer/src/utils/batchOps.ts',
-        'src/renderer/src/utils/frontendAlign.ts',
-        // ── 0.1.16: new stability/log modules + model library ──
-        'src/shared/logLine.ts',
-        'src/main/services/childEnv.ts',
-        'src/main/services/lru.ts',
-        'src/main/services/logFile.ts',
-        'src/main/services/session.ts',
-        'src/main/services/startupIssues.ts',
-        // ── 0.1.17: freeze attribution, secret-at-rest, scoped selection ──
-        'src/main/services/model.ts',
-        'src/main/services/slowOps.ts',
-        'src/main/services/workPool.ts',
-        'src/main/services/processTree.ts',
-        'src/main/services/secretStorage.ts',
-        // ── 0.2.0: extracted domain modules + IPC contract ──
-        'src/main/services/depsAudit.ts',
-        'src/main/services/envLock.ts',
-        'src/main/services/issueHub.ts',
-        'src/main/services/pythonMigration.ts',
-        'src/main/services/launchArgCatalog.ts',
-        'src/main/services/rendererEntry.ts',
-        'src/shared/argv.ts',
-        'src/shared/outputDir.ts',
-        'src/renderer/src/composables/useScopedResource.ts',
-        'src/renderer/src/composables/useAsyncAction.ts',
-        'src/renderer/src/components/ErrorBoundary.vue',
-        'src/renderer/src/composables/useScopedSelection.ts',
-        'src/renderer/src/composables/useInstanceScope.ts'
+        'src/main/**/*.ts',
+        'src/shared/**/*.ts',
+        'src/preload/**/*.ts',
+        'src/renderer/src/**/*.ts',
+        'src/renderer/src/**/*.vue'
+      ],
+      exclude: [
+        'src/**/*.d.ts',
+        'src/renderer/src/env.d.ts',
+        // Last-resort startup shim loaded by Electron before any test runtime.
+        'src/main/bootstrap.cjs'
       ],
       thresholds: {
         // Derived per file (baseline − 2pp) + a global floor.
         ...perFileThresholds(),
-        // 0.2.0 denominator now includes the extracted domain modules
-        // (depsAudit/envLock/issueHub/pythonMigration/argv/outputDir/renderer
-        // composables). Measured: statements 83.07 / branches 73.12 /
-        // functions 84.83 / lines 85.61 → floor is a real ratchet, not the
-        // old denominator's number.
-        statements: 83,
-        lines: 85,
-        functions: 84,
-        branches: 73
+        // 0.2.3: denominator is the WHOLE runtime surface (main, preload,
+        // shared, renderer views/components/stores). Measured on that
+        // denominator: statements 64.32 / branches 53.40 / functions 49.27 /
+        // lines 66.53 → floors are actual − 2pp. The number is lower than the
+        // old hand-picked subset, but it now covers 100% of runtime files.
+        statements: 62,
+        lines: 64,
+        functions: 47,
+        branches: 51
       }
     }
   }
