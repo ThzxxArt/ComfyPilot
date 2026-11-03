@@ -73,7 +73,14 @@ describe.skipIf(skip)('electron app smoke (real bundle)', () => {
       // argument as the app path.
       const args =
         process.platform === 'linux' && process.env.CI
-          ? ['--no-sandbox', 'out/main/bootstrap.cjs', '--e2e-smoke']
+          ? [
+              '--no-sandbox',
+              // Headless CI has no keyring/DBUS; basic storage removes a
+              // transient safeStorage/keyring startup dependency.
+              '--password-store=basic',
+              'out/main/bootstrap.cjs',
+              '--e2e-smoke'
+            ]
           : ['out/main/bootstrap.cjs', '--e2e-smoke']
       const p = spawn(bin, args, {
         env: {
@@ -115,7 +122,7 @@ describe.skipIf(skip)('electron app smoke (real bundle)', () => {
           /* ignore */
         }
         done(-1)
-      }, 12000)
+      }, 20000)
     })
 
     // Must not have failed to spawn
