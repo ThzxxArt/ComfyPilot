@@ -1,0 +1,142 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="400" viewBox="0 0 1600 400" role="img" aria-labelledby="cpTitle cpDesc">
+  <title id="cpTitle">ComfyPilot — ComfyUI 全能管理器</title>
+  <desc id="cpDesc">ComfyPilot 是本机 ComfyUI 生产线的控制塔，管理实例、环境、模型、节点、工作流、批跑、产物、监控、诊断与备份。</desc>
+  <defs>
+    <linearGradient id="cpBg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="0.5" stop-color="#F4F7FF"/>
+      <stop offset="1" stop-color="#E8F4FF"/>
+    </linearGradient>
+    <linearGradient id="cpAccent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#06B6D4"/>
+      <stop offset="0.5" stop-color="#4F6EF7"/>
+      <stop offset="1" stop-color="#9333EA"/>
+    </linearGradient>
+    <radialGradient id="cpGlowCyan" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#22D3EE" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#22D3EE" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="cpGlowViolet" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#A855F7" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#A855F7" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="cpGlowBlue" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#4F6EF7" stop-opacity="0.14"/>
+      <stop offset="1" stop-color="#4F6EF7" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="cpGrid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#64748B" stroke-opacity="0.13"/>
+    </pattern>
+    <filter id="cpBlur" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="28"/>
+    </filter>
+    <filter id="cpShadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="16" stdDeviation="24" flood-color="#4F6EF7" flood-opacity="0.14"/>
+    </filter>
+    <filter id="cpNodeGlow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="5" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1600" height="400" rx="28" fill="url(#cpBg)"/>
+  <rect width="1600" height="400" rx="28" fill="url(#cpGrid)"/>
+  <circle cx="1320" cy="40" r="250" fill="url(#cpGlowCyan)" filter="url(#cpBlur)"/>
+  <circle cx="900" cy="380" r="230" fill="url(#cpGlowViolet)" filter="url(#cpBlur)"/>
+  <circle cx="80" cy="350" r="190" fill="url(#cpGlowBlue)" filter="url(#cpBlur)"/>
+  <rect x="0" y="0" width="1600" height="4" fill="url(#cpAccent)" opacity="0.95"/>
+
+  <g transform="translate(64,62)">
+    <rect width="78" height="78" rx="23" fill="#FFFFFF" stroke="url(#cpAccent)" stroke-width="1.5"/>
+    <path d="M18 49 L39 18 L60 49 L39 61 Z" fill="none" stroke="#334155" stroke-width="1.7" stroke-linejoin="round" opacity="0.9"/>
+    <path d="M18 49 L39 18 L60 49" fill="none" stroke="url(#cpAccent)" stroke-width="2.2" stroke-linecap="round"/>
+    <circle cx="18" cy="49" r="4.5" fill="#06B6D4"/>
+    <circle cx="39" cy="18" r="4.5" fill="#9333EA"/>
+    <circle cx="60" cy="49" r="4.5" fill="#4F6EF7"/>
+    <circle cx="39" cy="61" r="3" fill="#475569"/>
+  </g>
+
+  <text x="168" y="112" font-family="Inter, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="64" font-weight="800" fill="#0F172A" letter-spacing="-1.6">ComfyPilot</text>
+  <text x="168" y="151" font-family="Inter, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="25" font-weight="600" fill="#4338CA">ComfyUI 全能管理器</text>
+  <text x="168" y="183" font-family="Inter, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="17" fill="#475569">本机 ComfyUI 生产线的控制塔 · 实例 · 模型 · 节点 · 工作流 · 监控</text>
+
+  <g transform="translate(168,210)" font-family="Inter, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="12.5" font-weight="600">
+    <g>
+      <rect width="102" height="31" rx="15.5" fill="#EEF2FF" stroke="#C7D2FE"/>
+      <text x="51" y="20.5" text-anchor="middle" fill="#3730A3">Electron 45</text>
+    </g>
+    <g transform="translate(112,0)">
+      <rect width="72" height="31" rx="15.5" fill="#EEF2FF" stroke="#C7D2FE"/>
+      <text x="36" y="20.5" text-anchor="middle" fill="#3730A3">Vue 3</text>
+    </g>
+    <g transform="translate(194,0)">
+      <rect width="106" height="31" rx="15.5" fill="#EEF2FF" stroke="#C7D2FE"/>
+      <text x="53" y="20.5" text-anchor="middle" fill="#3730A3">TypeScript 6</text>
+    </g>
+    <g transform="translate(310,0)">
+      <rect width="58" height="31" rx="15.5" fill="#EEF2FF" stroke="#C7D2FE"/>
+      <text x="29" y="20.5" text-anchor="middle" fill="#3730A3">MIT</text>
+    </g>
+  </g>
+
+  <g transform="translate(974,58)" filter="url(#cpShadow)" font-family="Inter, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif">
+    <rect width="562" height="284" rx="24" fill="#FFFFFF" stroke="#C7D2FE"/>
+    <circle cx="26" cy="25" r="4" fill="#F87171"/>
+    <circle cx="42" cy="25" r="4" fill="#FBBF24"/>
+    <circle cx="58" cy="25" r="4" fill="#34D399"/>
+    <text x="78" y="30" font-size="12" fill="#64748B" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">comfy-pilot / control tower</text>
+    <g transform="translate(474,13)">
+      <rect width="66" height="25" rx="12.5" fill="#ECFDF5" stroke="#A7F3D0"/>
+      <circle cx="14" cy="12.5" r="3" fill="#10B981"/>
+      <text x="25" y="16.5" font-size="10" font-weight="700" fill="#047857">READY</text>
+    </g>
+
+    <g transform="translate(24,56)">
+      <rect width="156" height="64" rx="12" fill="#F8FAFC" stroke="#E2E8F0"/>
+      <text x="14" y="21" font-size="10" letter-spacing="1.2" fill="#64748B">INSTANCES</text>
+      <text x="14" y="47" font-size="24" font-weight="700" fill="#0F172A">3</text>
+      <text x="132" y="47" font-size="10.5" fill="#059669">online</text>
+    </g>
+    <g transform="translate(192,56)">
+      <rect width="156" height="64" rx="12" fill="#F8FAFC" stroke="#E2E8F0"/>
+      <text x="14" y="21" font-size="10" letter-spacing="1.2" fill="#64748B">MODELS</text>
+      <text x="14" y="47" font-size="24" font-weight="700" fill="#0F172A">128</text>
+      <text x="128" y="47" font-size="10.5" fill="#0284C7">indexed</text>
+    </g>
+    <g transform="translate(360,56)">
+      <rect width="156" height="64" rx="12" fill="#F8FAFC" stroke="#E2E8F0"/>
+      <text x="14" y="21" font-size="10" letter-spacing="1.2" fill="#64748B">NODES</text>
+      <text x="14" y="47" font-size="24" font-weight="700" fill="#0F172A">42</text>
+      <text x="134" y="47" font-size="10.5" fill="#7C3AED">healthy</text>
+    </g>
+
+    <g transform="translate(24,136)">
+      <rect width="514" height="120" rx="14" fill="#F8FAFC" stroke="#E2E8F0"/>
+      <path d="M60 56 L170 30 L280 62 L390 34 L462 54" fill="none" stroke="#CBD5E1" stroke-width="1.5"/>
+      <path d="M60 56 L170 30 L280 62 L390 34" fill="none" stroke="url(#cpAccent)" stroke-width="2" opacity="0.9"/>
+      <path d="M170 30 L280 62 L390 34 L462 54" fill="none" stroke="#06B6D4" stroke-width="1.4" opacity="0.4"/>
+
+      <g filter="url(#cpNodeGlow)">
+        <circle cx="60" cy="56" r="8" fill="#FFFFFF" stroke="#06B6D4" stroke-width="2.2"/>
+        <circle cx="170" cy="30" r="8" fill="#FFFFFF" stroke="#9333EA" stroke-width="2.2"/>
+        <circle cx="280" cy="62" r="10" fill="#FFFFFF" stroke="#4F6EF7" stroke-width="2.4"/>
+        <circle cx="390" cy="34" r="8" fill="#FFFFFF" stroke="#10B981" stroke-width="2.2"/>
+        <circle cx="462" cy="54" r="7" fill="#FFFFFF" stroke="#F59E0B" stroke-width="2"/>
+      </g>
+      <circle cx="280" cy="62" r="20" fill="none" stroke="#4F6EF7" stroke-opacity="0.2" stroke-width="1.5"/>
+
+      <text x="60" y="88" text-anchor="middle" font-size="9.5" fill="#64748B" letter-spacing="0.6">INSTANCE</text>
+      <text x="170" y="88" text-anchor="middle" font-size="9.5" fill="#64748B" letter-spacing="0.6">MODEL</text>
+      <text x="280" y="96" text-anchor="middle" font-size="9.5" fill="#475569" letter-spacing="0.6">WORKFLOW</text>
+      <text x="390" y="88" text-anchor="middle" font-size="9.5" fill="#64748B" letter-spacing="0.6">NODE</text>
+      <text x="462" y="82" text-anchor="middle" font-size="9.5" fill="#64748B" letter-spacing="0.6">OUTPUT</text>
+    </g>
+  </g>
+
+  <path d="M64 326 H1536" stroke="#CBD5E1" stroke-width="1"/>
+  <text x="64" y="356" font-family="Inter, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="13" fill="#64748B">Windows 10+ · 零预装运行时 · 本地优先 · MIT</text>
+  <text x="1536" y="356" text-anchor="end" font-family="Inter, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="13" fill="#64748B">v0.2.4</text>
+</svg>
