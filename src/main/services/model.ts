@@ -42,6 +42,7 @@ import {
   replaceDownloadTasks,
   listDownloadTasks
 } from './db'
+import { resolveEffectiveInstance } from '@shared/instanceLayout'
 import { resolveReadTarget } from './target'
 import {
   resolveInsideAnyRoot,
@@ -108,13 +109,6 @@ export function categoryHintForRoot(root: string): ModelCategory | undefined {
       .pop()
       ?.toLowerCase() || ''
   return CATEGORY_BY_DIR[base]
-}
-
-/** Instance HTTP base (same host normalization as p1p2.instanceUrl). */
-function instanceBaseUrlOf(inst: { listen?: string; port?: number }): string {
-  const listen = inst.listen || '127.0.0.1'
-  const host = listen === '0.0.0.0' || listen === '::' || listen === '[::]' ? '127.0.0.1' : listen
-  return `http://${host}:${inst.port || 8188}`
 }
 
 async function fetchJsonSafe(url: string, timeoutMs = 4000): Promise<unknown> {
@@ -417,7 +411,7 @@ export class ModelService extends EventEmitter {
   private allowedDestRoots(): string[] {
     const settings = loadSettings()
     const instanceModels = loadInstanceConfigsSafe()
-      .map((c) => c.path && join(c.path, 'models'))
+      .map((c) => (c.path ? resolveEffectiveInstance(c).dirs.models : ''))
       .filter(Boolean) as string[]
     return [join(homedir(), 'Downloads'), ...settings.modelScanRoots, ...instanceModels].filter(
       Boolean
@@ -505,9 +499,9 @@ export class ModelService extends EventEmitter {
         roots.push({ root: r, hint: categoryHintForRoot(r) })
       }
       for (const r of extraRoots) roots.push({ root: r.path, hint: r.categoryHint })
-      // Default behaviour: settings roots + models/ under EVERY configured instance.
+      // Default behaviour: settings roots + the EFFECTIVE models dir of every instance.
       for (const c of loadInstanceConfigsSafe()) {
-        if (c.path) roots.push({ root: join(c.path, 'models') })
+        if (c.path) roots.push({ root: resolveEffectiveInstance(c).dirs.models })
       }
       const seen = new Set<string>()
       allRoots = []
@@ -1424,7 +1418,7 @@ export class ModelService extends EventEmitter {
         uncoveredRoots: []
       }
     }
-    const base = instanceBaseUrlOf(inst)
+    const base = resolveEffectiveInstance(inst).url
 
     type FolderInfo = { folders: string[]; extensions: string[]; names: string[] }
     const perFolder = new Map<string, FolderInfo>()
@@ -1498,7 +1492,7 @@ export class ModelService extends EventEmitter {
         // extra_model_paths.yaml roots are already visible to the scanner —
         // reporting them as "uncovered" would be a false alarm.
         ...parseExtraModelPaths(undefined, false, { modelOnly: true }),
-        ...loadInstanceConfigsSafe().map((c) => c.path && join(c.path, 'models'))
+        ...loadInstanceConfigsSafe().map((c) => (c.path ? resolveEffectiveInstance(c).dirs.models : ''))
       ]
         .filter(Boolean)
         .map((r) => normalizeForCompare(String(r)))

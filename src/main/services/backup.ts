@@ -15,6 +15,7 @@ import {
 } from 'fs'
 import { join, basename, dirname, relative, isAbsolute } from 'path'
 import { randomUUID } from 'crypto'
+import { resolveEffectiveInstance } from '@shared/instanceLayout'
 import type {
   AppSettings,
   BackupManifest,
@@ -112,7 +113,7 @@ function restoreRoots(): string[] {
   }
   for (const c of loadInstanceConfigs()) {
     if (!c.path) continue
-    roots.push(c.path, join(c.path, 'user', 'default', 'workflows'))
+    roots.push(c.path, resolveEffectiveInstance(c).dirs.workflows)
   }
   for (const r of loadSettings().modelScanRoots || []) {
     if (r) roots.push(r)
@@ -134,7 +135,7 @@ function workflowRestoreRoots(): string[] {
     /* ignore */
   }
   for (const c of loadInstanceConfigs()) {
-    if (c.path) roots.push(join(c.path, 'user', 'default', 'workflows'))
+    if (c.path) roots.push(resolveEffectiveInstance(c).dirs.workflows)
   }
   return [...new Set(roots.filter(Boolean))]
 }

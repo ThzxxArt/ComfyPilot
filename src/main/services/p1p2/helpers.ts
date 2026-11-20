@@ -1,16 +1,28 @@
 import { readFileSync } from 'fs'
 import { extname, basename } from 'path'
 import type { BatchJob, BatchJobItem, BatchParamOverrides, BatchJobStatus } from '@shared/types'
+import { resolveEffectiveInstance } from '@shared/instanceLayout'
 import { readPngTextMetaFromFile } from '../workflow'
 
 // ---------- helpers ----------
 
-export function instanceUrl(inst: { listen: string; port: number }): string {
-  const host =
-    inst.listen === '0.0.0.0' || inst.listen === '::' || inst.listen === '[::]'
-      ? '127.0.0.1'
-      : inst.listen
-  return `http://${host}:${inst.port}`
+/** Effective instance URL (0.2.5 WP1): the final argv wins over config.port. */
+export function instanceUrl(inst: {
+  path?: string
+  listen?: string
+  port?: number
+  extraArgs?: string[]
+  argTemplateId?: string
+  launchProfile?: import('@shared/types').LaunchProfile
+}): string {
+  return resolveEffectiveInstance({
+    path: inst.path || '',
+    listen: inst.listen,
+    port: inst.port,
+    extraArgs: inst.extraArgs,
+    argTemplateId: inst.argTemplateId,
+    launchProfile: inst.launchProfile
+  }).url
 }
 
 /** Bearer auth for a configured remote — EVERY request must carry it, not just

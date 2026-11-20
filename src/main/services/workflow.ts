@@ -33,6 +33,7 @@ import {
   workflowLibraryDir,
   userDataDir
 } from './db'
+import { resolveEffectiveInstance } from '@shared/instanceLayout'
 import { resolveReadTarget, resolveActiveTarget } from './target'
 import { ComfyApiClient } from './comfyApi'
 import { assertSafeRelativeFilename, isPathInside } from './security'
@@ -420,7 +421,8 @@ export class WorkflowService {
     const roots: Array<{ root: string; origin: WorkflowOrigin }> = [
       { root: library, origin: 'library' },
       ...instances.map((i) => ({
-        root: join(i.path, 'user', 'default', 'workflows'),
+        // 0.2.5 WP1: `--user-directory` / `--base-directory` move this folder.
+        root: resolveEffectiveInstance(i).dirs.workflows,
         origin: 'instance' as WorkflowOrigin
       })),
       { root: join(process.cwd(), 'workflows'), origin: 'external' as WorkflowOrigin }
@@ -560,7 +562,7 @@ export class WorkflowService {
     if (!inst) {
       throw new Error(instanceId ? `Instance not found: ${instanceId}` : 'No instance configured')
     }
-    return join(inst.path, 'user', 'default', 'workflows')
+    return resolveEffectiveInstance(inst).dirs.workflows
   }
 
   /**
@@ -695,13 +697,9 @@ export class WorkflowService {
     })
   }
 
-  /** Same host normalization as queue() and the other instance consumers. */
+  /** Same effective port/listen as the launch path (0.2.5 WP1). */
   private baseUrlOfConfig(inst: ComfyInstanceConfig): string {
-    const host =
-      inst.listen === '0.0.0.0' || inst.listen === '::' || inst.listen === '[::]'
-        ? '127.0.0.1'
-        : inst.listen
-    return `http://${host}:${inst.port}`
+    return resolveEffectiveInstance(inst).url
   }
 
   async importMany(
@@ -874,7 +872,7 @@ export class WorkflowService {
     if (!rec) throw new Error('Workflow not found')
     if (!existsSync(rec.path)) throw new Error('Workflow file missing on disk')
 
-    const destDir = join(inst.path, 'user', 'default', 'workflows')
+    const destDir = resolveEffectiveInstance(inst).dirs.workflows
     mkdirSync(destDir, { recursive: true })
     const ext = extname(rec.path)
     const safe = assertSafeRelativeFilename(rec.name)
@@ -920,11 +918,7 @@ export class WorkflowService {
     if (!inst) throw new Error(`Instance not found: ${instanceId}`)
 
     const copied = this.copyToInstancePath(id, inst)
-    const host =
-      inst.listen === '0.0.0.0' || inst.listen === '::' || inst.listen === '[::]'
-        ? '127.0.0.1'
-        : inst.listen
-    const url = `http://${host}:${inst.port}`
+    const url = resolveEffectiveInstance(inst).url
     return {
       instanceId: inst.id,
       instanceName: inst.name,
@@ -997,7 +991,7 @@ export class WorkflowService {
   } {
     const inst = resolveReadTarget(instanceId)
     // root = where imports land (instance workflows dir when available)
-    const root = inst ? join(inst.path, 'user', 'default', 'workflows') : this.libraryRoot()
+    const root = inst ? resolveEffectiveInstance(inst).dirs.workflows : this.libraryRoot()
     const all = this.list({ includeMissing: true })
     return {
       root,
@@ -1056,13 +1050,10 @@ export class WorkflowService {
         opts.instanceId ? `Instance not found: ${opts.instanceId}` : 'No instance configured'
       )
     }
-    // Same host normalisation as p1p2.instanceUrl — IPv6 listeners included.
-    const host = inst
-      ? inst.listen === '0.0.0.0' || inst.listen === '::' || inst.listen === '[::]'
-        ? '127.0.0.1'
-        : inst.listen
-      : ''
-    const url = remote ? remote.baseUrl.replace(/\/+$/, '') : `http://${host}:${inst!.port}`
+    // Same effective URL as the launch path — IPv6 and argv overrides included.
+    const url = remote
+      ? remote.baseUrl.replace(/\/+$/, '')
+      : resolveEffectiveInstance(inst!).url
 
     let rawJson: unknown = null
     const ext = extname(opts.workflowPath).toLowerCase()

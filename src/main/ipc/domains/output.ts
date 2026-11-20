@@ -5,6 +5,7 @@ import { shell } from 'electron'
 import type { WorkflowRecord } from '@shared/types'
 import { IPC_EVENTS } from '@shared/types'
 import { loadInstanceConfigs } from '../../services/db'
+import { resolveEffectiveInstance } from '@shared/instanceLayout'
 import { outputService } from '../../services/p1p2'
 import {
   isSafeExportSourcePath,
@@ -30,7 +31,7 @@ export function createOutputHandlers() {
         const allowed = [
           workflowLibraryDir(),
           ...loadInstanceConfigs().map((i) => resolveOutputDir(i)),
-          ...loadInstanceConfigs().map((i) => join(i.path, 'user', 'default', 'workflows'))
+          ...loadInstanceConfigs().map((i) => resolveEffectiveInstance(i).dirs.workflows)
         ].filter(Boolean) as string[]
         const resolved = resolveInsideAnyRoot(root, allowed)
         if (!resolved) throw new Error('Output root is outside the allowed areas')
@@ -89,7 +90,7 @@ export function createOutputHandlers() {
           const allowed = [
             workflowLibraryDir(),
             ...loadInstanceConfigs().map((i) => resolveOutputDir(i)),
-            ...loadInstanceConfigs().map((i) => join(i.path, 'user', 'default', 'workflows'))
+            ...loadInstanceConfigs().map((i) => resolveEffectiveInstance(i).dirs.workflows)
           ].filter(Boolean) as string[]
           // Per-segment normalization + resolve so `..` hops can't escape the
           // allow-list (0.1.9; the old prefix check was lexical-only).

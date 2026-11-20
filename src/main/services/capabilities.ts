@@ -13,6 +13,7 @@
  */
 import type { ComfyInstanceConfig, InstanceCapabilities } from '@shared/types'
 import { versionAtLeast } from '@shared/launchArgs'
+import { resolveEffectiveInstance } from '@shared/instanceLayout'
 import { loadInstanceConfigs } from './db'
 import { resolveReadTarget } from './target'
 import { LruCache } from './lru'
@@ -44,10 +45,9 @@ export function packageFolderFromPythonModule(mod: string): string | undefined {
 export const WORKFLOW_METADATA_SINCE = '0.39.0'
 
 function instanceBaseUrl(config: ComfyInstanceConfig): string {
-  const port = config.port || 8188
-  const listen = config.listen || '127.0.0.1'
-  const host = listen === '0.0.0.0' || listen === '::' || listen === '[::]' ? '127.0.0.1' : listen
-  return `http://${host}:${port}`
+  // 0.2.5 WP1: the final argv decides port/listen; `config.port` can be
+  // overridden by template/profile/extraArgs.
+  return resolveEffectiveInstance(config).url
 }
 
 export { instanceBaseUrl }

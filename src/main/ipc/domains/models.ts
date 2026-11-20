@@ -1,8 +1,8 @@
-import { join } from 'path'
 import { bootMarkFirstList } from '../../services/bootTiming'
 import { modelService } from '../../services/model'
 import { loadInstanceConfigs, loadSettings } from '../../services/db'
 import { resolveInsideAnyRoot, sanitizeId } from '../../services/security'
+import { resolveEffectiveInstance } from '@shared/instanceLayout'
 import { approvedReadRoots, broadcastNotification, isSafeReadPath, wrap } from '../context'
 import { safeInstanceId } from '../trust'
 
@@ -17,7 +17,7 @@ function assertAllowedScanRoots(roots: string[]): void {
   const allowed = [
     ...(loadSettings().modelScanRoots || []),
     ...loadInstanceConfigs()
-      .map((c) => (c.path ? join(c.path, 'models') : ''))
+      .map((c) => (c.path ? resolveEffectiveInstance(c).dirs.models : ''))
       .filter(Boolean),
     ...approvedReadRoots
   ]

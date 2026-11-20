@@ -70,11 +70,13 @@ export function resolvePython(config: ComfyInstanceConfig): string {
 
 export async function pythonVersionText(python: string): Promise<string> {
   try {
-    const { stdout } = await execFileAsync(python, ['--version'], {
+    const { stdout, stderr } = await execFileAsync(python, ['--version'], {
       timeout: 8000,
       windowsHide: true
     })
-    return String(stdout || '').trim()
+    // Some launchers print the version on stderr. Returning only stdout made
+    // callers treat a perfectly valid interpreter as "unknown".
+    return `${String(stdout || '')}\n${String(stderr || '')}`.trim()
   } catch {
     return ''
   }

@@ -28,9 +28,13 @@ interface RuntimeEntry {
   ready: boolean
   /** True when WE spawned the process (false when adopting an external ComfyUI). */
   managed: boolean
+  /** 0.2.5 WP3: this generation was launched with --disable-all-custom-nodes. */
+  safeMode?: boolean
   readyWaiters: Array<{
     resolve: (r: WaitReadyResult) => void
     timer?: NodeJS.Timeout
+    /** When this waiter started waiting — surfaced as real elapsedMs. */
+    startedAt?: number
   }>
   /** Interval that polls /system_stats until ready. */
   readyPollTimer?: NodeJS.Timeout

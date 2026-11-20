@@ -239,7 +239,9 @@ vi.mock('child_process', () => {
       if (result.error) finish(result.error, result.stdout || '', result.stderr || '')
       else finish(null, result.stdout || '', result.stderr || '')
     } else {
-      finish(null, '', '')
+      // 0.2.5: launch refuses an interpreter whose version cannot be parsed.
+      // The default fake interpreter is the supported runtime.
+      finish(null, args.includes('--version') ? 'Python 3.13.18' : '', '')
     }
     return { pid: 1, exitCode: null, kill: () => undefined }
   }
@@ -571,7 +573,7 @@ describe('list()', () => {
     expect(info.pinned).toBe(false)
     expect(info.autoStart).toBe(false)
     expect(info.extraArgs).toEqual([])
-    expect(info.managerEnabled).toBeUndefined()
+    expect(info.managerEnabled).toBe(false)
     expect(info.port).toBe(8199)
     expect(info.url).toBe('http://127.0.0.1:8199')
   })
@@ -2388,7 +2390,7 @@ describe('instance log pipeline (0.1.16)', () => {
 // classification, orphan ledger.
 // ===========================================================================
 describe('lifecycle truth (0.1.17 WP3)', () => {
-  it('stop() during starting kills the child that start already spawned', async () => {
+  it('stop() during starting prevents the spawn entirely (0.2.5 regression)', async () => {
     register(cfg({ id: 'quickstop' }))
     h.state.fetchImpl = failFetch
     const startP = svc.start('quickstop')
@@ -2399,11 +2401,10 @@ describe('lifecycle truth (0.1.17 WP3)', () => {
     await startAssertion
     const info = await stopP
     expect(info.status).toBe('stopped')
-    // The runtime no longer holds the child (start was cancelled), so inspect
-    // the process that was actually spawned.
-    const child = h.state.lastChild as unknown as ReturnType<typeof h.makeChild>
-    expect(child.killSignals.length).toBeGreaterThan(0)
-    expect(child.exitCode).not.toBeNull()
+    // 0.2.5 WP0: the pre-spawn gate must stop the start BEFORE a child exists.
+    // The old implementation spawned and then relied on a later cleanup.
+    expect(h.state.lastChild).toBeNull()
+    expect(h.state.spawnCount).toBe(0)
   })
 
   it('stopAll also stops instances that are still starting', async () => {
@@ -2492,7 +2493,9 @@ describe('lifecycle truth (0.1.17 WP3)', () => {
       // Attach the rejection expectation BEFORE advancing: the throw happens
       // inside the timer window and would otherwise surface as unhandled.
       const assertion = expect(restartP).rejects.toThrow(/refusing to adopt/i)
-      await vi.advanceTimersByTimeAsync(10_000)
+      // 0.2.5: restart now waits up to 6s for the effective port plus the
+      // 5s "port still held after stop" guard.
+      await vi.advanceTimersByTimeAsync(20_000)
       await assertion
     } finally {
       vi.useRealTimers()

@@ -13,6 +13,7 @@ import type {
 import { ComfyApiClient, COMFY_CLIENT_ID } from './comfyApi'
 import { proxyFetch } from './proxy'
 import { isLocalhostUrl } from './security'
+import { resolveEffectiveInstance } from '@shared/instanceLayout'
 import { loadInstanceConfigs, listRemotes } from './db'
 
 /**
@@ -33,9 +34,9 @@ export function assertMonitorBaseUrl(baseUrl: string): void {
   if (isLocalhostUrl(baseUrl)) return
   const origin = parsed.origin
   for (const inst of loadInstanceConfigs()) {
-    const host = inst.listen === '0.0.0.0' ? '127.0.0.1' : inst.listen
-    if (origin === `http://${host}:${inst.port}` || origin === `https://${host}:${inst.port}`)
-      return
+    const effective = resolveEffectiveInstance(inst)
+    const allowed = new URL(effective.url)
+    if (origin === allowed.origin || origin === `https://${allowed.host}`) return
   }
   for (const remote of listRemotes()) {
     try {

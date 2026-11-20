@@ -1,5 +1,5 @@
 import { BrowserWindow, WebContentsView, shell } from 'electron'
-import { basename, dirname, isAbsolute, join } from 'path'
+import { basename, dirname, isAbsolute } from 'path'
 import { homedir } from 'os'
 import type {
   AppSettings,
@@ -22,6 +22,7 @@ import { loadInstanceConfigs, loadSettings, userDataDir, workflowLibraryDir } fr
 import { secretStorageBackend } from '../services/secretStorage'
 import { remoteService } from '../services/p1p2'
 import { resolveOutputDir } from '@shared/outputDir'
+import { resolveEffectiveInstance } from '@shared/instanceLayout'
 import { isOwnRendererUrl } from '../services/rendererEntry'
 import { safeInstanceId } from './trust'
 
@@ -126,11 +127,11 @@ export function wrap<A extends unknown[], R>(
 function configuredComfyOrigins(): string[] {
   const origins: string[] = []
   for (const inst of loadInstanceConfigs()) {
-    let host = inst.listen || '127.0.0.1'
-    if (host === '0.0.0.0' || host === '::' || host === '[::]') host = '127.0.0.1'
-    if (!inst.port) continue
-    origins.push(`http://${host}:${inst.port}`)
-    origins.push(`https://${host}:${inst.port}`)
+    if (!inst.path) continue
+    const effective = resolveEffectiveInstance(inst)
+    origins.push(effective.url)
+    // HTTPS is only a trust convenience for TLS-fronted instances.
+    origins.push(effective.url.replace(/^http:/, 'https:'))
   }
   for (const remote of remoteService.list()) {
     if (remote.baseUrl) origins.push(remote.baseUrl)
@@ -307,7 +308,7 @@ function allowedReadRoots(): string[] {
   for (const c of loadInstanceConfigs()) {
     if (!c.path) continue
     try {
-      roots.push(c.path, resolveOutputDir(c), join(c.path, 'user', 'default', 'workflows'))
+      roots.push(c.path, resolveOutputDir(c), resolveEffectiveInstance(c).dirs.workflows)
     } catch {
       /* malformed config — skip */
     }
@@ -462,7 +463,7 @@ export async function collectRevealRoots(): Promise<string[]> {
   }
   for (const c of loadInstanceConfigs()) {
     if (!c.path) continue
-    roots.push(c.path, resolveOutputDir(c), join(c.path, 'user', 'default', 'workflows'))
+    roots.push(c.path, resolveOutputDir(c), resolveEffectiveInstance(c).dirs.workflows)
   }
   for (const r of loadSettings().modelScanRoots || []) roots.push(r)
   return roots
@@ -508,11 +509,8 @@ export async function requireRunningInstance(instanceId?: string): Promise<{
   }
   const inst = instances.find((i) => i.id === wanted)
   if (!inst) throw new Error(`Instance not found: ${wanted}`)
-  const host =
-    inst.listen === '0.0.0.0' || inst.listen === '::' || inst.listen === '[::]'
-      ? '127.0.0.1'
-      : inst.listen
-  const url = `http://${host}:${inst.port}`
+  // Effective URL — an argv `--port 9999` must not fall back to config.port.
+  const url = resolveEffectiveInstance(inst).url
   const { ComfyApiClient } = await import('../services/comfyApi')
   const stats = await new ComfyApiClient(url).systemStats()
   if (!stats) {

@@ -110,6 +110,33 @@ export interface ComfyInstanceConfig {
   migrationError?: string
 }
 
+/**
+ * Directories ComfyUI will actually use after applying the final argv
+ * (0.2.5 WP1). Derived purely from config + template + launch profile +
+ * extraArgs; never from the filesystem.
+ */
+export interface ResolvedInstanceDirs {
+  base: string
+  user: string
+  models: string
+  customNodes: string
+  input: string
+  output: string
+  temp: string
+  previews?: string
+  workflows: string
+  manager: string
+}
+
+/** Effective port/listen/URL/directories for an instance (0.2.5 WP1). */
+export interface EffectiveLaunch {
+  port: number
+  listen: string
+  probeHost: string
+  url: string
+  dirs: ResolvedInstanceDirs
+}
+
 export interface ComfyInstanceInfo extends ComfyInstanceConfig {
   status: InstanceStatus
   pid?: number
@@ -118,6 +145,14 @@ export interface ComfyInstanceInfo extends ComfyInstanceConfig {
   onlineVersion?: string
   managerEnabled?: boolean
   url?: string
+  /** Final-argv port (last `--port` wins), even when config.port differs. */
+  effectivePort?: number
+  /** Final-argv listen list, including comma-separated values. */
+  effectiveListen?: string
+  /** Final-argv directory layout used by every asset operation. */
+  resolvedDirs?: ResolvedInstanceDirs
+  /** True when this launch added `--disable-all-custom-nodes` for this run only. */
+  safeMode?: boolean
   startedAt?: number
   uptimeMs?: number
   lastError?: string
@@ -185,6 +220,11 @@ export interface LaunchOptions {
    * attempt without it fails with ADOPT_CONFIRM_REQUIRED so the UI can ask.
    */
   adoptExternal?: boolean
+  /**
+   * 0.2.5 WP3: add `--disable-all-custom-nodes` for THIS launch only.
+   * Never persisted and never deletes/disables a node pack.
+   */
+  safeMode?: boolean
 }
 
 export interface WaitReadyResult {

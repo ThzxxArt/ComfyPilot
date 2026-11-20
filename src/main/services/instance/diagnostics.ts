@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import type { DiagnosticPackage } from '@shared/types'
+import { resolveEffectiveInstance } from '@shared/instanceLayout'
 import { loadInstanceConfigs, userDataDir } from '../db'
 import type { InstanceServiceContext } from './types'
 
@@ -63,14 +64,17 @@ export async function exportDiagnostics(
     /* ignore */
   }
 
-  // extra_model_paths
+  // extra_model_paths + effective asset directories
   if (config?.path) {
+    const effective = resolveEffectiveInstance(config)
+    writeFileSync(join(dir, 'paths.json'), JSON.stringify(effective, null, 2))
+    contents.push('paths.json')
     const emp = join(config.path, 'extra_model_paths.yaml')
     if (existsSync(emp)) {
       writeFileSync(join(dir, 'extra_model_paths.yaml'), readFileSync(emp, 'utf-8'))
       contents.push('extra_model_paths.yaml')
     }
-    const custom = join(config.path, 'custom_nodes')
+    const custom = effective.dirs.customNodes
     if (existsSync(custom)) {
       writeFileSync(join(dir, 'custom_nodes.txt'), readdirSync(custom).join('\n'))
       contents.push('custom_nodes.txt')

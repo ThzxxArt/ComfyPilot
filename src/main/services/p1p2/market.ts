@@ -1,6 +1,6 @@
 import { existsSync, readdirSync } from 'fs'
-import { join } from 'path'
 import { loadInstanceConfigs, loadSettings } from '../db'
+import { resolveEffectiveInstance } from '@shared/instanceLayout'
 
 export class MarketService {
   async list(opts?: {
@@ -25,7 +25,8 @@ export class MarketService {
       let instancePath = ''
       if (opts?.instanceId) {
         const inst = loadInstanceConfigs().find((c) => c.id === opts.instanceId)
-        if (inst?.path) instancePath = inst.path
+        // 0.2.5 WP1: `--base-directory` moves custom_nodes.
+        if (inst?.path) instancePath = resolveEffectiveInstance(inst).dirs.customNodes
       }
       const installed = collectInstalledKeys(instancePath, packKeyVariants)
       try {
@@ -55,12 +56,11 @@ export class MarketService {
   }
 }
 
-function readdirSafe(instancePath: string): string[] {
-  if (!instancePath) return []
+function readdirSafe(customNodesDir: string): string[] {
+  if (!customNodesDir) return []
   try {
-    const dir = join(instancePath, 'custom_nodes')
-    if (!existsSync(dir)) return []
-    return readdirSync(dir)
+    if (!existsSync(customNodesDir)) return []
+    return readdirSync(customNodesDir)
   } catch {
     return []
   }

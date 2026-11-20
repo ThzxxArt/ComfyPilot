@@ -18,6 +18,7 @@ import { normalizeForCompare } from '../security'
 import { killProcessTree } from '../processTree'
 import { COMFY_DEFAULT_PORTS } from '@shared/constants'
 import { warnLaunchArgs } from '@shared/launchArgs'
+import { buildEffectiveArgList, resolveEffectiveInstance } from '@shared/instanceLayout'
 import { capabilityService } from '../capabilities'
 import { readCliArgsFlags } from '../launchArgCatalog'
 import { pythonVersionText } from './python'
@@ -53,8 +54,25 @@ export async function checkPort(port: number): Promise<PortCheckResult> {
   })
 }
 
+/** Ports already claimed by configured instances (effective, not just config.port). */
+function configuredPorts(): Set<number> {
+  const ports = new Set<number>()
+  for (const c of loadInstanceConfigs()) {
+    try {
+      ports.add(resolveEffectiveInstance(c).port)
+    } catch {
+      if (c.port) ports.add(c.port)
+    }
+  }
+  return ports
+}
+
 export async function suggestPort(ctx: InstanceServiceContext): Promise<number> {
+  // 0.2.5 WP0: a port that another configured instance will use is not a
+  // suggestion — batch starts then collide on the same "free" port.
+  const claimed = configuredPorts()
   for (const p of COMFY_DEFAULT_PORTS) {
+    if (claimed.has(p)) continue
     const check = await ctx.checkPort(p)
     if (check.available) return p
   }
@@ -62,11 +80,13 @@ export async function suggestPort(ctx: InstanceServiceContext): Promise<number> 
   // returning an unchecked port (the old fallback could collide).
   for (let i = 0; i < 8; i++) {
     const candidate = 9000 + Math.floor(Math.random() * 500)
+    if (claimed.has(candidate)) continue
     const check = await ctx.checkPort(candidate)
     if (check.available) return candidate
   }
   // Last resort: sequential scan just above the default range.
   for (let p = 8193; p < 8223; p++) {
+    if (claimed.has(p)) continue
     const check = await ctx.checkPort(p)
     if (check.available) return p
   }
@@ -83,14 +103,15 @@ export async function pickEphemeralPort(
   ctx: InstanceServiceContext,
   avoid: number
 ): Promise<number> {
+  const claimed = configuredPorts()
   for (let i = 0; i < 16; i++) {
     const candidate = 8310 + Math.floor(Math.random() * 600)
-    if (candidate === avoid) continue
+    if (candidate === avoid || claimed.has(candidate)) continue
     const check = await ctx.checkPort(candidate)
     if (check.available) return candidate
   }
   for (let p = 8910; p < 8960; p++) {
-    if (p === avoid) continue
+    if (p === avoid || claimed.has(p)) continue
     const check = await ctx.checkPort(p)
     if (check.available) return p
   }
@@ -126,9 +147,20 @@ export async function waitReady(
       elapsedMs: Date.now() - started
     }
   }
+  // 0.2.5 WP0: a stopped instance with no process will never become ready.
+  // The old code still created a waiter and blocked for ~305s.
+  if (!rt.process && !ctx.startingIds.has(id) && rt.status !== 'starting') {
+    return {
+      ready: false,
+      info: ctx.toInfo(rt),
+      error: rt.lastError || 'Instance is not running',
+      elapsedMs: Date.now() - started
+    }
+  }
   return new Promise<WaitReadyResult>((resolveWait) => {
     const waiter: RuntimeEntry['readyWaiters'][number] = {
-      resolve: () => undefined
+      resolve: () => undefined,
+      startedAt: started
     }
     const finish = (result: WaitReadyResult): void => {
       if (waiter.timer) {
@@ -163,7 +195,7 @@ function settleReadyWaiters(ctx: InstanceServiceContext, rt: RuntimeEntry, error
       ready: rt.ready && rt.status === 'running',
       info: ctx.toInfo(rt),
       error,
-      elapsedMs: 0
+      elapsedMs: w.startedAt ? Date.now() - w.startedAt : 0
     })
   }
 }
@@ -339,7 +371,15 @@ async function startInner(
     return waited.info
   }
 
-  let effectivePort = config.port || 8188
+  // 0.2.5 WP1: probe the port the final argv actually selects, not config.port.
+  let effective = resolveEffectiveInstance(config)
+  let effectivePort = effective.port
+  const portFlagCount = buildEffectiveArgList(config).filter(
+    (a) => a === '--port' || a.startsWith('--port=')
+  ).length
+  // A port injected through template/profile/extraArgs cannot be relocated by
+  // writing config.port — that would only change the FIRST (overridden) value.
+  const portOverriddenByArgs = portFlagCount > 1
   let portCheck = await ctx.checkPort(effectivePort)
   if (!portCheck.available && rt.expectingStop) {
     // 0.1.17 (WP3): a restart must NEVER adopt the process it just tried to
@@ -361,20 +401,22 @@ async function startInner(
   rt.expectingStop = false
   if (!portCheck.available) {
     // Port may be occupied by a ComfyUI we can adopt (already running).
-    const base = ctx.baseUrlOf({ ...config, port: effectivePort })
+    const base = effective.url
     try {
       const res = await fetch(`${base}/system_stats`, { signal: AbortSignal.timeout(1500) })
       if (res.ok) {
         // 0.1.18 (WP3 / L5): prove the process is OURS before adopting it.
         // Any ComfyUI answering on the port used to be treated as this
         // instance — batch runs and outputs then went to another machine's UI.
+        // 0.2.5 WP0: require ledger PID + `main.py` + the instance path; a
+        // reused PID whose command mentions some other ComfyUI is not ours.
         const ledger = readPids()[config.id]
         let owned = Boolean(ledger?.pid && isPidAlive(ledger.pid))
-        // A live PID is not proof: PIDs get reused. Require the command line
-        // to still look like a ComfyUI (same reasoning as the startup sweep).
         if (owned && ledger?.pid) {
           const cmd = await processCommandLine(ledger.pid)
-          owned = Boolean(cmd && /main\.py|comfyui/i.test(cmd))
+          const expectPath = normalizeForCompare(config.path).toLowerCase()
+          const cmdNorm = normalizeForCompare(String(cmd || '')).toLowerCase()
+          owned = Boolean(cmdNorm && /main\.py/.test(cmdNorm) && expectPath && cmdNorm.includes(expectPath))
         }
         if (!owned && !opts?.adoptExternal) {
           const e = new Error(
@@ -387,12 +429,16 @@ async function startInner(
         }
         rt.status = 'running'
         rt.ready = true
-        rt.managed = false
+        // Owned ledger entry → we may stop it later; truly external → never kill.
+        rt.managed = owned
+        if (owned) rt.pid = ledger?.pid
         rt.startedAt = rt.startedAt ?? Date.now()
         ctx.pushLog(
           rt,
           'info',
-          `Adopted already-running ComfyUI at ${base} (external process — stop will not kill it)`
+          owned
+            ? `Adopted ComfyUI at ${base} (owned by this app — stop may terminate it)`
+            : `Adopted already-running ComfyUI at ${base} (external process — stop will not kill it)`
         )
         ctx.emitStatus(rt)
         return ctx.toInfo(rt)
@@ -408,6 +454,17 @@ async function startInner(
       /* not ComfyUI — real conflict */
     }
     if (opts?.relocatePort) {
+      if (portOverriddenByArgs) {
+        const e = new Error(
+          `Port ${effectivePort} is selected by launch arguments (--port), not by the instance setting — change the overriding argument instead`
+        ) as Error & { code?: string }
+        e.code = 'PORT_OVERRIDDEN'
+        rt.status = 'error'
+        rt.lastError = e.message
+        ctx.pushLog(rt, 'error', e.message)
+        ctx.emitStatus(rt)
+        throw e
+      }
       const next = await ctx.suggestPort()
       effectivePort = next
       const nextConfig: ComfyInstanceConfig = { ...config, port: next }
@@ -421,6 +478,7 @@ async function startInner(
       )
       upsertInstanceConfig(nextConfig)
       rt.config = nextConfig
+      effective = resolveEffectiveInstance(nextConfig)
     } else {
       rt.lastError = `Port ${effectivePort} is already in use`
       rt.status = 'error'
@@ -442,7 +500,23 @@ async function startInner(
   rt.managed = true
   rt.lastError = undefined
   rt.startedAt = undefined
+  rt.safeMode = opts?.safeMode === true
   ctx.emitStatus(rt)
+
+  // 0.2.5 WP0: a stop/restart may arrive while any of the awaits below are in
+  // flight. Check the generation AND the cancel flag after every await, and
+  // once more immediately before spawn — the old code could spawn a process
+  // after the UI had already been told "stopped".
+  const assertStartCurrent = (): void => {
+    if (rt.generation === gen && !rt.cancelRequested) return
+    if (rt.generation === gen) {
+      rt.status = 'stopped'
+      rt.managed = false
+      clearReadyProbe(ctx, rt, 'Start cancelled')
+      ctx.emitStatus(rt)
+    }
+    throw Object.assign(new Error('Instance start cancelled'), { code: 'START_CANCELLED' })
+  }
 
   // 0.2.0: boot-session boundary for startup diagnostics.
   ctx.pushLog(rt, 'info', `=== ComfyPilot boot ${Date.now()} ${new Date().toISOString()} ===`)
@@ -456,6 +530,7 @@ async function startInner(
   } catch {
     /* quarantine is best-effort; ComfyUI still starts */
   }
+  assertStartCurrent()
   // EnvMarker: launch must use the same environment the audit/install wrote.
   // A stale marker after a manual venv swap is a hard stop, not a warning.
   try {
@@ -484,15 +559,33 @@ async function startInner(
       }
     }
   } catch (err) {
-    if ((err as { code?: string }).code === 'ENV_MISMATCH') throw err
+    if ((err as { code?: string }).code === 'ENV_MISMATCH') {
+      // 0.2.5 WP0: this used to be thrown while status was still `starting`,
+      // leaving the UI stuck on "启动中" forever.
+      rt.status = 'error'
+      rt.lastError = err instanceof Error ? err.message : String(err)
+      ctx.pushLog(rt, 'error', rt.lastError)
+      ctx.emitStatus(rt)
+      throw err
+    }
     /* a missing/corrupt marker is advisory */
   }
   const python = ctx.resolvePython(rt.config)
   // 0.2.0: refuse to spawn a non-3.13 interpreter. A Python 3.12 venv is a
   // one-way migration, not a supported runtime; 3.14+ is plainly unsupported.
   const versionText = await pythonVersionText(python)
+  assertStartCurrent()
   const pyMatch = versionText.match(/Python\s+(\d+)\.(\d+)/i)
-  if (pyMatch && !(Number(pyMatch[1]) === 3 && Number(pyMatch[2]) === 13)) {
+  if (!pyMatch) {
+    rt.status = 'error'
+    rt.lastError = `Could not determine the Python version of ${python} — refusing to launch`
+    ctx.pushLog(rt, 'error', rt.lastError)
+    ctx.emitStatus(rt)
+    const e = new Error(rt.lastError) as Error & { code?: string }
+    e.code = 'PYTHON_UNKNOWN'
+    throw e
+  }
+  if (!(Number(pyMatch[1]) === 3 && Number(pyMatch[2]) === 13)) {
     const legacy = Number(pyMatch[1]) === 3 && Number(pyMatch[2]) === 12
     rt.config = {
       ...rt.config,
@@ -509,6 +602,11 @@ async function startInner(
     throw e
   }
   const args = ctx.buildArgs(rt.config)
+  // 0.2.5 WP3: safe mode is a one-run argument — never persisted, never
+  // duplicated when the user already declared it.
+  if (opts?.safeMode && !args.includes('--disable-all-custom-nodes')) {
+    args.push('--disable-all-custom-nodes')
+  }
   // Refuse argparse-fatal combos (mutually exclusive groups) BEFORE spawn —
   // ComfyUI would otherwise exit instantly with an opaque usage error.
   ctx.assertLaunchArgsValid(rt, args)
@@ -556,6 +654,8 @@ async function startInner(
     }
   }
 
+  // Last gate before the process exists: no spawn after stop/restart.
+  assertStartCurrent()
   try {
     const child = spawn(python, args, {
       cwd: rt.config.path,
@@ -566,6 +666,24 @@ async function startInner(
     rt.process = child
     rt.pid = child.pid
     rt.startedAt = Date.now()
+    if (rt.generation !== gen || rt.cancelRequested) {
+      // Stop arrived while spawn() was executing — kill what we just created
+      // instead of leaving an orphan the user was told had been stopped.
+      rt.intentionalStop = true
+      await killProcessTree(child, { timeoutMs: 5000 })
+      if (rt.process === child) {
+        rt.process = undefined
+        rt.pid = undefined
+      }
+      if (rt.generation === gen) {
+        rt.status = 'stopped'
+        rt.managed = false
+        rt.cancelRequested = false
+        clearReadyProbe(ctx, rt, 'Start cancelled')
+        ctx.emitStatus(rt)
+      }
+      throw Object.assign(new Error('Instance start cancelled'), { code: 'START_CANCELLED' })
+    }
     // 0.1.17 (WP3): ledger entry so an app crash cannot orphan a 20 GB server.
     rememberPid(rt)
 
@@ -856,6 +974,32 @@ export async function sweepStaleProcesses(): Promise<{
   return { entries: ids.length, killed, unverified }
 }
 
+/**
+ * Kill a process tree we only know by PID (adopted owned instance, 0.2.5 WP0).
+ * Returns true only when the PID is observed gone — a timed-out taskkill is
+ * reported as failure, never as "stopped".
+ */
+async function killPidTree(pid: number): Promise<boolean> {
+  if (!pid || !isPidAlive(pid)) return true
+  try {
+    if (process.platform === 'win32') {
+      await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F'], {
+        windowsHide: true,
+        timeout: 8000
+      }).catch(() => undefined)
+    } else {
+      process.kill(pid, 'SIGKILL')
+    }
+  } catch {
+    /* already gone or permission denied */
+  }
+  for (let i = 0; i < 30; i++) {
+    if (!isPidAlive(pid)) return true
+    await new Promise((r) => setTimeout(r, 100))
+  }
+  return !isPidAlive(pid)
+}
+
 /** Stop a child process tree, gracefully first (0.1.17 WP3).
  *
  * Windows has no signals: the old code called `child.kill('SIGTERM')`, which
@@ -1032,14 +1176,23 @@ async function stopInner(
   // so the process reappeared seconds later.
   if (ctx.startingIds.has(id) || rt.status === 'starting') {
     rt.cancelRequested = true
-    const deadline = Date.now() + 10_000
+    // 0.2.5 WP0: wait for the in-flight start to observe the cancel. The
+    // pre-spawn + post-spawn generation gates make the remaining race safe;
+    // the old 10s window could expire while `python --version` was still
+    // running (8s timeout on a cold interpreter) and the start then spawned.
+    const deadline = Date.now() + 30_000
     while (ctx.startingIds.has(id) && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 50))
+    }
+    if (ctx.startingIds.has(id)) {
+      ctx.pushLog(rt, 'warn', 'Start did not finish within 30s — forcing stop')
     }
   }
   rt.intentionalStop = true
   rt.generation += 1
+  rt.lastExit = undefined
   const child = rt.process
+  const ledgerPid = rt.pid && !child ? rt.pid : undefined
   const wasManaged = rt.managed
   // Snapshot BEFORE overwriting status/ready so a second stop of an adopted
   // external process can still see that it was live.
@@ -1067,6 +1220,20 @@ async function stopInner(
       rt.pid = undefined
       rt.status = 'stopped'
     }
+  } else if (ledgerPid && wasManaged && isPidAlive(ledgerPid)) {
+    // 0.2.5 WP0: adopted but owned (ledger proves we spawned it). Stop must
+    // actually terminate it instead of refusing because `managed` was lost.
+    exited = await killPidTree(ledgerPid)
+    rt.process = undefined
+    rt.pid = exited ? undefined : ledgerPid
+    rt.status = exited ? 'stopped' : 'error'
+    ctx.pushLog(
+      rt,
+      exited ? 'info' : 'error',
+      exited
+        ? `Stopped adopted process tree (pid ${ledgerPid})`
+        : `Adopted process ${ledgerPid} did not exit within the grace window`
+    )
   } else {
     rt.process = undefined
     rt.pid = undefined
@@ -1100,10 +1267,11 @@ export async function restart(
   // waits for the port instead of adopting the process it just replaced.
   if (rtBefore) rtBefore.expectingStop = true
   await ctx.stop(id)
-  // Wait until port is free (or timeout) so start() does not race a dying process.
+  // Wait until the EFFECTIVE port is free (0.2.5 WP1) so start() does not
+  // race a dying process that listened on an argv-overridden port.
   const config = loadInstanceConfigs().find((c) => c.id === id)
-  const port = config?.port || 8188
-  for (let i = 0; i < 20; i++) {
+  const port = config ? resolveEffectiveInstance(config).port : 8188
+  for (let i = 0; i < 40; i++) {
     const check = await ctx.checkPort(port)
     if (check.available) break
     await new Promise((r) => setTimeout(r, 150))
@@ -1120,6 +1288,7 @@ export async function forceKill(
   if (!rt) throw new Error(`Instance not found: ${id}`)
   rt.intentionalStop = true
   rt.generation += 1
+  rt.lastExit = undefined
   const child = rt.process
   const pid = rt.pid
   const wasManaged = rt.managed
@@ -1137,20 +1306,8 @@ export async function forceKill(
     // still running; reporting a plain "stopped" would be a lie.
     exited = child.exitCode !== null
   } else if (pid && wasManaged) {
-    // Only kill PID if we spawned it and no longer own a live child handle (avoid PID reuse races).
-    try {
-      if (process.platform === 'win32') {
-        await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F'], {
-          windowsHide: true,
-          timeout: 5000
-        }).catch(() => undefined)
-      } else {
-        process.kill(pid, 'SIGKILL')
-      }
-    } catch {
-      /* ignore */
-    }
-    exited = !isPidAlive(pid)
+    // Only kill PID if we spawned it and no longer own a live child handle.
+    exited = await killPidTree(pid)
   } else if (!wasManaged && (wasReady || rt.status === 'running')) {
     // Live external ComfyUI we refused to kill — tell the UI we only signalled state.
     adopted = true

@@ -15,6 +15,7 @@ import { ComfyApiClient } from '../comfyApi'
 import { readPngTextMetaFromFile, recordPromptWorkflowLink } from '../workflow'
 import { classifyOutputType } from '@shared/mediaTypes'
 import { resolveOutputDir } from '@shared/outputDir'
+import { resolveEffectiveInstance } from '@shared/instanceLayout'
 import {
   emptyItem,
   instanceUrl,
@@ -395,6 +396,7 @@ export class BatchService extends EventEmitter {
     // Remote outputs cannot be verified on this machine — `produced` counts
     // history-reported files instead of indexed local paths (0.1.11).
     const localInstancePath = inst?.path || ''
+    const localInputDir = inst ? resolveEffectiveInstance(inst).dirs.input : ''
     // 0.1.17 (WP5): the scanner must follow `--output-directory`, not assume
     // `<instance>/output` — otherwise produced=0 while files exist elsewhere.
     const localOutputDir = inst ? resolveOutputDir(inst) : ''
@@ -539,7 +541,13 @@ export class BatchService extends EventEmitter {
       job.status = 'running'
       this.persist(job)
       this.emit('progress', job)
-      const settledIds = await this.awaitOutputs(job.id, client, localInstancePath, localOutputDir)
+      const settledIds = await this.awaitOutputs(
+        job.id,
+        client,
+        localInstancePath,
+        localOutputDir,
+        localInputDir
+      )
 
       // The job may have been removed while we were polling — never resurrect it.
       const latest = this.list().find((j) => j.id === id)
@@ -655,7 +663,8 @@ export class BatchService extends EventEmitter {
     jobId: string,
     client: ComfyApiClient,
     instancePath: string,
-    outputDir: string
+    outputDir: string,
+    inputDir?: string
   ): Promise<Set<string>> {
     const settled = new Set<string>()
     // Scale the wait with the job: 30s base + 20s per prompt, capped at 30 min.
@@ -731,7 +740,7 @@ export class BatchService extends EventEmitter {
             live.produced += h.outputs.length
           } else {
             for (const out of h.outputs) {
-              const abs = this.resolveHistoryOutput(out, instancePath, outputDir)
+              const abs = this.resolveHistoryOutput(out, instancePath, outputDir, inputDir)
               if (!abs) continue
               let linked = false
               for (const item of live.items) {
@@ -770,14 +779,17 @@ export class BatchService extends EventEmitter {
   private resolveHistoryOutput(
     out: { filename?: string; subfolder?: string; type?: string },
     instancePath: string,
-    outputDir?: string
+    outputDir?: string,
+    inputDir?: string
   ): string | null {
     if (!out?.filename) return null
     const sub = out.subfolder || ''
-    // 0.1.17 (WP5): `output` files live under the resolved output dir (which
-    // already honours --output-directory); inputs stay under the instance.
+    // 0.2.5 WP1/WP9: both roots come from the effective layout; the raw
+    // subfolder is validated in WP9 so `..`/absolute values cannot escape.
     const base =
-      out.type === 'input' ? join(instancePath, 'input') : outputDir || join(instancePath, 'output')
+      out.type === 'input'
+        ? inputDir || join(instancePath, 'input')
+        : outputDir || join(instancePath, 'output')
     const abs = join(base, sub, basename(out.filename))
     if (!existsSync(abs)) {
       // History referenced a file that is not on disk — log it so the gap is

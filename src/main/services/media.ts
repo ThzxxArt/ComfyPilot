@@ -24,6 +24,7 @@ import {
   clearOutputAssetThumbnails
 } from './db'
 import { resolveOutputDir } from '@shared/outputDir'
+import { resolveEffectiveInstance } from '@shared/instanceLayout'
 import {
   assertSafeRelativeFilename,
   isSafeExternalUrl,
@@ -273,9 +274,9 @@ function mediaOutputRoots(): string[] {
     }
     for (const c of loadInstanceConfigs()) {
       if (c.path) {
-        // Honor `--output-directory` exactly like the scanner/handler do.
+        // Honor the full effective layout exactly like the scanner/handler do.
         roots.push(resolveOutputDir(c))
-        roots.push(join(c.path, 'user', 'default', 'workflows'))
+        roots.push(resolveEffectiveInstance(c).dirs.workflows)
       }
     }
   } catch {

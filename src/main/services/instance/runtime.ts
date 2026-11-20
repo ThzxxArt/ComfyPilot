@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'fs'
 import { join, dirname } from 'path'
 import type { ComfyInstanceConfig, ComfyInstanceInfo, InstanceCapabilities } from '@shared/types'
+import { isManagerEnabledInArgv, resolveEffectiveInstance } from '@shared/instanceLayout'
 import { capabilityService } from '../capabilities'
 import { readComfyVersion } from '../comfyVersion'
 import { loadInstanceConfigs } from '../db'
@@ -83,13 +84,13 @@ export function probeVersion(ctx: InstanceServiceContext, installPath: string): 
 }
 
 export function baseUrlOf(config: ComfyInstanceConfig): string {
-  const port = config.port || 8188
-  const listen = config.listen || '127.0.0.1'
-  const host = listen === '0.0.0.0' || listen === '::' || listen === '[::]' ? '127.0.0.1' : listen
-  return `http://${host}:${port}`
+  // 0.2.5 WP1: the final argv wins over config.port/listen. Reading the
+  // configured values here made every probe miss `--port 9999` instances.
+  return resolveEffectiveInstance(config).url
 }
 
 export function toInfo(ctx: InstanceServiceContext, rt: RuntimeEntry): ComfyInstanceInfo {
+  const effective = resolveEffectiveInstance(rt.config)
   return {
     ...rt.config,
     // Normalize fields older JSONC records may omit
@@ -103,15 +104,21 @@ export function toInfo(ctx: InstanceServiceContext, rt: RuntimeEntry): ComfyInst
           ? 'migration-required'
           : rt.status,
     pid: rt.pid,
-    // Same host normalization as probes/launch (0.0.0.0 / :: / [::] → 127.0.0.1)
-    url: baseUrlOf(rt.config),
+    // Effective URL/dirs are authoritative for probes and every asset action.
+    url: effective.url,
+    effectivePort: effective.port,
+    effectiveListen: effective.listen,
+    resolvedDirs: effective.dirs,
+    safeMode: rt.safeMode === true,
     startedAt: rt.startedAt,
     uptimeMs: rt.startedAt ? Date.now() - rt.startedAt : undefined,
     lastError: rt.lastError,
     // 0.1.17 (WP3): structured crash reason so the UI can offer the right
     // recovery (restart vs. lower VRAM and restart).
     lastExit: rt.lastExit,
-    managerEnabled: rt.config.extraArgs?.some((a) => a.includes('enable-manager')),
+    // Template/profile/extraArgs all participate — `--enable-manager` in a
+    // launch template used to be reported as "Manager disabled".
+    managerEnabled: isManagerEnabledInArgv(rt.config),
     version: probeVersion(ctx, rt.config.path),
     // Real version reported by the running server (0.1.10) — only set when a
     // recent capability probe hit the instance while online.

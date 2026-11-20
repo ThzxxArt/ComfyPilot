@@ -9,6 +9,7 @@ import { EventEmitter } from 'events'
 import type { DoctorCheck, DoctorReport, DoctorSeverity } from '@shared/types'
 import { loadInstanceConfigs, loadSettings } from './db'
 import { LAUNCH_TEMPLATES, REGISTRY_API } from '@shared/constants'
+import { isManagerEnabledInArgv, resolveEffectiveInstance } from '@shared/instanceLayout'
 import { parseExtraModelPaths } from './model'
 import { resolveInstancePythonPath } from './instance'
 
@@ -303,8 +304,9 @@ export class DoctorService extends EventEmitter {
       /* bootstrap probe is advisory */
     }
 
-    // 4. models dir
-    const modelRoot = installPath ? join(installPath, 'models') : ''
+    // 4. models dir — effective (`--base-directory` / `--models-directory`).
+    const effectiveDirs = config ? resolveEffectiveInstance(config).dirs : undefined
+    const modelRoot = effectiveDirs?.models || (installPath ? join(installPath, 'models') : '')
     const hasModels = modelRoot && existsSync(modelRoot)
     checks.push({
       id: 'models-dir',
@@ -319,8 +321,8 @@ export class DoctorService extends EventEmitter {
       fixId: 'create-models-dir'
     })
 
-    // 5. custom_nodes
-    const customNodes = installPath ? join(installPath, 'custom_nodes') : ''
+    // 5. custom_nodes — effective (`--base-directory`).
+    const customNodes = effectiveDirs?.customNodes || (installPath ? join(installPath, 'custom_nodes') : '')
     const hasCN = customNodes && existsSync(customNodes)
     checks.push({
       id: 'custom-nodes',
@@ -472,8 +474,8 @@ export class DoctorService extends EventEmitter {
     if (installPath) {
       try {
         const { statfsSync } = await import('fs')
-        const modelsDir = join(installPath, 'models')
-        const outputDir = join(installPath, 'output')
+        const modelsDir = effectiveDirs?.models || join(installPath, 'models')
+        const outputDir = effectiveDirs?.output || join(installPath, 'output')
         for (const [label, dir] of [
           ['models', modelsDir],
           ['output', outputDir]
@@ -547,7 +549,7 @@ export class DoctorService extends EventEmitter {
     })
 
     // 11. Manager enabled flag
-    const managerEnabled = Boolean(config?.extraArgs?.some((a) => a.includes('enable-manager')))
+    const managerEnabled = config ? isManagerEnabledInArgv(config) : false
     checks.push({
       id: 'manager',
       group: 'Extensions',
@@ -619,6 +621,7 @@ export class DoctorService extends EventEmitter {
     if (!config) return { ok: false, message: `Instance not found: ${instanceId}` }
     const installPath = config.path || ''
     if (!installPath) return { ok: false, message: 'No instance path' }
+    const effectiveDirs = resolveEffectiveInstance(config).dirs
 
     switch (fixId) {
       case 'migrate-python-313': {
@@ -652,7 +655,7 @@ export class DoctorService extends EventEmitter {
         }
       }
       case 'create-models-dir': {
-        const dir = join(installPath, 'models')
+        const dir = effectiveDirs.models
         mkdirSync(dir, { recursive: true })
         for (const sub of [
           'checkpoints',
@@ -670,12 +673,12 @@ export class DoctorService extends EventEmitter {
         return { ok: true, message: `Created models tree at ${dir}` }
       }
       case 'create-custom-nodes': {
-        const dir = join(installPath, 'custom_nodes')
+        const dir = effectiveDirs.customNodes
         mkdirSync(dir, { recursive: true })
         return { ok: true, message: `Created ${dir}` }
       }
       case 'repair-impact-pack-config': {
-        const packDir = join(installPath, 'custom_nodes', 'ComfyUI-Impact-Pack')
+        const packDir = join(effectiveDirs.customNodes, 'ComfyUI-Impact-Pack')
         if (!existsSync(packDir)) {
           return { ok: false, message: 'ComfyUI-Impact-Pack is not installed' }
         }
@@ -704,7 +707,7 @@ export class DoctorService extends EventEmitter {
         // Real fix: rewrite requirements.txt to relax exact torch pins
         try {
           const { readdirSync } = await import('fs')
-          const customNodes = join(installPath, 'custom_nodes')
+          const customNodes = effectiveDirs.customNodes
           if (!existsSync(customNodes)) return { ok: false, message: 'custom_nodes missing' }
           let fixed = 0
           for (const name of readdirSync(customNodes)) {

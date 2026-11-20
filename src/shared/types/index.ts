@@ -24,6 +24,8 @@ export type {
   InstanceStatus,
   LaunchArgTemplate,
   LaunchProfile,
+  ResolvedInstanceDirs,
+  EffectiveLaunch,
   ComfyInstanceConfig,
   ComfyInstanceInfo,
   TargetRef,

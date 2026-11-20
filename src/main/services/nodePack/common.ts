@@ -11,9 +11,12 @@ import {
 import { join, resolve, sep } from 'path'
 import { execFile, execFileSync } from 'child_process'
 import { promisify } from 'util'
+import { resolveEffectiveInstance } from '@shared/instanceLayout'
 import { resolveInstancePythonPath, resolveRuntimesPythonSync } from '../instance'
 import { findInRuntimes } from '../bootstrap'
 import { resolveReadTarget } from '../target'
+import { loadInstanceConfigs } from '../db'
+import { normalizeForCompare } from '../security'
 
 export const execFileAsync = promisify(execFile)
 
@@ -323,13 +326,24 @@ export function detectCustomNodesRoot(instanceIdOrPath?: string): string {
   // different ComfyUI than the one the user selected.
   if (instanceIdOrPath) {
     // Path form takes precedence — never resolve a filesystem path as an instance id.
-    const instancePath =
-      instanceIdOrPath.includes('/') || instanceIdOrPath.includes('\\')
-        ? instanceIdOrPath
-        : resolveInstanceConfig(instanceIdOrPath)?.path
-    if (!instancePath) return ''
-    return join(instancePath, 'custom_nodes')
+    if (instanceIdOrPath.includes('/') || instanceIdOrPath.includes('\\')) {
+      return effectiveCustomNodesForPath(instanceIdOrPath)
+    }
+    const config = resolveInstanceConfig(instanceIdOrPath)
+    if (!config) return ''
+    // 0.2.5 WP1: `--base-directory` moves custom_nodes; the old fixed
+    // `<instance>/custom_nodes` installed packs where ComfyUI never looks.
+    return resolveEffectiveInstance(config).dirs.customNodes
   }
   const envPath = process.env.COMFYUI_PATH && join(process.env.COMFYUI_PATH, 'custom_nodes')
   return envPath && existsSync(envPath) ? envPath : ''
+}
+
+/** Effective custom_nodes for a bare path (no matching config) — argv unknown. */
+function effectiveCustomNodesForPath(instancePath: string): string {
+  const config = loadInstanceConfigs().find(
+    (c) => normalizeForCompare(c.path) === normalizeForCompare(instancePath)
+  )
+  if (config) return resolveEffectiveInstance(config).dirs.customNodes
+  return join(instancePath, 'custom_nodes')
 }
