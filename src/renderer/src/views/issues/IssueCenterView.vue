@@ -18,6 +18,7 @@ import {
   NSpin,
   NSwitch,
   NTag,
+  useDialog,
   useMessage
 } from 'naive-ui'
 import { AlertCircleOutline, RefreshOutline } from '@vicons/ionicons5'
@@ -29,6 +30,7 @@ const { t } = useI18n()
 const router = useRouter()
 const route = useRoute()
 const message = useMessage()
+const dialog = useDialog()
 const store = useAppStore()
 
 const issues = ref<AppIssue[]>([])
@@ -146,7 +148,23 @@ async function resolveIssue(issue: AppIssue): Promise<void> {
 }
 
 async function ignoreAll(): Promise<void> {
-  for (const issue of visible.value.filter((i) => i.status === 'open')) {
+  const targets = visible.value.filter((i) => i.status === 'open')
+  if (!targets.length) return
+  // 0.2.5 WP7: destructive bulk action requires confirmation.
+  const confirmed = await new Promise<boolean>((resolve) => {
+    dialog.warning({
+      title: t('issues.ignoreAllConfirmTitle'),
+      content: t('issues.ignoreAllConfirmBody', { n: targets.length }),
+      positiveText: t('issues.ignoreAll'),
+      negativeText: t('common.cancel'),
+      onPositiveClick: () => resolve(true),
+      onNegativeClick: () => resolve(false),
+      onClose: () => resolve(false),
+      onMaskClick: () => resolve(false)
+    })
+  })
+  if (!confirmed) return
+  for (const issue of targets) {
     await ipc('issue.dismiss', issue.id)
   }
   await load()

@@ -31,6 +31,8 @@ export default {
     groupOps: 'Ops'
   },
   common: {
+    targetRequired: 'Select a local instance before using this action',
+    remoteNotSupported: 'This action only supports local instances',
     needRunningInstance: 'Requires a running instance — start it manually on the Instances page',
     save: 'Save',
     cancel: 'Cancel',
@@ -236,8 +238,11 @@ export default {
     remoteKeySet: 'API key set',
     remoteKeyClear: 'Clear API key',
     remoteKeyCleared: 'API key cleared',
+    clearRemoteKeyConfirmTitle: 'Clear the remote API key?',
+    clearRemoteKeyConfirmBody: 'The saved credential for {name} is deleted and must be re-entered.',
     proxyBypass: 'Bypass list (comma-separated)',
     testConnection: 'Test connection',
+    saveAndTest: 'Save and test',
     applyNow: 'Apply now',
     proxyApplied: 'Proxy applied: {url}',
     proxyDirect: 'Switched to direct connection',
@@ -375,6 +380,19 @@ export default {
     managerPolicyNote:
       '"ComfyPilot install policy" is this app’s own gate — not Manager’s security_level.',
     openManagerConfig: 'Open config.ini',
+    updateChannel: 'Update channel',
+    channelStable: 'Stable (release tag)',
+    channelNightly: 'Nightly (master)',
+    legacyNightlyHint: '0.2.4 instances keep nightly by default; switch to stable if you want tags',
+    updateChannelSaved: 'Update channel saved',
+    migrateConfirmTitle: 'Migrate the Python environment?',
+    migrateConfirmBody:
+      'The old venv is archived and a 3.13 environment is built. The instance is unavailable during the migration.',
+    clearLogsConfirmTitle: 'Clear instance logs?',
+    clearLogsConfirmBody: 'Memory and on-disk logs are deleted. This cannot be undone.',
+    rollbackConfirmTitle: 'Roll back this update?',
+    rollbackConfirmBody:
+      'Restores the pre-update source backup and attempts to restore node versions.',
     add: 'Add instance',
     discover: 'Auto-discover',
     launchOpen: 'Launch & open',
@@ -963,6 +981,8 @@ export default {
     recoveryKind_duplicate: 'Duplicate copy',
     recoveryKind_trash: 'Quarantined leftover',
     recoveryCleanAll: 'Clean all',
+    recoveryCleanAllConfirmTitle: 'Clean all recovery leftovers?',
+    recoveryCleanAllConfirmBody: 'This deletes {n} backup/temporary item(s). It cannot be undone.',
     recoveryCleanAllDone: 'Cleaned {n} leftover item(s)',
     recoveryCleanAllPartial: 'Cleaned {n}; {failed} could not be removed',
     recoveryRestorable: 'Can be restored as package “{name}”',
@@ -1433,6 +1453,7 @@ export default {
     }
   },
   embed: {
+    title: 'Embedded ComfyUI',
     loadFailed: 'Embedded page failed to load',
     back: 'Back',
     urlPlaceholder: 'ComfyUI address, e.g. http://127.0.0.1:8188',
@@ -1727,7 +1748,8 @@ export default {
     errUpcastConflict:
       '--force-upcast-attention and --dont-upcast-attention are mutually exclusive.',
     errCudaMallocConflict: '--cuda-malloc and --disable-cuda-malloc are mutually exclusive.',
-    errManagerConflict: '--disable-manager-ui and --enable-manager-legacy-ui are mutually exclusive.',
+    errManagerConflict:
+      '--disable-manager-ui and --enable-manager-legacy-ui are mutually exclusive.',
     warnDeprecatedFlag: '{flag} is obsolete in current ComfyUI (e.g. DirectML was removed)',
     errInvalidNumber: 'Flag {flag} has a missing or invalid numeric value.',
     errGeneric: 'The argument combination conflicts — check the free-text field.',
@@ -1936,8 +1958,9 @@ export default {
     msgReqSkip: 'No requirements.txt — skipped',
     msgTorchRun: 'Installing PyTorch ({channel})…',
     msgTorchDone: 'PyTorch installed',
-    msgVerifyRun: 'Verifying…',
-    msgVerifyOk: 'Verification passed',
+    msgVerifyRun: 'Running a real startup self-check…',
+    msgVerifyOk: 'Startup self-check passed',
+    msgVerifyFail: 'Startup self-check failed — rolled back',
     msgPreflightRun: 'Checking install…',
     msgPreflightDone: 'Preflight passed ({source})',
     msgStopRun: 'Stopping instance…',
@@ -1969,6 +1992,9 @@ export default {
     allKinds: 'All kinds',
     openCount: '{n} open',
     ignoreAll: 'Ignore all',
+    ignoreAllConfirmTitle: 'Ignore all open issues?',
+    ignoreAllConfirmBody:
+      'This will ignore {n} issue(s); you can restore them from the Ignored filter.',
     severity_error: 'Error',
     severity_warning: 'Warning',
     severity_info: 'Info',

@@ -113,6 +113,39 @@ describe('component smoke', () => {
     w.unmount()
   })
 
+  it('CommandPalette exposes rescue actions for the active instance', async () => {
+    const C = (await import('../../src/renderer/src/components/CommandPalette.vue')).default
+    const w = await show(C)
+    const { useAppStore } = await import('../../src/renderer/src/stores/app')
+    const store = useAppStore()
+    store.instances = [
+      {
+        id: 'i1',
+        name: 'Alpha',
+        path: '/tmp/ComfyUI',
+        pythonPath: '',
+        venvPath: '',
+        port: 8188,
+        listen: '127.0.0.1',
+        extraArgs: [],
+        argTemplateId: 'default',
+        enabled: true,
+        notes: '',
+        autoStart: false,
+        frontendVersion: '',
+        pinned: false,
+        status: 'running'
+      } as never
+    ]
+    store.activeInstanceId = 'i1'
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true }))
+    await flushPromises()
+    await nextTick()
+    expect(document.body.textContent || '').toContain('强制重启')
+    expect(document.body.textContent || '').toContain('救援')
+    w.unmount()
+  })
+
   it('mounts NotificationCenter', async () => {
     const C = (await import('../../src/renderer/src/components/NotificationCenter.vue')).default
     const w = await show(C)

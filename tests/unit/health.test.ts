@@ -88,11 +88,7 @@ describe('health state machine (0.2.5 WP2)', () => {
   })
 
   it('does not kill a busy instance during a transient HTTP timeout', () => {
-    const d = decideHealth(
-      undefined,
-      { ...baseFacts, queueRunning: 1, lastProgressAt: 999_000 },
-      5
-    )
+    const d = decideHealth(undefined, { ...baseFacts, queueRunning: 1, lastProgressAt: 999_000 }, 5)
     expect(d.state).toBe('busy')
   })
 
@@ -163,9 +159,10 @@ describe('health service against real HTTP fixtures (0.2.5 WP2)', () => {
     expect(healthy.processAlive).toBe(true)
 
     server.setQueue(1, 0)
-    ;(
-      monitorService as unknown as { progressAtByBase: Map<string, number> }
-    ).progressAtByBase.set(server.url, Date.now())
+    ;(monitorService as unknown as { progressAtByBase: Map<string, number> }).progressAtByBase.set(
+      server.url,
+      Date.now()
+    )
     const busy = await instanceHealthService.check('i1')
     expect(busy.state).toBe('busy')
   })

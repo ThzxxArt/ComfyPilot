@@ -65,17 +65,10 @@ jobs:
       - name: Test polarity gate (no positive-only files)
         run: node scripts/check-test-polarity.cjs
 
-      - name: Unit & integration tests (coverage, Linux)
-        if: runner.os == 'Linux'
-        # Vitest thresholds + coverage-baseline ratchet. Node is pinned via
-        # .nvmrc so V8 function counts do not drift between CI and local runs.
+      - name: Unit & integration tests (coverage, both platforms)
+        # Istanbul is deterministic across Windows/Linux; the old V8
+        # "counters differ" exemption is obsolete (0.2.5 WP8).
         run: npm run test:coverage
-
-      - name: Unit & integration tests (Windows, no coverage thresholds)
-        if: runner.os == 'Windows'
-        # V8 coverage counters differ on Windows; running the same thresholds
-        # there produces false regressions. Coverage is enforced on Linux.
-        run: npm run test
 
       - name: Test-behaviour ratio gate
         run: npm run test:behavior

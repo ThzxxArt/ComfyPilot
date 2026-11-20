@@ -288,6 +288,32 @@ describe('main entry', () => {
     expect(app.exit).toHaveBeenCalledWith(0)
   })
 
+  it('forwards second-instance control commands and health transitions', async () => {
+    const callbacks = h.appEvents.get('second-instance') || []
+    expect(callbacks.length).toBeGreaterThan(0)
+    callbacks[callbacks.length - 1]({}, ['ComfyPilot.exe'])
+    callbacks[callbacks.length - 1]({}, ['ComfyPilot.exe', '--status'])
+    svc.instanceService.emit('status', { id: 'i1', status: 'running' })
+    const { instanceHealthService } = await import('../../src/main/services/instance/health')
+    instanceHealthService.emit('health', {
+      instanceId: 'i1',
+      health: {
+        instanceId: 'i1',
+        state: 'healthy',
+        checkedAt: Date.now(),
+        since: Date.now(),
+        consecutiveFailures: 0,
+        queueRunning: 0,
+        queuePending: 0,
+        portListening: true,
+        processAlive: true,
+        evidence: []
+      }
+    })
+    instanceHealthService.stop()
+    expect(h.windows.length).toBeGreaterThan(0)
+  })
+
   it('keeps the module export side-effect free (no renderer window data leak)', () => {
     expect(indexModule).toBeDefined()
   })

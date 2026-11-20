@@ -159,6 +159,9 @@ export function createNodeHandlers() {
     deleteSnapshot: wrap((id: string, instanceId?: string) =>
       nodePackService.deleteSnapshot(sanitizeId(id), requireLocalTarget(instanceId))
     ),
+    restoreVersions: wrap((id: string, instanceId?: string) =>
+      nodePackService.restoreNodeVersions(sanitizeId(id), requireLocalTarget(instanceId))
+    ),
     restoreSnapshot: wrap((id: string, instanceId?: string) =>
       nodePackService.restoreSnapshot(sanitizeId(id), requireLocalTarget(instanceId))
     ),

@@ -40,6 +40,10 @@ jobs:
       - run: node scripts/check-i18n.cjs
       - run: node scripts/check-hardcoded-zh.cjs
       - run: node scripts/check-version.cjs
+      - run: npm run build
+      - run: node scripts/check-asar.cjs
+      - name: E2E (Linux, xvfb)
+        run: xvfb-run -a npm run test:e2e
 
   # Linux is built best-effort: it is NOT a verified product yet, so its
   # failure must never block the Windows release. macOS is intentionally not
@@ -97,6 +101,17 @@ jobs:
             exit 1
           fi
       - run: npm run build
+      - name: Packaged --dir smoke (proves the product starts)
+        shell: bash
+        run: |
+          npx electron-builder --win --dir --publish never
+          ./release/win-unpacked/ComfyPilot.exe --e2e-smoke
+          ASAR=$(find release/win-unpacked -path '*/resources/app.asar' | head -n 1)
+          if [ -z "$ASAR" ]; then
+            echo "packaged app.asar not found"
+            exit 1
+          fi
+          node scripts/check-asar.cjs "$ASAR"
       - name: Package (NSIS, no publish)
         run: npx electron-builder --win --publish never
       - name: Asar manifest assertion
@@ -135,7 +150,7 @@ jobs:
           body: |
             ## 安装包
 
-            - `ComfyPilot-<version>-win-x64.exe`（NSIS，x64，version 见 latest.yml）
+            - `ComfyPilot-${{ github.ref_name }}-win-x64.exe`（NSIS，x64，version 见 latest.yml）
             - `SHA256SUMS.txt` 含安装包与 `latest.yml` 的校验和
 
             > 构建产物未签名：首次运行请按 SmartScreen 提示选择「更多信息 → 仍要运行」。

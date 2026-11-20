@@ -5,7 +5,6 @@ import {
   joinPathLike,
   probeHostForListen,
   readLastFlagValue,
-  resolveEffectiveDirs,
   resolveEffectiveInstance,
   resolveEffectiveListen,
   resolveEffectivePort

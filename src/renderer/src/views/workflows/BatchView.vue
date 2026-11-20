@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import TargetBanner from '@/components/TargetBanner.vue'
 import { useInstanceScope } from '@/composables/useInstanceScope'
 import { onMounted, onUnmounted, ref, computed, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -543,6 +544,7 @@ onUnmounted(() => {
 
 <template>
   <div class="page">
+    <TargetBanner />
     <div class="page-header">
       <div>
         <h1 class="page-title">{{ $t('batch.title') }}</h1>

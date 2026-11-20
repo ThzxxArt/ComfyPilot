@@ -9,10 +9,17 @@ import { nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 
 const ipcMock = vi.hoisted(() => vi.fn(async (_channel: string, ..._args: unknown[]) => undefined))
+const healthHook = vi.hoisted(() => ({ listener: null as null | ((p: unknown) => void) }))
 
 vi.mock('@/composables/useIpc', () => ({
   ipc: ipcMock,
   onInstanceStatus: () => () => undefined,
+  onInstanceHealth: (fn: (p: unknown) => void) => {
+    healthHook.listener = fn
+    return () => {
+      healthHook.listener = null
+    }
+  },
   onMonitorTick: () => () => undefined,
   onIpc: () => () => undefined,
   onNotification: () => () => undefined,
@@ -46,6 +53,20 @@ describe('app store activeTargetUrl (0.1.10)', () => {
     store.activeRemoteId = null
     expect(store.isRemoteActive).toBe(false)
     expect(store.activeTargetUrl).toBe('http://127.0.0.1:8188')
+  })
+
+  it('stores instanceHealth events by instance id', async () => {
+    const store = await freshStore()
+    healthHook.listener = null
+    const off = store.bindLive()
+    expect(healthHook.listener).toBeTruthy()
+    healthHook.listener!({
+      instanceId: 'i1',
+      health: { instanceId: 'i1', state: 'busy', checkedAt: 1 }
+    })
+    await nextTick()
+    expect(store.health.i1?.state).toBe('busy')
+    off()
   })
 
   it('prefers the remote baseUrl when a remote is selected (and stays consistent)', async () => {

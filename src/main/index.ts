@@ -757,19 +757,12 @@ app.whenReady().then(async () => {
   })
   instanceHealthService.on('health', (payload: { instanceId: string; health: unknown }) => {
     broadcast(IPC_EVENTS.instanceHealth, payload)
-    try {
-      noteHealthForRecovery(payload.health as Parameters<typeof noteHealthForRecovery>[0])
-    } catch {
-      /* recovery policy must never break health broadcast */
-    }
+    // noteHealthForRecovery already fails closed internally on bad settings.
+    noteHealthForRecovery(payload.health as Parameters<typeof noteHealthForRecovery>[0])
   })
-  try {
-    instanceHealthService.start(
-      instanceService as unknown as Parameters<typeof instanceHealthService.start>[0]
-    )
-  } catch (err) {
-    crashLog('health watchdog failed: ' + String(err))
-  }
+  instanceHealthService.start(
+    instanceService as unknown as Parameters<typeof instanceHealthService.start>[0]
+  )
   // 0.2.5 WP3: this process may itself be the first one (no running app); a
   // `--rescue`/`--status` passed at launch executes after the app is ready.
   if (startupControl) {

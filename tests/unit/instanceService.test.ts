@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { join, dirname } from 'path'
-import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'fs'
+import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, symlinkSync } from 'fs'
 import { tmpdir } from 'os'
 import type { ComfyInstanceConfig, LaunchOptions } from '@shared/types'
 
@@ -998,6 +998,7 @@ describe('spawn argv contract', () => {
 describe('exportLaunchScript()', () => {
   it('writes a .bat with cmd-safe escaping (opts.dir skips dialog)', async () => {
     const dir = join(ROOT, 'export-bat')
+    mkdirSync(dir, { recursive: true })
     const instPath = join(ROOT, 'path with space', 'Comfy & UI')
     mkdirSync(instPath, { recursive: true })
     register(cfg({ id: 'bat', name: 'My Instance!', path: instPath }))
@@ -1012,6 +1013,29 @@ describe('exportLaunchScript()', () => {
     expect(body).toMatch(/Comfy \^& UI/)
     // filename sanitizer replaced "!" and spaces
     expect(out).toContain('launch-My_Instance')
+  })
+
+  it('rejects when the save dialog is cancelled', async () => {
+    register(cfg({ id: 'cancel-export', name: 'Cancel' }))
+    h.state.saveDialogResult = { canceled: true, filePath: undefined }
+    await expect(svc.exportLaunchScript('cancel-export', { kind: 'bat' })).rejects.toThrow(
+      /cancelled/i
+    )
+  })
+
+  it('refuses a symlinked export directory', async () => {
+    const real = join(ROOT, 'export-real')
+    const link = join(ROOT, 'export-link')
+    mkdirSync(real, { recursive: true })
+    try {
+      symlinkSync(real, link)
+    } catch {
+      return // symlink creation not permitted on this runner
+    }
+    register(cfg({ id: 'sym', name: 'Sym' }))
+    await expect(svc.exportLaunchScript('sym', { dir: link, kind: 'bat' })).rejects.toThrow(
+      /symlink/i
+    )
   })
 
   it('writes a .sh with single-quote escaping', async () => {
@@ -2220,6 +2244,13 @@ describe('branch coverage extras', () => {
     expect(probe.packages.find((p) => p.name === 'torch')?.version).toBe('')
   })
 
+  it('copyDiagnostics returns the exported package path', async () => {
+    register(cfg({ id: 'copy-diag' }))
+    const path = await svc.copyDiagnostics('copy-diag')
+    expect(path).toContain('copy-diag')
+    expect(existsSync(path)).toBe(true)
+  })
+
   it('exportDiagnostics uses in-memory logs once a runtime exists', async () => {
     register(cfg({ id: 'live-diag' }))
     h.state.fetchImpl = failFetch
@@ -2649,6 +2680,16 @@ describe('lifecycle truth (0.1.17 WP3)', () => {
   })
 })
 
+describe('python version parsing (0.2.5 WP0)', () => {
+  it('accepts a version printed on stderr and rejects empty output', async () => {
+    const { pythonVersionText } = await import('../../src/main/services/instance/python')
+    h.state.execHandler = () => ({ stdout: '', stderr: 'Python 3.13.7' })
+    expect(await pythonVersionText('python')).toContain('3.13.7')
+    h.state.execHandler = () => ({ stdout: '', stderr: '' })
+    expect(await pythonVersionText('python')).toBe('')
+  })
+})
+
 describe('lifecycle root-cause fixes (0.2.5 WP0)', () => {
   it('waitReady returns immediately for a stopped instance with no process', async () => {
     register(cfg({ id: 'idle' }))
@@ -2657,6 +2698,16 @@ describe('lifecycle root-cause fixes (0.2.5 WP0)', () => {
     expect(result.ready).toBe(false)
     expect(result.error).toMatch(/not running/i)
     expect(Date.now() - t0).toBeLessThan(500)
+  })
+
+  it('ENV_MISMATCH also rejects a different venvPath in the marker', async () => {
+    register(cfg({ id: 'venv-mismatch', venvPath: join(ROOT, 'venv-a') }))
+    writeFileSync(
+      join(ROOT, '.comfypilot-env.json'),
+      JSON.stringify({ pythonVersion: '3.13.7', venvPath: join(ROOT, 'venv-b') })
+    )
+    await expect(svc.start('venv-mismatch')).rejects.toMatchObject({ code: 'ENV_MISMATCH' })
+    expect(svc.list().find((i) => i.id === 'venv-mismatch')?.status).toBe('error')
   })
 
   it('ENV_MISMATCH lands in error instead of leaving the UI on starting', async () => {
@@ -2698,6 +2749,107 @@ describe('lifecycle root-cause fixes (0.2.5 WP0)', () => {
     } finally {
       restorePlatform()
     }
+  })
+
+  it('instance.patch changes only the port and preserves migration fields', () => {
+    register(
+      cfg({
+        id: 'legacy312',
+        port: 8188,
+        pythonVersion: '3.12.9',
+        migrationState: 'required',
+        migrationError: 'needs 3.13'
+      })
+    )
+    const patched = svc.patch('legacy312', { port: 9999 })
+    expect(patched.port).toBe(9999)
+    expect(patched.pythonVersion).toBe('3.12.9')
+    expect(patched.migrationState).toBe('required')
+    expect(patched.migrationError).toBe('needs 3.13')
+    expect(() => svc.patch('missing', { port: 9000 })).toThrow(/not found/i)
+  })
+
+  it('refuses to relocate a port that extraArgs explicitly override', async () => {
+    register(cfg({ id: 'argv-port', extraArgs: ['--port', '9998'] }))
+    h.state.portsInUse.add(9998)
+    h.state.fetchImpl = failFetch
+    await expect(svc.start('argv-port', { relocatePort: true })).rejects.toMatchObject({
+      code: 'PORT_OVERRIDDEN'
+    })
+    expect(svc.list().find((i) => i.id === 'argv-port')?.port).toBe(8188)
+  })
+
+  it('Python 3.14 and unknown interpreter versions land in error, not starting', async () => {
+    register(cfg({ id: 'py314' }))
+    h.state.execHandler = (_cmd, args) =>
+      args.includes('--version') ? { stdout: 'Python 3.14.0' } : { stdout: '' }
+    await expect(svc.start('py314')).rejects.toMatchObject({ code: 'PYTHON_UNSUPPORTED' })
+    const info = svc.list().find((i) => i.id === 'py314')!
+    expect(info.status).toBe('error')
+    expect(info.migrationState).toBe('failed')
+
+    register(cfg({ id: 'pyunknown' }))
+    h.state.execHandler = () => ({ stdout: 'not a python' })
+    await expect(svc.start('pyunknown')).rejects.toMatchObject({ code: 'PYTHON_UNKNOWN' })
+    expect(svc.list().find((i) => i.id === 'pyunknown')?.status).toBe('error')
+  })
+
+  it('warns about a path-valued launch flag that points nowhere', async () => {
+    register(cfg({ id: 'badpath', extraArgs: ['--output-directory', '/definitely/not/here'] }))
+    h.state.fetchImpl = failFetch
+    await svc.start('badpath')
+    expect(
+      svc.getLogs('badpath').some((l) => /--output-directory path does not exist/.test(l.message))
+    ).toBe(true)
+    await svc.stop('badpath')
+  })
+
+  it('logs the TLS probe limitation instead of silently failing health later', async () => {
+    register(cfg({ id: 'tls', extraArgs: ['--tls-keyfile', '/tmp/key.pem'] }))
+    h.state.fetchImpl = failFetch
+    await svc.start('tls')
+    expect(svc.getLogs('tls').some((l) => /TLS launch flags detected/.test(l.message))).toBe(true)
+    await svc.stop('tls')
+  })
+
+  it('killAllForQuit is bounded and safe when nothing is running', async () => {
+    register(cfg({ id: 'quit' }))
+    await expect(svc.killAllForQuit(20)).resolves.toBeUndefined()
+  })
+
+  it('forceKill on an adopted external instance reports adopted/exited:false', async () => {
+    register(cfg({ id: 'external' }))
+    h.state.portsInUse.add(8188)
+    h.state.fetchImpl = okStats
+    const info = await svc.start('external', { adoptExternal: true })
+    expect(info.status).toBe('running')
+    const killed = await svc.forceKill('external')
+    expect(killed.adopted).toBe(true)
+    expect(killed.exited).toBe(false)
+  })
+
+  it('adds --disable-all-custom-nodes exactly once for a safe-mode launch', async () => {
+    register(cfg({ id: 'safe' }))
+    h.state.fetchImpl = failFetch
+    await svc.start('safe', { safeMode: true })
+    const args = h.state.lastSpawn!.args
+    expect(args.filter((a) => a === '--disable-all-custom-nodes')).toHaveLength(1)
+    expect(svc.list().find((i) => i.id === 'safe')?.safeMode).toBe(true)
+    await svc.stop('safe')
+    await svc.start('safe')
+    expect(h.state.lastSpawn!.args).not.toContain('--disable-all-custom-nodes')
+    expect(svc.list().find((i) => i.id === 'safe')?.safeMode).toBe(false)
+  })
+
+  it('refuses to spawn a directory without a ComfyUI fingerprint', async () => {
+    const empty = join(ROOT, 'not-comfy')
+    mkdirSync(empty, { recursive: true })
+    register(cfg({ id: 'not-comfy', path: empty }))
+    await expect(svc.start('not-comfy')).rejects.toMatchObject({ code: 'INSTANCE_NOT_COMFYUI' })
+    const info = svc.list().find((i) => i.id === 'not-comfy')!
+    expect(info.status).toBe('error')
+    expect(info.lastError).toMatch(/fingerprint/i)
+    expect(h.state.spawnCount).toBe(0)
   })
 
   it('suggestPort skips every configured instance port', async () => {

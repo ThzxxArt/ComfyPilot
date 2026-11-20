@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import TargetBanner from '@/components/TargetBanner.vue'
 import { useRouter } from 'vue-router'
 import {
   ServerOutline,
@@ -210,6 +211,19 @@ watch(
  */
 let disposed = false
 
+/** 0.2.5 WP7: never poll the queue while the window is hidden. */
+function onVisibility(): void {
+  if (document.hidden) {
+    if (queueTimer) clearInterval(queueTimer)
+    queueTimer = null
+    return
+  }
+  if (!queueTimer && !disposed) {
+    void refreshQueue()
+    queueTimer = setInterval(() => void refreshQueue(), 5000)
+  }
+}
+
 onMounted(async () => {
   disposed = false
   await refreshStats()
@@ -218,6 +232,7 @@ onMounted(async () => {
   await refreshQueue()
   if (disposed) return
   queueTimer = setInterval(() => void refreshQueue(), 5000)
+  document.addEventListener('visibilitychange', onVisibility)
   if (activeStatus.value === 'starting') void refreshTailLogs()
   offLog = onInstanceLogBatch((payload) => {
     const p = payload as { id: string; lines: ComfyLogLine[] }
@@ -239,6 +254,7 @@ watch(
 
 onUnmounted(() => {
   disposed = true
+  document.removeEventListener('visibilitychange', onVisibility)
   if (queueTimer) clearInterval(queueTimer)
   queueTimer = null
   if (startTimer) clearInterval(startTimer)
@@ -264,6 +280,7 @@ async function runDoctor(): Promise<void> {
 
 <template>
   <div class="page">
+    <TargetBanner />
     <div class="page-header">
       <div>
         <h1 class="page-title">{{ $t('dashboard.title') }}</h1>

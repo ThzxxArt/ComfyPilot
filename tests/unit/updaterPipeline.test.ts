@@ -47,6 +47,8 @@ const h = vi.hoisted(() => {
       summary: { pass: number; warn: number }
     } | null,
     doctorErr: null as Error | null,
+    selfcheckResult: null as null | { ok: boolean; exitCode: number | null; output: string },
+    selfcheckErr: null as Error | null,
     uvInstalled: false,
     uvPath: 'C:/fake/uv.exe',
     sessionFetch: null as ((url: string) => unknown) | null,
@@ -340,7 +342,17 @@ vi.mock('../../src/main/services/installer', () => ({
 }))
 
 vi.mock('../../src/main/services/nodePack', () => ({
-  resolveGitBinary: vi.fn(() => 'git')
+  resolveGitBinary: vi.fn(() => 'git'),
+  nodePackService: {
+    createSnapshot: vi.fn(() => ({ id: 'snap-pre-update' })),
+    restoreNodeVersions: vi.fn(async () => ({
+      ok: true,
+      restored: [],
+      skipped: [],
+      failed: [],
+      warnings: []
+    }))
+  }
 }))
 
 vi.mock('../../src/main/services/bootstrap', () => ({
@@ -374,6 +386,10 @@ vi.mock('../../src/main/services/instance', async () => {
       checkPort: vi.fn(async () => {
         const available = h.state.checkPortQueue.length ? h.state.checkPortQueue.shift()! : true
         return { port: 8188, available }
+      }),
+      runStartupSelfCheck: vi.fn(async () => {
+        if (h.state.selfcheckErr) throw h.state.selfcheckErr
+        return h.state.selfcheckResult || { ok: true, exitCode: 0, output: 'ok' }
       }),
       launch: vi.fn(async (id: string, opts: unknown) => {
         h.state.launchCalls.push({ id, opts })
@@ -465,6 +481,8 @@ function resetState(): void {
   h.state.checkPortQueue = []
   h.state.doctorResult = { checks: [], summary: { pass: 5, warn: 0 } }
   h.state.doctorErr = null
+  h.state.selfcheckResult = null
+  h.state.selfcheckErr = null
   h.state.uvInstalled = false
   h.state.failCopyOnce.clear()
   h.state.failRmPrefix = []
@@ -576,6 +594,132 @@ function waitFinished(): Promise<UpdateProgress> {
     comfyUpdaterService.on('progress', handler)
   })
 }
+
+describe('stable update channel (0.2.5 WP5)', () => {
+  beforeEach(() => {
+    seedZipInstall({ withVenv: true, withReq: false })
+  })
+
+  it('uses the latest release tag, never master, and reports release metadata', async () => {
+    h.state.instances[0].updateChannel = 'stable'
+    h.state.sessionFetch = async () =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          tag_name: 'v0.46.0',
+          published_at: '2026-11-18T00:00:00Z',
+          body: 'notes',
+          html_url: 'https://github.com/Comfy-Org/ComfyUI/releases/tag/v0.46.0',
+          prerelease: false
+        })
+      }) as never
+    const info = await comfyUpdaterService.check('inst-1')
+    expect(info.channel).toBe('stable')
+    expect(info.latest).toBe('v0.46.0')
+    expect(info.updatable).toBe(true)
+    expect(info.releaseUrl).toContain('/releases/tag/v0.46.0')
+    expect(info.releaseNotes).toBe('notes')
+  })
+
+  it('skips prereleases and never reports them as stable', async () => {
+    h.state.instances[0].updateChannel = 'stable'
+    h.state.sessionFetch = async () =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () => ({ tag_name: 'v0.47.0-rc1', prerelease: true })
+      }) as never
+    const info = await comfyUpdaterService.check('inst-1')
+    expect(info.channel).toBe('stable')
+    expect(info.updatable).toBe(false)
+    expect(info.unknown).toBe(true)
+  })
+
+  it('reports up to date when the installed version equals the stable tag', async () => {
+    h.state.instances[0].updateChannel = 'stable'
+    h.writeFile(join(COMFY, 'pyproject.toml'), '[project]\nversion = "0.46.0"\n')
+    h.state.sessionFetch = async () =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () => ({ tag_name: 'v0.46.0', prerelease: false })
+      }) as never
+    const info = await comfyUpdaterService.check('inst-1')
+    expect(info.updatable).toBe(false)
+  })
+
+  it('downloads the release tag archive (not master) on a stable update', async () => {
+    h.state.instances[0].updateChannel = 'stable'
+    const urls: string[] = []
+    h.state.sessionFetch = async (url: string) => {
+      urls.push(url)
+      if (url.includes('/releases/latest')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ tag_name: 'v0.46.0', prerelease: false })
+        }
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => '10' },
+        arrayBuffer: async () => new TextEncoder().encode('zip').buffer
+      }
+    }
+    h.state.unzipImpl = (_zip, dest) => {
+      const nested = join(dest, 'ComfyUI-0.46.0')
+      h.mkdirPath(nested)
+      h.writeFile(join(nested, 'main.py'), 'print(1)')
+    }
+    const p = await runUpdate({ updateDeps: false })
+    expect(p.status).toBe('done')
+    expect(urls.some((u) => u.includes('/archive/refs/tags/v0.46.0.zip'))).toBe(true)
+    expect(urls.some((u) => u.includes('/refs/heads/master.zip'))).toBe(false)
+  })
+
+  it('refuses a stable update when no release tag can be resolved', async () => {
+    h.state.instances[0].updateChannel = 'stable'
+    h.state.sessionFetch = async () => ({ ok: false, status: 403, json: async () => ({}) }) as never
+    const p = await runUpdate({ updateDeps: false })
+    expect(p.status).toBe('failed')
+    expect(p.error).toMatch(/no official release tag/i)
+  })
+
+  it('checks out the release tag for a stable git install', async () => {
+    h.state.instances[0].updateChannel = 'stable'
+    seedGitInstall({ withVenv: true, withReq: false })
+    const execs: string[] = []
+    h.state.sessionFetch = async () =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () => ({ tag_name: 'v0.46.0', prerelease: false })
+      }) as never
+    h.state.execHandler = (cmd, args) => {
+      execs.push(`${cmd} ${args.join(' ')}`)
+      if (args.includes('status')) return { stdout: '' }
+      if (args.includes('rev-parse')) return { stdout: 'abc1234\n' }
+      return { stdout: 'ok\n' }
+    }
+    const p = await runUpdate({ updateDeps: false })
+    expect(p.status).toBe('done')
+    expect(execs.some((c) => c.includes('checkout --detach v0.46.0'))).toBe(true)
+  })
+
+  it('treats a legacy instance without updateChannel as nightly', async () => {
+    delete h.state.instances[0].updateChannel
+    h.state.sessionFetch = async () =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () => ({ sha: 'abcdef123456', commit: { committer: { date: '2026-11-20' } } })
+      }) as never
+    const info = await comfyUpdaterService.check('inst-1')
+    expect(info.channel).toBe('nightly')
+  })
+})
 
 async function runUpdate(opts?: ComfyUpdateOptions): Promise<UpdateProgress> {
   const finished = waitFinished()
@@ -1127,7 +1271,7 @@ describe('runUpdate pipeline', () => {
     expect(fetch?.status).toBe('done')
   })
 
-  it('keeps the file backup when the health check fails (review fix)', async () => {
+  it('rolls back and keeps the file backup when the startup self-check fails', async () => {
     seedZipInstall({ withVenv: true, withReq: false })
     h.state.sessionFetch = async () => ({
       ok: true,
@@ -1140,14 +1284,11 @@ describe('runUpdate pipeline', () => {
       h.mkdirPath(nested)
       h.writeFile(join(nested, 'main.py'), 'updated')
     }
-    h.state.doctorResult = {
-      checks: [{ severity: 'fail', title: 'broken import' }],
-      summary: { pass: 1, warn: 0 }
-    }
+    h.state.selfcheckResult = { ok: false, exitCode: 1, output: 'broken import' }
     const p = await runUpdate({ updateDeps: false })
-    expect(p.status).toBe('done')
+    expect(p.status).toBe('failed')
     expect(p.steps.find((s) => s.id === 'verify')?.status).toBe('failed')
-    // The backup is the only way back from a failed health check — it must stay.
+    // The backup is the only way back from a failed self-check — it must stay.
     expect(p.backupPath).toBeTruthy()
     expect(dhas(p.backupPath!)).toBe(true)
   })
@@ -1305,36 +1446,33 @@ describe('runUpdate pipeline', () => {
     expect(p.status).toBe('done')
     const verify = p.steps.find((s) => s.id === 'verify')
     expect(verify?.status).toBe('done')
-    expect(verify?.detail).toMatch(/Health check passed/)
+    expect(verify?.detail).toMatch(/Startup self-check passed/)
   })
 
-  it('tolerates doctor failures while main.py still exists', async () => {
+  it('fails and rolls back when the real startup self-check reports a crash', async () => {
     seedGitInstall({ withVenv: true, withReq: false })
-    h.state.doctorResult = {
-      checks: [{ severity: 'fail', title: 'venv missing' }],
-      summary: { pass: 2, warn: 1 }
-    }
+    h.state.selfcheckResult = { ok: false, exitCode: 1, output: 'Traceback: boom' }
     routeExec([{ match: '', result: () => ({ stdout: 'sha\n' }) }])
     const p = await runUpdate({ updateDeps: false })
-    expect(p.status).toBe('done')
+    expect(p.status).toBe('failed')
+    expect(p.error).toMatch(/self-check|did not start/i)
     const verify = p.steps.find((s) => s.id === 'verify')
-    expect(verify?.detail).toMatch(/1 fail/)
-    expect(verify?.log.join('\n')).toMatch(/venv missing/)
+    expect(verify?.detail).toMatch(/self-check failed|unavailable/i)
   })
 
-  it('skips verify when doctor is unavailable but main.py survives', async () => {
+  it('fails verify when the self-check cannot run (not a silent pass)', async () => {
     seedGitInstall({ withVenv: true, withReq: false })
-    h.state.doctorErr = new Error('doctor module missing')
+    h.state.selfcheckErr = new Error('self-check module missing')
     routeExec([{ match: '', result: () => ({ stdout: 'sha\n' }) }])
     const p = await runUpdate({ updateDeps: false })
-    expect(p.status).toBe('done')
+    expect(p.status).toBe('failed')
     const verify = p.steps.find((s) => s.id === 'verify')
-    expect(verify?.detail).toMatch(/doctor unavailable/i)
+    expect(verify?.detail).toMatch(/unavailable/i)
   })
 
   it('fails verify when doctor errors and main.py is gone', async () => {
     seedGitInstall({ withVenv: true, withReq: false })
-    h.state.doctorErr = new Error('doctor exploded')
+    h.state.selfcheckErr = new Error('self-check exploded')
     h.state.execHandler = (cmd, args) => {
       if (args.includes('pull')) {
         // wipe main.py to simulate a catastrophic update
@@ -1345,7 +1483,7 @@ describe('runUpdate pipeline', () => {
     }
     const p = await runUpdate({ updateDeps: false })
     expect(p.status).toBe('failed')
-    expect(p.error).toMatch(/doctor exploded|main\.py/i)
+    expect(p.error).toMatch(/self-check exploded|main\.py/i)
   })
 
   it('relaunches the instance when open is requested', async () => {

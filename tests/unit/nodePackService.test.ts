@@ -1281,6 +1281,21 @@ describe('install via registry channel', () => {
     })
   }
 
+  it('queries Registry status before cloning a known repository (banned)', async () => {
+    setFetch(async (url) => {
+      if (url.endsWith('/nodes/BannedPack')) return makeRes({ status: 'banned' })
+      throw new Error('unexpected ' + url)
+    })
+    await expect(
+      nodePackService.install({
+        id: 'BannedPack',
+        source: 'registry',
+        repository: 'https://github.com/example/BannedPack.git',
+        instanceId: 'inst-1'
+      })
+    ).rejects.toThrow(/banned/i)
+  })
+
   it('downloads, unzips and records a flat registry pack', async () => {
     seedRegistryHappy((tmpDest) => {
       const dest = (tmpDest as string) || join(ROOT, 'RegPack')
@@ -4366,5 +4381,29 @@ describe('recovery of interrupted update leftovers', () => {
     expect(entry!.liveExists).toBe(true)
     nodePackService.cleanRecovery(entry!.name, 'inst-1')
     expect(nodePackService.scanRecovery('inst-1').some((e) => e.kind === 'duplicate')).toBe(false)
+  })
+})
+
+describe('effective custom_nodes root (0.2.5 WP1)', () => {
+  it('lists packs under --base-directory/custom_nodes for both id and path lookups', async () => {
+    const base = join(ROOT, 'effective-base')
+    h.state.instances = [
+      {
+        ...h.state.instances[0],
+        id: 'eff',
+        path: ROOT,
+        launchProfile: { baseDirectory: base }
+      }
+    ]
+    const packDir = join(base, 'custom_nodes', 'BasePack')
+    h.mkdirPath(packDir)
+    h.writeFile(join(packDir, '__init__.py'), 'NODE_CLASS_MAPPINGS = {}\n')
+    h.writeFile(join(packDir, 'pyproject.toml'), 'name = "BasePack"\nversion = "1.0.0"\n')
+    expect(nodePackService.list('eff').some((p) => p.name === 'BasePack')).toBe(true)
+    expect(nodePackService.list(ROOT).some((p) => p.name === 'BasePack')).toBe(true)
+    const { detectCustomNodesRoot, resolveGitBinaryAsync } =
+      await import('../../src/main/services/nodePack/common')
+    expect(detectCustomNodesRoot('/unregistered/path')).toBe('/unregistered/path/custom_nodes')
+    expect(typeof (await resolveGitBinaryAsync())).toBe('string')
   })
 })

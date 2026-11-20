@@ -98,11 +98,7 @@ export class PathCapabilityStore {
    * Existing paths are resolved (symlinks) before containment; write targets
    * that do not exist yet are checked lexically against their real parent.
    */
-  covers(
-    candidate: string,
-    scope: PathCapabilityScope,
-    opts?: { instanceId?: string }
-  ): boolean {
+  covers(candidate: string, scope: PathCapabilityScope, opts?: { instanceId?: string }): boolean {
     if (!candidate || candidate.includes('\0')) return false
     this.prune()
     const target = realpathOrSelf(candidate)

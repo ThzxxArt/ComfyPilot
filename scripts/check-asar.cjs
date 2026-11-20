@@ -12,7 +12,9 @@
 const fs = require('fs')
 const path = require('path')
 
-const root = path.join(__dirname, '..')
+const root = process.env.CP_GATE_ROOT
+  ? path.resolve(process.env.CP_GATE_ROOT)
+  : path.join(__dirname, '..')
 const yml = fs.readFileSync(path.join(root, 'electron-builder.yml'), 'utf-8')
 const problems = []
 
@@ -46,6 +48,12 @@ if (asarPath) {
       }
       if (!entries.some((p) => p.includes('/out/main/'))) {
         problems.push('asar has no out/main payload')
+      }
+      if (!entries.some((p) => /(^|\/)out\/main\/bootstrap\.cjs$/.test(p))) {
+        problems.push('asar is missing out/main/bootstrap.cjs (packaged entry)')
+      }
+      if (!entries.some((p) => /(^|\/)package\.json$/.test(p))) {
+        problems.push('asar is missing package.json')
       }
       const resources = path.join(path.dirname(abs), 'preload')
       const renderer = path.join(path.dirname(abs), 'renderer')

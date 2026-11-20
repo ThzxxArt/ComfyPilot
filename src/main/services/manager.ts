@@ -6,7 +6,15 @@
  * security levels, and ComfyPilot's own install policy was mislabelled as
  * Manager's `security_level`.
  */
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'fs'
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  writeFileSync
+} from 'fs'
 import { join } from 'path'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
@@ -137,11 +145,11 @@ async function pipManagerVersion(config: ComfyInstanceConfig): Promise<string | 
   if (cached && Date.now() - cached.at < 60_000) return cached.version
   let version: string | undefined
   try {
-    const { stdout } = await execFileAsync(
-      python,
-      ['-m', 'pip', 'show', 'comfyui-manager'],
-      { timeout: 8000, windowsHide: true, maxBuffer: 1024 * 1024 }
-    )
+    const { stdout } = await execFileAsync(python, ['-m', 'pip', 'show', 'comfyui-manager'], {
+      timeout: 8000,
+      windowsHide: true,
+      maxBuffer: 1024 * 1024
+    })
     const m = String(stdout || '').match(/^Version:\s*(\S+)/im)
     if (m) version = m[1]
   } catch {
@@ -200,13 +208,19 @@ export async function getManagerInfo(config: ComfyInstanceConfig): Promise<Manag
 
   const newConfig = existsSync(paths.configPath)
   const legacyConfig = existsSync(paths.legacyConfigPath)
-  const configPath = newConfig ? paths.configPath : legacyConfig ? paths.legacyConfigPath : paths.configPath
+  const configPath = newConfig
+    ? paths.configPath
+    : legacyConfig
+      ? paths.legacyConfigPath
+      : paths.configPath
   let parsed: ParsedManagerConfig = { values: {}, hasDefault: false }
   if (existsSync(configPath)) {
     try {
       parsed = parseManagerConfig(readFileSync(configPath, 'utf-8'))
     } catch (err) {
-      warnings.push(`config.ini could not be read: ${err instanceof Error ? err.message : String(err)}`)
+      warnings.push(
+        `config.ini could not be read: ${err instanceof Error ? err.message : String(err)}`
+      )
     }
   } else if (installed) {
     warnings.push('Manager is installed but config.ini was not found')
@@ -220,7 +234,12 @@ export async function getManagerInfo(config: ComfyInstanceConfig): Promise<Manag
   if (gitInstalled && pipVersion) {
     warnings.push('Manager is installed both via pip and git — remove one to avoid version drift')
   }
-  if (installed && version && /^v?4\./.test(version) === false && !/^3\.(3[89]|[4-9]\d)/.test(version)) {
+  if (
+    installed &&
+    version &&
+    /^v?4\./.test(version) === false &&
+    !/^3\.(3[89]|[4-9]\d)/.test(version)
+  ) {
     warnings.push(`Manager ${version} predates the v4.4 API/security model`)
   }
   const snapshotsDir = join(paths.managerDir, 'snapshots')

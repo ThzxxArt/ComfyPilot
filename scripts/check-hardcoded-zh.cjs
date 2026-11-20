@@ -12,14 +12,29 @@ function walk(dir, acc) {
     if (e.isDirectory()) {
       if (e.name === 'i18n' || e.name === 'locales') continue
       walk(p, acc)
-    } else if (/\.vue$/.test(e.name)) acc.push(p)
+    } else if (/\.(vue|ts)$/.test(e.name)) acc.push(p)
   }
   return acc
 }
 
 const files = walk(path.join(__dirname, '../src/renderer/src'), [])
-// Shared constants feed the UI — Chinese data there leaks via bindings.
-const extra = [path.join(__dirname, '../src/shared/constants.ts')].filter((p) => fs.existsSync(p))
+// Shared modules feed the UI — Chinese data there leaks via bindings.
+const sharedDir = path.join(__dirname, '../src/shared')
+const shared = []
+if (fs.existsSync(sharedDir)) {
+  const stack = [sharedDir]
+  while (stack.length) {
+    const dir = stack.pop()
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name)
+      if (e.isDirectory()) stack.push(p)
+      else if (/\.ts$/.test(e.name)) shared.push(p)
+    }
+  }
+}
+const extra = [path.join(__dirname, '../src/shared/constants.ts'), ...shared].filter((p) =>
+  fs.existsSync(p)
+)
 let bad = 0
 for (const f of [...files, ...extra]) {
   const lines = fs.readFileSync(f, 'utf8').split(/\r?\n/)

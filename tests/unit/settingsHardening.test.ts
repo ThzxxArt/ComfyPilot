@@ -36,6 +36,35 @@ describe('assertSafeSettingsPatch — proxy', () => {
   })
 })
 
+describe('assertSafeSettingsPatch — health/batch numeric bounds', () => {
+  it('accepts valid values and rejects out-of-range/non-numeric ones', () => {
+    expect(() =>
+      assertSafeSettingsPatch({
+        healthCheckIntervalMs: 5000,
+        healthCheckTimeoutMs: 2000,
+        healthStaleMs: 180000,
+        autoRecoverCooldownMs: 300000,
+        autoRecoverMaxAttempts: 3,
+        batchDeadlineMs: 1800000,
+        healthCheckEnabled: true,
+        autoRecover: false
+      })
+    ).not.toThrow()
+    for (const patch of [
+      { healthCheckIntervalMs: 10 },
+      { healthCheckTimeoutMs: 999999 },
+      { healthStaleMs: 1 },
+      { autoRecoverCooldownMs: 1 },
+      { autoRecoverMaxAttempts: 0 },
+      { batchDeadlineMs: 1 },
+      { healthCheckEnabled: 'yes' },
+      { autoRecover: 1 }
+    ]) {
+      expect(() => assertSafeSettingsPatch(patch as never)).toThrow()
+    }
+  })
+})
+
 describe('assertSafeSettingsPatch — aria2Path', () => {
   it('rejects relative and missing executables', () => {
     expect(() => assertSafeSettingsPatch({ aria2Path: 'aria2c' })).toThrow(/absolute/)

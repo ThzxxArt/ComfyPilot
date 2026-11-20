@@ -79,7 +79,11 @@ function writeStatus(statuses: ControlResult['statuses']): void {
   }
 }
 
-function reject(action: ControlAction, instanceId: string | undefined, error: string): ControlResult {
+function reject(
+  action: ControlAction,
+  instanceId: string | undefined,
+  error: string
+): ControlResult {
   const result: ControlResult = { ok: false, action, instanceId, error }
   controlLog(`${action} ${instanceId || '-'} rejected: ${error}`)
   return result
@@ -104,7 +108,8 @@ async function runCommand(cmd: ControlCommand): Promise<ControlResult> {
 
   const rawId = String(cmd.instanceId || '')
   if (!rawId) return reject(action, undefined, 'Missing instance id')
-  if (rawId.startsWith('remote:')) return reject(action, rawId, 'Remote instances cannot be rescued')
+  if (rawId.startsWith('remote:'))
+    return reject(action, rawId, 'Remote instances cannot be rescued')
   const id = sanitizeId(rawId)
   if (id !== rawId) return reject(action, rawId, 'Invalid instance id')
   const info = instanceService.list().find((i) => i.id === id)
@@ -177,7 +182,9 @@ export async function executeControlCommand(cmd: ControlCommand): Promise<Contro
   const running = inflight.get(key)
   if (running) return { ...(await running), merged: true }
   const p = runCommand(cmd)
-    .catch((err) => reject(cmd.action, cmd.instanceId, err instanceof Error ? err.message : String(err)))
+    .catch((err) =>
+      reject(cmd.action, cmd.instanceId, err instanceof Error ? err.message : String(err))
+    )
     .finally(() => inflight.delete(key))
   inflight.set(key, p)
   return p
@@ -242,19 +249,22 @@ export function noteHealthForRecovery(health: InstanceHealth): void {
   }
   if (state.timer) return
   const wait = Math.max(0, health.since + policy.afterMs - now)
-  state.timer = setTimeout(() => {
-    state.timer = undefined
-    const latest = instanceHealthService.get(health.instanceId)
-    if (!latest || latest.state !== 'unresponsive') return
-    state.attempts.push(Date.now())
-    controlLog(`recovery ${health.instanceId} attempting ${policy.action}`)
-    void executeControlCommand({
-      action: policy.action === 'safe-restart' ? 'safe-rescue' : 'rescue',
-      instanceId: health.instanceId
-    }).then((r) => {
-      if (!r.ok) controlLog(`recovery ${health.instanceId} failed: ${r.error || 'unknown'}`)
-    })
-  }, Math.min(wait, policy.cooldownMs))
+  state.timer = setTimeout(
+    () => {
+      state.timer = undefined
+      const latest = instanceHealthService.get(health.instanceId)
+      if (!latest || latest.state !== 'unresponsive') return
+      state.attempts.push(Date.now())
+      controlLog(`recovery ${health.instanceId} attempting ${policy.action}`)
+      void executeControlCommand({
+        action: policy.action === 'safe-restart' ? 'safe-rescue' : 'rescue',
+        instanceId: health.instanceId
+      }).then((r) => {
+        if (!r.ok) controlLog(`recovery ${health.instanceId} failed: ${r.error || 'unknown'}`)
+      })
+    },
+    Math.min(wait, policy.cooldownMs)
+  )
   state.timer.unref?.()
 }
 

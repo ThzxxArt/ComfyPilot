@@ -20,17 +20,9 @@ export type {
   AppNotificationInput
 } from './app'
 
-export type {
-  HealthState,
-  InstanceHealth,
-  HealthRecoveryPolicy
-} from './health'
+export type { HealthState, InstanceHealth, HealthRecoveryPolicy } from './health'
 
-export type {
-  ManagerInfo,
-  ManagerSecurityLevel,
-  ManagerNetworkMode
-} from './manager'
+export type { ManagerInfo, ManagerSecurityLevel, ManagerNetworkMode } from './manager'
 export { DEFAULT_HEALTH_RECOVERY_POLICY } from './health'
 
 export type {

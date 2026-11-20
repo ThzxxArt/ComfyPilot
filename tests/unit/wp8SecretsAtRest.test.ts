@@ -8,12 +8,13 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import type { RemoteInstanceConfig } from '../../src/shared/types'
 
-const h = vi.hoisted(() => ({ dir: '', encryption: true }))
+const h = vi.hoisted(() => ({ dir: '', encryption: true, backend: 'secret_service' }))
 
 vi.mock('electron', () => ({
   app: { getPath: () => h.dir },
   safeStorage: {
     isEncryptionAvailable: () => h.encryption,
+    getSelectedStorageBackend: () => h.backend,
     // Stand-in for the OS keychain: reversible, and never the raw bytes.
     encryptString: (s: string) => Buffer.from(`enc:${s}`, 'utf-8'),
     decryptString: (b: Buffer) => {
@@ -43,6 +44,37 @@ function remote(apiKey: string): RemoteInstanceConfig {
     apiKey
   } as RemoteInstanceConfig
 }
+
+describe('secret backend truth (0.2.5 WP10)', () => {
+  it('reports Linux basic_text as plaintext, not os-keychain', async () => {
+    vi.resetModules()
+    h.encryption = true
+    h.backend = 'basic_text'
+    const real = process.platform
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+    try {
+      const { secretStorageBackend } = await import('../../src/main/services/secretStorage')
+      expect(secretStorageBackend()).toBe('plaintext')
+    } finally {
+      Object.defineProperty(process, 'platform', { value: real, configurable: true })
+      h.backend = 'secret_service'
+    }
+  })
+
+  it('rejects an unknown backend and reports unavailable without safeStorage', async () => {
+    vi.resetModules()
+    h.backend = 'unknown'
+    const real = process.platform
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+    try {
+      const { secretStorageBackend } = await import('../../src/main/services/secretStorage')
+      expect(secretStorageBackend()).toBe('plaintext')
+    } finally {
+      Object.defineProperty(process, 'platform', { value: real, configurable: true })
+      h.backend = 'secret_service'
+    }
+  })
+})
 
 describe('remote API keys at rest', () => {
   it('never writes the plaintext key to remote_instances.jsonc', async () => {

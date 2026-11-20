@@ -5,11 +5,7 @@ import {
   officialTorchIndex
 } from '../../src/main/services/installer'
 import { TORCH_DISK_GB } from '@shared/constants'
-import {
-  renderLaunchProfile,
-  validateLaunchArgs,
-  warnLaunchArgs
-} from '@shared/launchArgs'
+import { renderLaunchProfile, validateLaunchArgs, warnLaunchArgs } from '@shared/launchArgs'
 import { buildArgs } from '../../src/main/services/instance/launchArgs'
 import type { ComfyInstanceConfig } from '@shared/types'
 

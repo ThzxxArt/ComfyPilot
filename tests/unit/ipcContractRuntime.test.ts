@@ -29,9 +29,7 @@ describe('runtime IPC contract (0.2.0)', () => {
         }
       ])
     ).not.toThrow()
-    expect(() => validateIpcArgs('instance.save', [{ id: 'i1' }])).toThrow(
-      /Invalid IPC arguments/i
-    )
+    expect(() => validateIpcArgs('instance.save', [{ id: 'i1' }])).toThrow(/Invalid IPC arguments/i)
     expect(() =>
       validateIpcArgs('instance.save', [
         {

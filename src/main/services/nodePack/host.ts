@@ -68,6 +68,16 @@ export interface NodePackPublicApi {
   snapshots(instanceId?: string): NodeSnapshot[]
   createSnapshot(name?: string, instanceId?: string): NodeSnapshot
   restoreSnapshot(id: string, instanceId?: string): boolean
+  restoreNodeVersions(
+    id: string,
+    instanceId?: string
+  ): Promise<{
+    ok: boolean
+    restored: string[]
+    skipped: Array<{ name: string; reason: string }>
+    failed: Array<{ name: string; error: string }>
+    warnings: string[]
+  }>
   deleteSnapshot(id: string, instanceId?: string): boolean
   scanRecovery(instanceId?: string): NodeRecoveryEntry[]
   quarantineTransients(instanceId?: string): string[]

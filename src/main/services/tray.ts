@@ -134,9 +134,7 @@ async function buildMenu(): Promise<Menu> {
           enabled: inst.status !== 'starting',
           click: () => {
             void import('../control')
-              .then((m) =>
-                m.executeControlCommand({ action: 'rescue', instanceId: inst.id })
-              )
+              .then((m) => m.executeControlCommand({ action: 'rescue', instanceId: inst.id }))
               .then((r) => {
                 if (!r.ok) showSystemNotification('Rescue failed', r.error || inst.name)
                 refreshTray()
@@ -149,9 +147,7 @@ async function buildMenu(): Promise<Menu> {
           enabled: inst.status !== 'starting',
           click: () => {
             void import('../control')
-              .then((m) =>
-                m.executeControlCommand({ action: 'safe-rescue', instanceId: inst.id })
-              )
+              .then((m) => m.executeControlCommand({ action: 'safe-rescue', instanceId: inst.id }))
               .then((r) => {
                 if (!r.ok) showSystemNotification('Safe mode failed', r.error || inst.name)
                 refreshTray()

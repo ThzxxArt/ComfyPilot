@@ -40,14 +40,7 @@ export interface InstallStep {
 }
 
 export type TorchChannel =
-  | 'cu130'
-  | 'cu126'
-  | 'rocm'
-  | 'rocm7.2'
-  | 'rocm10.0'
-  | 'xpu'
-  | 'mps'
-  | 'cpu'
+  'cu130' | 'cu126' | 'rocm' | 'rocm7.2' | 'rocm10.0' | 'xpu' | 'mps' | 'cpu'
 
 export interface InstallPlan {
   installRoot: string
@@ -181,6 +174,10 @@ export interface ComfyUpdateInfo {
    * "master is X commits ahead of the last release" is the honest framing.
    */
   latestRelease?: { tag: string; publishedAt?: string }
+  /** 0.2.5 WP5: stable (release tag) or nightly (master). */
+  channel?: 'stable' | 'nightly'
+  releaseUrl?: string
+  releaseNotes?: string
   checkedAt: number
   error?: string
 }
@@ -252,6 +249,8 @@ export interface ComfyUpdateOptions {
   torchChannel?: TorchChannel
   /** Open embed/browser after a successful update+optional restart. */
   open?: 'embed' | 'browser' | 'none'
+  /** 0.2.5 WP5: override the instance's configured channel for this run. */
+  channel?: 'stable' | 'nightly'
 }
 
 /**
@@ -270,4 +269,6 @@ export interface UpdateJournal {
    * journal used to be cleared, so the only recovery point became invisible.
    */
   status?: 'in-progress' | 'verify-failed'
+  /** 0.2.5 WP5: node snapshot taken before the source update. */
+  nodeSnapshotId?: string
 }

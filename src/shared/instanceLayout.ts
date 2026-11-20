@@ -207,7 +207,10 @@ export function resolveEffectiveListen(config: EffectiveArgSource, args?: string
   return raw && raw.trim() ? raw.trim() : config.listen || '127.0.0.1'
 }
 
-export function resolveEffectiveDirs(config: EffectiveArgSource, args?: string[]): ResolvedInstanceDirs {
+export function resolveEffectiveDirs(
+  config: EffectiveArgSource,
+  args?: string[]
+): ResolvedInstanceDirs {
   const argv = args ?? buildEffectiveArgList(config)
   const root = config.path || '.'
   const readDir = (flag: string): string | undefined => {

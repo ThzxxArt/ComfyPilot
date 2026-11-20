@@ -328,6 +328,19 @@ const needsPythonMigration = computed(
 
 async function migratePython(): Promise<void> {
   if (!id.value || migratingPython.value) return
+  const confirmed = await new Promise<boolean>((resolve) => {
+    dialog.warning({
+      title: t('instance.migrateConfirmTitle'),
+      content: t('instance.migrateConfirmBody'),
+      positiveText: t('common.confirm'),
+      negativeText: t('common.cancel'),
+      onPositiveClick: () => resolve(true),
+      onNegativeClick: () => resolve(false),
+      onClose: () => resolve(false),
+      onMaskClick: () => resolve(false)
+    })
+  })
+  if (!confirmed) return
   migratingPython.value = true
   try {
     const result = await ipc('instance.migratePython', id.value)
@@ -359,6 +372,19 @@ function goEdit(): void {
 
 async function clearLogs(): Promise<void> {
   if (!id.value) return
+  const confirmed = await new Promise<boolean>((resolve) => {
+    dialog.warning({
+      title: t('instance.clearLogsConfirmTitle'),
+      content: t('instance.clearLogsConfirmBody'),
+      positiveText: t('common.confirm'),
+      negativeText: t('common.cancel'),
+      onPositiveClick: () => resolve(true),
+      onNegativeClick: () => resolve(false),
+      onClose: () => resolve(false),
+      onMaskClick: () => resolve(false)
+    })
+  })
+  if (!confirmed) return
   try {
     await ipc('instance.clearLogs', id.value)
     logs.value = []
@@ -847,6 +873,19 @@ function openReleaseNotes(): void {
 async function rollbackPendingUpdate(): Promise<void> {
   const target = instance.value
   if (!target) return
+  const confirmed = await new Promise<boolean>((resolve) => {
+    dialog.warning({
+      title: t('instance.rollbackConfirmTitle'),
+      content: t('instance.rollbackConfirmBody'),
+      positiveText: t('instance.rollbackUpdate'),
+      negativeText: t('common.cancel'),
+      onPositiveClick: () => resolve(true),
+      onNegativeClick: () => resolve(false),
+      onClose: () => resolve(false),
+      onMaskClick: () => resolve(false)
+    })
+  })
+  if (!confirmed) return
   rollingBack.value = true
   try {
     const ok = await ipc('instance.rollbackUpdate', target.id)
@@ -861,6 +900,18 @@ async function rollbackPendingUpdate(): Promise<void> {
     message.error(err instanceof Error ? err.message : String(err))
   } finally {
     rollingBack.value = false
+  }
+}
+
+async function setUpdateChannel(channel: 'stable' | 'nightly'): Promise<void> {
+  const target = instance.value
+  if (!target) return
+  try {
+    await ipc('instance.setUpdateChannel', target.id, channel)
+    message.success(t('instance.updateChannelSaved'))
+    await refresh()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
   }
 }
 
@@ -985,7 +1036,14 @@ const torchIndexChoice = ref<string>('https://download.pytorch.org/whl/cpu/')
 const TORCH_INDEX_OPTIONS = [
   { labelKey: 'install.torchChannels.cu130', value: 'https://download.pytorch.org/whl/cu130/' },
   { labelKey: 'install.torchChannels.cu126', value: 'https://download.pytorch.org/whl/cu126/' },
-  { labelKey: 'install.torchChannels.rocm', value: 'https://download.pytorch.org/whl/rocm6.2/' },
+  {
+    labelKey: 'install.torchChannels.rocm7.2',
+    value: 'https://download.pytorch.org/whl/rocm7.2/'
+  },
+  {
+    labelKey: 'install.torchChannels.rocm10.0',
+    value: 'https://download.pytorch.org/whl/rocm10.0/'
+  },
   { labelKey: 'install.torchChannels.xpu', value: 'https://download.pytorch.org/whl/xpu/' },
   { labelKey: 'install.torchChannels.mps', value: 'https://download.pytorch.org/whl/cpu/' },
   { labelKey: 'install.torchChannels.cpu', value: 'https://download.pytorch.org/whl/cpu/' }
@@ -995,8 +1053,25 @@ const torchIndexSelectOptions = computed(() =>
   TORCH_INDEX_OPTIONS.map((o) => ({ label: t(o.labelKey), value: o.value }))
 )
 
+/**
+ * 0.2.5 WP7: default to the machine's real accelerator channel, never CPU.
+ * A CUDA user pressing "reinstall torch" used to silently replace a working
+ * GPU build with a CPU wheel.
+ */
 function openTorchModal(): void {
-  torchIndexChoice.value = 'https://download.pytorch.org/whl/cpu/'
+  const gpu = store.system?.gpus?.[0]
+  const vendor = String(gpu?.vendor || gpu?.model || '').toLowerCase()
+  let index = 'https://download.pytorch.org/whl/cpu/'
+  if (/nvidia|geforce|rtx|gtx|quadro|tesla/.test(vendor)) {
+    index = 'https://download.pytorch.org/whl/cu130/'
+  } else if (/amd|radeon/.test(vendor)) {
+    index = navigator.userAgent.includes('Windows')
+      ? 'https://download.pytorch.org/whl/rocm10.0/'
+      : 'https://download.pytorch.org/whl/rocm7.2/'
+  } else if (/intel|arc/.test(vendor)) {
+    index = 'https://download.pytorch.org/whl/xpu/'
+  }
+  torchIndexChoice.value = index
   showTorchModal.value = true
 }
 
@@ -1305,12 +1380,7 @@ watch(
                       :health="instance ? store.health[instance.id] : undefined"
                       :status="instance?.status"
                     />
-                    <NButton
-                      v-if="instance"
-                      size="tiny"
-                      secondary
-                      @click="rescueInstance(false)"
-                    >
+                    <NButton v-if="instance" size="tiny" secondary @click="rescueInstance(false)">
                       {{ $t('instance.forceRestart') }}
                     </NButton>
                     <NButton
@@ -1498,7 +1568,21 @@ watch(
               </div>
 
               <div class="update-actions">
-                <NSpace>
+                <NSpace align="center">
+                  <span class="hint">{{ $t('instance.updateChannel') }}</span>
+                  <NSelect
+                    :value="instance?.updateChannel || 'nightly'"
+                    :options="[
+                      { label: $t('instance.channelStable'), value: 'stable' },
+                      { label: $t('instance.channelNightly'), value: 'nightly' }
+                    ]"
+                    size="small"
+                    style="width: 190px"
+                    @update:value="setUpdateChannel"
+                  />
+                  <span v-if="!instance?.updateChannel" class="hint">{{
+                    $t('instance.legacyNightlyHint')
+                  }}</span>
                   <NButton secondary :loading="checkingUpdate" @click="doCheckUpdate">
                     <template #icon><NIcon :component="CloudDownloadOutline" /></template>
                     {{ $t('instance.checkUpdate') }}

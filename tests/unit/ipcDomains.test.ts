@@ -453,6 +453,9 @@ describe('IPC domains', () => {
     expect((await call(x.remove, 'a1', true)).ok).toBe(true)
     expect((await call(x.batchDelete, ['a1'], false)).ok).toBe(true)
     expect((await call(x.exportZip, [join(h.root, 'file.txt')])).ok).toBe(true)
+    const thumbFile = join(outRoot, 'thumb.png')
+    writeFileSync(thumbFile, 'png')
+    expect((await call(x.thumb, thumbFile)).ok).toBe(true)
     expect((await call(x.assetsMatch, 'i1', 'a.png')).ok).toBe(true)
   })
 

@@ -41,7 +41,16 @@ function upsert(op: BackgroundOp | null | undefined): void {
   const idx = ops.value.findIndex((o) => o.id === op.id)
   if (idx >= 0) ops.value[idx] = op
   else ops.value = [op, ...ops.value]
+  pruneFinished()
   sortOps()
+}
+
+/** 0.2.5 WP7: finished rows stay for 10 minutes, then disappear. */
+function pruneFinished(): void {
+  const cutoff = Date.now() - 10 * 60 * 1000
+  ops.value = ops.value.filter(
+    (o) => o.status === 'running' || (o.finishedAt || o.startedAt) >= cutoff
+  )
 }
 
 /** Newest first, running always above finished. */
@@ -115,16 +124,10 @@ async function cancelOp(op: BackgroundOp): Promise<void> {
 async function load(): Promise<void> {
   try {
     const list = (await ipc('ops.list')) as BackgroundOp[]
-    // Merge instead of clobbering: an op-changed event can land while this
-    // request is in flight, and the older list must not resurrect it.
-    for (const live of ops.value) {
-      const inList = list.find((o) => o.id === live.id)
-      if (!inList) list.push(live)
-      else if (inList.status === 'running' && live.status !== 'running') {
-        Object.assign(inList, live)
-      }
-    }
+    // 0.2.5 WP7: the main process is authoritative. The old merge re-added
+    // every local row missing from the list, so finished ops never went away.
     ops.value = list
+    pruneFinished()
     sortOps()
   } catch {
     /* keep whatever live events already delivered */

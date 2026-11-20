@@ -48,15 +48,15 @@
 
 2026-11-11 的本机实例事故：
 
-| 事实 | 观测值 |
-| --- | --- |
-| ComfyPilot 状态 | `running`，窗口响应正常 |
-| 实例进程 | 父 PID `10588` → 实际服务 PID `19756`，都还活着 |
-| 端口 | `127.0.0.1:8188` 仍 `LISTENING` |
-| 新连接 | Windows 本机与 WSL 都连不上，HTTP 超时 |
-| TCP 连接 | 大量 `CLOSE_WAIT`，说明服务端事件循环没有回收连接 |
-| GPU | 利用率 **0%**，显存占用 `14336 / 16376 MiB` |
-| 日志 | 最后业务日志停在 `Context window 4/6`，之后约 **8 小时 47 分钟**无输出 |
+| 事实            | 观测值                                                                 |
+| --------------- | ---------------------------------------------------------------------- |
+| ComfyPilot 状态 | `running`，窗口响应正常                                                |
+| 实例进程        | 父 PID `10588` → 实际服务 PID `19756`，都还活着                        |
+| 端口            | `127.0.0.1:8188` 仍 `LISTENING`                                        |
+| 新连接          | Windows 本机与 WSL 都连不上，HTTP 超时                                 |
+| TCP 连接        | 大量 `CLOSE_WAIT`，说明服务端事件循环没有回收连接                      |
+| GPU             | 利用率 **0%**，显存占用 `14336 / 16376 MiB`                            |
+| 日志            | 最后业务日志停在 `Context window 4/6`，之后约 **8 小时 47 分钟**无输出 |
 
 ComfyPilot 的判断依据只有“进程存在 + 启动时 `/system_stats` 成功过一次”，所以它没有说谎的意图，但它**没有能力知道服务已经死了**。
 
@@ -64,13 +64,13 @@ ComfyPilot 的判断依据只有“进程存在 + 启动时 `/system_stats` 成�
 
 ### 0.2 上游已经变了
 
-| 上游 | 2026-11-20 的事实 | 对 ComfyPilot 的影响 |
-| --- | --- | --- |
-| ComfyUI | **v0.46.0**（2026-11-18），frontend 1.59.6，templates 0.11.111 | 新增/变更大量启动参数与 API；DirectML 已移除 |
-| ComfyUI-Manager | **4.4.2**（2026-11-19），v3.38 起配置迁移到 `user/__manager/` | ComfyPilot 仍按旧路径/旧语义理解 Manager |
-| Python | 官方推荐 **3.13**；3.12 可回退；3.14 可用但有节点兼容问题 | 0.2.0 的“只支持 3.13”需要更诚实的措辞与边界 |
-| PyTorch | CUDA 13.0 为稳定线；索引已有 cu132 / cu134；ROCm 7.2 / 7.14 / 10.0 / 10.1 | 0.2.4 仍固定 `rocm6.2`，Windows AMD 直接回退 CPU |
-| 官方 Desktop | 多实例、快照、稳定/最新通道、共享目录、Manager 安全等级、终端 | ComfyPilot 的“安装器”优势被大幅抹平 |
+| 上游            | 2026-11-20 的事实                                                         | 对 ComfyPilot 的影响                             |
+| --------------- | ------------------------------------------------------------------------- | ------------------------------------------------ |
+| ComfyUI         | **v0.46.0**（2026-11-18），frontend 1.59.6，templates 0.11.111            | 新增/变更大量启动参数与 API；DirectML 已移除     |
+| ComfyUI-Manager | **4.4.2**（2026-11-19），v3.38 起配置迁移到 `user/__manager/`             | ComfyPilot 仍按旧路径/旧语义理解 Manager         |
+| Python          | 官方推荐 **3.13**；3.12 可回退；3.14 可用但有节点兼容问题                 | 0.2.0 的“只支持 3.13”需要更诚实的措辞与边界      |
+| PyTorch         | CUDA 13.0 为稳定线；索引已有 cu132 / cu134；ROCm 7.2 / 7.14 / 10.0 / 10.1 | 0.2.4 仍固定 `rocm6.2`，Windows AMD 直接回退 CPU |
+| 官方 Desktop    | 多实例、快照、稳定/最新通道、共享目录、Manager 安全等级、终端             | ComfyPilot 的“安装器”优势被大幅抹平              |
 
 ### 0.3 不做什么
 
@@ -89,31 +89,31 @@ ComfyPilot 的判断依据只有“进程存在 + 启动时 `/system_stats` 成�
 
 ### 1.1 读取范围
 
-| 范围 | 规模 |
-| --- | --- |
-| 仓库文件 | 366 个（不含 `node_modules` / `out` / `release`） |
-| `src/` | **69,116 行** |
-| `src/main` | 34,622 行 |
-| `src/renderer` | 29,408 行 |
-| `src/shared` | 5,010 行 |
-| `src/preload` | 76 行 |
-| `tests/` | 40,704 行 / 148 个测试文件 |
-| 文档与脚本 | README、`docs/PLAN-0.2.0.md`、CI / Release、11 个 `scripts/*.cjs` |
-| 关键外部事实 | ComfyUI v0.46.0、ComfyUI-Manager 4.4.2、官方 Desktop、Stability Matrix、ComfyUI-Launcher、ComfyLauncher |
+| 范围           | 规模                                                                                                    |
+| -------------- | ------------------------------------------------------------------------------------------------------- |
+| 仓库文件       | 366 个（不含 `node_modules` / `out` / `release`）                                                       |
+| `src/`         | **69,116 行**                                                                                           |
+| `src/main`     | 34,622 行                                                                                               |
+| `src/renderer` | 29,408 行                                                                                               |
+| `src/shared`   | 5,010 行                                                                                                |
+| `src/preload`  | 76 行                                                                                                   |
+| `tests/`       | 40,704 行 / 148 个测试文件                                                                              |
+| 文档与脚本     | README、`docs/PLAN-0.2.0.md`、CI / Release、11 个 `scripts/*.cjs`                                       |
+| 关键外部事实   | ComfyUI v0.46.0、ComfyUI-Manager 4.4.2、官方 Desktop、Stability Matrix、ComfyUI-Launcher、ComfyLauncher |
 
 > 方法：核心链路逐行复核；其余模块按“整文件读到 EOF”的方式并行审计；外部事实以官方文档 / Release / 源码为准，不用记忆代替证据。
 
 ### 1.2 当前基线
 
-| 项 | 值 |
-| --- | --- |
-| HEAD | `4155279`（README 重设计） |
-| 版本 | `0.2.4` |
-| 测试 | 148 文件 / **1,930 用例**（实测 `npx vitest run` 全通过） |
-| 覆盖率 | statements **64.64%** · branches **53.84%** · functions **49.49%** · lines **66.81%** |
-| 覆盖分母 | **172 个运行时代码文件**（main / preload / shared / renderer） |
-| CI | Ubuntu + Windows 双平台；当前 `4155279` 全绿 |
-| 数据 | JSONC v2；`coverage-baseline.json` 172 个文件逐文件 ratchet |
+| 项       | 值                                                                                    |
+| -------- | ------------------------------------------------------------------------------------- |
+| HEAD     | `4155279`（README 重设计）                                                            |
+| 版本     | `0.2.4`                                                                               |
+| 测试     | 148 文件 / **1,930 用例**（实测 `npx vitest run` 全通过）                             |
+| 覆盖率   | statements **64.64%** · branches **53.84%** · functions **49.49%** · lines **66.81%** |
+| 覆盖分母 | **172 个运行时代码文件**（main / preload / shared / renderer）                        |
+| CI       | Ubuntu + Windows 双平台；当前 `4155279` 全绿                                          |
+| 数据     | JSONC v2；`coverage-baseline.json` 172 个文件逐文件 ratchet                           |
 
 ### 1.3 三个“真相断点”
 
@@ -160,52 +160,52 @@ Python 服务器（main.py）
 
 ComfyUI 的版本/通道也要分清：
 
-| 维度 | 事实 |
-| --- | --- |
-| 源码通道 | GitHub `master`（nightly）vs Release tag（stable，v0.46.0） |
-| 前端 | 独立 npm 包 `comfyui-frontend-package`（1.59.x），可 `--front-end-version` 指定 |
-| Python | 3.13 推荐；3.12 可回退；3.14 可用但有节点兼容问题 |
-| Manager | v3.38+ 配置迁到 `user/__manager/`；v4.4.2 为 pip 安装；API 改为 POST + JSON + 批量队列 |
-| 安全 | Manager `strong / normal / normal- / weak`；Comfy Desktop UI 用 Strict/Standard/Relaxed/Permissive 映射 |
+| 维度     | 事实                                                                                                    |
+| -------- | ------------------------------------------------------------------------------------------------------- |
+| 源码通道 | GitHub `master`（nightly）vs Release tag（stable，v0.46.0）                                             |
+| 前端     | 独立 npm 包 `comfyui-frontend-package`（1.59.x），可 `--front-end-version` 指定                         |
+| Python   | 3.13 推荐；3.12 可回退；3.14 可用但有节点兼容问题                                                       |
+| Manager  | v3.38+ 配置迁到 `user/__manager/`；v4.4.2 为 pip 安装；API 改为 POST + JSON + 批量队列                  |
+| 安全     | Manager `strong / normal / normal- / weak`；Comfy Desktop UI 用 Strict/Standard/Relaxed/Permissive 映射 |
 
 这也是为什么 0.2.5 的“健康证据链”必须同时看 HTTP、TCP、进程、日志、WS/队列、GPU，而不能只加一个 `setInterval(fetch)`。
 
 ComfyUI 当前对管理器最重要的 API 面：
 
-| API | 用途 | ComfyPilot 0.2.4 现状 |
-| --- | --- | --- |
-| `GET /system_stats` | 版本、Python/torch、argv、包版本 | ✅ 就绪探测 + 能力探测 |
-| `GET /features` | 服务端 feature flags | ✅ 能力探测 |
-| `GET /object_info` | 节点类型 → `python_module` 归属 | ✅ 预检/失败归因（缓存 180s） |
-| `GET /queue` / `POST /queue` | 队列、清空、删除 pending | ✅ 监控/批跑 |
-| `GET /history` | 历史与输出 | ✅ 监控/产物关联 |
-| `POST /prompt` | 提交工作流 | ✅ 工作流/批跑 |
-| `POST /interrupt` / `POST /free` | 中断、释放显存 | ✅ 监控 |
-| `GET /api/jobs` / `POST /api/jobs/cancel` | 统一作业列表/取消（0.39+） | ✅ 探测 + 批跑取消；监控仍以 legacy queue 为主 |
-| `GET /api/assets` | 资产系统（0.40+，feature-gated） | ✅ 只读增强 |
-| `GET /default_workflow` | 内置默认工作流（0.41+） | ✅ 工作流导入 |
-| `WS /ws` | 进度、预览、执行错误 | ✅ 监控/批跑/诊断 |
+| API                                       | 用途                             | ComfyPilot 0.2.4 现状                          |
+| ----------------------------------------- | -------------------------------- | ---------------------------------------------- |
+| `GET /system_stats`                       | 版本、Python/torch、argv、包版本 | ✅ 就绪探测 + 能力探测                         |
+| `GET /features`                           | 服务端 feature flags             | ✅ 能力探测                                    |
+| `GET /object_info`                        | 节点类型 → `python_module` 归属  | ✅ 预检/失败归因（缓存 180s）                  |
+| `GET /queue` / `POST /queue`              | 队列、清空、删除 pending         | ✅ 监控/批跑                                   |
+| `GET /history`                            | 历史与输出                       | ✅ 监控/产物关联                               |
+| `POST /prompt`                            | 提交工作流                       | ✅ 工作流/批跑                                 |
+| `POST /interrupt` / `POST /free`          | 中断、释放显存                   | ✅ 监控                                        |
+| `GET /api/jobs` / `POST /api/jobs/cancel` | 统一作业列表/取消（0.39+）       | ✅ 探测 + 批跑取消；监控仍以 legacy queue 为主 |
+| `GET /api/assets`                         | 资产系统（0.40+，feature-gated） | ✅ 只读增强                                    |
+| `GET /default_workflow`                   | 内置默认工作流（0.41+）          | ✅ 工作流导入                                  |
+| `WS /ws`                                  | 进度、预览、执行错误             | ✅ 监控/批跑/诊断                              |
 
 0.2.5 不重写这些 API，只在健康、Manager、更新通道上补“事实来源”。
 
 ### 2.1 竞品能力矩阵
 
-| 能力 | ComfyPilot 0.2.4 | 官方 Comfy Desktop | Stability Matrix | ComfyUI-Launcher | ComfyLauncher |
-| --- | --- | --- | --- | --- | --- |
-| 定位 | ComfyUI 生产控制塔 | 官方安装/运行器 | 多工具包管理器 | 工作流零配置运行 | 轻量便携启动器 |
-| 多实例 | ✅ 本地多实例 | ✅ 多 install | ⚠️ 多包，每包通常一个实例 | ✅ 每工作流隔离环境 | ✅ 多便携构建 |
-| 零预装 | ✅ 便携 Python / uv / MinGit | ✅ 预构建 GPU 环境 | ✅ 内嵌 Git / Python | ⚠️ Docker / Python | ❌ 依赖现有便携包 |
-| 模型库 | ✅ 扫描/去重/下载/缩略图/对账 | ✅ 共享目录 | ✅ 共享目录 + Civitai/HF | ⚠️ 按工作流下载 | ❌ |
-| 节点管理 | ✅ Registry/Manager/Git/依赖/冲突 | ✅ Manager | ✅ 扩展 | ✅ 自动安装 | ❌ |
-| 工作流库 | ✅ 导入/标签/同步/批跑 | ❌（只画布） | ⚠️ 推理项目 | ✅ 零配置项目 | ❌ |
-| 批跑 | ✅ 多工作流 × 矩阵 | ❌ | ❌ | ⚠️ 多项目 | ❌ |
-| 监控 | ✅ CPU/内存/GPU/队列/WS/预览 | ⚠️ 基础 | ⚠️ 基础 | ❌ | ⚠️ 状态灯 |
-| 诊断 | ✅ Doctor/日志/崩溃归因/启动问题 | ⚠️ 更新日志 | ❌ | ❌ | ⚠️ 控制台 |
-| 快照 | ⚠️ 配置备份 + 节点启用状态 | ✅ 版本/包/节点快照 | ❌ | ⚠️ 隔离环境 | ❌ |
-| 远程 | ✅ 远程监控/队列 | ✅ Remote/Cloud | ❌ | ⚠️ 云端 | ❌ |
-| 更新通道 | ⚠️ 只跟 master | ✅ Stable / Latest | ✅ 包版本 | ⚠️ | ❌ |
-| 跨平台 | ⚠️ Windows 验证；mac/Linux 未验证 | ✅ Win/mac/Linux | ✅ Win/Linux/mac | ✅ Docker/手动 | ⚠️ Win/Linux |
-| License | MIT | AGPL / 商业双许可 | AGPL | AGPL | MIT |
+| 能力     | ComfyPilot 0.2.4                  | 官方 Comfy Desktop  | Stability Matrix          | ComfyUI-Launcher    | ComfyLauncher     |
+| -------- | --------------------------------- | ------------------- | ------------------------- | ------------------- | ----------------- |
+| 定位     | ComfyUI 生产控制塔                | 官方安装/运行器     | 多工具包管理器            | 工作流零配置运行    | 轻量便携启动器    |
+| 多实例   | ✅ 本地多实例                     | ✅ 多 install       | ⚠️ 多包，每包通常一个实例 | ✅ 每工作流隔离环境 | ✅ 多便携构建     |
+| 零预装   | ✅ 便携 Python / uv / MinGit      | ✅ 预构建 GPU 环境  | ✅ 内嵌 Git / Python      | ⚠️ Docker / Python  | ❌ 依赖现有便携包 |
+| 模型库   | ✅ 扫描/去重/下载/缩略图/对账     | ✅ 共享目录         | ✅ 共享目录 + Civitai/HF  | ⚠️ 按工作流下载     | ❌                |
+| 节点管理 | ✅ Registry/Manager/Git/依赖/冲突 | ✅ Manager          | ✅ 扩展                   | ✅ 自动安装         | ❌                |
+| 工作流库 | ✅ 导入/标签/同步/批跑            | ❌（只画布）        | ⚠️ 推理项目               | ✅ 零配置项目       | ❌                |
+| 批跑     | ✅ 多工作流 × 矩阵                | ❌                  | ❌                        | ⚠️ 多项目           | ❌                |
+| 监控     | ✅ CPU/内存/GPU/队列/WS/预览      | ⚠️ 基础             | ⚠️ 基础                   | ❌                  | ⚠️ 状态灯         |
+| 诊断     | ✅ Doctor/日志/崩溃归因/启动问题  | ⚠️ 更新日志         | ❌                        | ❌                  | ⚠️ 控制台         |
+| 快照     | ⚠️ 配置备份 + 节点启用状态        | ✅ 版本/包/节点快照 | ❌                        | ⚠️ 隔离环境         | ❌                |
+| 远程     | ✅ 远程监控/队列                  | ✅ Remote/Cloud     | ❌                        | ⚠️ 云端             | ❌                |
+| 更新通道 | ⚠️ 只跟 master                    | ✅ Stable / Latest  | ✅ 包版本                 | ⚠️                  | ❌                |
+| 跨平台   | ⚠️ Windows 验证；mac/Linux 未验证 | ✅ Win/mac/Linux    | ✅ Win/Linux/mac          | ✅ Docker/手动      | ⚠️ Win/Linux      |
+| License  | MIT                               | AGPL / 商业双许可   | AGPL                      | AGPL                | MIT               |
 
 ### 2.2 结论
 
@@ -341,14 +341,14 @@ ComfyPilot 的差异化应该收敛为一句话：
 
 这组问题不修，健康检测与救援就会建立在不可靠的状态机上。
 
-| ID | 问题 | 证据 | 后果 |
-| --- | --- | --- | --- |
-| P0-5a | 安装器 reset 跨轮污染 | `installer.ts:414-442, 1574-1629` | 旧 run 的 catch 写进新 run 的 progress，并 `children.clear()` 清掉新 run 的取消句柄 |
-| P0-5b | `repairEnv` 伪造 Python 3.13 | `env.ts:922-941, 1087-1118` | 3.12 venv 点一次“修复环境”后配置显示 3.13 / `migrationState:'none'`，下次启动才被真实解释器拦下 |
-| P0-5c | spawn 晚于 stop 的孤儿 | `lifecycle.ts:436-570, 1033-1039, 654-671` | stop 等 10s 超时后返回 stopped，start 仍 spawn；取消分支因 generation 已变而跳过清理，留下无人管理的进程 |
-| P0-5d | 收养后丢失所有权 | `lifecycle.ts:371-398` | 台账可证明是本应用启动的孤儿被标 `managed=false`，Stop/ForceKill 拒绝杀，只能等下次启动 sweep |
-| P0-5e | ENV_MISMATCH 卡 `starting` | `lifecycle.ts:440-489` | 抛错前已置 `starting`，但不在 spawn 的 try 内，也不置 `error`，UI 永久“启动中” |
-| P0-5f | ComfyUI zip 不可取消、零校验 | `installer.ts:444-485, 1633-1672` | 取消后仍下载/解包；镜像可返回任意 zip，下次启动执行其 `main.py` |
+| ID    | 问题                         | 证据                                       | 后果                                                                                                     |
+| ----- | ---------------------------- | ------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| P0-5a | 安装器 reset 跨轮污染        | `installer.ts:414-442, 1574-1629`          | 旧 run 的 catch 写进新 run 的 progress，并 `children.clear()` 清掉新 run 的取消句柄                      |
+| P0-5b | `repairEnv` 伪造 Python 3.13 | `env.ts:922-941, 1087-1118`                | 3.12 venv 点一次“修复环境”后配置显示 3.13 / `migrationState:'none'`，下次启动才被真实解释器拦下          |
+| P0-5c | spawn 晚于 stop 的孤儿       | `lifecycle.ts:436-570, 1033-1039, 654-671` | stop 等 10s 超时后返回 stopped，start 仍 spawn；取消分支因 generation 已变而跳过清理，留下无人管理的进程 |
+| P0-5d | 收养后丢失所有权             | `lifecycle.ts:371-398`                     | 台账可证明是本应用启动的孤儿被标 `managed=false`，Stop/ForceKill 拒绝杀，只能等下次启动 sweep            |
+| P0-5e | ENV_MISMATCH 卡 `starting`   | `lifecycle.ts:440-489`                     | 抛错前已置 `starting`，但不在 spawn 的 try 内，也不置 `error`，UI 永久“启动中”                           |
+| P0-5f | ComfyUI zip 不可取消、零校验 | `installer.ts:444-485, 1633-1672`          | 取消后仍下载/解包；镜像可返回任意 zip，下次启动执行其 `main.py`                                          |
 
 **修复方向**
 
@@ -403,13 +403,13 @@ ComfyPilot 的差异化应该收敛为一句话：
 
 #### P0-8 资产域的功能级缺陷（0.2.5 快修）
 
-| ID | 问题 | 证据 | 影响 |
-| --- | --- | --- | --- |
-| P0-8a | Civitai 下载文件名没有扩展名 | `model.ts:865-876` 改写成 `/api/download/models/<id>` 后取 pathname basename；不读 `Content-Disposition`；`MODEL_EXT` 不含空扩展名 | 下载落盘为纯数字文件，扫描/去重/缩略图全部失效 |
-| P0-8b | 批跑 30 秒空 history 提前 break | `p1p2/batch.ts:756` `consecutiveEmpty>=12 && settled.size===0` | 正常排队 >30s 的任务被标超时，实际随后出图；用户重跑浪费算力 |
-| P0-8c | 备份跨机恢复被模型绝对路径整体拒绝 | `backup.ts:552-556` invalidPaths 一律 abort；`:872-876` 模型路径不在当前根即 invalid；sections 不参与校验 | 换机/换盘/移动盘时，连 settings 都无法恢复 |
-| P0-8d | history 输出路径无 containment / 删除无根校验 | `batch.ts:770-789` `join(base, subfolder, basename(filename))`；`output.ts:447-453` 只 `existsSync` 就 unlink | 恶意/异常 subfolder 可索引输出根外文件，随后可被删除 |
-| P0-8e | 取消下载留下半成品最终文件 | `model.ts:1227` 直接写 `destPath`；取消只 abort；再次下载因 `existsSync` 报 “Target already exists” | 模型库出现损坏条目，用户无法重下同一文件 |
+| ID    | 问题                                          | 证据                                                                                                                               | 影响                                                         |
+| ----- | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| P0-8a | Civitai 下载文件名没有扩展名                  | `model.ts:865-876` 改写成 `/api/download/models/<id>` 后取 pathname basename；不读 `Content-Disposition`；`MODEL_EXT` 不含空扩展名 | 下载落盘为纯数字文件，扫描/去重/缩略图全部失效               |
+| P0-8b | 批跑 30 秒空 history 提前 break               | `p1p2/batch.ts:756` `consecutiveEmpty>=12 && settled.size===0`                                                                     | 正常排队 >30s 的任务被标超时，实际随后出图；用户重跑浪费算力 |
+| P0-8c | 备份跨机恢复被模型绝对路径整体拒绝            | `backup.ts:552-556` invalidPaths 一律 abort；`:872-876` 模型路径不在当前根即 invalid；sections 不参与校验                          | 换机/换盘/移动盘时，连 settings 都无法恢复                   |
+| P0-8d | history 输出路径无 containment / 删除无根校验 | `batch.ts:770-789` `join(base, subfolder, basename(filename))`；`output.ts:447-453` 只 `existsSync` 就 unlink                      | 恶意/异常 subfolder 可索引输出根外文件，随后可被删除         |
+| P0-8e | 取消下载留下半成品最终文件                    | `model.ts:1227` 直接写 `destPath`；取消只 abort；再次下载因 `existsSync` 报 “Target already exists”                                | 模型库出现损坏条目，用户无法重下同一文件                     |
 
 **修复方向**
 
@@ -423,19 +423,19 @@ ComfyPilot 的差异化应该收敛为一句话：
 
 `src/main/ipc/contract.ts:1-11` 明确把“被攻破/有 bug 的渲染进程”作为威胁模型。按这个模型，以下链是 P0：
 
-| ID | 链 | 证据 | 影响 |
-| --- | --- | --- | --- |
-| S1 | `model.download` 下载 `main.py` / `python.exe` → `instance.save` 注册 home 下任意目录 → `pythonPath` 指向实例内任意文件 → `instance.launch` | `domains/models.ts:53-55`、`model.ts:831-876,1227`、`context.ts:220-231`、`discovery.ts:144-168`、`lifecycle.ts:490-565` | 当前用户代码执行，绕过 picker / approved roots / executable approval |
-| S2 | `settings.set({ modelScanRoots:['/'] })` → `model.download` 写 `.bashrc` / `authorized_keys` / Startup `.bat`；`output.scan/delete` 全盘读/删 | `domains/settings.ts:124-144`、`security.ts:563-572`、`model.ts:416-432`、`media.ts:266-285`、`context.ts:300-317,454-468` | allow-list 被渲染器自己扩到全盘，任意文件写/读/删 |
-| S3 | `instance.save` 不校验 `launchProfile.outputDirectory` / `extraArgs` / `listen` | `domains/instances.ts:74-82`、`discovery.ts:144-168`、`shared/outputDir.ts:25-46`、`domains/output.ts:24-37,154-161` | 全盘扫描/打开/删除 + 受限 SSRF（`listen` 指向内网/云 metadata） |
-| S4 | 恶意备份注入 `pythonPath` / `venvPath` / `launchProfile` / node-pack path / `proxy.password` | `backup.ts:811-846,582-597,789-806,272-296` | 恢复后启动即执行；代理密码可被注入，流量走攻击者代理 |
-| S5 | 开发模式 renderer URL 前缀信任 | `rendererEntry.ts:13-16` | `http://localhost:5173@evil` / `51730` 可获得 preload + IPC |
-| S6 | Linux `basic_text` / 明文凭据回退 | `secretStorage.ts:19-44` | 无 keyring 时凭据明文落盘，文件默认 0644 |
-| S7 | ComfyUI zip / 应用更新无哈希/签名/固定 commit | `updater.ts:1547-1569`、`appUpdate.ts:189-203`、`electron-builder.yml:7-10` | 镜像/发布账号被攻破即可下发恶意代码 |
-| S8 | `shell.openPath` / `output.open` 未阻止 `.py/.sh/.pyc` | `security.ts:235-279` | 结合 S1/S2，点击打开即执行 |
-| S9 | `output.thumb` / `output.scan` 根未 realpath，符号链接可越界 | `domains/output.ts:138-146`、`p1p2/output.ts:240-265`、`media.ts:194-238` | 任意图片读取 / 全盘媒体索引 |
-| S10 | `exportLaunchScript` 的 `dir` 词法校验，符号链接可写到根外 | `instances.ts:339-350`、`instance/launchArgs.ts:143-162` | `.bat/.sh` 写到根外，覆盖已有文件 |
-| S11 | `model.move/symlink` 信任 DB `fileName` | `model.ts:706-756` | `../../.config/autostart/evil.desktop` 可写到目标根外 |
+| ID  | 链                                                                                                                                            | 证据                                                                                                                       | 影响                                                                 |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| S1  | `model.download` 下载 `main.py` / `python.exe` → `instance.save` 注册 home 下任意目录 → `pythonPath` 指向实例内任意文件 → `instance.launch`   | `domains/models.ts:53-55`、`model.ts:831-876,1227`、`context.ts:220-231`、`discovery.ts:144-168`、`lifecycle.ts:490-565`   | 当前用户代码执行，绕过 picker / approved roots / executable approval |
+| S2  | `settings.set({ modelScanRoots:['/'] })` → `model.download` 写 `.bashrc` / `authorized_keys` / Startup `.bat`；`output.scan/delete` 全盘读/删 | `domains/settings.ts:124-144`、`security.ts:563-572`、`model.ts:416-432`、`media.ts:266-285`、`context.ts:300-317,454-468` | allow-list 被渲染器自己扩到全盘，任意文件写/读/删                    |
+| S3  | `instance.save` 不校验 `launchProfile.outputDirectory` / `extraArgs` / `listen`                                                               | `domains/instances.ts:74-82`、`discovery.ts:144-168`、`shared/outputDir.ts:25-46`、`domains/output.ts:24-37,154-161`       | 全盘扫描/打开/删除 + 受限 SSRF（`listen` 指向内网/云 metadata）      |
+| S4  | 恶意备份注入 `pythonPath` / `venvPath` / `launchProfile` / node-pack path / `proxy.password`                                                  | `backup.ts:811-846,582-597,789-806,272-296`                                                                                | 恢复后启动即执行；代理密码可被注入，流量走攻击者代理                 |
+| S5  | 开发模式 renderer URL 前缀信任                                                                                                                | `rendererEntry.ts:13-16`                                                                                                   | `http://localhost:5173@evil` / `51730` 可获得 preload + IPC          |
+| S6  | Linux `basic_text` / 明文凭据回退                                                                                                             | `secretStorage.ts:19-44`                                                                                                   | 无 keyring 时凭据明文落盘，文件默认 0644                             |
+| S7  | ComfyUI zip / 应用更新无哈希/签名/固定 commit                                                                                                 | `updater.ts:1547-1569`、`appUpdate.ts:189-203`、`electron-builder.yml:7-10`                                                | 镜像/发布账号被攻破即可下发恶意代码                                  |
+| S8  | `shell.openPath` / `output.open` 未阻止 `.py/.sh/.pyc`                                                                                        | `security.ts:235-279`                                                                                                      | 结合 S1/S2，点击打开即执行                                           |
+| S9  | `output.thumb` / `output.scan` 根未 realpath，符号链接可越界                                                                                  | `domains/output.ts:138-146`、`p1p2/output.ts:240-265`、`media.ts:194-238`                                                  | 任意图片读取 / 全盘媒体索引                                          |
+| S10 | `exportLaunchScript` 的 `dir` 词法校验，符号链接可写到根外                                                                                    | `instances.ts:339-350`、`instance/launchArgs.ts:143-162`                                                                   | `.bat/.sh` 写到根外，覆盖已有文件                                    |
+| S11 | `model.move/symlink` 信任 DB `fileName`                                                                                                       | `model.ts:706-756`                                                                                                         | `../../.config/autostart/evil.desktop` 可写到目标根外                |
 
 **修复方向**
 
@@ -448,90 +448,90 @@ ComfyPilot 的差异化应该收敛为一句话：
 
 ### 3.2 P1（0.2.5 应修）
 
-| ID | 问题 | 证据 | 影响 |
-| --- | --- | --- | --- |
-| P1-1 | 锁屏/界面无响应时没有救援通道 | `CommandPalette.vue:74-87` 只有启动/停止；`tray.ts:113-144` 只有停止/启动 | 用户只能 `taskkill`，应用状态不一致 |
-| P1-2 | 节点快照不恢复版本 | `nodePack/update.ts:971-1009` 记录 version/gitRev；`1011-1081` 只切启用/禁用 | “快照”不能回滚坏节点更新 |
-| P1-3 | torch 矩阵过期 | `installer.ts:59-66` 固定 `rocm6.2`；`630-645` Windows AMD 回退 CPU；`TORCH_DISK_GB` 未更新 | AMD/新 CUDA 用户装错或性能损失 |
-| P1-4 | Python 3.13 文案过期 | `doctor.ts:109-124`、`installer.ts:838-840` 说 3.14 没有 torch 轮子 | 与官方文档冲突，用户被误导 |
-| P1-5 | 诊断包缺健康证据 | `instance/diagnostics.ts` 只有 config/log/env/自定义节点 | 卡死复盘缺少 PID 树、端口、健康、Manager、GPU |
-| P1-6 | `managerEnabled` 忽略模板 | `runtime.ts:114`、`doctor.ts:550` | 选 Manager 模板仍显示未启用 |
-| P1-7 | adopted 外部实例 stop 返回 `exited:true` | `lifecycle.ts:1070-1090` 初始化 `exited=true` | API/批量汇总把“只发信号”当“已退出” |
-| P1-8 | restart 等端口只等 3 秒 | `lifecycle.ts:1104-1110` | Windows 慢杀进程时 restart 误报端口占用 |
-| P1-9 | IPC schema 大量 `obj` | `ipc/contract.ts:19-25`；219 个通道 | 参数形状校验浅，破坏性通道依赖服务层 |
-| P1-10 | `--listen` 多地址 / TLS 参数不支持 | `runtime.ts:85-90`、`capabilities.ts:46-51` | 合法 ComfyUI 配置被探错地址 |
-| P1-11 | 更新前没有节点版本快照 | `updater.ts` 只备份 core 文件 | 更新后节点坏了只能手工修 |
-| P1-12 | 备份/快照命名混淆 | `backup.ts` 是配置/工作流元数据；`nodePack` 快照是启用状态 | 用户以为“快照”能回滚环境 |
-| P1-13 | ROCm/XPU/MPS 的 torch 校验是空操作 | `installer.ts:214-223, 1053-1062` 只比较 `torch.version.cuda` | 镜像给了 CPU wheel 也能“验证通过”，首次推理才失败 |
-| P1-14 | 镜像装错频道后不回退官方 | `installer.ts:1387-1399` 的 fallback 只包住安装，不包住 verify | 一个能装但给错 wheel 的镜像会让整个安装失败 |
-| P1-15 | `envLock` 实际只覆盖 pipOps / deps | `envLock.ts`；`env.repairEnv`、`pythonMigration`、installer 未拿锁 | Doctor 修复 / 详情页修复 / 迁移可同时写同一 venv |
-| P1-16 | 迁移失败卡 `migrating` | `pythonMigration.ts:170-189` 基础解释器解析在 try 之外 | 下载失败/取消后 UI 无法再次触发迁移 |
-| P1-17 | 重装不处理既有 3.12 venv | `installer.ts:1183-1220` 直接往旧 venv 建，再校验失败 | 0.1.18 原路径重装大概率死在第 3 步，而不是走迁移向导 |
-| P1-18 | selfcheck 与运行中实例共享 user/db | `selfcheck.ts:29-37` 只换端口，不传 base/user 目录 | 两个进程可能同时写 `comfyui.db` |
-| P1-19 | 工作流预检仍以全局模型索引为主 | `preflight.ts:100-180` | 另一个实例里的同名模型会让预检误报“已存在” |
-| P1-20 | Manager 互斥组未校验 | `shared/launchArgs.ts:433-457` 漏 `--disable-manager-ui` + `--enable-manager-legacy-ui` | ComfyUI argparse 直接退出，应用却放行 |
-| P1-21 | `--force-output-rerun` 缺失 / `--directml` 过期 | `shared/launchArgs.ts:237-353` 与上游 110 flag 差 1:1 | 新功能不可发现；旧 flag 对 0.46 无效 |
-| P1-22 | `frontendVersion` 是死字段 | `shared/launchArgs.ts` 从未渲染 `--front-end-version` | 保存了但永远不生效 |
-| P1-23 | `escapeForBat` 在双引号内再转义 `^` | `instance/launchArgs.ts:31-39` | 含 `&` / `^` 的路径导出 .bat 后参数错误 |
-| P1-24 | ready 探针并发 tick / 超时回调无 generation 守卫 | `lifecycle.ts:172-271` | 重复 ready 日志；stop 后旧回调把状态翻回 error |
-| P1-25 | `suggestPort` / `pickPort` 不排除其它实例端口 | `lifecycle.ts:56-98`、`installer.ts:1762-1779` | 多实例批量启动时端口冲突 |
-| P1-26 | 安装后版本缓存不失效 | `runtime.ts:44-83`；installer 不调 `invalidateVersionCache` | 安装完成仍显示旧版本/`detected` |
-| P1-27 | 诊断包空日志/缺配置处理不健壮 | `diagnostics.ts:11-28` | 有 runtime 但内存日志为空时写空 console.log；config 缺失可崩 |
-| P1-28 | 远程/本地作用域不一致 | `NodesView.vue:660-684`、`WorkflowsView.vue:172,739`、`BatchView.vue:459-461`、`OutputView.vue:773-783` | 远程下仍可点本地专属操作；纯远程用户无法入队；查看产物进本地空库 |
-| P1-29 | Nodes 深链冷启动失效 | `NodesView.vue:965-969` 先未 await 的 `applyFocus()` 再 `refresh()` | 从 IssueCenter 跳转不滚动、不高亮，甚至误报“找不到包” |
-| P1-30 | 加载失败被渲染成空数据 | `InstancesView.vue:182-194,1089-1104`、`BatchView.vue:143-159,757-761`、`IssueCenterView.vue:80-89,211-212` | 主进程/网络故障被误读为“没有实例/任务/问题” |
-| P1-31 | 破坏性操作确认不一致 | `IssueCenterView.vue:148-153`、`NodesView.vue:432-451`、`InstanceDetailView.vue:266-306,783-801`、`SettingsView.vue:467-475` | 一次误点忽略全部问题/清空残留/迁移/回滚/丢 API Key |
-| P1-32 | 重装 torch 默认 CPU | `InstanceDetailView.vue:917,934-937` | CUDA 用户容易把 GPU torch 换成 CPU |
-| P1-33 | 测试代理会静默保存整份表单 | `SettingsView.vue:329-353` | 用户以为只测代理，实际把安全级别/网络模式等草稿全部持久化 |
-| P1-34 | 列表/详情请求竞态与重复请求 | `OutputView.vue:379-394,729-753`、`WorkflowsView.vue:184-198`、`ModelsView.vue:725-732`、`InstallView.vue:414-448` | 旧响应覆盖新实例；过滤一次触发两次请求；预检旧结果放行/阻断安装 |
-| P1-35 | 误导性反馈 / i18n 缺口 | `SettingsView.vue:616`、`MarketView.vue:538`、`BatchView.vue:198`、`useComfyUpdate.ts:649` | “全部测活”当成功文案；硬编码英文；`TARGET_REQUIRED` 未本地化 |
-| P1-36 | Embed resize IPC 洪泛 / Dashboard 轮询不暂停 | `EmbedView.vue:55-65,116-141`、`DashboardView.vue:220` | 拖动窗口每像素一次 IPC；隐藏窗口仍 5s 轮询 |
-| P1-37 | 路由 `/embed` 无导航元数据 | `router/index.ts`、`App.vue:222-227,635` | 内嵌 ComfyUI 时侧栏高亮 Dashboard、页头标题“总览” |
-| P1-38 | ErrorBoundary 不随路由重置 | `App.vue:781-787`、`ErrorBoundary.vue:17-26` | 页面 A 崩溃后切到 B 仍是错误页，壳层导航失效 |
-| P1-39 | migrationState IPC 失败被当成迁移失败 | `App.vue:351-360,761-780` | 临时桥错误会把整个应用锁进迁移阻断页 |
-| P1-40 | 更新进度共享槽无 runId / `interrupted` 非终态 | `useComfyUpdate.ts:94-106`、`NodeOpProgressModal.vue:86-92` | 并发更新/修复/节点操作互相覆盖；重载后永久“运行中” |
-| P1-41 | `messageKey/params` 全链路未消费 | `useIpc.ts:58-66`、三个进度弹窗 | 中文界面大量英文进度句与英文错误 |
-| P1-42 | CSP `connect-src/frame-src` 允许任意 http(s) | `src/renderer/index.html:6-11` | 与注释不符；XSS 后外联不受限 |
-| P1-43 | TaskCenter 会复活已结束 op / 不 prune | `TaskCenter.vue:115-128,163` | 运行中行永久残留，列表只增不减 |
-| P1-44 | `pruneActiveInstance` 自动回退 `instances[0]` | `stores/app.ts:199-204` | 用户正在操作 B，B 被删除后静默切到 A，破坏性操作可能落错目标 |
-| P1-45 | 覆盖率 ratchet 可绕过 | `coverage-ratchet.cjs:96-101` 新文件仅 informational；baseline 可删条目/改名/`--update` 降级 | README“新增代码不能拉低基线”不成立；新模块可 0% 通过 |
-| P1-46 | 迁移/3.12 阻断测试过薄 | `dataMigration.test.ts` 仅 2 用例；`migration.ts` 48% lines / 25% branches；无 `migration-required` 生命周期测试 | 单向、可能丢数据的高风险路径没有回归锁 |
-| P1-47 | 深链 / IssueCenter 无 DOM 行为测试 | `NodesView.vue:826-890`；`views.smoke.test.ts` 只挂载 | WP4 的“去修复一定落在正确实例和节点”无证据 |
-| P1-48 | 门禁脚本本身弱 | `check-test-polarity.cjs:59` 漏 `it.each/options`；`test-behavior-ratio` 目标 60%；`check-hardcoded-zh` 只扫 `.vue` + constants；`format:check` 只扫 `src` | “完整中英双语/行为占比/格式”被夸大 |
-| P1-49 | desktop / tray 几乎未测 | `desktop.ts` 4.41% lines；`tray.ts` 56.86%；`launcher.test.ts` 只测 `safeShortcutName` | Windows 快捷方式/开机自启/托盘无自动验证 |
-| P1-50 | `test:all` 不是完整门禁 | `package.json:47` 缺 lint/format/i18n/hardcoded/polarity/version | 开发者本地自测会漏掉一半 CI |
-| P1-51 | 文档陈旧/矛盾 | `README.md:231,316,389,481,502`；`docs/PLAN-0.2.0.md` 行号/文件数全部过期 | 用户/贡献者被错误引导 |
-| P1-52 | 依赖安装失败在 `list()` 后消失 | `nodePack/install.ts:749-755` 写 `pip-failed` issue；`list.ts:277-339` 只合并 `collectIssues`，不合并持久化 issues | 刷新后包显示 installed，启动才报 ModuleNotFoundError |
-| P1-53 | `issueHub.scan(instanceId)` 误解决其他实例问题 | `issueHub.ts:197,109-145` 未出现 fingerprint 一律 resolved | 对单实例扫描会把其他实例问题标已解决并隐藏 |
-| P1-54 | 产物幽灵清理从未执行 | `output.ts:60-88` 的 `scan()` 无生产调用；`scanAsync` 不 prune | 外部删除的产物永久留在索引/统计/批删目标 |
-| P1-55 | `workflow.list` TOCTOU 整体抛错 | `workflow.ts:473-484` `existsSync` 后 `buildRecord` 内 `statSync` 无 try | 一个文件消失导致工作流页整体加载失败 |
-| P1-56 | 暂停排队下载无效 / resume 打 error | `model.ts:1330-1339` 只 abort 已有 controller；`scheduleDownload` 不检查 paused | 排队任务暂停后仍启动；resume 触发 “already in progress” |
-| P1-57 | 每次下载完成触发全库 rehash + 并发 scan | `model.ts:818-820` `scan({hash:true})`；无单飞/去抖 | 大库下载一个小 LoRA 触发数分钟全盘读，重复标记互相覆盖 |
-| P1-58 | 节点更新 `git reset --hard` 丢弃本地修改 | `nodePack/update.ts:711-752` | 用户在 git 包内的本地补丁/配置被静默丢弃 |
-| P1-59 | 批跑进度事件数组/对象混发 | `p1p2/batch.ts:117` 自愈 emit 数组，其他 emit 单 job | 渲染层按对象解析可能报错/丢更新 |
-| P1-60 | 市场 category 过滤无效 / ban 包可经 git 安装 | `p1p2/market.ts:40`；`nodePack/install.ts:358-425` | 选视频仍返回全部；被 ban 的包有 repository 时直接 git clone |
-| P1-61 | IPv6 监听在监控/对账被拒 | `monitor.ts:35-38`、`model.ts:114-118` 不格式化 `[::1]` | IPv6-only 环境监控/模型对账不可用 |
-| P1-62 | Registry 索引全失败仍标 ready 24h | `registryIndex.ts:268-276` | 网络抖动一次后整天搜索为空且不提示刷新 |
-| P1-63 | `install-runs` 不在 debounce 集合却用 `scheduleFileWrite` | `db/batch.ts:35-50`、`jsonc.ts:300-307` | 400ms 内第二次写入读不到 pending，安装历史丢记录/状态回退 |
-| P1-64 | JSONC BOM 被当成损坏文件 | `jsonc.ts:27-77,151-174` | Windows 编辑器保存带 BOM 的合法 JSONC 被 rename `.bad` 并报 corrupt |
-| P1-65 | `toV2` spread 顺序可被对象自带 `schemaVersion` 覆盖；retry 不重置 | `schema.ts:19-27`、`migration.ts:122-133` | 迁移后仍可能写出 v1；重试统计累加 |
-| P1-66 | senderFrame 缺失时 fail-open | `contract.ts:315-322`、`context.ts:101-109` | 未来 API/测试环境可绕过来源校验 |
-| P1-67 | `activeInstance` 不在 `AppSettings` / known keys | `target.ts:70-76`、`db/settings.ts:38-61` | `resolveActiveTarget` 的 fallback 实际不可用 |
+| ID    | 问题                                                              | 证据                                                                                                                                                       | 影响                                                                |
+| ----- | ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| P1-1  | 锁屏/界面无响应时没有救援通道                                     | `CommandPalette.vue:74-87` 只有启动/停止；`tray.ts:113-144` 只有停止/启动                                                                                  | 用户只能 `taskkill`，应用状态不一致                                 |
+| P1-2  | 节点快照不恢复版本                                                | `nodePack/update.ts:971-1009` 记录 version/gitRev；`1011-1081` 只切启用/禁用                                                                               | “快照”不能回滚坏节点更新                                            |
+| P1-3  | torch 矩阵过期                                                    | `installer.ts:59-66` 固定 `rocm6.2`；`630-645` Windows AMD 回退 CPU；`TORCH_DISK_GB` 未更新                                                                | AMD/新 CUDA 用户装错或性能损失                                      |
+| P1-4  | Python 3.13 文案过期                                              | `doctor.ts:109-124`、`installer.ts:838-840` 说 3.14 没有 torch 轮子                                                                                        | 与官方文档冲突，用户被误导                                          |
+| P1-5  | 诊断包缺健康证据                                                  | `instance/diagnostics.ts` 只有 config/log/env/自定义节点                                                                                                   | 卡死复盘缺少 PID 树、端口、健康、Manager、GPU                       |
+| P1-6  | `managerEnabled` 忽略模板                                         | `runtime.ts:114`、`doctor.ts:550`                                                                                                                          | 选 Manager 模板仍显示未启用                                         |
+| P1-7  | adopted 外部实例 stop 返回 `exited:true`                          | `lifecycle.ts:1070-1090` 初始化 `exited=true`                                                                                                              | API/批量汇总把“只发信号”当“已退出”                                  |
+| P1-8  | restart 等端口只等 3 秒                                           | `lifecycle.ts:1104-1110`                                                                                                                                   | Windows 慢杀进程时 restart 误报端口占用                             |
+| P1-9  | IPC schema 大量 `obj`                                             | `ipc/contract.ts:19-25`；219 个通道                                                                                                                        | 参数形状校验浅，破坏性通道依赖服务层                                |
+| P1-10 | `--listen` 多地址 / TLS 参数不支持                                | `runtime.ts:85-90`、`capabilities.ts:46-51`                                                                                                                | 合法 ComfyUI 配置被探错地址                                         |
+| P1-11 | 更新前没有节点版本快照                                            | `updater.ts` 只备份 core 文件                                                                                                                              | 更新后节点坏了只能手工修                                            |
+| P1-12 | 备份/快照命名混淆                                                 | `backup.ts` 是配置/工作流元数据；`nodePack` 快照是启用状态                                                                                                 | 用户以为“快照”能回滚环境                                            |
+| P1-13 | ROCm/XPU/MPS 的 torch 校验是空操作                                | `installer.ts:214-223, 1053-1062` 只比较 `torch.version.cuda`                                                                                              | 镜像给了 CPU wheel 也能“验证通过”，首次推理才失败                   |
+| P1-14 | 镜像装错频道后不回退官方                                          | `installer.ts:1387-1399` 的 fallback 只包住安装，不包住 verify                                                                                             | 一个能装但给错 wheel 的镜像会让整个安装失败                         |
+| P1-15 | `envLock` 实际只覆盖 pipOps / deps                                | `envLock.ts`；`env.repairEnv`、`pythonMigration`、installer 未拿锁                                                                                         | Doctor 修复 / 详情页修复 / 迁移可同时写同一 venv                    |
+| P1-16 | 迁移失败卡 `migrating`                                            | `pythonMigration.ts:170-189` 基础解释器解析在 try 之外                                                                                                     | 下载失败/取消后 UI 无法再次触发迁移                                 |
+| P1-17 | 重装不处理既有 3.12 venv                                          | `installer.ts:1183-1220` 直接往旧 venv 建，再校验失败                                                                                                      | 0.1.18 原路径重装大概率死在第 3 步，而不是走迁移向导                |
+| P1-18 | selfcheck 与运行中实例共享 user/db                                | `selfcheck.ts:29-37` 只换端口，不传 base/user 目录                                                                                                         | 两个进程可能同时写 `comfyui.db`                                     |
+| P1-19 | 工作流预检仍以全局模型索引为主                                    | `preflight.ts:100-180`                                                                                                                                     | 另一个实例里的同名模型会让预检误报“已存在”                          |
+| P1-20 | Manager 互斥组未校验                                              | `shared/launchArgs.ts:433-457` 漏 `--disable-manager-ui` + `--enable-manager-legacy-ui`                                                                    | ComfyUI argparse 直接退出，应用却放行                               |
+| P1-21 | `--force-output-rerun` 缺失 / `--directml` 过期                   | `shared/launchArgs.ts:237-353` 与上游 110 flag 差 1:1                                                                                                      | 新功能不可发现；旧 flag 对 0.46 无效                                |
+| P1-22 | `frontendVersion` 是死字段                                        | `shared/launchArgs.ts` 从未渲染 `--front-end-version`                                                                                                      | 保存了但永远不生效                                                  |
+| P1-23 | `escapeForBat` 在双引号内再转义 `^`                               | `instance/launchArgs.ts:31-39`                                                                                                                             | 含 `&` / `^` 的路径导出 .bat 后参数错误                             |
+| P1-24 | ready 探针并发 tick / 超时回调无 generation 守卫                  | `lifecycle.ts:172-271`                                                                                                                                     | 重复 ready 日志；stop 后旧回调把状态翻回 error                      |
+| P1-25 | `suggestPort` / `pickPort` 不排除其它实例端口                     | `lifecycle.ts:56-98`、`installer.ts:1762-1779`                                                                                                             | 多实例批量启动时端口冲突                                            |
+| P1-26 | 安装后版本缓存不失效                                              | `runtime.ts:44-83`；installer 不调 `invalidateVersionCache`                                                                                                | 安装完成仍显示旧版本/`detected`                                     |
+| P1-27 | 诊断包空日志/缺配置处理不健壮                                     | `diagnostics.ts:11-28`                                                                                                                                     | 有 runtime 但内存日志为空时写空 console.log；config 缺失可崩        |
+| P1-28 | 远程/本地作用域不一致                                             | `NodesView.vue:660-684`、`WorkflowsView.vue:172,739`、`BatchView.vue:459-461`、`OutputView.vue:773-783`                                                    | 远程下仍可点本地专属操作；纯远程用户无法入队；查看产物进本地空库    |
+| P1-29 | Nodes 深链冷启动失效                                              | `NodesView.vue:965-969` 先未 await 的 `applyFocus()` 再 `refresh()`                                                                                        | 从 IssueCenter 跳转不滚动、不高亮，甚至误报“找不到包”               |
+| P1-30 | 加载失败被渲染成空数据                                            | `InstancesView.vue:182-194,1089-1104`、`BatchView.vue:143-159,757-761`、`IssueCenterView.vue:80-89,211-212`                                                | 主进程/网络故障被误读为“没有实例/任务/问题”                         |
+| P1-31 | 破坏性操作确认不一致                                              | `IssueCenterView.vue:148-153`、`NodesView.vue:432-451`、`InstanceDetailView.vue:266-306,783-801`、`SettingsView.vue:467-475`                               | 一次误点忽略全部问题/清空残留/迁移/回滚/丢 API Key                  |
+| P1-32 | 重装 torch 默认 CPU                                               | `InstanceDetailView.vue:917,934-937`                                                                                                                       | CUDA 用户容易把 GPU torch 换成 CPU                                  |
+| P1-33 | 测试代理会静默保存整份表单                                        | `SettingsView.vue:329-353`                                                                                                                                 | 用户以为只测代理，实际把安全级别/网络模式等草稿全部持久化           |
+| P1-34 | 列表/详情请求竞态与重复请求                                       | `OutputView.vue:379-394,729-753`、`WorkflowsView.vue:184-198`、`ModelsView.vue:725-732`、`InstallView.vue:414-448`                                         | 旧响应覆盖新实例；过滤一次触发两次请求；预检旧结果放行/阻断安装     |
+| P1-35 | 误导性反馈 / i18n 缺口                                            | `SettingsView.vue:616`、`MarketView.vue:538`、`BatchView.vue:198`、`useComfyUpdate.ts:649`                                                                 | “全部测活”当成功文案；硬编码英文；`TARGET_REQUIRED` 未本地化        |
+| P1-36 | Embed resize IPC 洪泛 / Dashboard 轮询不暂停                      | `EmbedView.vue:55-65,116-141`、`DashboardView.vue:220`                                                                                                     | 拖动窗口每像素一次 IPC；隐藏窗口仍 5s 轮询                          |
+| P1-37 | 路由 `/embed` 无导航元数据                                        | `router/index.ts`、`App.vue:222-227,635`                                                                                                                   | 内嵌 ComfyUI 时侧栏高亮 Dashboard、页头标题“总览”                   |
+| P1-38 | ErrorBoundary 不随路由重置                                        | `App.vue:781-787`、`ErrorBoundary.vue:17-26`                                                                                                               | 页面 A 崩溃后切到 B 仍是错误页，壳层导航失效                        |
+| P1-39 | migrationState IPC 失败被当成迁移失败                             | `App.vue:351-360,761-780`                                                                                                                                  | 临时桥错误会把整个应用锁进迁移阻断页                                |
+| P1-40 | 更新进度共享槽无 runId / `interrupted` 非终态                     | `useComfyUpdate.ts:94-106`、`NodeOpProgressModal.vue:86-92`                                                                                                | 并发更新/修复/节点操作互相覆盖；重载后永久“运行中”                  |
+| P1-41 | `messageKey/params` 全链路未消费                                  | `useIpc.ts:58-66`、三个进度弹窗                                                                                                                            | 中文界面大量英文进度句与英文错误                                    |
+| P1-42 | CSP `connect-src/frame-src` 允许任意 http(s)                      | `src/renderer/index.html:6-11`                                                                                                                             | 与注释不符；XSS 后外联不受限                                        |
+| P1-43 | TaskCenter 会复活已结束 op / 不 prune                             | `TaskCenter.vue:115-128,163`                                                                                                                               | 运行中行永久残留，列表只增不减                                      |
+| P1-44 | `pruneActiveInstance` 自动回退 `instances[0]`                     | `stores/app.ts:199-204`                                                                                                                                    | 用户正在操作 B，B 被删除后静默切到 A，破坏性操作可能落错目标        |
+| P1-45 | 覆盖率 ratchet 可绕过                                             | `coverage-ratchet.cjs:96-101` 新文件仅 informational；baseline 可删条目/改名/`--update` 降级                                                               | README“新增代码不能拉低基线”不成立；新模块可 0% 通过                |
+| P1-46 | 迁移/3.12 阻断测试过薄                                            | `dataMigration.test.ts` 仅 2 用例；`migration.ts` 48% lines / 25% branches；无 `migration-required` 生命周期测试                                           | 单向、可能丢数据的高风险路径没有回归锁                              |
+| P1-47 | 深链 / IssueCenter 无 DOM 行为测试                                | `NodesView.vue:826-890`；`views.smoke.test.ts` 只挂载                                                                                                      | WP4 的“去修复一定落在正确实例和节点”无证据                          |
+| P1-48 | 门禁脚本本身弱                                                    | `check-test-polarity.cjs:59` 漏 `it.each/options`；`test-behavior-ratio` 目标 60%；`check-hardcoded-zh` 只扫 `.vue` + constants；`format:check` 只扫 `src` | “完整中英双语/行为占比/格式”被夸大                                  |
+| P1-49 | desktop / tray 几乎未测                                           | `desktop.ts` 4.41% lines；`tray.ts` 56.86%；`launcher.test.ts` 只测 `safeShortcutName`                                                                     | Windows 快捷方式/开机自启/托盘无自动验证                            |
+| P1-50 | `test:all` 不是完整门禁                                           | `package.json:47` 缺 lint/format/i18n/hardcoded/polarity/version                                                                                           | 开发者本地自测会漏掉一半 CI                                         |
+| P1-51 | 文档陈旧/矛盾                                                     | `README.md:231,316,389,481,502`；`docs/PLAN-0.2.0.md` 行号/文件数全部过期                                                                                  | 用户/贡献者被错误引导                                               |
+| P1-52 | 依赖安装失败在 `list()` 后消失                                    | `nodePack/install.ts:749-755` 写 `pip-failed` issue；`list.ts:277-339` 只合并 `collectIssues`，不合并持久化 issues                                         | 刷新后包显示 installed，启动才报 ModuleNotFoundError                |
+| P1-53 | `issueHub.scan(instanceId)` 误解决其他实例问题                    | `issueHub.ts:197,109-145` 未出现 fingerprint 一律 resolved                                                                                                 | 对单实例扫描会把其他实例问题标已解决并隐藏                          |
+| P1-54 | 产物幽灵清理从未执行                                              | `output.ts:60-88` 的 `scan()` 无生产调用；`scanAsync` 不 prune                                                                                             | 外部删除的产物永久留在索引/统计/批删目标                            |
+| P1-55 | `workflow.list` TOCTOU 整体抛错                                   | `workflow.ts:473-484` `existsSync` 后 `buildRecord` 内 `statSync` 无 try                                                                                   | 一个文件消失导致工作流页整体加载失败                                |
+| P1-56 | 暂停排队下载无效 / resume 打 error                                | `model.ts:1330-1339` 只 abort 已有 controller；`scheduleDownload` 不检查 paused                                                                            | 排队任务暂停后仍启动；resume 触发 “already in progress”             |
+| P1-57 | 每次下载完成触发全库 rehash + 并发 scan                           | `model.ts:818-820` `scan({hash:true})`；无单飞/去抖                                                                                                        | 大库下载一个小 LoRA 触发数分钟全盘读，重复标记互相覆盖              |
+| P1-58 | 节点更新 `git reset --hard` 丢弃本地修改                          | `nodePack/update.ts:711-752`                                                                                                                               | 用户在 git 包内的本地补丁/配置被静默丢弃                            |
+| P1-59 | 批跑进度事件数组/对象混发                                         | `p1p2/batch.ts:117` 自愈 emit 数组，其他 emit 单 job                                                                                                       | 渲染层按对象解析可能报错/丢更新                                     |
+| P1-60 | 市场 category 过滤无效 / ban 包可经 git 安装                      | `p1p2/market.ts:40`；`nodePack/install.ts:358-425`                                                                                                         | 选视频仍返回全部；被 ban 的包有 repository 时直接 git clone         |
+| P1-61 | IPv6 监听在监控/对账被拒                                          | `monitor.ts:35-38`、`model.ts:114-118` 不格式化 `[::1]`                                                                                                    | IPv6-only 环境监控/模型对账不可用                                   |
+| P1-62 | Registry 索引全失败仍标 ready 24h                                 | `registryIndex.ts:268-276`                                                                                                                                 | 网络抖动一次后整天搜索为空且不提示刷新                              |
+| P1-63 | `install-runs` 不在 debounce 集合却用 `scheduleFileWrite`         | `db/batch.ts:35-50`、`jsonc.ts:300-307`                                                                                                                    | 400ms 内第二次写入读不到 pending，安装历史丢记录/状态回退           |
+| P1-64 | JSONC BOM 被当成损坏文件                                          | `jsonc.ts:27-77,151-174`                                                                                                                                   | Windows 编辑器保存带 BOM 的合法 JSONC 被 rename `.bad` 并报 corrupt |
+| P1-65 | `toV2` spread 顺序可被对象自带 `schemaVersion` 覆盖；retry 不重置 | `schema.ts:19-27`、`migration.ts:122-133`                                                                                                                  | 迁移后仍可能写出 v1；重试统计累加                                   |
+| P1-66 | senderFrame 缺失时 fail-open                                      | `contract.ts:315-322`、`context.ts:101-109`                                                                                                                | 未来 API/测试环境可绕过来源校验                                     |
+| P1-67 | `activeInstance` 不在 `AppSettings` / known keys                  | `target.ts:70-76`、`db/settings.ts:38-61`                                                                                                                  | `resolveActiveTarget` 的 fallback 实际不可用                        |
 
 ### 3.3 P2（0.2.5 收尾或后续）
 
-| ID | 问题 | 说明 |
-| --- | --- | --- |
-| P2-1 | `pids.json` 非原子写 | 崩溃时可能丢失孤儿 PID；改为临时文件 + rename |
-| P2-2 | 日志逐行 `writeFileSync` | 高 debug 输出时阻塞主进程；可批量写 |
-| P2-3 | 巨文件 | `InstanceDetailView.vue` 2,247 行、`NodesView.vue` 2,027 行 |
-| P2-4 | 安装包未签名 | SmartScreen 提示；需要证书/发布策略 |
-| P2-5 | macOS / Linux 未实机验证 | 配置存在但未承诺 |
-| P2-6 | 覆盖率 ratchet 只能防回退 | 新文件仍可能低覆盖；本次新增文件必须单独补测 |
-| P2-7 | 端口冲突等待窗口偏短 | 与 P1-8 同源，可配置化 |
-| P2-8 | 备份恢复的跨机器路径重映射 | 已有安全重映射，但 UI 可更清楚 |
-| P2-9 | Linux/macOS 运行时 tar 符号链接被拒 | `zipSafe.ts:136-144` 拒绝一切符号链接，而 `bootstrap.ts:302-311` 接受 `python3 -> python3.13`；该平台运行时可能解包失败 |
-| P2-10 | 自定义镜像 `--trusted-host` 关闭证书校验 | `installer.ts:1070-1078`；仅应在明确的离线/自签场景使用，需文档警示 |
+| ID    | 问题                                     | 说明                                                                                                                    |
+| ----- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| P2-1  | `pids.json` 非原子写                     | 崩溃时可能丢失孤儿 PID；改为临时文件 + rename                                                                           |
+| P2-2  | 日志逐行 `writeFileSync`                 | 高 debug 输出时阻塞主进程；可批量写                                                                                     |
+| P2-3  | 巨文件                                   | `InstanceDetailView.vue` 2,247 行、`NodesView.vue` 2,027 行                                                             |
+| P2-4  | 安装包未签名                             | SmartScreen 提示；需要证书/发布策略                                                                                     |
+| P2-5  | macOS / Linux 未实机验证                 | 配置存在但未承诺                                                                                                        |
+| P2-6  | 覆盖率 ratchet 只能防回退                | 新文件仍可能低覆盖；本次新增文件必须单独补测                                                                            |
+| P2-7  | 端口冲突等待窗口偏短                     | 与 P1-8 同源，可配置化                                                                                                  |
+| P2-8  | 备份恢复的跨机器路径重映射               | 已有安全重映射，但 UI 可更清楚                                                                                          |
+| P2-9  | Linux/macOS 运行时 tar 符号链接被拒      | `zipSafe.ts:136-144` 拒绝一切符号链接，而 `bootstrap.ts:302-311` 接受 `python3 -> python3.13`；该平台运行时可能解包失败 |
+| P2-10 | 自定义镜像 `--trusted-host` 关闭证书校验 | `installer.ts:1070-1078`；仅应在明确的离线/自签场景使用，需文档警示                                                     |
 
 其他值得在 0.2.5 收尾或后续一并收口的 P2：
 
@@ -553,17 +553,17 @@ ComfyPilot 的差异化应该收敛为一句话：
 
 ### 4.1 目标
 
-| 目标 | 说明 |
-| --- | --- |
-| **G1 运行真相** | 实例健康有独立状态、证据与时间线；卡死不再显示绿色 |
-| **G2 可救援** | 不解锁 Windows 也能通过 `--rescue` / 托盘 / 命令面板救回；安全模式可排除节点 |
-| **G3 更新可信** | stable / nightly 双通道；更新后必须通过真实启动验证；失败自动回滚 |
-| **G4 上游对齐** | Manager v4.4、ComfyUI 0.46、CUDA 13 / ROCm 7.2 / 10.0 |
-| **G5 路径真相** | port/listen/dirs 以最终 argv 为准，所有资产操作一致 |
-| **G6 安全边界** | 路径 capability 化；S1/S2/S3 RCE 链、恶意备份、符号链接越界全部被负例锁死 |
-| **G7 资产真相** | Civitai 下载可入库；批跑不误判排队；备份可跨机/可重映射；输出路径不可越界 |
-| **G8 体验与发布** | 远程作用域/错误态/确认一致；release gate 能证明 packaged 产物可启动 |
-| **G9 无破坏** | 数据 schema 不变；0.2.4 实例/设置/备份可直接用 |
+| 目标              | 说明                                                                         |
+| ----------------- | ---------------------------------------------------------------------------- |
+| **G1 运行真相**   | 实例健康有独立状态、证据与时间线；卡死不再显示绿色                           |
+| **G2 可救援**     | 不解锁 Windows 也能通过 `--rescue` / 托盘 / 命令面板救回；安全模式可排除节点 |
+| **G3 更新可信**   | stable / nightly 双通道；更新后必须通过真实启动验证；失败自动回滚            |
+| **G4 上游对齐**   | Manager v4.4、ComfyUI 0.46、CUDA 13 / ROCm 7.2 / 10.0                        |
+| **G5 路径真相**   | port/listen/dirs 以最终 argv 为准，所有资产操作一致                          |
+| **G6 安全边界**   | 路径 capability 化；S1/S2/S3 RCE 链、恶意备份、符号链接越界全部被负例锁死    |
+| **G7 资产真相**   | Civitai 下载可入库；批跑不误判排队；备份可跨机/可重映射；输出路径不可越界    |
+| **G8 体验与发布** | 远程作用域/错误态/确认一致；release gate 能证明 packaged 产物可启动          |
+| **G9 无破坏**     | 数据 schema 不变；0.2.4 实例/设置/备份可直接用                               |
 
 ### 4.2 验收画面
 
@@ -655,12 +655,12 @@ ComfyPilot 的差异化应该收敛为一句话：
 
 执行顺序按依赖排，不按编号排：
 
-| 阶段 | WP | 依赖 | 关键产出 |
-| --- | --- | --- | --- |
-| **M1 基础事实** | WP1 路径/有效启动、WP10 安全边界、WP0 生命周期/安装器 | WP1 与 WP10 可并行；WP0 依赖 WP1 的 effective 解析 | 路径/端口/目录全部一致；S1/S2/S3 RCE 链被堵；stop/start 无孤儿；安装器无跨轮污染 |
-| **M2 运行真相** | WP2 健康、WP3 救援/安全模式 | WP2 依赖 WP0/WP1；WP3 依赖 WP2 | 卡死 3 分钟内变红；`--rescue` 锁屏可救；安全模式可启动 |
-| **M3 资产与上游** | WP9 资产 P0、WP4 Manager、WP5 更新安全、WP6 运行时矩阵 | WP9/WP4/WP6 依赖 WP1；WP5 依赖 WP0/WP4 的节点快照 | Civitai/批跑/备份/输出 P0 修复；Manager v4.4 真实 schema；stable 更新有启动验证；torch 矩阵对齐 |
-| **M4 体验与发布** | WP7 渲染层反馈、WP8 测试/发布可信度 + 文档 | WP7 依赖 WP2/WP3；WP8 最后 | 远程作用域/错误态/确认统一；release gate 能证明安装包能启动；CI 双平台绿 |
+| 阶段              | WP                                                     | 依赖                                               | 关键产出                                                                                        |
+| ----------------- | ------------------------------------------------------ | -------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| **M1 基础事实**   | WP1 路径/有效启动、WP10 安全边界、WP0 生命周期/安装器  | WP1 与 WP10 可并行；WP0 依赖 WP1 的 effective 解析 | 路径/端口/目录全部一致；S1/S2/S3 RCE 链被堵；stop/start 无孤儿；安装器无跨轮污染                |
+| **M2 运行真相**   | WP2 健康、WP3 救援/安全模式                            | WP2 依赖 WP0/WP1；WP3 依赖 WP2                     | 卡死 3 分钟内变红；`--rescue` 锁屏可救；安全模式可启动                                          |
+| **M3 资产与上游** | WP9 资产 P0、WP4 Manager、WP5 更新安全、WP6 运行时矩阵 | WP9/WP4/WP6 依赖 WP1；WP5 依赖 WP0/WP4 的节点快照  | Civitai/批跑/备份/输出 P0 修复；Manager v4.4 真实 schema；stable 更新有启动验证；torch 矩阵对齐 |
+| **M4 体验与发布** | WP7 渲染层反馈、WP8 测试/发布可信度 + 文档             | WP7 依赖 WP2/WP3；WP8 最后                         | 远程作用域/错误态/确认统一；release gate 能证明安装包能启动；CI 双平台绿                        |
 
 **关键路径**：
 
@@ -784,21 +784,21 @@ export interface EffectiveLaunch {
 
 **改造点**
 
-| 模块 | 改动 |
-| --- | --- |
-| `instance/lifecycle.ts` | `checkPort` / `baseUrlOf` / 就绪探测用 effective |
-| `instance/runtime.ts` | `toInfo()` 返回 `effectivePort/effectiveListen/url/resolvedDirs` |
-| `capabilities.ts` | 用 effective URL |
-| `monitor.ts` | `assertMonitorBaseUrl` / 队列 URL 支持多地址 |
-| `workflow.ts` | 工作流目录、baseUrl |
-| `nodePack/common.ts` | `detectCustomNodesRoot` 用 `customNodes` |
-| `nodePack/list/install/update/recovery` | `.disabled` / 安装根 |
-| `model.ts` | allowed roots、扫描根、reconcile |
-| `p1p2/output.ts` / `media.ts` | 输出根 |
-| `backup.ts` | 恢复根 |
-| `diagnostics.ts` | 诊断内容 |
-| `doctor.ts` | custom_nodes / Manager |
-| `p1p2/market.ts` | 安装检测 |
+| 模块                                    | 改动                                                             |
+| --------------------------------------- | ---------------------------------------------------------------- |
+| `instance/lifecycle.ts`                 | `checkPort` / `baseUrlOf` / 就绪探测用 effective                 |
+| `instance/runtime.ts`                   | `toInfo()` 返回 `effectivePort/effectiveListen/url/resolvedDirs` |
+| `capabilities.ts`                       | 用 effective URL                                                 |
+| `monitor.ts`                            | `assertMonitorBaseUrl` / 队列 URL 支持多地址                     |
+| `workflow.ts`                           | 工作流目录、baseUrl                                              |
+| `nodePack/common.ts`                    | `detectCustomNodesRoot` 用 `customNodes`                         |
+| `nodePack/list/install/update/recovery` | `.disabled` / 安装根                                             |
+| `model.ts`                              | allowed roots、扫描根、reconcile                                 |
+| `p1p2/output.ts` / `media.ts`           | 输出根                                                           |
+| `backup.ts`                             | 恢复根                                                           |
+| `diagnostics.ts`                        | 诊断内容                                                         |
+| `doctor.ts`                             | custom_nodes / Manager                                           |
+| `p1p2/market.ts`                        | 安装检测                                                         |
 
 **安全**
 
@@ -835,13 +835,7 @@ export interface EffectiveLaunch {
 
 ```ts
 export type HealthState =
-  | 'unknown'
-  | 'healthy'
-  | 'busy'
-  | 'suspect'
-  | 'unresponsive'
-  | 'crashed'
-  | 'stopped'
+  'unknown' | 'healthy' | 'busy' | 'suspect' | 'unresponsive' | 'crashed' | 'stopped'
 
 export interface InstanceHealth {
   state: HealthState
@@ -970,12 +964,12 @@ ComfyPilot.exe --status
 
 ```ts
 export interface HealthRecoveryPolicy {
-  enabled: boolean          // 默认 false（只告警）
+  enabled: boolean // 默认 false（只告警）
   action: 'restart' | 'safe-restart'
-  afterMs: number           // unresponsive 持续多久才动手，默认 60s
-  maxAttempts: number       // 10 分钟内最多 3 次
-  cooldownMs: number        // 两次尝试间隔，默认 5 分钟
-  killRunningJobs: boolean  // 队列在跑时是否允许杀，默认 false
+  afterMs: number // unresponsive 持续多久才动手，默认 60s
+  maxAttempts: number // 10 分钟内最多 3 次
+  cooldownMs: number // 两次尝试间隔，默认 5 分钟
+  killRunningJobs: boolean // 队列在跑时是否允许杀，默认 false
 }
 ```
 
@@ -1093,10 +1087,10 @@ snapshots = managerDir/snapshots
 
 **通道语义**
 
-| 通道 | 来源 | 适用 |
-| --- | --- | --- |
-| `stable` | GitHub Releases 最新正式 tag（跳过 prerelease） | 生产、默认新实例 |
-| `nightly` | `master` archive / git master | 追新、现有实例保持 |
+| 通道      | 来源                                            | 适用               |
+| --------- | ----------------------------------------------- | ------------------ |
+| `stable`  | GitHub Releases 最新正式 tag（跳过 prerelease） | 生产、默认新实例   |
+| `nightly` | `master` archive / git master                   | 追新、现有实例保持 |
 
 - 旧实例没有 `updateChannel`：按 zip/git 现状视为 nightly，UI 显示“当前跟踪 master”，提供切换。
 - stable 下载 `https://github.com/Comfy-Org/ComfyUI/archive/refs/tags/<tag>.zip`，走 GitHub 镜像。
@@ -1151,15 +1145,15 @@ snapshots = managerDir/snapshots
 
 **torch 矩阵**
 
-| 平台 | 通道 | 说明 |
-| --- | --- | --- |
-| Windows/Linux NVIDIA | `cu130`（默认） | 20 系及以上；CUDA 13 稳定线 |
-| 旧 NVIDIA | `cu126` | 兼容保留 |
-| Linux AMD | `rocm7.2` | 官方推荐 ROCm 7.2 |
-| Windows AMD | `rocm10.0` | 官方 Windows ROCm 10.0 多架构包 |
-| Intel | `xpu` | 保持 |
-| macOS | `mps` | 保持 CPU 轮子 + MPS |
-| 无 GPU | `cpu` | 保持 |
+| 平台                 | 通道            | 说明                            |
+| -------------------- | --------------- | ------------------------------- |
+| Windows/Linux NVIDIA | `cu130`（默认） | 20 系及以上；CUDA 13 稳定线     |
+| 旧 NVIDIA            | `cu126`         | 兼容保留                        |
+| Linux AMD            | `rocm7.2`       | 官方推荐 ROCm 7.2               |
+| Windows AMD          | `rocm10.0`      | 官方 Windows ROCm 10.0 多架构包 |
+| Intel                | `xpu`           | 保持                            |
+| macOS                | `mps`           | 保持 CPU 轮子 + MPS             |
+| 无 GPU               | `cpu`           | 保持                            |
 
 - `TorchChannel` 类型扩展；`TORCH_INDEX`、`TORCH_DISK_GB`、`expectedCudaForChannel` 同步。
 - `detectGpu()`：RTX 20+ → cu130；AMD Windows → rocm10.0（不再默认 CPU）；Linux → rocm7.2。
@@ -1445,13 +1439,13 @@ snapshots = managerDir/snapshots
 
 **不升 `schemaVersion`。** 全部为可选新增字段：
 
-| 文件 | 新增 |
-| --- | --- |
-| `instances.jsonc` | `updateChannel?`, `comfyChannel?`, `healthPolicy?`, `safeMode?`（仅运行时，不持久化） |
-| `settings.jsonc` | `healthCheckEnabled?`, `healthCheckIntervalMs?`, `healthCheckTimeoutMs?`, `healthStaleMs?`, `autoRecover?`, `autoRecoverCooldownMs?`, `autoRecoverMaxAttempts?` |
-| `node_packs.jsonc` | 无结构变更（已有 version/gitRev） |
-| `backups.jsonc` | 无结构变更 |
-| `pids.json` | 无结构变更（改为原子写） |
+| 文件               | 新增                                                                                                                                                            |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `instances.jsonc`  | `updateChannel?`, `comfyChannel?`, `healthPolicy?`, `safeMode?`（仅运行时，不持久化）                                                                           |
+| `settings.jsonc`   | `healthCheckEnabled?`, `healthCheckIntervalMs?`, `healthCheckTimeoutMs?`, `healthStaleMs?`, `autoRecover?`, `autoRecoverCooldownMs?`, `autoRecoverMaxAttempts?` |
+| `node_packs.jsonc` | 无结构变更（已有 version/gitRev）                                                                                                                               |
+| `backups.jsonc`    | 无结构变更                                                                                                                                                      |
+| `pids.json`        | 无结构变更（改为原子写）                                                                                                                                        |
 
 **需要同步的 allowlist**
 
@@ -1465,18 +1459,18 @@ snapshots = managerDir/snapshots
 
 新增通道（均需 zod 严格 schema，禁止裸 `obj`）：
 
-| 通道 | 参数 | 返回 |
-| --- | --- | --- |
-| `instance.health` | `[id]` | `InstanceHealth` |
-| `instance.patch` | `[id, partial]` | `ComfyInstanceInfo` |
-| `instance.setPort` | `[id, port]` | `ComfyInstanceInfo` |
-| `instance.rescue` | `[id, {safe?}]` | `InstanceStopResult` |
-| `instance.exportRescueScript` | `[id]` | `{path}` |
-| `instance.managerInfo` | `[id]` | `ManagerInfo` |
-| `instance.setManagerSecurity` | `[id, level]` | `ManagerInfo` |
-| `instance.openManagerConfig` | `[id]` | `{path}` |
-| `instance.setUpdateChannel` | `[id, channel]` | `ComfyInstanceInfo` |
-| `instance.checkHealth` | `[id]` | `InstanceHealth` |
+| 通道                          | 参数            | 返回                 |
+| ----------------------------- | --------------- | -------------------- |
+| `instance.health`             | `[id]`          | `InstanceHealth`     |
+| `instance.patch`              | `[id, partial]` | `ComfyInstanceInfo`  |
+| `instance.setPort`            | `[id, port]`    | `ComfyInstanceInfo`  |
+| `instance.rescue`             | `[id, {safe?}]` | `InstanceStopResult` |
+| `instance.exportRescueScript` | `[id]`          | `{path}`             |
+| `instance.managerInfo`        | `[id]`          | `ManagerInfo`        |
+| `instance.setManagerSecurity` | `[id, level]`   | `ManagerInfo`        |
+| `instance.openManagerConfig`  | `[id]`          | `{path}`             |
+| `instance.setUpdateChannel`   | `[id, channel]` | `ComfyInstanceInfo`  |
+| `instance.checkHealth`        | `[id]`          | `InstanceHealth`     |
 
 事件：
 
@@ -1495,17 +1489,17 @@ snapshots = managerDir/snapshots
 
 ### 7.1 单元 / 集成
 
-| 域 | 正向 | 反例 |
-| --- | --- | --- |
-| 路径解析 | 默认、每个 dir flag、相对/绝对、多 listen、port 覆盖 | `..`、空值、非法 flag、越界、符号链接逃逸 |
-| 健康 | healthy/busy/suspect/unresponsive/crashed/stopped | 一次失败、短暂日志安静、端口未监听、远端、adopted |
-| 救援 | `--rescue` 成功、`--safe-rescue`、`--status` | 未知 id、remote、重复、冷却、adopted、stop 未退出 |
-| 安全模式 | argv 只加一次、退出清除、失败诊断标记 | 已有 `--disable-all-custom-nodes`、启动失败 |
-| Manager | v4 path、pip/git、config 解析/写、列表 v4 优先 | 缺文件、不可读、`%`、注入、旧源遮蔽、offline |
-| 更新通道 | stable 新/旧/相同、prerelease、镜像 | 403/429、非 JSON、tag 不存在、dirty git |
-| 更新安全 | 自检通过、自动回滚、节点版本回滚 | 自检失败、rollback 失败、部分节点失败、取消 |
-| 运行时 | cu130/rocm7.2/rocm10.0/xpu/cpu/mps | 轮子不存在、Python 非 3.13、检测失败 |
-| IPC | 新通道参数/返回 | 错误类型、缺参、非本应用 frame |
+| 域       | 正向                                                 | 反例                                              |
+| -------- | ---------------------------------------------------- | ------------------------------------------------- |
+| 路径解析 | 默认、每个 dir flag、相对/绝对、多 listen、port 覆盖 | `..`、空值、非法 flag、越界、符号链接逃逸         |
+| 健康     | healthy/busy/suspect/unresponsive/crashed/stopped    | 一次失败、短暂日志安静、端口未监听、远端、adopted |
+| 救援     | `--rescue` 成功、`--safe-rescue`、`--status`         | 未知 id、remote、重复、冷却、adopted、stop 未退出 |
+| 安全模式 | argv 只加一次、退出清除、失败诊断标记                | 已有 `--disable-all-custom-nodes`、启动失败       |
+| Manager  | v4 path、pip/git、config 解析/写、列表 v4 优先       | 缺文件、不可读、`%`、注入、旧源遮蔽、offline      |
+| 更新通道 | stable 新/旧/相同、prerelease、镜像                  | 403/429、非 JSON、tag 不存在、dirty git           |
+| 更新安全 | 自检通过、自动回滚、节点版本回滚                     | 自检失败、rollback 失败、部分节点失败、取消       |
+| 运行时   | cu130/rocm7.2/rocm10.0/xpu/cpu/mps                   | 轮子不存在、Python 非 3.13、检测失败              |
+| IPC      | 新通道参数/返回                                      | 错误类型、缺参、非本应用 frame                    |
 
 ### 7.2 真实 HTTP 夹具
 
@@ -1540,12 +1534,12 @@ snapshots = managerDir/snapshots
 
 ### 8.1 里程碑
 
-| 里程碑 | 内容 | 退出标准 |
-| --- | --- | --- |
-| M1（基础） | WP0 生命周期/安装器根因 + WP1 路径/有效启动 + WP10 安全边界 | 所有资产操作路径一致；stop/start 无孤儿；安装器无跨轮污染；S1/S2/S3 链被负例测试锁死 |
-| M2（可观测） | WP2 健康 + WP3 救援/安全模式 | 卡死夹具 3 分钟内变红；`--rescue` 可救回；安全模式可启动 |
-| M3（上游/资产） | WP4 Manager + WP5 更新安全 + WP6 运行时矩阵 + WP9 资产 P0 | Manager v4 信息正确；stable 更新失败自动回滚；Civitai/批跑/备份/输出 P0 修复；torch 矩阵对齐 |
-| M4（发布） | WP7 渲染层反馈 + WP8 发布可信度 + 文档 | CI 双平台绿；packaged smoke 通过；Windows 10 场景验收通过 |
+| 里程碑          | 内容                                                        | 退出标准                                                                                     |
+| --------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| M1（基础）      | WP0 生命周期/安装器根因 + WP1 路径/有效启动 + WP10 安全边界 | 所有资产操作路径一致；stop/start 无孤儿；安装器无跨轮污染；S1/S2/S3 链被负例测试锁死         |
+| M2（可观测）    | WP2 健康 + WP3 救援/安全模式                                | 卡死夹具 3 分钟内变红；`--rescue` 可救回；安全模式可启动                                     |
+| M3（上游/资产） | WP4 Manager + WP5 更新安全 + WP6 运行时矩阵 + WP9 资产 P0   | Manager v4 信息正确；stable 更新失败自动回滚；Civitai/批跑/备份/输出 P0 修复；torch 矩阵对齐 |
+| M4（发布）      | WP7 渲染层反馈 + WP8 发布可信度 + 文档                      | CI 双平台绿；packaged smoke 通过；Windows 10 场景验收通过                                    |
 
 > 按 1 人 + AI 辅助估算：**WP 合计 46–58 人日**；含集成、回归、Windows 实机与发布缓冲约 **50–64 人日**。
 >
@@ -1574,7 +1568,8 @@ snapshots = managerDir/snapshots
 9. **资产抽检**
    - Civitai 下载落盘有扩展名并入库；批跑排队 >30s 不误判；备份换盘恢复预览给出重映射/跳过。
 10. **打包产物**
-   - `electron-builder --win --dir` 后启动 `release/win-unpacked/ComfyPilot.exe --e2e-smoke`，preload/renderer/IPC 正常。
+
+- `electron-builder --win --dir` 后启动 `release/win-unpacked/ComfyPilot.exe --e2e-smoke`，preload/renderer/IPC 正常。
 
 ### 8.3 0.2.5 Definition of Done
 
@@ -1590,33 +1585,33 @@ snapshots = managerDir/snapshots
 
 ## 9. 风险与缓解
 
-| 风险 | 影响 | 缓解 |
-| --- | --- | --- |
-| 健康误判 | 杀掉正在跑的长任务 | 证据组合；busy 状态；默认只告警；自动恢复默认关闭 |
-| 自动恢复循环 | 反复重启、显存抖动 | 冷却、最大次数、熔断、失败后只通知 |
-| 救援命令被滥用 | 本地用户可杀实例 | 仅本地、精确 id、无任意命令、审计日志；与 `taskkill` 同等权限 |
-| Manager 配置写坏 | Manager 启动失败 | 备份、原子写、保留注释/未知键、默认只读 |
-| stable 更新不兼容 | 起不来 | 真实启动自检 + 自动回滚 + 节点快照 |
-| 路径重构回归 | 资产写错位置 | 先写纯函数测试，再逐模块替换；保留旧路径回退测试 |
-| 覆盖率下降 | 门禁红 | 新文件先补行为测试；不提前 accept baseline |
-| 范围膨胀 | 0.2.5 延期 | 11 WP 已锁定；按 M1–M4 分 beta、关键路径串行 + 其余并行；不得静默砍 WP；若延期，先保 M1/M2 质量，不改变最终范围 |
-| Windows 锁屏/权限 | 救援命令不可用 | 文档给出 `taskkill` 兜底；应用主进程卡死时明确不支持 |
-| TLS 自签名 | 探针误判 | 0.2.5 明确警告；完整支持排后续版本 |
+| 风险              | 影响               | 缓解                                                                                                            |
+| ----------------- | ------------------ | --------------------------------------------------------------------------------------------------------------- |
+| 健康误判          | 杀掉正在跑的长任务 | 证据组合；busy 状态；默认只告警；自动恢复默认关闭                                                               |
+| 自动恢复循环      | 反复重启、显存抖动 | 冷却、最大次数、熔断、失败后只通知                                                                              |
+| 救援命令被滥用    | 本地用户可杀实例   | 仅本地、精确 id、无任意命令、审计日志；与 `taskkill` 同等权限                                                   |
+| Manager 配置写坏  | Manager 启动失败   | 备份、原子写、保留注释/未知键、默认只读                                                                         |
+| stable 更新不兼容 | 起不来             | 真实启动自检 + 自动回滚 + 节点快照                                                                              |
+| 路径重构回归      | 资产写错位置       | 先写纯函数测试，再逐模块替换；保留旧路径回退测试                                                                |
+| 覆盖率下降        | 门禁红             | 新文件先补行为测试；不提前 accept baseline                                                                      |
+| 范围膨胀          | 0.2.5 延期         | 11 WP 已锁定；按 M1–M4 分 beta、关键路径串行 + 其余并行；不得静默砍 WP；若延期，先保 M1/M2 质量，不改变最终范围 |
+| Windows 锁屏/权限 | 救援命令不可用     | 文档给出 `taskkill` 兜底；应用主进程卡死时明确不支持                                                            |
+| TLS 自签名        | 探针误判           | 0.2.5 明确警告；完整支持排后续版本                                                                              |
 
 ---
 
 ## 10. 待确认的实现选择
 
-| # | 决策 | 玥玥建议 |
-| --- | --- | --- |
-| 1 | 自动恢复默认开还是关？ | **默认关，只告警**；用户显式开启。避免误杀长任务。 |
-| 2 | 新实例默认 stable 还是 nightly？ | **stable**；旧实例保持 nightly 并提示切换。 |
-| 3 | 0.2.5 是否扩到 Python 3.14？ | **不扩**；保持 3.13 验证默认，只修正文案与迁移提示。 |
-| 4 | 0.2.5 的节点版本回滚做到什么程度？ | **v1：git 精确 checkout + registry 尽力而为 + local 只警告**；完整实例快照仍放后续版本。 |
-| 5 | 是否允许 ComfyPilot 写 Manager `config.ini`？ | **允许，但默认只读 + 显式确认 + 备份**。 |
-| 6 | 救援命令是否随安装包提供 `.bat`？ | **提供**；这是锁屏场景最实用的入口。 |
-| 7 | TLS 实例是否 0.2.5 支持？ | **0.2.5 先警告，不静默假死**；完整支持排后续版本。 |
-| 8 | 是否把工作流依赖清单放进 0.2.5？ | **不放进 0.2.5 的 11 个 WP**；排后续版本，避免范围失控。 |
+| #   | 决策                                          | 玥玥建议                                                                                 |
+| --- | --------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| 1   | 自动恢复默认开还是关？                        | **默认关，只告警**；用户显式开启。避免误杀长任务。                                       |
+| 2   | 新实例默认 stable 还是 nightly？              | **stable**；旧实例保持 nightly 并提示切换。                                              |
+| 3   | 0.2.5 是否扩到 Python 3.14？                  | **不扩**；保持 3.13 验证默认，只修正文案与迁移提示。                                     |
+| 4   | 0.2.5 的节点版本回滚做到什么程度？            | **v1：git 精确 checkout + registry 尽力而为 + local 只警告**；完整实例快照仍放后续版本。 |
+| 5   | 是否允许 ComfyPilot 写 Manager `config.ini`？ | **允许，但默认只读 + 显式确认 + 备份**。                                                 |
+| 6   | 救援命令是否随安装包提供 `.bat`？             | **提供**；这是锁屏场景最实用的入口。                                                     |
+| 7   | TLS 实例是否 0.2.5 支持？                     | **0.2.5 先警告，不静默假死**；完整支持排后续版本。                                       |
+| 8   | 是否把工作流依赖清单放进 0.2.5？              | **不放进 0.2.5 的 11 个 WP**；排后续版本，避免范围失控。                                 |
 
 ---
 
@@ -1655,65 +1650,65 @@ snapshots = managerDir/snapshots
 
 ### 12.1 代码位
 
-| 主题 | 位置 |
-| --- | --- |
-| 启动就绪一次性 | `src/main/services/instance/lifecycle.ts:172-271` |
-| 实例状态枚举 | `src/shared/types/instance.ts:4-12` |
-| `toInfo` 无健康 | `src/main/services/instance/runtime.ts:92-119` |
-| `managerEnabled` 只看 extraArgs | `src/main/services/instance/runtime.ts:114` |
-| 端口检查用 config.port | `src/main/services/instance/lifecycle.ts:342` |
-| `baseUrlOf` 单值 | `src/main/services/instance/runtime.ts:85-90` |
-| 工作流固定 user 路径 | `src/main/services/workflow.ts:563,877,1000` |
-| 节点固定 custom_nodes | `src/main/services/nodePack/common.ts:320-331` |
-| 模型固定 models | `src/main/services/model.ts:417-424,508-511` |
-| 输出只解析 output-directory | `src/shared/outputDir.ts:25-45` |
-| Manager 列表顺序/break | `src/main/services/nodePack/list.ts:405-411,466` |
-| Manager 真实 schema 不匹配 | `src/main/services/nodePack/list.ts:431-465` |
-| Civitai 文件名无扩展名 | `src/main/services/model.ts:865-876` |
-| 批跑 30s 早退 | `src/main/services/p1p2/batch.ts:756` |
-| 备份 invalidPaths 整体拒绝 | `src/main/services/backup.ts:552-556,872-876` |
-| history 输出路径无 containment | `src/main/services/p1p2/batch.ts:770-789` |
-| 输出删除无根校验 | `src/main/services/p1p2/output.ts:447-453` |
-| 取消下载留半成品 | `src/main/services/model.ts:1227,1373-1389` |
-| 节点快照只切启用 | `src/main/services/nodePack/update.ts:971-1081` |
-| 更新稳定版仅信息 | `src/main/services/updater.ts:621-652` |
-| 更新 verify 是 Doctor | `src/main/services/updater.ts:1204-1236` |
-| verify 失败仍 done | `src/main/services/updater.ts:1244-1292` |
-| master zip 固定 | `src/main/services/updater.ts:1549` |
-| torch 矩阵 rocm6.2 | `src/main/services/installer.ts:59-66` |
-| AMD Windows 回退 CPU | `src/main/services/installer.ts:639-645` |
-| Python 3.13 文案 | `src/main/services/doctor.ts:109-124`、`installer.ts:838-840` |
-| 诊断包内容 | `src/main/services/instance/diagnostics.ts:7-145` |
-| 安装器 reset 跨轮污染 | `src/main/services/installer.ts:414-442,1574-1629` |
-| `repairEnv` 伪造 3.13 | `src/main/services/env.ts:922-941,1087-1118` |
-| spawn 晚于 stop 的孤儿 | `src/main/services/instance/lifecycle.ts:436-570,1033-1039,654-671` |
-| 收养丢失所有权 | `src/main/services/instance/lifecycle.ts:371-398` |
-| ENV_MISMATCH 卡 starting | `src/main/services/instance/lifecycle.ts:440-489` |
-| ComfyUI zip 零校验/不可取消 | `src/main/services/installer.ts:444-485,1633-1672` |
-| 端口冲突 save 丢迁移字段 | `src/renderer/src/composables/useLaunch.ts:154-170`、`src/main/services/instance/discovery.ts:147-166` |
-| 命令面板只有启动/停止 | `src/renderer/src/components/CommandPalette.vue:74-87` |
-| 托盘只有启动/停止 | `src/main/services/tray.ts:113-144` |
-| ErrorBoundary 不随路由重置 | `src/renderer/src/App.vue:781-787`、`ErrorBoundary.vue:17-26` |
-| 更新进度共享槽 | `src/renderer/src/composables/useComfyUpdate.ts:94-106` |
-| CSP 允许任意 http(s) | `src/renderer/index.html:6-11` |
-| 渲染器 → RCE 链 S1 | `src/main/ipc/domains/models.ts:53-55`、`model.ts:831-876,1227`、`context.ts:220-231`、`instance/discovery.ts:144-168`、`lifecycle.ts:490-565` |
-| modelScanRoots 全盘扩权 S2 | `src/main/ipc/domains/settings.ts:124-144`、`security.ts:563-572`、`model.ts:416-432` |
-| launchProfile 路径未校验 S3 | `src/main/ipc/domains/instances.ts:74-82`、`shared/outputDir.ts:25-46` |
-| 备份注入 S4 | `src/main/services/backup.ts:811-846,582-597,789-806` |
-| dev URL 前缀信任 S5 | `src/main/services/rendererEntry.ts:13-16` |
-| Linux 明文凭据 S6 | `src/main/services/secretStorage.ts:19-44` |
-| 更新无签名/固定 commit S7 | `src/main/services/updater.ts:1547-1569`、`appUpdate.ts:189-203` |
-| openPath 未阻止 .py/.sh S8 | `src/main/services/security.ts:235-279` |
-| output thumb/scan 符号链接 S9 | `src/main/ipc/domains/output.ts:138-146`、`p1p2/output.ts:240-265` |
-| release gate 不 build/E2E | `.github/workflows/release.yml:20-42` |
-| Windows 不跑覆盖率 | `.github/workflows/ci.yml:74-78` |
-| ratchet 新文件豁免 | `scripts/coverage-ratchet.cjs:96-101` |
-| 迁移测试过薄 | `tests/unit/dataMigration.test.ts`；`coverage-baseline.json` migration 48% |
-| desktop/tray 低覆盖 | `coverage-baseline.json` desktop 4.41%、tray 56.86% |
-| README 陈旧陈述 | `README.md:231,316,389,481,502` |
-| settings allowlist | `src/main/services/db/settings.ts:38-61` |
-| 设置值校验 | `src/main/services/security.ts:524-541` |
-| IPC 契约 | `src/main/ipc/contract.ts:19-292` |
+| 主题                            | 位置                                                                                                                                           |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| 启动就绪一次性                  | `src/main/services/instance/lifecycle.ts:172-271`                                                                                              |
+| 实例状态枚举                    | `src/shared/types/instance.ts:4-12`                                                                                                            |
+| `toInfo` 无健康                 | `src/main/services/instance/runtime.ts:92-119`                                                                                                 |
+| `managerEnabled` 只看 extraArgs | `src/main/services/instance/runtime.ts:114`                                                                                                    |
+| 端口检查用 config.port          | `src/main/services/instance/lifecycle.ts:342`                                                                                                  |
+| `baseUrlOf` 单值                | `src/main/services/instance/runtime.ts:85-90`                                                                                                  |
+| 工作流固定 user 路径            | `src/main/services/workflow.ts:563,877,1000`                                                                                                   |
+| 节点固定 custom_nodes           | `src/main/services/nodePack/common.ts:320-331`                                                                                                 |
+| 模型固定 models                 | `src/main/services/model.ts:417-424,508-511`                                                                                                   |
+| 输出只解析 output-directory     | `src/shared/outputDir.ts:25-45`                                                                                                                |
+| Manager 列表顺序/break          | `src/main/services/nodePack/list.ts:405-411,466`                                                                                               |
+| Manager 真实 schema 不匹配      | `src/main/services/nodePack/list.ts:431-465`                                                                                                   |
+| Civitai 文件名无扩展名          | `src/main/services/model.ts:865-876`                                                                                                           |
+| 批跑 30s 早退                   | `src/main/services/p1p2/batch.ts:756`                                                                                                          |
+| 备份 invalidPaths 整体拒绝      | `src/main/services/backup.ts:552-556,872-876`                                                                                                  |
+| history 输出路径无 containment  | `src/main/services/p1p2/batch.ts:770-789`                                                                                                      |
+| 输出删除无根校验                | `src/main/services/p1p2/output.ts:447-453`                                                                                                     |
+| 取消下载留半成品                | `src/main/services/model.ts:1227,1373-1389`                                                                                                    |
+| 节点快照只切启用                | `src/main/services/nodePack/update.ts:971-1081`                                                                                                |
+| 更新稳定版仅信息                | `src/main/services/updater.ts:621-652`                                                                                                         |
+| 更新 verify 是 Doctor           | `src/main/services/updater.ts:1204-1236`                                                                                                       |
+| verify 失败仍 done              | `src/main/services/updater.ts:1244-1292`                                                                                                       |
+| master zip 固定                 | `src/main/services/updater.ts:1549`                                                                                                            |
+| torch 矩阵 rocm6.2              | `src/main/services/installer.ts:59-66`                                                                                                         |
+| AMD Windows 回退 CPU            | `src/main/services/installer.ts:639-645`                                                                                                       |
+| Python 3.13 文案                | `src/main/services/doctor.ts:109-124`、`installer.ts:838-840`                                                                                  |
+| 诊断包内容                      | `src/main/services/instance/diagnostics.ts:7-145`                                                                                              |
+| 安装器 reset 跨轮污染           | `src/main/services/installer.ts:414-442,1574-1629`                                                                                             |
+| `repairEnv` 伪造 3.13           | `src/main/services/env.ts:922-941,1087-1118`                                                                                                   |
+| spawn 晚于 stop 的孤儿          | `src/main/services/instance/lifecycle.ts:436-570,1033-1039,654-671`                                                                            |
+| 收养丢失所有权                  | `src/main/services/instance/lifecycle.ts:371-398`                                                                                              |
+| ENV_MISMATCH 卡 starting        | `src/main/services/instance/lifecycle.ts:440-489`                                                                                              |
+| ComfyUI zip 零校验/不可取消     | `src/main/services/installer.ts:444-485,1633-1672`                                                                                             |
+| 端口冲突 save 丢迁移字段        | `src/renderer/src/composables/useLaunch.ts:154-170`、`src/main/services/instance/discovery.ts:147-166`                                         |
+| 命令面板只有启动/停止           | `src/renderer/src/components/CommandPalette.vue:74-87`                                                                                         |
+| 托盘只有启动/停止               | `src/main/services/tray.ts:113-144`                                                                                                            |
+| ErrorBoundary 不随路由重置      | `src/renderer/src/App.vue:781-787`、`ErrorBoundary.vue:17-26`                                                                                  |
+| 更新进度共享槽                  | `src/renderer/src/composables/useComfyUpdate.ts:94-106`                                                                                        |
+| CSP 允许任意 http(s)            | `src/renderer/index.html:6-11`                                                                                                                 |
+| 渲染器 → RCE 链 S1              | `src/main/ipc/domains/models.ts:53-55`、`model.ts:831-876,1227`、`context.ts:220-231`、`instance/discovery.ts:144-168`、`lifecycle.ts:490-565` |
+| modelScanRoots 全盘扩权 S2      | `src/main/ipc/domains/settings.ts:124-144`、`security.ts:563-572`、`model.ts:416-432`                                                          |
+| launchProfile 路径未校验 S3     | `src/main/ipc/domains/instances.ts:74-82`、`shared/outputDir.ts:25-46`                                                                         |
+| 备份注入 S4                     | `src/main/services/backup.ts:811-846,582-597,789-806`                                                                                          |
+| dev URL 前缀信任 S5             | `src/main/services/rendererEntry.ts:13-16`                                                                                                     |
+| Linux 明文凭据 S6               | `src/main/services/secretStorage.ts:19-44`                                                                                                     |
+| 更新无签名/固定 commit S7       | `src/main/services/updater.ts:1547-1569`、`appUpdate.ts:189-203`                                                                               |
+| openPath 未阻止 .py/.sh S8      | `src/main/services/security.ts:235-279`                                                                                                        |
+| output thumb/scan 符号链接 S9   | `src/main/ipc/domains/output.ts:138-146`、`p1p2/output.ts:240-265`                                                                             |
+| release gate 不 build/E2E       | `.github/workflows/release.yml:20-42`                                                                                                          |
+| Windows 不跑覆盖率              | `.github/workflows/ci.yml:74-78`                                                                                                               |
+| ratchet 新文件豁免              | `scripts/coverage-ratchet.cjs:96-101`                                                                                                          |
+| 迁移测试过薄                    | `tests/unit/dataMigration.test.ts`；`coverage-baseline.json` migration 48%                                                                     |
+| desktop/tray 低覆盖             | `coverage-baseline.json` desktop 4.41%、tray 56.86%                                                                                            |
+| README 陈旧陈述                 | `README.md:231,316,389,481,502`                                                                                                                |
+| settings allowlist              | `src/main/services/db/settings.ts:38-61`                                                                                                       |
+| 设置值校验                      | `src/main/services/security.ts:524-541`                                                                                                        |
+| IPC 契约                        | `src/main/ipc/contract.ts:19-292`                                                                                                              |
 
 ### 12.2 外部事实
 
@@ -1735,3 +1730,34 @@ snapshots = managerDir/snapshots
 ## 13. 一句话总结
 
 > **0.2.5 一次收口：把“运行中”从一句进程状态，变成可验证、可救援、可回滚的事实；把路径/端口/目录变成唯一真相；把渲染器可扩权的 RCE 链堵死；把 Civitai/批跑/备份/输出的 P0 修好；并让 ComfyPilot 跟得上 ComfyUI 0.46 与 Manager v4.4，而不是继续用 0.39 时代的世界观管理 2026 年的实例。**
+
+---
+
+## 14. 实施状态（2026-11-20）
+
+本计划已按 M1 → M4 全部落地，11 个 WP 均在 0.2.5 内完成，未拆分到后续版本。
+
+| WP                  | 状态 | 主要落点                                                                  |
+| ------------------- | ---- | ------------------------------------------------------------------------- |
+| WP0 生命周期/安装器 | ✅   | `instance/lifecycle.ts`、`installer.ts`、`env.ts`、`pythonMigration.ts`   |
+| WP1 有效路径        | ✅   | `shared/instanceLayout.ts`、各资产服务与 IPC                              |
+| WP2 健康模型        | ✅   | `instance/health.ts`、`HealthBadge.vue`、诊断包                           |
+| WP3 救援/安全模式   | ✅   | `main/control.ts`、托盘/命令面板/详情页、恢复策略                         |
+| WP4 Manager v4.4    | ✅   | `services/manager.ts`、`nodePack/list.ts`、实例详情                       |
+| WP5 稳定更新        | ✅   | `updater.ts` stable/nightly、真实启动自检、节点版本回滚                   |
+| WP6 运行时矩阵      | ✅   | `installer.ts`、`shared/launchArgs.ts`、`LaunchProfileEditor.vue`         |
+| WP7 渲染层反馈      | ✅   | 远程作用域、错误态、竞态、确认、i18n、CSP、壳层恢复                       |
+| WP8 测试/发布       | ✅   | release/ci gate、ratchet、gates.test.ts、文档                             |
+| WP9 资产 P0         | ✅   | `model.ts`、`p1p2/batch.ts`、`backup.ts`、`p1p2/output.ts`、`issueHub.ts` |
+| WP10 安全边界       | ✅   | `pathCapability.ts`、IPC 契约、备份/下载/输出 containment                 |
+
+验证记录（本机 WSL）：
+
+- `npm test`：159 文件 / 2071 用例通过。
+- `npm run test:coverage`：全局 lines 68.88%、branches 55.95%；179 文件 ratchet 通过。
+- `npm run test:behavior`：97.6%（目标 ≥90%）。
+- `npm run lint:check` / `format:check` / `typecheck` / `typecheck:test` 通过。
+- `npm run build`、`npm run test:e2e` 通过。
+- `npx electron-builder --win --dir` 后 `release/win-unpacked/ComfyPilot.exe --e2e-smoke` 通过，
+  `check-asar` 对真实 `app.asar` 通过。
+- Windows 10/11 实机 10 场景：**未验证**（需在真实 Windows 桌面执行 §8.2，不能以 WSL 代替）。

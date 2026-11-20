@@ -682,8 +682,9 @@ async function refresh(): Promise<void> {
 /** Scan roots: settings roots win; otherwise the ACTIVE instance's models/ dir. */
 function currentScanRoots(): string[] {
   if (store.settings?.modelScanRoots?.length) return store.settings.modelScanRoots
-  const path = store.activeInstance?.path
-  return path ? [`${path.replace(/[\\/]+$/, '')}/models`] : []
+  // 0.2.5 WP1/WP7: use the instance's effective models directory.
+  const dir = store.activeInstance?.resolvedDirs?.models
+  return dir ? [dir] : []
 }
 
 async function scan(hash = false): Promise<void> {

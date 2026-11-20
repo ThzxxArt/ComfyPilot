@@ -216,6 +216,7 @@ function plan(overrides: Partial<InstallPlan> = {}): InstallPlan {
 async function freshService(): Promise<{
   start: (p: InstallPlan) => Promise<{ runId: string }>
   cancel: () => boolean
+  reset: () => void
   getStatus: () => InstallProgress | null
 }> {
   vi.resetModules()
@@ -310,7 +311,7 @@ describe('installer runPlan (integration)', () => {
     expect(done.status).toBe('done')
     expect(second.runId).not.toBe(first.runId)
     // Release the stale transfer: its catch/finally must not touch run #2.
-    release?.()
+    ;(release as (() => void) | null)?.()
     await new Promise((r) => setTimeout(r, 100))
     const current = svc.getStatus()
     expect(current?.runId).toBe(second.runId)

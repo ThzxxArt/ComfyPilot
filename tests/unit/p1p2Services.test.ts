@@ -363,6 +363,72 @@ describe('p1p2 services', () => {
 
   // ========== BatchService.start ==========
 
+  it('instanceUrl uses the effective argv URL and normalizes IPv6/wildcards', async () => {
+    const { instanceUrl } = await import('../../src/main/services/p1p2/helpers')
+    expect(
+      instanceUrl({
+        path: '/opt/ComfyUI',
+        listen: '0.0.0.0',
+        port: 8188,
+        extraArgs: ['--port', '9999']
+      })
+    ).toBe('http://127.0.0.1:9999')
+    expect(instanceUrl({ path: '/opt/ComfyUI', listen: '::1', port: 9000 })).toBe(
+      'http://[::1]:9000'
+    )
+    expect(instanceUrl({ path: '', listen: '127.0.0.1', port: 0 })).toBe('http://127.0.0.1:8188')
+  })
+
+  it('history output paths cannot escape the effective output root (0.2.5 WP9)', async () => {
+    const { batchService } = await freshP1p2()
+    await seedInstance()
+    const outRoot = join(ROOT, 'comfy', 'output')
+    mkdirSync(join(outRoot, 'safe'), { recursive: true })
+    writeFileSync(join(outRoot, 'safe', 'a.png'), 'x')
+    const resolve = (
+      batchService as unknown as {
+        resolveHistoryOutput: (
+          out: { filename?: string; subfolder?: string; type?: string },
+          instancePath: string,
+          outputDir?: string,
+          inputDir?: string
+        ) => string | null
+      }
+    ).resolveHistoryOutput.bind(batchService)
+    expect(resolve({ filename: 'a.png', subfolder: 'safe' }, ROOT, outRoot)).toBeTruthy()
+    expect(resolve({ filename: 'a.png', subfolder: '../..' }, ROOT, outRoot)).toBeNull()
+    expect(resolve({ filename: 'a.png', subfolder: '/etc' }, ROOT, outRoot)).toBeNull()
+    expect(resolve({ filename: 'a.png', subfolder: 'C:\\Windows' }, ROOT, outRoot)).toBeNull()
+  })
+
+  it('treats a prompt as queued from /queue, and a queue error as not queued', async () => {
+    const { batchService } = await freshP1p2()
+    const still = (
+      batchService as unknown as {
+        isPromptStillQueued: (c: unknown, pending: string[]) => Promise<boolean>
+      }
+    ).isPromptStillQueued.bind(batchService)
+    expect(
+      await still({ queueState: async () => ({ running: ['p1'], pending: [] }) }, ['p1'])
+    ).toBe(true)
+    expect(
+      await still({ queueState: async () => ({ running: [], pending: ['p1'] }) }, ['p1'])
+    ).toBe(true)
+    expect(await still({ queueState: async () => ({ running: [], pending: [] }) }, ['p1'])).toBe(
+      false
+    )
+    expect(
+      await still(
+        {
+          queueState: async () => {
+            throw new Error('queue down')
+          }
+        },
+        ['p1']
+      )
+    ).toBe(false)
+  })
+
   describe('BatchService.start', () => {
     it('happy path: queue → history settles + links outputs + indexes asset', async () => {
       const { batchService, outputService } = await freshP1p2()

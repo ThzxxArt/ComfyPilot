@@ -189,112 +189,112 @@ export async function migrateInstancePython(
   // 0.2.5 WP0: migration writes the same venv as repair/install — one lock.
   const releaseEnvLock = acquireEnvLock(instanceId, 'python-migration')
   try {
-  upsertInstanceConfig({ ...config, migrationState: 'migrating', migrationError: undefined })
+    upsertInstanceConfig({ ...config, migrationState: 'migrating', migrationError: undefined })
 
-  // 1. Base interpreter: portable 3.13, or download it. This resolution used
-  // to sit outside any try, so a download failure left the instance stuck in
-  // `migrating` forever (0.2.5 WP0).
-  let basePython: string | null = findInRuntimes('python')
-  try {
-    if (!basePython) {
-      const status = await bootstrapService.ensure({
-        kinds: ['python'],
-        downloadIfMissing: true,
+    // 1. Base interpreter: portable 3.13, or download it. This resolution used
+    // to sit outside any try, so a download failure left the instance stuck in
+    // `migrating` forever (0.2.5 WP0).
+    let basePython: string | null = findInRuntimes('python')
+    try {
+      if (!basePython) {
+        const status = await bootstrapService.ensure({
+          kinds: ['python'],
+          downloadIfMissing: true,
+          signal
+        })
+        basePython = status.components.find((c) => c.kind === 'python' && c.installed)?.path || null
+      }
+      if (!basePython) throw new Error('PYTHON_UNSUPPORTED: no Python 3.13 runtime available')
+      checkAbort()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      upsertInstanceConfig({ ...config, migrationState: 'failed', migrationError: message })
+      throw err
+    }
+
+    // 2. Archive the old venv. Never delete it before the new one is verified.
+    const archivedVenv = `${venvPath}.pre-313-${new Date().toISOString().replace(/[:.]/g, '-')}`
+    let archived = false
+    try {
+      if (existsSync(venvPath)) {
+        renameSync(venvPath, archivedVenv)
+        archived = true
+      }
+      checkAbort()
+      // 3. Create the 3.13 venv.
+      await execFileAsync(basePython, ['-m', 'venv', venvPath], {
+        timeout: 5 * 60 * 1000,
+        windowsHide: true,
         signal
       })
-      basePython = status.components.find((c) => c.kind === 'python' && c.installed)?.path || null
-    }
-    if (!basePython) throw new Error('PYTHON_UNSUPPORTED: no Python 3.13 runtime available')
-    checkAbort()
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    upsertInstanceConfig({ ...config, migrationState: 'failed', migrationError: message })
-    throw err
-  }
+      checkAbort()
+      const newPython = venvPython(venvPath)
+      if (!existsSync(newPython)) throw new Error(`venv creation failed — missing ${newPython}`)
+      const newVersion = await versionOf(newPython, signal)
+      const parsedNewVersion = parseVersion(newVersion)
+      if (!is313(newVersion) || !parsedNewVersion) {
+        throw new Error(`venv reports ${newVersion || 'unknown'} — expected Python 3.13`)
+      }
 
-  // 2. Archive the old venv. Never delete it before the new one is verified.
-  const archivedVenv = `${venvPath}.pre-313-${new Date().toISOString().replace(/[:.]/g, '-')}`
-  let archived = false
-  try {
-    if (existsSync(venvPath)) {
-      renameSync(venvPath, archivedVenv)
-      archived = true
-    }
-    checkAbort()
-    // 3. Create the 3.13 venv.
-    await execFileAsync(basePython, ['-m', 'venv', venvPath], {
-      timeout: 5 * 60 * 1000,
-      windowsHide: true,
-      signal
-    })
-    checkAbort()
-    const newPython = venvPython(venvPath)
-    if (!existsSync(newPython)) throw new Error(`venv creation failed — missing ${newPython}`)
-    const newVersion = await versionOf(newPython, signal)
-    const parsedNewVersion = parseVersion(newVersion)
-    if (!is313(newVersion) || !parsedNewVersion) {
-      throw new Error(`venv reports ${newVersion || 'unknown'} — expected Python 3.13`)
-    }
-
-    // 4. Install torch + requirements.
-    await installTorchAndRequirements(
-      newPython,
-      channel,
-      join(config.path, 'requirements.txt'),
-      warnings,
-      signal
-    )
-    checkAbort()
-
-    // 5. Only now write the config + EnvMarker. A stale marker from the old
-    // 3.12 era would block the next launch with ENV_MISMATCH.
-    try {
-      writeFileSync(
-        join(dirname(config.path), '.comfypilot-env.json'),
-        JSON.stringify(
-          {
-            venvPath,
-            pythonPath: newPython,
-            pythonVersion: parsedNewVersion,
-            migratedAt: Date.now()
-          },
-          null,
-          2
-        )
+      // 4. Install torch + requirements.
+      await installTorchAndRequirements(
+        newPython,
+        channel,
+        join(config.path, 'requirements.txt'),
+        warnings,
+        signal
       )
-    } catch {
-      warnings.push('could not update .comfypilot-env.json')
+      checkAbort()
+
+      // 5. Only now write the config + EnvMarker. A stale marker from the old
+      // 3.12 era would block the next launch with ENV_MISMATCH.
+      try {
+        writeFileSync(
+          join(dirname(config.path), '.comfypilot-env.json'),
+          JSON.stringify(
+            {
+              venvPath,
+              pythonPath: newPython,
+              pythonVersion: parsedNewVersion,
+              migratedAt: Date.now()
+            },
+            null,
+            2
+          )
+        )
+      } catch {
+        warnings.push('could not update .comfypilot-env.json')
+      }
+      upsertInstanceConfig({
+        ...config,
+        venvPath,
+        pythonPath: '',
+        pythonVersion: parsedNewVersion,
+        migrationState: 'none',
+        migrationError: undefined
+      })
+      return {
+        ok: true,
+        instanceId,
+        venvPath,
+        fromVersion,
+        toVersion: newVersion,
+        channel,
+        archivedVenv: archived ? archivedVenv : undefined,
+        warnings
+      }
+    } catch (err) {
+      // Restore the old environment and keep the instance blocked but intact.
+      try {
+        if (existsSync(venvPath)) rmSync(venvPath, { recursive: true, force: true })
+        if (archived && existsSync(archivedVenv)) renameSync(archivedVenv, venvPath)
+      } catch {
+        warnings.push('could not restore the archived venv automatically')
+      }
+      const message = err instanceof Error ? err.message : String(err)
+      upsertInstanceConfig({ ...config, migrationState: 'failed', migrationError: message })
+      throw err
     }
-    upsertInstanceConfig({
-      ...config,
-      venvPath,
-      pythonPath: '',
-      pythonVersion: parsedNewVersion,
-      migrationState: 'none',
-      migrationError: undefined
-    })
-    return {
-      ok: true,
-      instanceId,
-      venvPath,
-      fromVersion,
-      toVersion: newVersion,
-      channel,
-      archivedVenv: archived ? archivedVenv : undefined,
-      warnings
-    }
-  } catch (err) {
-    // Restore the old environment and keep the instance blocked but intact.
-    try {
-      if (existsSync(venvPath)) rmSync(venvPath, { recursive: true, force: true })
-      if (archived && existsSync(archivedVenv)) renameSync(archivedVenv, venvPath)
-    } catch {
-      warnings.push('could not restore the archived venv automatically')
-    }
-    const message = err instanceof Error ? err.message : String(err)
-    upsertInstanceConfig({ ...config, migrationState: 'failed', migrationError: message })
-    throw err
-  }
   } finally {
     releaseEnvLock()
   }

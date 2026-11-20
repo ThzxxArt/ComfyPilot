@@ -208,7 +208,8 @@ export const useAppStore = defineStore('app', () => {
   function pruneActiveInstance(): void {
     if (!activeInstanceId.value) return
     if (!instances.value.some((i) => i.id === activeInstanceId.value)) {
-      activeInstanceId.value = activeRemoteId.value ? null : (instances.value[0]?.id ?? null)
+      // 0.2.5 WP7: never silently redirect destructive work to instances[0].
+      activeInstanceId.value = null
     }
   }
 

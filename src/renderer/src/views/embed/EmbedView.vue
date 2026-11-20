@@ -52,9 +52,19 @@ function currentRect(): { x: number; y: number; width: number; height: number } 
   }
 }
 
+let resizeRaf = 0
+let lastResizeAt = 0
 function applyResize(): void {
   if (!embedded.value) return
-  void ipc('embed.resize', currentRect())
+  // 0.2.5 WP7: coalesce window drags into at most one IPC per 100ms.
+  if (resizeRaf) return
+  resizeRaf = requestAnimationFrame(() => {
+    resizeRaf = 0
+    const now = Date.now()
+    if (now - lastResizeAt < 100) return
+    lastResizeAt = now
+    void ipc('embed.resize', currentRect())
+  })
 }
 
 function onLayout(e: Event): void {

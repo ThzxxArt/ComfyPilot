@@ -52,6 +52,7 @@ import { comfyChildEnv } from './childEnv'
 import { readComfyVersion } from './comfyVersion'
 import { killProcessTree } from './processTree'
 import { resolveTorchIndex, officialTorchIndex, applyGithubMirror } from './installer'
+import { versionAtLeast } from '@shared/launchArgs'
 import { resolveGitBinary } from './nodePack'
 import { bootstrapService } from './bootstrap'
 
@@ -228,6 +229,7 @@ function stampInstallMeta(
     comfyFetchedAt?: number
     comfyVersion?: string
     comfySource?: string
+    comfyChannel?: 'stable' | 'nightly'
   }
 ): void {
   try {
@@ -244,6 +246,11 @@ function stampInstallMeta(
   } catch {
     /* best-effort */
   }
+}
+
+/** Legacy 0.2.4 instances have no updateChannel → keep tracking master. */
+function optsChannel(config: ComfyInstanceConfig): 'stable' | 'nightly' {
+  return config.updateChannel === 'stable' ? 'stable' : 'nightly'
 }
 
 export class ComfyUpdaterService extends EventEmitter {
@@ -623,7 +630,9 @@ export class ComfyUpdaterService extends EventEmitter {
    * the user which release the current master is ahead of. Never throws and
    * never gates the update decision.
    */
-  private async fetchLatestRelease(): Promise<{ tag: string; publishedAt?: string } | undefined> {
+  private async fetchLatestRelease(): Promise<
+    { tag: string; publishedAt?: string; body?: string; htmlUrl?: string } | undefined
+  > {
     try {
       const url = applyGithubMirror(
         'https://api.github.com/repos/Comfy-Org/ComfyUI/releases/latest'
@@ -634,9 +643,20 @@ export class ComfyUpdaterService extends EventEmitter {
         signal: AbortSignal.timeout(15000)
       })
       if (!res.ok) return undefined
-      const data = (await res.json()) as { tag_name?: string; published_at?: string }
-      if (!data.tag_name) return undefined
-      return { tag: data.tag_name, publishedAt: data.published_at }
+      const data = (await res.json()) as {
+        tag_name?: string
+        published_at?: string
+        body?: string
+        html_url?: string
+        prerelease?: boolean
+      }
+      if (!data.tag_name || data.prerelease) return undefined
+      return {
+        tag: data.tag_name,
+        publishedAt: data.published_at,
+        body: data.body,
+        htmlUrl: data.html_url
+      }
     } catch {
       return undefined
     }
@@ -652,6 +672,43 @@ export class ComfyUpdaterService extends EventEmitter {
     // 0.1.14: attach the latest official release (informational) to every
     // outcome; failure just omits the field.
     const latestRelease = await this.fetchLatestRelease()
+    const channel = optsChannel(config)
+
+    // 0.2.5 WP5: stable means the latest non-prerelease GitHub tag, not master.
+    if (channel === 'stable') {
+      const tag = latestRelease?.tag
+      if (!tag) {
+        return {
+          instanceId,
+          current,
+          source,
+          updatable: false,
+          unknown: true,
+          channel,
+          latestRelease,
+          checkedAt,
+          error: 'Could not determine the latest stable ComfyUI release'
+        }
+      }
+      const tagVersion = tag.replace(/^v/, '')
+      const currentVersion = current.replace(/^v/, '')
+      const updatable = /^\d+\.\d+/.test(currentVersion)
+        ? tagVersion !== currentVersion && versionAtLeast(tagVersion, currentVersion)
+        : true
+      return {
+        instanceId,
+        current,
+        latest: tag,
+        source,
+        updatable,
+        channel,
+        latestCommit: tag,
+        latestRelease,
+        releaseUrl: latestRelease?.htmlUrl,
+        releaseNotes: latestRelease?.body,
+        checkedAt
+      }
+    }
 
     if (source === 'git') {
       try {
@@ -692,6 +749,7 @@ export class ComfyUpdaterService extends EventEmitter {
           behindCount: behind,
           latestCommit: latestCommit || undefined,
           latestRelease,
+          channel,
           checkedAt
         }
       } catch (e) {
@@ -701,6 +759,7 @@ export class ComfyUpdaterService extends EventEmitter {
           source: 'git',
           updatable: false,
           latestRelease,
+          channel,
           checkedAt,
           error: e instanceof Error ? e.message : String(e)
         }
@@ -740,6 +799,7 @@ export class ComfyUpdaterService extends EventEmitter {
           updatable,
           latestCommit: latestCommit || undefined,
           latestRelease,
+          channel,
           checkedAt
         }
       } catch (e) {
@@ -752,6 +812,7 @@ export class ComfyUpdaterService extends EventEmitter {
           updatable: false,
           unknown: true,
           latestRelease,
+          channel,
           checkedAt,
           error: e instanceof Error ? e.message : String(e)
         }
@@ -764,6 +825,7 @@ export class ComfyUpdaterService extends EventEmitter {
       source: 'unknown',
       updatable: false,
       latestRelease,
+      channel,
       checkedAt,
       error: 'Not a recognizable ComfyUI install (missing main.py)'
     }
@@ -795,6 +857,8 @@ export class ComfyUpdaterService extends EventEmitter {
 
   private async runUpdate(config: ComfyInstanceConfig, opts: ComfyUpdateOptions): Promise<void> {
     const comfyDir = resolve(normalizePathEverySegment(config.path))
+    const channel = opts.channel || optsChannel(config)
+    let stableTag: string | undefined
     let backupPath: string | undefined
     let backupKind: 'git' | 'files' | null = null
     /** True once we actually rewrote the tree — only then is a rollback meaningful. */
@@ -802,7 +866,15 @@ export class ComfyUpdaterService extends EventEmitter {
     /** 0.1.17 (WP4-3): pre-fetch tree state + whether a zip overlay was attempted. */
     let gitBefore: { head: string; status: string } | null = null
     let overlayAttempted = false
+    let nodeSnapshotId: string | undefined
     try {
+      // 0.2.5 WP5: resolve the stable tag before touching the tree, but inside
+      // the run's try so the failure is recorded as `failed` (not an unhandled
+      // rejection from start()).
+      stableTag = channel === 'stable' ? (await this.fetchLatestRelease())?.tag : undefined
+      if (channel === 'stable' && !stableTag) {
+        throw new Error('Stable update requested, but no official release tag is available')
+      }
       // 0. preflight
       this.setStep('preflight', 'running', 'Checking install…', undefined, 'update.msgPreflightRun')
       if (!existsSync(join(comfyDir, 'main.py'))) {
@@ -822,6 +894,18 @@ export class ComfyUpdaterService extends EventEmitter {
       this.setStep('preflight', 'done', `Source: ${source}`, undefined, 'update.msgPreflightDone', {
         source
       })
+      // 0.2.5 WP5: record node versions before the source changes so a bad
+      // update can be diagnosed/rolled back per node.
+      try {
+        const { nodePackService } = await import('./nodePack')
+        nodeSnapshotId = nodePackService.createSnapshot(
+          `pre-update-${new Date().toISOString().replace(/[:.]/g, '-')}`,
+          config.id
+        ).id
+        this.log('preflight', `node snapshot ${nodeSnapshotId}`)
+      } catch (e) {
+        this.log('preflight', `node snapshot failed (non-fatal): ${String(e)}`)
+      }
       this.assertNotCancelled()
 
       // 1. stop instance if running
@@ -923,7 +1007,8 @@ export class ComfyUpdaterService extends EventEmitter {
         comfyDir,
         backupPath,
         backupKind,
-        startedAt: Date.now()
+        startedAt: Date.now(),
+        nodeSnapshotId
       })
       this.assertNotCancelled()
 
@@ -938,15 +1023,37 @@ export class ComfyUpdaterService extends EventEmitter {
         this.setStep('fetch', 'running', 'Pulling latest source…', undefined, 'update.msgFetchGit')
         const gitBin = resolveGitBinary()
         try {
-          await this.run(gitBin, ['-C', comfyDir, 'pull', '--ff-only'], { timeout: 300000 })
+          if (channel === 'stable') {
+            await this.run(gitBin, ['-C', comfyDir, 'fetch', '--tags', '--quiet'], {
+              timeout: 120000
+            })
+            const dirty = (
+              await this.runRaw(gitBin, ['-C', comfyDir, 'status', '--porcelain'], {
+                timeout: 10000
+              })
+            ).trim()
+            if (dirty) {
+              throw new UpdateAbortedNoTreeChange(
+                `Stable checkout refused: the git tree has local changes in ${comfyDir}. Commit/stash them first.`
+              )
+            }
+            await this.run(gitBin, ['-C', comfyDir, 'checkout', '--detach', stableTag!], {
+              timeout: 120000
+            })
+          } else {
+            await this.run(gitBin, ['-C', comfyDir, 'pull', '--ff-only'], { timeout: 300000 })
+          }
         } catch (e) {
+          if (e instanceof UpdateAbortedNoTreeChange) throw e
           const msg = e instanceof Error ? e.message : String(e)
-          this.log('fetch', `pull --ff-only failed: ${msg}`)
-          // ff-only failure means local changes or diverged history. The working
-          // tree was NOT rewritten by us — do NOT rollback (reset --hard would
-          // destroy the user's local edits). Report and stop.
+          this.log(
+            'fetch',
+            `${channel === 'stable' ? 'stable checkout' : 'pull --ff-only'} failed: ${msg}`
+          )
+          // A failed ff-only pull/checkout means local changes or diverged
+          // history. The working tree was NOT rewritten by us — do NOT rollback.
           throw new UpdateAbortedNoTreeChange(
-            `git pull --ff-only failed: ${msg}. Commit/stash local changes in ${comfyDir} and retry. Your local files were left untouched.`
+            `git ${channel === 'stable' ? `checkout ${stableTag}` : 'pull --ff-only'} failed: ${msg}. Commit/stash local changes in ${comfyDir} and retry. Your local files were left untouched.`
           )
         }
         treeModified = true
@@ -961,20 +1068,22 @@ export class ComfyUpdaterService extends EventEmitter {
           // the launch-flag gate never fall back to a bare commit sha.
           comfyVersion: readComfyVersion(comfyDir),
           comfyFetchedAt: Date.now(),
-          comfySource: 'git'
+          comfySource: 'git',
+          comfyChannel: channel
         })
         this.log('fetch', `updated to ${sha}`)
         this.setStep('fetch', 'done', `HEAD ${sha}`, undefined, 'update.msgFetchGitDone', { sha })
       } else {
         this.setStep('fetch', 'running', 'Downloading archive…', undefined, 'update.msgFetchZip')
         overlayAttempted = true
-        await this.fetchAndOverlayZip(comfyDir)
+        await this.fetchAndOverlayZip(comfyDir, stableTag)
         treeModified = true
         stampInstallMeta(comfyDir, {
           comfyFetchedAt: Date.now(),
           comfyCommit: undefined,
           comfyVersion: readComfyVersion(comfyDir),
-          comfySource: 'zip'
+          comfySource: 'zip',
+          comfyChannel: channel
         })
         this.setStep('fetch', 'done', 'Archive overlaid', undefined, 'update.msgFetchZipDone')
       }
@@ -1201,38 +1310,47 @@ export class ComfyUpdaterService extends EventEmitter {
       }
       this.assertNotCancelled()
 
-      // 6. verify
-      this.setStep('verify', 'running', 'Running health check…', undefined, 'update.msgVerifyRun')
+      // 6. verify — REAL launch, not a static Doctor report (0.2.5 WP5).
+      this.setStep(
+        'verify',
+        'running',
+        'Running real startup self-check…',
+        undefined,
+        'update.msgVerifyRun'
+      )
       let verifyFailed = false
       try {
-        const { doctorService } = await import('./doctor')
-        const report = await doctorService.run(config.id)
-        const fails = report.checks.filter((c) => c.severity === 'fail')
-        if (fails.length) {
+        const { instanceService } = await import('./instance')
+        const check = await instanceService.runStartupSelfCheck(config.id)
+        if (!check.ok) {
           verifyFailed = true
           this.log(
             'verify',
-            `doctor reported ${fails.length} failure(s): ${fails.map((f) => f.title).join(', ')}`
+            `startup self-check failed (exit ${check.exitCode}): ${check.output.slice(-600)}`
           )
-          // Verify failures are warnings for an update — the source did change —
-          // but catastrophic (missing main.py) is handled below.
-          if (!existsSync(join(comfyDir, 'main.py'))) {
-            throw new Error('main.py missing after update')
-          }
-          // 0.1.17 (WP10): a failed health check is NOT a green step.
           this.setStep(
             'verify',
             'failed',
-            `Doctor: ${fails.length} fail / ${report.summary.warn} warn`
+            `Startup self-check failed (exit ${check.exitCode})`,
+            undefined,
+            'update.msgVerifyFail'
           )
-        } else {
-          this.log('verify', `doctor pass=${report.summary.pass} warn=${report.summary.warn}`)
-          this.setStep('verify', 'done', 'Health check passed', undefined, 'update.msgVerifyOk')
+          throw new Error(
+            `Update verification failed: ComfyUI did not start (exit ${check.exitCode}). The source was rolled back.`
+          )
         }
+        this.log('verify', 'startup self-check passed')
+        this.setStep('verify', 'done', 'Startup self-check passed', undefined, 'update.msgVerifyOk')
       } catch (e) {
         if (!existsSync(join(comfyDir, 'main.py'))) throw e
-        this.log('verify', `doctor unavailable: ${e instanceof Error ? e.message : String(e)}`)
-        this.setStep('verify', 'done', 'Skipped (doctor unavailable)')
+        // A missing self-check runner is not proof of success either.
+        verifyFailed = true
+        this.setStep(
+          'verify',
+          'failed',
+          `Startup self-check unavailable: ${e instanceof Error ? e.message : String(e)}`
+        )
+        throw e
       }
 
       // A cancel that landed during the health check must still win over the
@@ -1287,7 +1405,8 @@ export class ComfyUpdaterService extends EventEmitter {
           backupPath,
           backupKind: backupKind || 'files',
           startedAt: Date.now(),
-          status: 'verify-failed'
+          status: 'verify-failed',
+          nodeSnapshotId
         })
       }
       // Post-update node compatibility check — a source update can break
@@ -1393,6 +1512,28 @@ export class ComfyUpdaterService extends EventEmitter {
           undefined,
           'update.msgRollback'
         )
+        // 0.2.5 WP5: source rollback does not undo node updates. Restore the
+        // versions recorded in the pre-update snapshot (git exact, registry
+        // best-effort, local warned), and report partial failures honestly.
+        if (nodeSnapshotId) {
+          try {
+            const { nodePackService } = await import('./nodePack')
+            const nodeRollback = await nodePackService.restoreNodeVersions(
+              nodeSnapshotId,
+              config.id
+            )
+            this.log(
+              'rollback',
+              `node versions: restored ${nodeRollback.restored.length}, skipped ${nodeRollback.skipped.length}, failed ${nodeRollback.failed.length}`
+            )
+            for (const w of nodeRollback.warnings) this.log('rollback', `node warning: ${w}`)
+            for (const f of nodeRollback.failed) {
+              this.log('rollback', `node rollback failed: ${f.name}: ${f.error}`)
+            }
+          } catch (e) {
+            this.log('rollback', `node version rollback failed: ${String(e)}`)
+          }
+        }
         // Back on the previous tree — nothing left to recover.
         this.clearJournal(comfyDir)
       } else {
@@ -1544,10 +1685,12 @@ export class ComfyUpdaterService extends EventEmitter {
    * files absent from the archive are left alone (we never delete unknown user
    * files — same safety stance as the installer debris guard).
    */
-  private async fetchAndOverlayZip(comfyDir: string): Promise<void> {
-    const url = applyGithubMirror(
-      'https://github.com/Comfy-Org/ComfyUI/archive/refs/heads/master.zip'
-    )
+  private async fetchAndOverlayZip(comfyDir: string, stableTag?: string): Promise<void> {
+    // 0.2.5 WP5: stable downloads the tag archive, nightly keeps master.
+    const sourceUrl = stableTag
+      ? `https://github.com/Comfy-Org/ComfyUI/archive/refs/tags/${encodeURIComponent(stableTag)}.zip`
+      : 'https://github.com/Comfy-Org/ComfyUI/archive/refs/heads/master.zip'
+    const url = applyGithubMirror(sourceUrl)
     if (!isSafeExternalUrl(url)) throw new Error('Blocked ComfyUI archive URL')
     const { session } = await import('electron')
     const tmpZip = join(dirname(comfyDir), `._comfyui_update_${Date.now()}.zip`)

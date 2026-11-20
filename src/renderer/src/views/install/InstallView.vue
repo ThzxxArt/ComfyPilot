@@ -324,8 +324,14 @@ const installingNow = computed(() => installing.value || progress.value?.status 
 const hasHardPreflightFail = computed(() =>
   Boolean(preflight.value?.checks?.some((c) => !c.ok && !c.fixId))
 )
+const preflightReady = ref(false)
 const canStartInstall = computed(
-  () => canStart.value && !hasHardPreflightFail.value && !installingNow.value
+  () =>
+    canStart.value &&
+    !hasHardPreflightFail.value &&
+    !installingNow.value &&
+    !preflighting.value &&
+    preflightReady.value
 )
 
 const diskNeedGb = computed(() => {
@@ -419,28 +425,38 @@ async function detectGpu(): Promise<void> {
   }
 }
 
+let preflightSeq = 0
 async function runPreflight(): Promise<void> {
   if (!plan.value.installRoot.trim()) return
+  const seq = ++preflightSeq
   preflighting.value = true
   try {
-    preflight.value = await ipc('installer.preflight', {
+    const result = await ipc('installer.preflight', {
       installRoot: plan.value.installRoot,
       useUv: plan.value.useUv,
       pythonPath: plan.value.pythonPath || undefined,
       torchChannel: plan.value.torchChannel
     })
+    // 0.2.5 WP7: a stale preflight for another path/channel must never enable
+    // (or block) the install button.
+    if (seq !== preflightSeq) return
+    preflight.value = result
+    preflightReady.value = true
   } catch (err) {
+    if (seq !== preflightSeq) return
     // Never leave green checks from a previous path beside the new one.
     preflight.value = null
+    preflightReady.value = false
     message.error(errText(err))
   } finally {
-    preflighting.value = false
+    if (seq === preflightSeq) preflighting.value = false
   }
 }
 
 let preflightTimer: ReturnType<typeof setTimeout> | null = null
 
 function schedulePreflight(delay = 400): void {
+  preflightReady.value = false
   if (preflightTimer) clearTimeout(preflightTimer)
   preflightTimer = setTimeout(() => {
     preflightTimer = null
@@ -451,7 +467,13 @@ function schedulePreflight(delay = 400): void {
 }
 
 watch(
-  () => [plan.value.installRoot, plan.value.torchChannel, plan.value.useUv] as const,
+  () =>
+    [
+      plan.value.installRoot,
+      plan.value.torchChannel,
+      plan.value.useUv,
+      plan.value.pythonPath
+    ] as const,
   () => schedulePreflight()
 )
 

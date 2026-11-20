@@ -346,7 +346,12 @@ export class OutputService {
       // Still unlinked? A fingerprint match may exist — outputs produced by
       // direct ComfyUI-frontend runs never had a sidecar (0.1.11). Read the
       // PNG head once, backfill, and persist a sidecar for cheap rescans.
-      if (!workflowId && type === 'image' && ext === '.png' && !this.pngNoMeta.get(this.pngKey(full, st))) {
+      if (
+        !workflowId &&
+        type === 'image' &&
+        ext === '.png' &&
+        !this.pngNoMeta.get(this.pngKey(full, st))
+      ) {
         try {
           const meta = readPngTextMetaFromFile(full)
           if (!Object.keys(meta).length) this.pngNoMeta.set(this.pngKey(full, st), true)

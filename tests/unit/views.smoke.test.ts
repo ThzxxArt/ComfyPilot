@@ -308,6 +308,131 @@ describe('renderer view smoke', () => {
     })
   }
 
+  it('dashboard pauses queue polling while hidden and resumes on visibility', async () => {
+    const wrapper = await mountView(
+      '/',
+      () => import('../../src/renderer/src/views/dashboard/DashboardView.vue')
+    )
+    try {
+      const hidden = Object.getOwnPropertyDescriptor(document, 'hidden')
+      Object.defineProperty(document, 'hidden', { value: true, configurable: true })
+      document.dispatchEvent(new Event('visibilitychange'))
+      await new Promise((r) => setTimeout(r, 10))
+      Object.defineProperty(document, 'hidden', { value: false, configurable: true })
+      document.dispatchEvent(new Event('visibilitychange'))
+      await new Promise((r) => setTimeout(r, 10))
+      if (hidden) Object.defineProperty(document, 'hidden', hidden)
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('instance detail copy-rescue and manager-open actions do not throw', async () => {
+    const wrapper = await mountView(
+      '/instances/i1',
+      () => import('../../src/renderer/src/views/instances/InstanceDetailView.vue')
+    )
+    try {
+      const copy = wrapper.findAll('button').find((b) => (b.text() || '').includes('复制救援命令'))
+      expect(copy).toBeTruthy()
+      await copy!.trigger('click')
+      await new Promise((r) => setTimeout(r, 10))
+      const openManager = wrapper
+        .findAll('button')
+        .find((b) => (b.text() || '').includes('打开 config.ini'))
+      if (openManager) await openManager.trigger('click')
+      await new Promise((r) => setTimeout(r, 10))
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('issue center ignore-all asks for confirmation and dismisses', async () => {
+    const bridge = (window as unknown as { comfyPilot: { invoke: Function } }).comfyPilot
+    const original = bridge.invoke.bind(bridge)
+    bridge.invoke = async (channel: string, ...args: unknown[]) => {
+      if (channel === 'issue.list') {
+        return {
+          ok: true,
+          data: [
+            {
+              id: 'iss1',
+              fingerprint: 'fp1',
+              kind: 'startup',
+              severity: 'error',
+              title: 'Bad pack',
+              detail: 'boom',
+              actions: [],
+              status: 'open',
+              firstSeen: Date.now(),
+              lastSeen: Date.now(),
+              updatedAt: Date.now()
+            }
+          ]
+        }
+      }
+      return original(channel, ...args)
+    }
+    try {
+      const wrapper = await mountView(
+        '/issues',
+        () => import('../../src/renderer/src/views/issues/IssueCenterView.vue')
+      )
+      await new Promise((r) => setTimeout(r, 20))
+      const ignore = wrapper.findAll('button').find((b) => (b.text() || '').includes('全部忽略'))
+      expect(ignore).toBeTruthy()
+      await ignore!.trigger('click')
+      await new Promise((r) => setTimeout(r, 30))
+      const confirm = Array.from(document.querySelectorAll('.n-dialog button')).find((b) =>
+        (b.textContent || '').includes('全部忽略')
+      ) as HTMLButtonElement | undefined
+      expect(confirm).toBeTruthy()
+      confirm!.click()
+      await new Promise((r) => setTimeout(r, 30))
+      expect(invoked).toContain('issue.dismiss')
+      wrapper.unmount()
+    } finally {
+      bridge.invoke = original
+    }
+  })
+
+  it('instance detail rescue action invokes the rescue IPC', async () => {
+    const wrapper = await mountView(
+      '/instances/i1',
+      () => import('../../src/renderer/src/views/instances/InstanceDetailView.vue')
+    )
+    try {
+      invoked.length = 0
+      const button = wrapper.findAll('button').find((b) => (b.text() || '').includes('强制重启'))
+      expect(button).toBeTruthy()
+      await button!.trigger('click')
+      await new Promise((r) => setTimeout(r, 20))
+      expect(invoked).toContain('instance.rescue')
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('throttles embed layout resizes into one IPC per frame window', async () => {
+    const wrapper = await mountView(
+      '/embed?url=http%3A%2F%2F127.0.0.1%3A8188',
+      () => import('../../src/renderer/src/views/embed/EmbedView.vue')
+    )
+    try {
+      invoked.length = 0
+      for (let i = 0; i < 8; i++) {
+        window.dispatchEvent(
+          new CustomEvent('comfypilot:layout', { detail: { sidebarWidth: 200 + i } })
+        )
+      }
+      await new Promise((r) => requestAnimationFrame(() => r(undefined)))
+      const resizes = invoked.filter((c) => c === 'embed.resize').length
+      expect(resizes).toBeLessThanOrEqual(1)
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it('rejects a broken view loader instead of rendering an empty shell', async () => {
     await expect(
       mountView('/', async () => {

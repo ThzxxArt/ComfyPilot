@@ -100,7 +100,15 @@ const backupRestoreSchema = z
   .object({
     sections: z
       .array(
-        z.enum(['settings', 'instances', 'nodePacks', 'models', 'workflows', 'remotes', 'snapshots'])
+        z.enum([
+          'settings',
+          'instances',
+          'nodePacks',
+          'models',
+          'workflows',
+          'remotes',
+          'snapshots'
+        ])
       )
       .optional()
   })
@@ -147,6 +155,7 @@ set('instance.exportRescueScript', z.tuple([s]))
 set('instance.managerInfo', z.tuple([s]))
 set('instance.setManagerSecurity', z.tuple([s, z.enum(['strong', 'normal', 'normal-', 'weak'])]))
 set('instance.openManagerConfig', z.tuple([s]))
+set('instance.setUpdateChannel', z.tuple([s, z.enum(['stable', 'nightly'])]))
 set('instance.migratePython', z.tuple([s]))
 set('instance.remove', z.tuple([s]))
 set('instance.launch', z.tuple([s, launchOptionsSchema.optional()]))
@@ -260,6 +269,7 @@ set('node.snapshots', z.tuple([s.optional()]))
 set('node.createSnapshot', z.tuple([s.optional(), s.optional()]))
 set('node.deleteSnapshot', z.tuple([s, s.optional()]))
 set('node.restoreSnapshot', z.tuple([s, s.optional()]))
+set('node.restoreVersions', z.tuple([s, s.optional()]))
 set('node.checkUpdates', z.tuple([s.optional()]))
 set('node.updateAll', z.tuple([s.optional(), obj.optional()]))
 set('deps.recipes', z.tuple([]))

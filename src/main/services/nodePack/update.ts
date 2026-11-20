@@ -8,6 +8,7 @@ import {
   mkdirSync
 } from 'fs'
 import { join, dirname, basename } from 'path'
+import { execFile } from 'child_process'
 import { createHash, randomUUID } from 'crypto'
 import type {
   NodeCheckProgressEvent,
@@ -1013,6 +1014,102 @@ export function createSnapshot(
  * NOTE: this does NOT reinstall missing packs or roll back versions — it only
  * toggles `.disabled` markers to match the snapshot. UI must say so.
  */
+export interface NodeVersionRestoreResult {
+  ok: boolean
+  restored: string[]
+  skipped: Array<{ name: string; reason: string }>
+  failed: Array<{ name: string; error: string }>
+  warnings: string[]
+}
+
+/**
+ * 0.2.5 WP5 node rollback v1: git packs are checked out at the exact recorded
+ * revision; registry packs are best-effort reinstalled at the recorded version;
+ * local/unknown packs are left untouched and reported.
+ */
+export async function restoreNodeVersions(
+  this: NodePackHost,
+  snapshotId: string,
+  instanceId?: string
+): Promise<NodeVersionRestoreResult> {
+  const snap = getSnapshot(snapshotId)
+  if (!snap) throw new Error(`Snapshot not found: ${snapshotId}`)
+  if (instanceId && snap.instanceId && snap.instanceId !== instanceId) {
+    throw new Error('Snapshot belongs to a different instance')
+  }
+  const out: NodeVersionRestoreResult = {
+    ok: true,
+    restored: [],
+    skipped: [],
+    failed: [],
+    warnings: []
+  }
+  const gitBin = resolveGitBinary()
+  const git = (args: string[], timeout = 10000): Promise<string> =>
+    new Promise((resolveGit, rejectGit) => {
+      execFile(
+        gitBin,
+        args,
+        { timeout, windowsHide: true, env: comfyChildEnv(loadSettings()) },
+        (err, stdout, stderr) => {
+          if (err) rejectGit(new Error(stderr || stdout || err.message))
+          else resolveGit(String(stdout || ''))
+        }
+      )
+    })
+  for (const pack of snap.packs) {
+    const path = String(pack.path || '')
+    if (!path || !existsSync(path)) {
+      out.failed.push({ name: pack.name, error: 'path is missing on disk' })
+      continue
+    }
+    const source = String(pack.source || '').replace(/@disabled$/, '')
+    const isGit = source === 'git' || existsSync(join(path, '.git'))
+    if (isGit) {
+      if (!pack.gitRev) {
+        out.skipped.push({ name: pack.name, reason: 'no recorded git revision' })
+        continue
+      }
+      try {
+        const dirty = (await git(['-C', path, 'status', '--porcelain'])).trim()
+        if (dirty) {
+          out.skipped.push({ name: pack.name, reason: 'working tree has local changes' })
+          continue
+        }
+        await git(['-C', path, 'checkout', '--detach', pack.gitRev], 60000)
+        out.restored.push(pack.name)
+      } catch (e) {
+        out.failed.push({
+          name: pack.name,
+          error: e instanceof Error ? e.message : String(e)
+        })
+      }
+      continue
+    }
+    if (source === 'registry' || source === 'manager') {
+      if (!pack.version) {
+        out.skipped.push({ name: pack.name, reason: 'no recorded version' })
+        continue
+      }
+      try {
+        await this.update(pack.name, pack.version, instanceId, { fromBatch: true })
+        out.restored.push(pack.name)
+      } catch (e) {
+        // The registry id may be unknown or the version may no longer exist.
+        out.failed.push({
+          name: pack.name,
+          error: e instanceof Error ? e.message : String(e)
+        })
+      }
+      continue
+    }
+    out.warnings.push(`${pack.name}: local pack left untouched`)
+    out.skipped.push({ name: pack.name, reason: 'local pack — manual restore required' })
+  }
+  out.ok = out.failed.length === 0
+  return out
+}
+
 export function restoreSnapshot(this: NodePackHost, id: string, instanceId?: string): boolean {
   const snap = getSnapshot(id)
   if (!snap) return false
@@ -1112,5 +1209,6 @@ export const updateMethods = {
   pruneAutoSnapshots,
   createSnapshot,
   restoreSnapshot,
+  restoreNodeVersions,
   deleteSnapshot
 }

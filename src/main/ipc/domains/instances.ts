@@ -50,7 +50,10 @@ function discoveredComfyRoots(): string[] {
 
 /** IPv4/IPv6 literals only; wildcard/loopback/private-LAN ranges. */
 function isAllowedListenHost(raw: string): boolean {
-  const host = raw.trim().replace(/^\[|\]$/g, '').toLowerCase()
+  const host = raw
+    .trim()
+    .replace(/^\[|\]$/g, '')
+    .toLowerCase()
   if (!host) return false
   if (host === '0.0.0.0' || host === '::' || host === '*') return true
   if (host === '::1') return true
@@ -68,7 +71,12 @@ function isAllowedListenHost(raw: string): boolean {
   // IPv6 literal heuristics: loopback, ULA (fc00::/7) and link-local.
   if (!host.includes(':')) return false
   if (host.startsWith('fc') || host.startsWith('fd')) return true
-  if (host.startsWith('fe8') || host.startsWith('fe9') || host.startsWith('fea') || host.startsWith('feb'))
+  if (
+    host.startsWith('fe8') ||
+    host.startsWith('fe9') ||
+    host.startsWith('fea') ||
+    host.startsWith('feb')
+  )
     return true
   return false
 }
@@ -145,7 +153,8 @@ function assertSafeLaunchConfig(config: ComfyInstanceConfig): void {
       if (next && !String(next).startsWith('--')) value = String(next)
     }
     if (!value) continue
-    if (/[\\/]\.\.[\\/]|^\.\.$/.test(value)) throw new Error(`extraArgs ${flag} must not contain '..'`)
+    if (/[\\/]\.\.[\\/]|^\.\.$/.test(value))
+      throw new Error(`extraArgs ${flag} must not contain '..'`)
     const abs = value.match(/^[a-zA-Z]:[\\/]|^\//) ? value : join(config.path, value)
     if (!resolveInsideAnyRoot(abs, roots)) {
       throw new Error(`extraArgs ${flag} points outside the instance and picked roots`)
@@ -257,12 +266,19 @@ export function createInstanceHandlers(ctx: IpcContext) {
       const { managerInfoForId } = await import('../../services/manager')
       return managerInfoForId(sanitizeId(id))
     }),
-    setManagerSecurity: wrap(async (id: string, level: import('@shared/types').ManagerSecurityLevel) => {
+    setManagerSecurity: wrap(
+      async (id: string, level: import('@shared/types').ManagerSecurityLevel) => {
+        const safeId = sanitizeId(id)
+        const { setManagerSecurityLevel } = await import('../../services/manager')
+        const cfg = loadInstanceConfigs().find((c) => c.id === safeId)
+        if (!cfg) throw new Error(`Instance not found: ${safeId}`)
+        return setManagerSecurityLevel(cfg, level)
+      }
+    ),
+    setUpdateChannel: wrap((id: string, channel: 'stable' | 'nightly') => {
       const safeId = sanitizeId(id)
-      const { setManagerSecurityLevel } = await import('../../services/manager')
-      const cfg = loadInstanceConfigs().find((c) => c.id === safeId)
-      if (!cfg) throw new Error(`Instance not found: ${safeId}`)
-      return setManagerSecurityLevel(cfg, level)
+      if (channel !== 'stable' && channel !== 'nightly') throw new Error('Invalid update channel')
+      return instanceService.patch(safeId, { updateChannel: channel })
     }),
     openManagerConfig: wrap(async (id: string) => {
       const safeId = sanitizeId(id)

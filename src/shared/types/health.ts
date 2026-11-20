@@ -1,13 +1,7 @@
 /** Instance health facts and recovery policy (0.2.5 WP2/WP3). */
 
 export type HealthState =
-  | 'unknown'
-  | 'healthy'
-  | 'busy'
-  | 'suspect'
-  | 'unresponsive'
-  | 'crashed'
-  | 'stopped'
+  'unknown' | 'healthy' | 'busy' | 'suspect' | 'unresponsive' | 'crashed' | 'stopped'
 
 export interface InstanceHealth {
   instanceId: string

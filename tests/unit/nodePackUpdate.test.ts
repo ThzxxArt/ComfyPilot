@@ -450,6 +450,177 @@ describe('nodePackService.updateAll', () => {
   })
 })
 
+describe('node version rollback v1 (0.2.5 WP5)', () => {
+  it('checks out the exact git revision and reports local packs as skipped', async () => {
+    const db = await import('../../src/main/services/db')
+    const cp = await import('child_process')
+    h.state.dirs.set('C:/packs/GitPack', ['.git'])
+    h.state.exists.add('C:/packs/GitPack')
+    h.state.dirs.set('C:/packs/LocalPack', [])
+    h.state.exists.add('C:/packs/LocalPack')
+    ;(db.getSnapshot as ReturnType<typeof vi.fn>).mockReturnValue({
+      id: 'snap-1',
+      name: 'pre-update',
+      createdAt: 1,
+      notes: '',
+      instanceId: 'inst-1',
+      packs: [
+        {
+          name: 'GitPack',
+          version: '1.0.0',
+          path: 'C:/packs/GitPack',
+          source: 'git',
+          gitRev: 'abc1234'
+        },
+        { name: 'LocalPack', version: '0.0.0', path: 'C:/packs/LocalPack', source: 'local' }
+      ]
+    })
+    ;(cp.execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      (
+        _cmd: string,
+        args: string[],
+        maybeOpts: unknown,
+        maybeCb?: (e: null, o: string, e2: string) => void
+      ) => {
+        const cb = (typeof maybeOpts === 'function' ? maybeOpts : maybeCb) as (
+          e: null,
+          o: string,
+          e2: string
+        ) => void
+        if (args.includes('status')) cb(null, '', '')
+        else cb(null, 'ok', '')
+        return { pid: 1 }
+      }
+    )
+    const out = await nodePackService.restoreNodeVersions('snap-1', 'inst-1')
+    expect(out.ok).toBe(true)
+    expect(out.restored).toEqual(['GitPack'])
+    expect(out.skipped).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: 'LocalPack' })])
+    )
+    expect(out.warnings.join(' ')).toMatch(/local pack/i)
+  })
+
+  it('skips a git pack without a revision and a registry pack without a version', async () => {
+    const db = await import('../../src/main/services/db')
+    h.state.dirs.set('C:/packs/NoRev', ['.git'])
+    h.state.exists.add('C:/packs/NoRev')
+    h.state.exists.add('C:/packs/NoVersion')
+    h.state.dirs.set('C:/packs/NoVersion', [])
+    ;(db.getSnapshot as ReturnType<typeof vi.fn>).mockReturnValue({
+      id: 'snap-4',
+      name: 'pre-update',
+      createdAt: 1,
+      notes: '',
+      packs: [
+        { name: 'NoRev', version: '1', path: 'C:/packs/NoRev', source: 'git' },
+        { name: 'NoVersion', version: '', path: 'C:/packs/NoVersion', source: 'registry' }
+      ]
+    })
+    const out = await nodePackService.restoreNodeVersions('snap-4', 'inst-1')
+    expect(out.ok).toBe(true)
+    expect(out.skipped).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'NoRev', reason: expect.stringMatching(/revision/i) }),
+        expect.objectContaining({ name: 'NoVersion', reason: expect.stringMatching(/version/i) })
+      ])
+    )
+  })
+
+  it('reports a missing pack path and a registry failure honestly', async () => {
+    const db = await import('../../src/main/services/db')
+    ;(db.getSnapshot as ReturnType<typeof vi.fn>).mockReturnValue({
+      id: 'snap-3',
+      name: 'pre-update',
+      createdAt: 1,
+      notes: '',
+      packs: [
+        { name: 'Gone', version: '1', path: 'C:/packs/Gone', source: 'git', gitRev: 'abc' },
+        { name: 'Reg', version: '1.0.0', path: 'C:/packs/Reg', source: 'registry' }
+      ]
+    })
+    h.state.exists.add('C:/packs/Reg')
+    const out = await nodePackService.restoreNodeVersions('snap-3', 'inst-1')
+    expect(out.ok).toBe(false)
+    expect(out.failed.map((f) => f.name)).toEqual(expect.arrayContaining(['Gone', 'Reg']))
+  })
+
+  it('reports a git checkout failure instead of pretending it restored', async () => {
+    const db = await import('../../src/main/services/db')
+    const cp = await import('child_process')
+    h.state.dirs.set('C:/packs/BadCheckout', ['.git'])
+    h.state.exists.add('C:/packs/BadCheckout')
+    ;(db.getSnapshot as ReturnType<typeof vi.fn>).mockReturnValue({
+      id: 'snap-5',
+      name: 'pre-update',
+      createdAt: 1,
+      notes: '',
+      packs: [
+        {
+          name: 'BadCheckout',
+          version: '1',
+          path: 'C:/packs/BadCheckout',
+          source: 'git',
+          gitRev: 'abc'
+        }
+      ]
+    })
+    ;(cp.execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      (
+        _cmd: string,
+        args: string[],
+        maybeOpts: unknown,
+        maybeCb?: (e: Error | null, o: string, e2: string) => void
+      ) => {
+        const cb = (typeof maybeOpts === 'function' ? maybeOpts : maybeCb) as (
+          e: Error | null,
+          o: string,
+          e2: string
+        ) => void
+        if (args.includes('status')) cb(null, '', '')
+        else cb(new Error('checkout boom'), '', '')
+        return { pid: 1 }
+      }
+    )
+    const out = await nodePackService.restoreNodeVersions('snap-5', 'inst-1')
+    expect(out.ok).toBe(false)
+    expect(out.failed[0].error).toMatch(/checkout boom/)
+  })
+
+  it('skips a dirty git pack instead of destroying local edits', async () => {
+    const db = await import('../../src/main/services/db')
+    const cp = await import('child_process')
+    h.state.dirs.set('C:/packs/Dirty', ['.git'])
+    h.state.exists.add('C:/packs/Dirty')
+    ;(db.getSnapshot as ReturnType<typeof vi.fn>).mockReturnValue({
+      id: 'snap-2',
+      name: 'pre-update',
+      createdAt: 1,
+      notes: '',
+      packs: [{ name: 'Dirty', version: '1', path: 'C:/packs/Dirty', source: 'git', gitRev: 'abc' }]
+    })
+    ;(cp.execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      (
+        _cmd: string,
+        args: string[],
+        maybeOpts: unknown,
+        maybeCb?: (e: null, o: string, e2: string) => void
+      ) => {
+        const cb = (typeof maybeOpts === 'function' ? maybeOpts : maybeCb) as (
+          e: null,
+          o: string,
+          e2: string
+        ) => void
+        cb(null, args.includes('status') ? ' M local.py' : 'ok', '')
+        return { pid: 1 }
+      }
+    )
+    const out = await nodePackService.restoreNodeVersions('snap-2', 'inst-1')
+    expect(out.restored).toEqual([])
+    expect(out.skipped[0].reason).toMatch(/local changes/i)
+  })
+})
+
 describe('event emitter surface', () => {
   it('NodePackService is an EventEmitter with the update API', () => {
     expect(nodePackService).toBeInstanceOf(EventEmitter)

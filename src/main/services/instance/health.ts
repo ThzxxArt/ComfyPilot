@@ -297,9 +297,7 @@ export class InstanceHealthService extends EventEmitter {
       }
     }
     const effective = resolveEffectiveInstance(config)
-    const processAlive = Boolean(
-      (rt?.process && rt.process.exitCode === null) || pidAlive(rt?.pid)
-    )
+    const processAlive = Boolean((rt?.process && rt.process.exitCode === null) || pidAlive(rt?.pid))
     if (!processAlive) {
       const state: HealthState = rt?.status === 'starting' ? 'suspect' : 'stopped'
       return {

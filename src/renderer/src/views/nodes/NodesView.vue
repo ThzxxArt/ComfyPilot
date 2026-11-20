@@ -432,6 +432,20 @@ async function cleanRecoveryEntry(name: string): Promise<void> {
 async function cleanAllRecovery(): Promise<void> {
   const instId = store.localTargetId || undefined
   if (!instId) return
+  // 0.2.5 WP7: bulk deletion of leftovers requires explicit confirmation.
+  const confirmed = await new Promise<boolean>((resolve) => {
+    dialog.warning({
+      title: t('nodes.recoveryCleanAllConfirmTitle'),
+      content: t('nodes.recoveryCleanAllConfirmBody', { n: recovery.value.length }),
+      positiveText: t('nodes.recoveryCleanAll'),
+      negativeText: t('common.cancel'),
+      onPositiveClick: () => resolve(true),
+      onNegativeClick: () => resolve(false),
+      onClose: () => resolve(false),
+      onMaskClick: () => resolve(false)
+    })
+  })
+  if (!confirmed) return
   recoveryBusy.value = '*'
   try {
     const result = await ipc('node.recoveryCleanAll', instId)
@@ -962,10 +976,13 @@ async function removeSnapshot(id: string): Promise<void> {
   }
 }
 
-onMounted(() => {
-  applyFocus()
+onMounted(async () => {
   selectNodeOpInstance(store.activeInstanceId || '')
-  void refresh()
+  // 0.2.5 WP7: a cold deep link must land on a loaded pack list before focus
+  // is applied; the old fire-and-forget order reported "not found" and never
+  // scrolled/highlighted.
+  await refresh()
+  await applyFocus()
 })
 
 // Switching the active instance must re-scan packs/conflicts/snapshots.

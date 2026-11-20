@@ -246,4 +246,50 @@ describe('self-update stream & install (0.1.13)', () => {
     expect(s.status).toBe('available')
     expect(s.availableVersion).toBe('9.9.9')
   })
+
+  it('rejects an update published outside the ComfyPilot GitHub repository', async () => {
+    h.packaged = true
+    const mod = await import('../../src/main/services/appUpdate')
+    await mod.checkAppUpdate()
+    emit('update-available', {
+      version: '9.9.9',
+      files: [{ url: 'https://evil.example/ComfyPilot-9.9.9.exe' }]
+    })
+    const s = mod.getLastAppUpdateStatus()
+    expect(s.status).toBe('error')
+    expect(s.error).toMatch(/publisher/i)
+  })
+
+  it('rejects an untrusted downloaded update and never auto-installs on quit', async () => {
+    h.packaged = true
+    const mod = await import('../../src/main/services/appUpdate')
+    const updater = (await import('electron-updater')).autoUpdater as {
+      autoInstallOnAppQuit?: boolean
+    }
+    updater.autoInstallOnAppQuit = true
+    await mod.initAppUpdate({ enableAutoCheckUpdates: false })
+    expect(updater.autoInstallOnAppQuit).toBe(false)
+    emit('update-downloaded', {
+      version: '9.9.9',
+      files: [{ url: 'http://github.com/ThzxxArt/ComfyPilot/releases/download/v9/9.9.9.exe' }]
+    })
+    const s = mod.getLastAppUpdateStatus()
+    expect(s.status).toBe('error')
+    expect(s.error).toMatch(/untrusted publisher/i)
+  })
+
+  it('accepts a GitHub-hosted ComfyPilot release file', async () => {
+    h.packaged = true
+    const mod = await import('../../src/main/services/appUpdate')
+    await mod.checkAppUpdate()
+    emit('update-available', {
+      version: '9.9.9',
+      files: [
+        {
+          url: 'https://github.com/ThzxxArt/ComfyPilot/releases/download/v9.9.9/ComfyPilot.exe'
+        }
+      ]
+    })
+    expect(mod.getLastAppUpdateStatus().status).toBe('available')
+  })
 })

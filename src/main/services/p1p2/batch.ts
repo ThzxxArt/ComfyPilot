@@ -774,13 +774,7 @@ export class BatchService extends EventEmitter {
       // 0.2.5 WP9: 30s of empty history is normal while a job waits in a busy
       // GPU queue. Only declare prompts lost when /queue no longer knows them.
       if (consecutiveEmpty >= 12 && settled.size === 0) {
-        const queue: { running: string[]; pending: string[] } = await client
-          .queueState()
-          .catch(() => ({ running: [] as string[], pending: [] as string[] }))
-        const stillQueued = pending.some(
-          (p) => queue.running.includes(p) || queue.pending.includes(p)
-        )
-        if (stillQueued) {
+        if (await this.isPromptStillQueued(client, pending)) {
           deadline = Math.min(Date.now() + 24 * 60 * 60 * 1000, Date.now() + baseDeadline)
           consecutiveEmpty = 0
         } else {
@@ -798,6 +792,21 @@ export class BatchService extends EventEmitter {
       this.emit('progress', live)
     }
     return settled
+  }
+
+  /**
+   * 0.2.5 WP9: an empty /history window is not proof a prompt is lost while
+   * ComfyUI still reports it in /queue. A queue probe failure fails closed
+   * (treated as "not queued") so a broken endpoint cannot loop forever.
+   */
+  private async isPromptStillQueued(client: ComfyApiClient, pending: string[]): Promise<boolean> {
+    let queue: { running: string[]; pending: string[] } = { running: [], pending: [] }
+    try {
+      queue = await client.queueState()
+    } catch {
+      return false
+    }
+    return pending.some((p) => queue.running.includes(p) || queue.pending.includes(p))
   }
 
   private resolveHistoryOutput(

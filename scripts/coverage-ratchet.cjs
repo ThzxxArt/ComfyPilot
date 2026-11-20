@@ -12,7 +12,9 @@
 const fs = require('fs')
 const path = require('path')
 
-const root = path.join(__dirname, '..')
+const root = process.env.CP_GATE_ROOT
+  ? path.resolve(process.env.CP_GATE_ROOT)
+  : path.join(__dirname, '..')
 const lcovPath = path.join(root, 'coverage', 'lcov.info')
 const baselinePath = path.join(root, 'coverage-baseline.json')
 const MAX_DROP = 1
@@ -70,6 +72,14 @@ for (const [file, c] of files) {
 }
 
 const update = process.argv.includes('--update')
+const accepted = process.argv.includes('--accept')
+const allowNew = new Set(
+  (process.argv.find((a) => a.startsWith('--allow-new=')) || '')
+    .slice('--allow-new='.length)
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+)
 const baseline = fs.existsSync(baselinePath)
   ? JSON.parse(fs.readFileSync(baselinePath, 'utf-8'))
   : {}
@@ -84,19 +94,59 @@ if (!update && Object.keys(baseline).length === 0) {
 }
 
 if (update) {
+  if (!accepted) {
+    console.error('[ratchet] --update requires --accept (CI rejects silent baseline rewrites)')
+    process.exit(1)
+  }
+  const removed = Object.keys(baseline).filter(
+    (file) => !results.has(file) && !allowNew.has(`deleted:${file}`)
+  )
+  if (removed.length) {
+    for (const file of removed) console.error('[ratchet] MISSING FROM REPORT ' + file)
+    console.error(
+      '[ratchet] refusing to drop files from the baseline; declare a real deletion with --allow-new=deleted:<path>'
+    )
+    process.exit(1)
+  }
+  const newLow = [...results.entries()].filter(
+    ([file, m]) => !baseline[file] && !allowNew.has(file) && m.lines < 30
+  )
+  if (newLow.length) {
+    for (const [file, m] of newLow) {
+      console.error(`[ratchet] NEW FILE BELOW 30%: ${file} lines=${m.lines.toFixed(2)}%`)
+    }
+    console.error('[ratchet] add tests for new files before accepting the baseline')
+    process.exit(1)
+  }
+  // Baseline is monotonic: existing floors are NEVER lowered by --update.
+  // New files are added at their measured values; files that improved are
+  // raised so the ratchet actually tightens over time.
   const next = {}
-  for (const [file, metrics] of [...results.entries()].sort()) next[file] = metrics
+  for (const [file, metrics] of [...results.entries()].sort()) {
+    const before = baseline[file]
+    next[file] = before
+      ? {
+          lines: Math.max(Number(before.lines) || 0, metrics.lines),
+          branches: Math.max(Number(before.branches) || 0, metrics.branches),
+          functions: Math.max(Number(before.functions) || 0, metrics.functions)
+        }
+      : metrics
+  }
   fs.writeFileSync(baselinePath, JSON.stringify(next, null, 2) + '\n')
-  console.log(`[ratchet] baseline written (${Object.keys(next).length} files)`)
+  console.log(`[ratchet] baseline written (${Object.keys(next).length} files, monotonic)`)
   process.exit(0)
 }
 
 const drops = []
 const gains = []
+const newLow = []
 for (const [file, metrics] of results) {
   const was = baseline[file]
   if (!was) {
     gains.push(file)
+    // New files must carry real tests. 30% lines is the floor; 0% is never ok.
+    if (metrics.lines < 30 && !allowNew.has(file))
+      newLow.push(`${file} lines=${metrics.lines.toFixed(2)}%`)
     continue
   }
   for (const metric of ['lines', 'branches', 'functions']) {
@@ -108,13 +158,19 @@ for (const [file, metrics] of results) {
   }
 }
 for (const d of drops) console.error('[ratchet] DROP ' + d)
-if (drops.length) {
+for (const n of newLow) console.error('[ratchet] NEW FILE BELOW 30% ' + n)
+// Every baseline file must still be produced by the suite. A deleted/renamed
+// module requires an explicit --allow-new=deleted:<path> declaration.
+const missing = Object.keys(baseline).filter(
+  (file) => !results.has(file) && !allowNew.has(`deleted:${file}`)
+)
+for (const m of missing) console.error('[ratchet] MISSING FROM REPORT ' + m)
+if (drops.length || newLow.length || missing.length) {
   console.error(
-    `\n[ratchet] ${drops.length} file(s) dropped more than ${MAX_DROP}pp. ` +
-      'Fix the regression, or accept it explicitly with `node scripts/coverage-ratchet.cjs --update`.'
+    `\n[ratchet] ${drops.length} drop(s), ${newLow.length} low new file(s), ${missing.length} missing file(s). ` +
+      'Fix the regression, or accept explicitly with `node scripts/coverage-ratchet.cjs --update --accept`.'
   )
   process.exit(1)
 }
-if (gains.length)
-  console.log(`[ratchet] ${gains.length} new file(s) not in baseline (informational)`)
+if (gains.length) console.log(`[ratchet] ${gains.length} new file(s) accepted at >=30% lines`)
 console.log(`[ratchet] OK — ${results.size} files compared`)

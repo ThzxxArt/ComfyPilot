@@ -223,6 +223,34 @@ describe('capabilityService (0.1.10)', () => {
     expect(caps!.assetsApi).toBe(false)
   })
 
+  it('uses the effective argv port for the probe base URL', async () => {
+    const { instanceBaseUrl } = await import('../../src/main/services/capabilities')
+    expect(instanceBaseUrl({ ...instanceConfigs[0], extraArgs: ['--port', '9999'] } as never)).toBe(
+      'http://127.0.0.1:9999'
+    )
+    expect(instanceBaseUrl({ ...instanceConfigs[0], listen: '::1' } as never)).toBe(
+      'http://[::1]:8188'
+    )
+  })
+
+  it('caches object_info node attribution and invalidates it', async () => {
+    const { capabilityService } = await fresh()
+    routes.set('/object_info', () =>
+      json({ KSampler: { python_module: 'custom_nodes.Pack.nodes' } })
+    )
+    const map = await capabilityService.nodeTypeMap('inst-a')
+    expect(map?.types.has('KSampler')).toBe(true)
+    expect(map?.moduleByType.get('KSampler')).toBe('Pack')
+    expect(capabilityService.pythonModuleForTypeCached('inst-a', 'KSampler')).toBe('Pack')
+    // Cached path + unknown instance/id branches.
+    expect((await capabilityService.nodeTypeMap('inst-a'))?.types.has('KSampler')).toBe(true)
+    expect(await capabilityService.nodeTypeMap('missing')).toBeNull()
+    expect(capabilityService.pythonModuleForTypeCached('missing', 'KSampler')).toBeUndefined()
+    capabilityService.invalidate('inst-a')
+    expect(capabilityService.pythonModuleForTypeCached('inst-a', 'KSampler')).toBeUndefined()
+    capabilityService.invalidate()
+  })
+
   it('reports assetsApi=false on older builds where the route does not exist', async () => {
     const { capabilityService } = await fresh()
     routes.set('/system_stats', () => json(fullStats))

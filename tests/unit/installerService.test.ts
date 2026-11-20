@@ -667,6 +667,26 @@ describe('installer service internals', () => {
       expect(existsSync(join(comfyDir, 'main.py'))).toBe(true)
     })
 
+    it('rejects an http mirror and a checksum mismatch', async () => {
+      const { installerService } = await import('../../src/main/services/installer')
+      const anySvc = installerService as unknown as {
+        fetchComfyZip: (d: string, token?: object, sha?: string) => Promise<string>
+      }
+      const { saveSettings } = await import('../../src/main/services/db')
+      saveSettings({ githubEndpoint: 'http://insecure.example/' })
+      await expect(anySvc.fetchComfyZip(join(ROOT, 'zip-http', 'ComfyUI'))).rejects.toThrow(/https/)
+      saveSettings({ githubEndpoint: '' })
+      mkdirSync(join(ROOT, 'zip-sha'), { recursive: true })
+      h.fetchImpl = async () =>
+        new Response(Buffer.from('payload'), {
+          status: 200,
+          headers: { 'content-length': '7' }
+        })
+      await expect(
+        anySvc.fetchComfyZip(join(ROOT, 'zip-sha', 'ComfyUI'), undefined, 'a'.repeat(64))
+      ).rejects.toThrow(/checksum mismatch/i)
+    })
+
     it('throws on non-ok HTTP', async () => {
       const { installerService } = await import('../../src/main/services/installer')
       const anySvc = installerService as unknown as { fetchComfyZip: (d: string) => Promise<void> }

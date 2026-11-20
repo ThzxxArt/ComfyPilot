@@ -119,7 +119,9 @@ async function resolveCivitaiDownloadInfo(
       const apiName = primary?.name ? basename(String(primary.name)) : undefined
       if (!fileName && apiName) fileName = apiName
       const model = (body.model || {}) as Record<string, unknown>
-      const images = Array.isArray(body.images) ? (body.images as Array<Record<string, unknown>>) : []
+      const images = Array.isArray(body.images)
+        ? (body.images as Array<Record<string, unknown>>)
+        : []
       metadata = {
         versionId,
         modelId: model.id,
@@ -934,8 +936,7 @@ export class ModelService extends EventEmitter {
           )
           if (!rec || !task.metadata) return
           const civitai = task.metadata.civitai as
-            | { trainedWords?: unknown; previewUrl?: unknown }
-            | undefined
+            { trainedWords?: unknown; previewUrl?: unknown } | undefined
           const trainedWords = Array.isArray(civitai?.trainedWords)
             ? (civitai!.trainedWords as unknown[]).map(String)
             : rec.civitaiTrainedWords
@@ -1685,7 +1686,9 @@ export class ModelService extends EventEmitter {
         // extra_model_paths.yaml roots are already visible to the scanner —
         // reporting them as "uncovered" would be a false alarm.
         ...parseExtraModelPaths(undefined, false, { modelOnly: true }),
-        ...loadInstanceConfigsSafe().map((c) => (c.path ? resolveEffectiveInstance(c).dirs.models : ''))
+        ...loadInstanceConfigsSafe().map((c) =>
+          c.path ? resolveEffectiveInstance(c).dirs.models : ''
+        )
       ]
         .filter(Boolean)
         .map((r) => normalizeForCompare(String(r)))

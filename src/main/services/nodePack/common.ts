@@ -342,7 +342,10 @@ export function detectCustomNodesRoot(instanceIdOrPath?: string): string {
 function effectiveCustomNodesForPath(instancePath: string): string {
   const wanted = instancePath.replace(/\\/g, '/').toLowerCase()
   const config = loadInstanceConfigs().find(
-    (c) => String(c.path || '').replace(/\\/g, '/').toLowerCase() === wanted
+    (c) =>
+      String(c.path || '')
+        .replace(/\\/g, '/')
+        .toLowerCase() === wanted
   )
   if (config) return resolveEffectiveInstance(config).dirs.customNodes
   return join(instancePath, 'custom_nodes')

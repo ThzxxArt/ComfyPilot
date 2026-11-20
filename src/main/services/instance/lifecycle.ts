@@ -416,7 +416,9 @@ async function startInner(
           const cmd = await processCommandLine(ledger.pid)
           const expectPath = normalizeForCompare(config.path).toLowerCase()
           const cmdNorm = normalizeForCompare(String(cmd || '')).toLowerCase()
-          owned = Boolean(cmdNorm && /main\.py/.test(cmdNorm) && expectPath && cmdNorm.includes(expectPath))
+          owned = Boolean(
+            cmdNorm && /main\.py/.test(cmdNorm) && expectPath && cmdNorm.includes(expectPath)
+          )
         }
         if (!owned && !opts?.adoptExternal) {
           const e = new Error(

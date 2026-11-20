@@ -156,4 +156,31 @@ describe('ComfyApiClient jobs API (0.1.10)', () => {
     const del = calls.find((c) => c.url.includes('/queue') && c.init?.method === 'POST')!
     expect((del.init?.headers as Record<string, string>)['Content-Type']).toBe('application/json')
   })
+
+  it('queueState returns prompt ids still running/pending, and [] on a bad response', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              queue_running: [[0, 'running-1', {}, {}, []]],
+              queue_pending: [[1, 'pending-1', {}, {}, []]]
+            }),
+            { status: 200 }
+          )
+      )
+    )
+    const { ComfyApiClient } = await import('../../src/main/services/comfyApi')
+    const client = new ComfyApiClient('http://127.0.0.1:8188')
+    await expect(client.queueState()).resolves.toEqual({
+      running: ['running-1'],
+      pending: ['pending-1']
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('x', { status: 500 }))
+    )
+    await expect(client.queueState()).resolves.toEqual({ running: [], pending: [] })
+  })
 })

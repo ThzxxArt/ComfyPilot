@@ -711,10 +711,7 @@ export class InstallerService extends EventEmitter {
           // 0.2.5 WP6: official Windows ROCm 10.0 wheels exist; never silently
           // install CPU torch on an AMD GPU box.
           recommendedTorch = process.platform === 'linux' ? 'rocm7.2' : 'rocm10.0'
-          notes =
-            process.platform === 'linux'
-              ? 'AMD ROCm 7.2 (Linux)'
-              : 'AMD ROCm 10.0 (Windows)'
+          notes = process.platform === 'linux' ? 'AMD ROCm 7.2 (Linux)' : 'AMD ROCm 10.0 (Windows)'
           notesKey = process.platform === 'linux' ? 'gpu.amdLinux' : 'gpu.amdWindows'
         } else if (vendor.includes('intel') || /arc|xe/i.test(model)) {
           recommendedTorch =
@@ -1553,7 +1550,10 @@ export class InstallerService extends EventEmitter {
         frontendVersion: samePath?.frontendVersion || '',
         pinned: Boolean(samePath?.pinned),
         pythonVersion: '3.13.18',
-        migrationState: 'none'
+        migrationState: 'none',
+        // 0.2.5 WP5: new installs default to stable; a re-install keeps the
+        // user's existing channel (legacy undefined = nightly).
+        updateChannel: samePath?.updateChannel || (samePath ? undefined : 'stable')
       }
       upsertInstanceConfig(config)
       if (this.progress) {

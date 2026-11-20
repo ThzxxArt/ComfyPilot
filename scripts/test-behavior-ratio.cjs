@@ -12,7 +12,7 @@ const fs = require('fs')
 const path = require('path')
 
 const root = path.join(__dirname, '..', 'tests')
-const TARGET = 60
+const TARGET = 90
 
 function walk(dir, out = []) {
   for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -26,7 +26,9 @@ function walk(dir, out = []) {
 /** Split a file into test cases: name + body text. */
 function cases(src) {
   const out = []
-  const re = /\b(?:it|test)(?:\.\w+)?\(\s*(['"`])([\s\S]*?)\1\s*,\s*(?:async\s*)?\(\)\s*=>\s*\{/g
+  // Supports plain it(), it.each(table)('…', (x) => …) and options objects.
+  const re =
+    /\b(?:it|test)(?:\.\w+)*(?:\([^)]*\))?\(\s*(['"`])([\s\S]*?)\1\s*,\s*(?:\{[^}]*\}\s*,\s*)?(?:async\s*)?\([^)]*\)\s*=>\s*\{/g
   let m
   while ((m = re.exec(src))) {
     const start = re.lastIndex

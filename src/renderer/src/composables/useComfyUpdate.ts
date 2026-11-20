@@ -646,6 +646,8 @@ export function describeNodeError(t: TranslateFn, err: unknown): string {
   if (code === 'OP_CANCELLED') return t('nodes.opCancelled')
   if (code === 'DISABLE_CONFLICT') return t('nodes.disableConflict')
   if (code === 'ENABLE_CONFLICT') return t('nodes.enableConflict')
+  if (code === 'TARGET_REQUIRED') return t('common.targetRequired')
+  if (code === 'REMOTE_NOT_SUPPORTED') return t('common.remoteNotSupported')
   return msg
 }
 

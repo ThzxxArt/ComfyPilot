@@ -1,17 +1,22 @@
 {
+  "src/main/control.ts": {
+    "lines": 74.59,
+    "branches": 55.1,
+    "functions": 66.67
+  },
   "src/main/index.ts": {
-    "lines": 46.98,
-    "branches": 25.66,
-    "functions": 19.83
+    "lines": 49.79,
+    "branches": 30.08,
+    "functions": 23.53
   },
   "src/main/ipc/context.ts": {
-    "lines": 41.24,
-    "branches": 22.44,
-    "functions": 55.26
+    "lines": 58.85,
+    "branches": 43.46,
+    "functions": 69.05
   },
   "src/main/ipc/contract.ts": {
-    "lines": 99.24,
-    "branches": 72.97,
+    "lines": 99.29,
+    "branches": 75.61,
     "functions": 100
   },
   "src/main/ipc/domains/backup.ts": {
@@ -30,9 +35,9 @@
     "functions": 100
   },
   "src/main/ipc/domains/instances.ts": {
-    "lines": 5.77,
-    "branches": 7.61,
-    "functions": 9.09
+    "lines": 20,
+    "branches": 24.4,
+    "functions": 14.63
   },
   "src/main/ipc/domains/issues.ts": {
     "lines": 100,
@@ -55,9 +60,9 @@
     "functions": 11.9
   },
   "src/main/ipc/domains/output.ts": {
-    "lines": 50.6,
-    "branches": 23.44,
-    "functions": 54.55
+    "lines": 56.47,
+    "branches": 28.79,
+    "functions": 59.09
   },
   "src/main/ipc/domains/remote.ts": {
     "lines": 95.45,
@@ -65,7 +70,7 @@
     "functions": 100
   },
   "src/main/ipc/domains/settings.ts": {
-    "lines": 62.86,
+    "lines": 63.89,
     "branches": 55,
     "functions": 61.11
   },
@@ -80,7 +85,7 @@
     "functions": 57.14
   },
   "src/main/ipc/handlers.ts": {
-    "lines": 96.37,
+    "lines": 96.53,
     "branches": 0,
     "functions": 20
   },
@@ -90,9 +95,9 @@
     "functions": 100
   },
   "src/main/services/appUpdate.ts": {
-    "lines": 92.77,
-    "branches": 70.97,
-    "functions": 94.74
+    "lines": 93.27,
+    "branches": 72.5,
+    "functions": 95
   },
   "src/main/services/assetsApi.ts": {
     "lines": 100,
@@ -100,8 +105,8 @@
     "functions": 100
   },
   "src/main/services/backup.ts": {
-    "lines": 87.76,
-    "branches": 66.78,
+    "lines": 91.73,
+    "branches": 69.52,
     "functions": 84
   },
   "src/main/services/bootTiming.ts": {
@@ -115,9 +120,9 @@
     "functions": 88.64
   },
   "src/main/services/capabilities.ts": {
-    "lines": 68.13,
-    "branches": 66.3,
-    "functions": 75
+    "lines": 100,
+    "branches": 85.54,
+    "functions": 100
   },
   "src/main/services/childEnv.ts": {
     "lines": 100,
@@ -127,7 +132,7 @@
   "src/main/services/comfyApi.ts": {
     "lines": 90.83,
     "branches": 69.09,
-    "functions": 88.89
+    "functions": 90.48
   },
   "src/main/services/comfyVersion.ts": {
     "lines": 100,
@@ -155,8 +160,8 @@
     "functions": 0
   },
   "src/main/services/db/jsonc.ts": {
-    "lines": 90.05,
-    "branches": 82.52,
+    "lines": 90.2,
+    "branches": 83.33,
     "functions": 88.46
   },
   "src/main/services/db/migration.ts": {
@@ -215,14 +220,14 @@
     "functions": 7.69
   },
   "src/main/services/doctor.ts": {
-    "lines": 91.6,
-    "branches": 74.67,
-    "functions": 95.83
+    "lines": 94.84,
+    "branches": 77.07,
+    "functions": 100
   },
   "src/main/services/env.ts": {
-    "lines": 58.87,
-    "branches": 50.14,
-    "functions": 55.88
+    "lines": 82.06,
+    "branches": 68.24,
+    "functions": 76.47
   },
   "src/main/services/envLock.ts": {
     "lines": 100,
@@ -237,16 +242,16 @@
   "src/main/services/installer.ts": {
     "lines": 89.57,
     "branches": 80.98,
-    "functions": 85.71
+    "functions": 85.87
   },
   "src/main/services/instance/diagnostics.ts": {
-    "lines": 82.26,
+    "lines": 83.13,
     "branches": 70,
-    "functions": 66.67
+    "functions": 100
   },
   "src/main/services/instance/discovery.ts": {
-    "lines": 95,
-    "branches": 98.57,
+    "lines": 95.59,
+    "branches": 98.65,
     "functions": 100
   },
   "src/main/services/instance/envProbe.ts": {
@@ -254,38 +259,43 @@
     "branches": 90.91,
     "functions": 100
   },
+  "src/main/services/instance/health.ts": {
+    "lines": 87.14,
+    "branches": 73.64,
+    "functions": 81.48
+  },
   "src/main/services/instance/index.ts": {
-    "lines": 96.15,
+    "lines": 98.11,
     "branches": 66.67,
-    "functions": 95.56
+    "functions": 97.83
   },
   "src/main/services/instance/launchArgs.ts": {
     "lines": 100,
-    "branches": 92.06,
+    "branches": 92.96,
     "functions": 100
   },
   "src/main/services/instance/lifecycle.ts": {
-    "lines": 89.4,
-    "branches": 71.75,
-    "functions": 88.73
+    "lines": 89.74,
+    "branches": 73.97,
+    "functions": 92.21
   },
   "src/main/services/instance/logs.ts": {
-    "lines": 98.15,
+    "lines": 98.21,
     "branches": 90.7,
     "functions": 100
   },
   "src/main/services/instance/python.ts": {
     "lines": 96.3,
-    "branches": 88.89,
+    "branches": 90,
     "functions": 100
   },
   "src/main/services/instance/runtime.ts": {
     "lines": 100,
-    "branches": 95.74,
+    "branches": 97.37,
     "functions": 100
   },
   "src/main/services/instance/selfcheck.ts": {
-    "lines": 55.56,
+    "lines": 60.38,
     "branches": 52.38,
     "functions": 66.67
   },
@@ -295,9 +305,9 @@
     "functions": 100
   },
   "src/main/services/issueHub.ts": {
-    "lines": 77.99,
-    "branches": 42.42,
-    "functions": 80
+    "lines": 79.01,
+    "branches": 44.12,
+    "functions": 82.86
   },
   "src/main/services/launchArgCatalog.ts": {
     "lines": 100,
@@ -314,20 +324,25 @@
     "branches": 91.67,
     "functions": 100
   },
+  "src/main/services/manager.ts": {
+    "lines": 78.71,
+    "branches": 70.4,
+    "functions": 61.54
+  },
   "src/main/services/media.ts": {
     "lines": 95.78,
     "branches": 83.75,
     "functions": 93.75
   },
   "src/main/services/model.ts": {
-    "lines": 56.5,
-    "branches": 50.35,
-    "functions": 56.38
+    "lines": 62.2,
+    "branches": 56.55,
+    "functions": 62.14
   },
   "src/main/services/monitor.ts": {
-    "lines": 73.72,
-    "branches": 58.04,
-    "functions": 69.09
+    "lines": 74.33,
+    "branches": 58.24,
+    "functions": 69.64
   },
   "src/main/services/netProbe.ts": {
     "lines": 64.86,
@@ -335,9 +350,9 @@
     "functions": 87.5
   },
   "src/main/services/nodePack/common.ts": {
-    "lines": 92.24,
+    "lines": 93.5,
     "branches": 83.33,
-    "functions": 92
+    "functions": 96.3
   },
   "src/main/services/nodePack/deps.ts": {
     "lines": 82.43,
@@ -355,9 +370,9 @@
     "functions": 80
   },
   "src/main/services/nodePack/list.ts": {
-    "lines": 85.6,
-    "branches": 80.95,
-    "functions": 95
+    "lines": 87.32,
+    "branches": 84.64,
+    "functions": 95.65
   },
   "src/main/services/nodePack/ops.ts": {
     "lines": 100,
@@ -375,9 +390,9 @@
     "functions": 100
   },
   "src/main/services/nodePack/update.ts": {
-    "lines": 93.39,
-    "branches": 83.43,
-    "functions": 91.49
+    "lines": 93.61,
+    "branches": 83.62,
+    "functions": 92.16
   },
   "src/main/services/ops.ts": {
     "lines": 32.53,
@@ -387,7 +402,7 @@
   "src/main/services/p1p2/batch.ts": {
     "lines": 90.82,
     "branches": 77.97,
-    "functions": 88.89
+    "functions": 89.19
   },
   "src/main/services/p1p2/helpers.ts": {
     "lines": 100,
@@ -395,19 +410,24 @@
     "functions": 100
   },
   "src/main/services/p1p2/market.ts": {
-    "lines": 96.77,
-    "branches": 76.92,
+    "lines": 97.14,
+    "branches": 79.41,
     "functions": 100
   },
   "src/main/services/p1p2/output.ts": {
-    "lines": 87.08,
-    "branches": 80.18,
-    "functions": 90.63
+    "lines": 89.59,
+    "branches": 81.4,
+    "functions": 94.12
   },
   "src/main/services/p1p2/remote.ts": {
     "lines": 100,
     "branches": 85.71,
     "functions": 100
+  },
+  "src/main/services/pathCapability.ts": {
+    "lines": 85.71,
+    "branches": 66.67,
+    "functions": 86.67
   },
   "src/main/services/pipOps.ts": {
     "lines": 94.65,
@@ -430,9 +450,9 @@
     "functions": 86.36
   },
   "src/main/services/pythonMigration.ts": {
-    "lines": 73.03,
-    "branches": 40,
-    "functions": 80
+    "lines": 74.07,
+    "branches": 41.24,
+    "functions": 83.33
   },
   "src/main/services/registry.ts": {
     "lines": 47.27,
@@ -445,18 +465,18 @@
     "functions": 88
   },
   "src/main/services/rendererEntry.ts": {
-    "lines": 21.43,
-    "branches": 29.41,
+    "lines": 56,
+    "branches": 51.85,
     "functions": 100
   },
   "src/main/services/secretStorage.ts": {
-    "lines": 75,
-    "branches": 66.67,
-    "functions": 80
+    "lines": 91.67,
+    "branches": 78.57,
+    "functions": 100
   },
   "src/main/services/security.ts": {
-    "lines": 94.78,
-    "branches": 83.5,
+    "lines": 94.9,
+    "branches": 84.26,
     "functions": 96.67
   },
   "src/main/services/session.ts": {
@@ -480,9 +500,9 @@
     "functions": 60
   },
   "src/main/services/tray.ts": {
-    "lines": 56.86,
-    "branches": 47.83,
-    "functions": 47.22
+    "lines": 58.93,
+    "branches": 48.15,
+    "functions": 52.27
   },
   "src/main/services/updater.ts": {
     "lines": 91.7,
@@ -525,8 +545,8 @@
     "functions": 100
   },
   "src/renderer/src/App.vue": {
-    "lines": 56.54,
-    "branches": 32.43,
+    "lines": 56.9,
+    "branches": 32.8,
     "functions": 56.84
   },
   "src/renderer/src/components/ComfyUpdateProgressModal.vue": {
@@ -535,14 +555,19 @@
     "functions": 48.72
   },
   "src/renderer/src/components/CommandPalette.vue": {
-    "lines": 21.74,
-    "branches": 5.13,
-    "functions": 9.52
+    "lines": 48.15,
+    "branches": 29.79,
+    "functions": 37.5
   },
   "src/renderer/src/components/ErrorBoundary.vue": {
-    "lines": 57.14,
+    "lines": 57.89,
     "branches": 25,
-    "functions": 0
+    "functions": 16.67
+  },
+  "src/renderer/src/components/HealthBadge.vue": {
+    "lines": 88.24,
+    "branches": 43.75,
+    "functions": 100
   },
   "src/renderer/src/components/IndeterminateBar.vue": {
     "lines": 100,
@@ -550,8 +575,8 @@
     "functions": 100
   },
   "src/renderer/src/components/LaunchProfileEditor.vue": {
-    "lines": 71.95,
-    "branches": 58.82,
+    "lines": 72.94,
+    "branches": 61.82,
     "functions": 54.47
   },
   "src/renderer/src/components/ListSkeleton.vue": {
@@ -585,14 +610,14 @@
     "functions": 100
   },
   "src/renderer/src/components/TargetBanner.vue": {
-    "lines": 87.5,
-    "branches": 57.14,
+    "lines": 100,
+    "branches": 71.43,
     "functions": 100
   },
   "src/renderer/src/components/TaskCenter.vue": {
-    "lines": 44,
-    "branches": 8.51,
-    "functions": 30
+    "lines": 46.67,
+    "branches": 8.89,
+    "functions": 32.26
   },
   "src/renderer/src/composables/useAsyncAction.ts": {
     "lines": 100,
@@ -601,7 +626,7 @@
   },
   "src/renderer/src/composables/useAutoFollow.ts": {
     "lines": 100,
-    "branches": 76.92,
+    "branches": 84.62,
     "functions": 100
   },
   "src/renderer/src/composables/useComfyUpdate.ts": {
@@ -620,9 +645,9 @@
     "functions": 100
   },
   "src/renderer/src/composables/useIpc.ts": {
-    "lines": 64.71,
+    "lines": 65.71,
     "branches": 73.68,
-    "functions": 46.15
+    "functions": 46.43
   },
   "src/renderer/src/composables/useLaunch.ts": {
     "lines": 6.48,
@@ -660,9 +685,9 @@
     "functions": 0
   },
   "src/renderer/src/stores/app.ts": {
-    "lines": 76.86,
-    "branches": 52.22,
-    "functions": 80
+    "lines": 77.78,
+    "branches": 55.56,
+    "functions": 80.49
   },
   "src/renderer/src/styles/tokens.ts": {
     "lines": 16.67,
@@ -715,9 +740,9 @@
     "functions": 15
   },
   "src/renderer/src/views/dashboard/DashboardView.vue": {
-    "lines": 56.16,
-    "branches": 32.95,
-    "functions": 33.33
+    "lines": 57.89,
+    "branches": 34.81,
+    "functions": 33.8
   },
   "src/renderer/src/views/doctor/DoctorView.vue": {
     "lines": 40.54,
@@ -725,9 +750,9 @@
     "functions": 28
   },
   "src/renderer/src/views/embed/EmbedView.vue": {
-    "lines": 63.06,
-    "branches": 40,
-    "functions": 57.89
+    "lines": 70.59,
+    "branches": 47.46,
+    "functions": 64.1
   },
   "src/renderer/src/views/install/InstallView.vue": {
     "lines": 47.53,
@@ -735,8 +760,8 @@
     "functions": 28.67
   },
   "src/renderer/src/views/instances/InstanceDetailView.vue": {
-    "lines": 36.89,
-    "branches": 18.54,
+    "lines": 36.92,
+    "branches": 19.64,
     "functions": 34.58
   },
   "src/renderer/src/views/instances/InstancesView.vue": {
@@ -745,9 +770,9 @@
     "functions": 15.42
   },
   "src/renderer/src/views/issues/IssueCenterView.vue": {
-    "lines": 48.65,
-    "branches": 23.91,
-    "functions": 32.65
+    "lines": 66.12,
+    "branches": 44,
+    "functions": 62.96
   },
   "src/renderer/src/views/models/ModelsView.vue": {
     "lines": 33.65,
@@ -770,14 +795,14 @@
     "functions": 14.4
   },
   "src/renderer/src/views/output/OutputView.vue": {
-    "lines": 33.02,
-    "branches": 17.12,
+    "lines": 33.08,
+    "branches": 17.19,
     "functions": 17.51
   },
   "src/renderer/src/views/settings/SettingsView.vue": {
-    "lines": 41.48,
-    "branches": 32.21,
-    "functions": 41.18
+    "lines": 42,
+    "branches": 34.62,
+    "functions": 41.26
   },
   "src/renderer/src/views/workflows/BatchView.vue": {
     "lines": 24.51,
@@ -785,7 +810,7 @@
     "functions": 10.24
   },
   "src/renderer/src/views/workflows/WorkflowsView.vue": {
-    "lines": 26.43,
+    "lines": 27.21,
     "branches": 15.6,
     "functions": 11.5
   },
@@ -804,9 +829,14 @@
     "branches": 72.86,
     "functions": 100
   },
+  "src/shared/instanceLayout.ts": {
+    "lines": 90.52,
+    "branches": 81.21,
+    "functions": 92.31
+  },
   "src/shared/launchArgs.ts": {
-    "lines": 98.78,
-    "branches": 94.25,
+    "lines": 99.44,
+    "branches": 95.14,
     "functions": 100
   },
   "src/shared/logLine.ts": {
@@ -825,8 +855,8 @@
     "functions": 100
   },
   "src/shared/outputDir.ts": {
-    "lines": 94.12,
-    "branches": 86.96,
+    "lines": 100,
+    "branches": 100,
     "functions": 100
   },
   "src/shared/pipAliases.ts": {
@@ -847,6 +877,11 @@
   "src/shared/preflight.ts": {
     "lines": 100,
     "branches": 93.65,
+    "functions": 100
+  },
+  "src/shared/types/health.ts": {
+    "lines": 100,
+    "branches": 100,
     "functions": 100
   },
   "src/shared/types/ipc.ts": {

@@ -220,6 +220,8 @@ const themeOverrides = {
 }
 
 const activeKey = computed(() => {
+  // 0.2.5 WP7: /embed is its own surface, not Dashboard.
+  if (route.path === '/embed') return 'embed'
   const hit = nav.value.find(
     (n) => route.path === n.path || (n.path !== '/' && route.path.startsWith(n.path))
   )
@@ -632,7 +634,13 @@ async function toggleInstanceRun(): Promise<void> {
           <section class="main">
             <header class="header glass">
               <div class="header-left">
-                <div class="header-title">{{ nav.find((n) => n.key === activeKey)?.label }}</div>
+                <div class="header-title">
+                  {{
+                    activeKey === 'embed'
+                      ? $t('embed.title')
+                      : nav.find((n) => n.key === activeKey)?.label
+                  }}
+                </div>
                 <div class="header-crumb">{{ t('header.crumb') }}</div>
               </div>
               <NSpace align="center" :size="10">

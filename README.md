@@ -55,28 +55,28 @@ ComfyPilot **不替代** ComfyUI 的节点画布。它把画布之外的一切�
 
 ## ✨ 为什么是 ComfyPilot
 
-| 原则 | 说明 |
-| --- | --- |
-| 🎛️ **控制塔，不是编辑器** | 节点画布交给官方 ComfyUI Frontend。ComfyPilot 负责它周围的实例、环境、资产与运行状态。 |
-| 📦 **零预装** | 用户不需要提前安装 Python、Git 或 uv。便携运行时、ComfyUI、torch 与基础模型由一条装机流水线准备。 |
-| 🔍 **只读事实** | 版本、环境、端口、队列与产物都从磁盘、进程、HTTP 与 WebSocket 读取，不靠猜测。 |
-| 🛡️ **根因修复** | 删除保护、realpath 复核、原子恢复、全量门禁；每个正向测试都必须配一个失败/拒绝反例。 |
+| 原则                      | 说明                                                                                              |
+| ------------------------- | ------------------------------------------------------------------------------------------------- |
+| 🎛️ **控制塔，不是编辑器** | 节点画布交给官方 ComfyUI Frontend。ComfyPilot 负责它周围的实例、环境、资产与运行状态。            |
+| 📦 **零预装**             | 用户不需要提前安装 Python、Git 或 uv。便携运行时、ComfyUI、torch 与基础模型由一条装机流水线准备。 |
+| 🔍 **只读事实**           | 版本、环境、端口、队列与产物都从磁盘、进程、HTTP 与 WebSocket 读取，不靠猜测。                    |
+| 🛡️ **根因修复**           | 删除保护、realpath 复核、原子恢复、全量门禁；每个正向测试都必须配一个失败/拒绝反例。              |
 
 <a name="quickstart"></a>
 
 ## 🚀 一分钟上手
 
-| 01 · 下载 | 02 · 一键装机 | 03 · 启动出图 |
-| --- | --- | --- |
-| 安装 Windows x64 安装包。无需预装 Python / Git / uv。 | 选择安装目录与 GPU 通道；自动下载便携运行时、拉取 ComfyUI、安装 torch 与依赖。 | 启动实例 → 打开 Frontend → 下载推荐模型 → 出图。 |
-| [**下载最新版 →**](https://github.com/ThzxxArt/ComfyPilot/releases/latest) | 支持 zip 源码包（默认）或 git clone。 | 完成后可随时检查更新、修复环境或回滚。 |
+| 01 · 下载                                                                  | 02 · 一键装机                                                                  | 03 · 启动出图                                    |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------ |
+| 安装 Windows x64 安装包。无需预装 Python / Git / uv。                      | 选择安装目录与 GPU 通道；自动下载便携运行时、拉取 ComfyUI、安装 torch 与依赖。 | 启动实例 → 打开 Frontend → 下载推荐模型 → 出图。 |
+| [**下载最新版 →**](https://github.com/ThzxxArt/ComfyPilot/releases/latest) | 支持 zip 源码包（默认）或 git clone。                                          | 完成后可随时检查更新、修复环境或回滚。           |
 
 <p align="center">
   <a href="https://github.com/ThzxxArt/ComfyPilot/releases/latest">
     <img src="https://img.shields.io/badge/Download-Windows%20x64-4F6EF7?style=for-the-badge&logo=windows11&logoColor=white" alt="Download ComfyPilot for Windows">
   </a>
-  <a href="https://github.com/ThzxxArt/ComfyPilot/releases/tag/v0.2.4">
-    <img src="https://img.shields.io/badge/Release-v0.2.4-22C55E?style=for-the-badge&logo=github&logoColor=white" alt="ComfyPilot v0.2.4">
+  <a href="https://github.com/ThzxxArt/ComfyPilot/releases/tag/v0.2.5">
+    <img src="https://img.shields.io/badge/Release-v0.2.5-22C55E?style=for-the-badge&logo=github&logoColor=white" alt="ComfyPilot v0.2.5">
   </a>
 </p>
 
@@ -87,19 +87,19 @@ ComfyPilot **不替代** ComfyUI 的节点画布。它把画布之外的一切�
 
 ## 🧭 功能地图
 
-| 图标 | 模块 | 你能做什么 |
-| --- | --- | --- |
-| 🛰️ | **实例控制** | 发现 / 启动 / 停止 / 重启 / 强杀；就绪探测、端口冲突自愈；9 组启动参数、冲突校验、实时预览、按显存推荐；在线能力探测、启动脚本导出、诊断包；ComfyUI 本体检查更新、备份回滚；启动自检与一键修复环境。 |
-| 🧰 | **一键装机** | 自动准备 uv / 便携 Python 3.13 / MinGit；zip 或 git 获取 ComfyUI；按 GPU 推荐 torch 通道；PyPI / Torch / GitHub 镜像测速；断点续传 + SHA256；推荐基础模型。 |
-| 🧠 | **模型库** | 多根扫描、safetensors 元数据、SHA256 去重；断点下载与校验；移动 / 软链 / 改名；存储分析；与运行中实例在线对账；多选批量删除 / 移动。 |
-| 🧩 | **节点包** | Registry / Manager / Git 安装；依赖真实安装；启用 / 禁用 / 锁定；冲突检测；导入冒烟；安装/更新前快照；全量检查更新与一键批量更新；启动加载报告；依赖体检与配方修复。 |
-| 🛒 | **市场** | Comfy Registry 精选浏览与一键安装。 |
-| 🎞️ | **工作流** | JSON / PNG 元数据解析并入库；标签 / 收藏 / 改名 / 删除；ZIP 导出；同步到实例；导入引擎默认工作流；按实例排队。 |
-| 🚀 | **批跑** | 多工作流 × 次数；种子策略 + 尺寸 / steps / cfg 矩阵；真实出图跟踪；取消可撤队；产物关联批次。 |
-| 🖼️ | **产物** | 图像 / 视频 / 音频 / 3D / EXR 全类型索引；真缩略图；灯箱与内嵌播放；排序分页；收藏；批量导出 / 删除；PNG 参数还原为工作流；实例资产库只读增强。 |
-| 📈 | **监控** | CPU / 内存 / 磁盘 / GPU 真实采样；ComfyUI 队列与历史；WebSocket 实时进度；节点级进度；作业列表；清队列 / 中断 / 释放显存；远程实例监控。 |
-| 🩺 | **诊断 / 备份** | Doctor 一键体检与可修复项；结构化运行失败诊断；启动自检；崩溃归因；配置 / 实例 / 节点 / 模型快照与原子恢复。 |
-| 🌐 | **网络** | HTTP / HTTPS / SOCKS5 代理；PyPI / Torch / GitHub / HuggingFace 镜像；测速自动推荐。 |
+| 图标 | 模块            | 你能做什么                                                                                                                                                                                           |
+| ---- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 🛰️   | **实例控制**    | 发现 / 启动 / 停止 / 重启 / 强杀；就绪探测、端口冲突自愈；9 组启动参数、冲突校验、实时预览、按显存推荐；在线能力探测、启动脚本导出、诊断包；ComfyUI 本体检查更新、备份回滚；启动自检与一键修复环境。 |
+| 🧰   | **一键装机**    | 自动准备 uv / 便携 Python 3.13 / MinGit；zip 或 git 获取 ComfyUI；按 GPU 推荐 torch 通道；PyPI / Torch / GitHub 镜像测速；断点续传 + SHA256；推荐基础模型。                                          |
+| 🧠   | **模型库**      | 多根扫描、safetensors 元数据、SHA256 去重；断点下载与校验；移动 / 软链 / 改名；存储分析；与运行中实例在线对账；多选批量删除 / 移动。                                                                 |
+| 🧩   | **节点包**      | Registry / Manager / Git 安装；依赖真实安装；启用 / 禁用 / 锁定；冲突检测；导入冒烟；安装/更新前快照；全量检查更新与一键批量更新；启动加载报告；依赖体检与配方修复。                                 |
+| 🛒   | **市场**        | Comfy Registry 精选浏览与一键安装。                                                                                                                                                                  |
+| 🎞️   | **工作流**      | JSON / PNG 元数据解析并入库；标签 / 收藏 / 改名 / 删除；ZIP 导出；同步到实例；导入引擎默认工作流；按实例排队。                                                                                       |
+| 🚀   | **批跑**        | 多工作流 × 次数；种子策略 + 尺寸 / steps / cfg 矩阵；真实出图跟踪；取消可撤队；产物关联批次。                                                                                                        |
+| 🖼️   | **产物**        | 图像 / 视频 / 音频 / 3D / EXR 全类型索引；真缩略图；灯箱与内嵌播放；排序分页；收藏；批量导出 / 删除；PNG 参数还原为工作流；实例资产库只读增强。                                                      |
+| 📈   | **监控**        | CPU / 内存 / 磁盘 / GPU 真实采样；ComfyUI 队列与历史；WebSocket 实时进度；节点级进度；作业列表；清队列 / 中断 / 释放显存；远程实例监控。                                                             |
+| 🩺   | **诊断 / 备份** | Doctor 一键体检与可修复项；结构化运行失败诊断；启动自检；崩溃归因；配置 / 实例 / 节点 / 模型快照与原子恢复。                                                                                         |
+| 🌐   | **网络**        | HTTP / HTTPS / SOCKS5 代理；PyPI / Torch / GitHub / HuggingFace 镜像；测速自动推荐。                                                                                                                 |
 
 <details>
 <summary><b>完整功能详解</b></summary>
@@ -173,8 +173,8 @@ ComfyPilot **不替代** ComfyUI 的节点画布。它把画布之外的一切�
 - **完整中英双语**：装机向导、启动器、诊断、节点、工作流与错误提示均纳入 i18n；CI 强制键对齐。
 - **小屏与可访问性**：名称单行省略 + 悬停全文、描述两行截断、卡片等高；首屏骨架屏；`prefers-reduced-motion`；键盘焦点环与快捷键。
 
-| 主色 | 强调 | 辅助 |
-| --- | --- | --- |
+| 主色         | 强调         | 辅助         |
+| ------------ | ------------ | ------------ |
 | 🟦 `#4F6EF7` | 🟪 `#7C5CFC` | 🩵 `#22D3EE` |
 
 <a name="architecture"></a>
@@ -218,14 +218,14 @@ flowchart TB
 
 ## 🧪 质量工程
 
-| 维度 | 现状 |
-| --- | --- |
-| **测试** | **1930 用例 / 148 文件**；含 `@vue/test-utils` 全页面挂载、preload 桥、Electron 主入口、IPC 域、任务中心与全组件冒烟。 |
-| **覆盖率** | statements **64.64%** · branches **53.84%** · functions **49.48%** · lines **66.80%** |
+| 维度         | 现状                                                                                                                                               |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **测试**     | **1930 用例 / 148 文件**；含 `@vue/test-utils` 全页面挂载、preload 桥、Electron 主入口、IPC 域、任务中心与全组件冒烟。                             |
+| **覆盖率**   | statements **64.64%** · branches **53.84%** · functions **49.48%** · lines **66.80%**                                                              |
 | **覆盖分母** | **172 个运行时代码文件**：`src/main`、`src/preload`、`src/shared`、`src/renderer/src`；仅排除 `.d.ts` 与真实 Electron E2E 覆盖的 `bootstrap.cjs`。 |
-| **CI** | Ubuntu + Windows 双平台；Node 24.19.0 固定；typecheck / lint / format / i18n / 硬编码 / 行为占比 / 正反例 / coverage / build / asar / E2E。 |
-| **E2E** | 真实 Electron 启动、preload 桥、一次真实 IPC、渲染层 console 错误置红。 |
-| **反例门禁** | 任何含正向断言的测试文件必须至少有一个失败/拒绝用例；禁止 happy-path-only。 |
+| **CI**       | Ubuntu + Windows 双平台；Node 24.19.0 固定；typecheck / lint / format / i18n / 硬编码 / 行为占比 / 正反例 / coverage / build / asar / E2E。        |
+| **E2E**      | 真实 Electron 启动、preload 桥、一次真实 IPC、渲染层 console 错误置红。                                                                            |
+| **反例门禁** | 任何含正向断言的测试文件必须至少有一个失败/拒绝用例；禁止 happy-path-only。                                                                        |
 
 > [!NOTE]
 > **“绝对全面”指分母覆盖全部运行时代码，不是 100% 行覆盖。** 旧版 83% 是手选子集的数字；把 16 个页面视图与 Electron 入口纳入后，真实数字就是上面这组。门禁按实测 −2pp 设置全局下限，并对每个文件执行 `coverage-baseline.json` ratchet。
@@ -236,15 +236,15 @@ flowchart TB
 
 ### 最终用户
 
-| 项 | 要求 |
-| --- | --- |
-| 操作系统 | **Windows 10 / 11**（发布与验证）；macOS / Linux 仅有构建配置，未验证 |
-| 磁盘 | ≥ 20 GB 可用（含 torch 与推荐模型） |
-| GPU | 使用 NVIDIA GPU 加速需自行安装驱动；应用可检测并提示，无法代装 |
-| VC++ Redistributable | Windows 运行 Electron 需要；缺失时启动会提示 |
-| Python / Git / uv | **无需预装**；一键装机自动下载便携运行时 |
+| 项                   | 要求                                                                  |
+| -------------------- | --------------------------------------------------------------------- |
+| 操作系统             | **Windows 10 / 11**（发布与验证）；macOS / Linux 仅有构建配置，未验证 |
+| 磁盘                 | ≥ 20 GB 可用（含 torch 与推荐模型）                                   |
+| GPU                  | 使用 NVIDIA GPU 加速需自行安装驱动；应用可检测并提示，无法代装        |
+| VC++ Redistributable | Windows 运行 Electron 需要；缺失时启动会提示                          |
+| Python / Git / uv    | **无需预装**；一键装机自动下载便携运行时                              |
 
-1. 下载并运行 `ComfyPilot-0.2.4-win-x64.exe`。
+1. 下载并运行 `ComfyPilot-0.2.5-win-x64.exe`。
 2. 打开应用 → 空态三步引导 →「全自动安装」。
 3. 完成后「立即启动并打开 Frontend」→ 下载基础模型 → 出图。
 
@@ -263,35 +263,35 @@ node node_modules/electron/install.js   # 若 Electron 二进制未就绪
 npm run dev
 ```
 
-| 命令 | 用途 |
-| --- | --- |
-| `npm run typecheck` | `vue-tsc` + 主进程 `tsc` |
-| `npm run typecheck:test` | 测试源码 tsc（CI 门禁） |
-| `npm run test` | 单元 + 集成（1930 用例） |
-| `npm run test:coverage` | 覆盖率 + 全局阈值 + 每文件 ratchet |
-| `npm run test:e2e` | 真实 Electron 冒烟（需先 build） |
-| `npm run lint:check` | ESLint 只检查（CI 门禁） |
-| `npm run format:check` | Prettier 检查 |
-| `npm run build:win` | Windows NSIS 安装包 |
+| 命令                     | 用途                               |
+| ------------------------ | ---------------------------------- |
+| `npm run typecheck`      | `vue-tsc` + 主进程 `tsc`           |
+| `npm run typecheck:test` | 测试源码 tsc（CI 门禁）            |
+| `npm run test`           | 单元 + 集成（1930 用例）           |
+| `npm run test:coverage`  | 覆盖率 + 全局阈值 + 每文件 ratchet |
+| `npm run test:e2e`       | 真实 Electron 冒烟（需先 build）   |
+| `npm run lint:check`     | ESLint 只检查（CI 门禁）           |
+| `npm run format:check`   | Prettier 检查                      |
+| `npm run build:win`      | Windows NSIS 安装包                |
 
 开发环境：Node.js `^22.13.0 || >=24`、npm ≥ 10。CI 固定 Node **24.19.0**。
 
 <details>
 <summary><b>设置项速查</b></summary>
 
-| 分组 | 项 | 说明 |
-| --- | --- | --- |
-| 路径 | 默认实例目录、模型扫描根、下载目录、产物索引根、extra_model_paths.yaml | 影响发现与下载落点 |
-| 路径 | 产物扫描深度 | output 目录递归层数（默认 4，2–10） |
-| 网络 | GitHub 镜像 / HF Endpoint / Civitai Endpoint | 镜像与下载域名 |
-| 网络 | PyPI 镜像 / Torch 镜像 | 装机与节点依赖加速 |
-| 网络 | 网络模式 | public / private / offline / personal_cloud |
-| 安全 | security_level | strong / normal / normal- / weak（对齐 Manager 语义） |
-| 安全 | allow_git_url_install / allow_pip_install | 是否允许 git 装节点、装后自动 pip |
-| 下载 | aria2 路径、启用 aria2 | 大文件可选加速 |
-| 代理 | 协议 / 主机 / 端口 / 账号 / 绕过列表 | 下载、Registry、git/pip/uv、内嵌页共用 |
-| 行为 | 启动检查更新、优先内嵌 Frontend、语言、开机自启、托盘、autoStart | 启动器体验 |
-| 快捷键 | Ctrl+1…9 / Ctrl+Enter / Ctrl+, | 设置页内置清单 |
+| 分组   | 项                                                                     | 说明                                                  |
+| ------ | ---------------------------------------------------------------------- | ----------------------------------------------------- |
+| 路径   | 默认实例目录、模型扫描根、下载目录、产物索引根、extra_model_paths.yaml | 影响发现与下载落点                                    |
+| 路径   | 产物扫描深度                                                           | output 目录递归层数（默认 4，2–10）                   |
+| 网络   | GitHub 镜像 / HF Endpoint / Civitai Endpoint                           | 镜像与下载域名                                        |
+| 网络   | PyPI 镜像 / Torch 镜像                                                 | 装机与节点依赖加速                                    |
+| 网络   | 网络模式                                                               | public / private / offline / personal_cloud           |
+| 安全   | security_level                                                         | strong / normal / normal- / weak（对齐 Manager 语义） |
+| 安全   | allow_git_url_install / allow_pip_install                              | 是否允许 git 装节点、装后自动 pip                     |
+| 下载   | aria2 路径、启用 aria2                                                 | 大文件可选加速                                        |
+| 代理   | 协议 / 主机 / 端口 / 账号 / 绕过列表                                   | 下载、Registry、git/pip/uv、内嵌页共用                |
+| 行为   | 启动检查更新、优先内嵌 Frontend、语言、开机自启、托盘、autoStart       | 启动器体验                                            |
+| 快捷键 | Ctrl+1…9 / Ctrl+Enter / Ctrl+,                                         | 设置页内置清单                                        |
 
 </details>
 
@@ -313,7 +313,7 @@ npm run build:mac     # macOS DMG（配置存在，未验证）
 npm run build:linux   # AppImage + deb（配置存在，未验证）
 ```
 
-产物输出到 `release/`。tag 触发的 `.github/workflows/release.yml` 会先跑完整 gate，再打包 Windows NSIS、断言 asar、生成 `SHA256SUMS.txt` 并创建草稿 Release。
+产物输出到 `release/`。tag 触发的 `.github/workflows/release.yml` 会先跑完整 gate（含 build、Linux xvfb E2E、配置 asar 断言），再打包 Windows `--dir` 产物并用 `--e2e-smoke` 真实启动、检查真实 `app.asar`，最后打包 NSIS、生成 `SHA256SUMS.txt` 并创建草稿 Release。
 
 若 PowerShell 下 `electron-builder` 调用异常：
 
@@ -327,37 +327,37 @@ cmd /c "node node_modules\electron-builder\cli.js --win --config electron-builde
 
 ## 🗂️ 数据与安全
 
-| 面 | 说明 |
-| --- | --- |
-| **存储格式** | JSONC（带注释的 JSON），无原生模块、无 SQLite |
-| **数据目录** | `%APPDATA%/comfy-pilot/data/`（macOS / Linux 为对应 userData） |
-| **运行时** | `userData/runtimes/`：便携 Python / uv / MinGit + `checksums.json` |
-| **缓存与缩略图** | `userData/app-cache/`（刻意避开 Chromium 的 `cache/` 目录） |
-| **日志** | `%APPDATA%/comfy-pilot/logs/`：`boot.log` 与实例日志 |
-| **凭据** | 代理密码与远程 API key 走 Electron `safeStorage` 加密落盘；备份导出脱敏 |
-| **删除保护** | 含 `models/` `custom_nodes/` `user/` `output/` 的旧目录只归档不删除 |
-| **路径边界** | 分段规范化 + realpath 复核；zip-slip、符号链接逃逸、保留设备名一并拒绝 |
-| **网络边界** | 设置端点仅 http(s)；内嵌页与监控限制在 localhost / 已注册实例；`comfy-pilot-media:` 只放行受控根 |
+| 面               | 说明                                                                                             |
+| ---------------- | ------------------------------------------------------------------------------------------------ |
+| **存储格式**     | JSONC（带注释的 JSON），无原生模块、无 SQLite                                                    |
+| **数据目录**     | `%APPDATA%/comfy-pilot/data/`（macOS / Linux 为对应 userData）                                   |
+| **运行时**       | `userData/runtimes/`：便携 Python / uv / MinGit + `checksums.json`                               |
+| **缓存与缩略图** | `userData/app-cache/`（刻意避开 Chromium 的 `cache/` 目录）                                      |
+| **日志**         | `%APPDATA%/comfy-pilot/logs/`：`boot.log` 与实例日志                                             |
+| **凭据**         | 代理密码与远程 API key 走 Electron `safeStorage` 加密落盘；备份导出脱敏                          |
+| **删除保护**     | 含 `models/` `custom_nodes/` `user/` `output/` 的旧目录只归档不删除                              |
+| **路径边界**     | 分段规范化 + realpath 复核；zip-slip、符号链接逃逸、保留设备名一并拒绝                           |
+| **网络边界**     | 设置端点仅 http(s)；内嵌页与监控限制在 localhost / 已注册实例；`comfy-pilot-media:` 只放行受控根 |
 
 <details>
 <summary><b>完整安全设计</b></summary>
 
-| 面 | 措施 |
-| --- | --- |
-| 渲染进程 | `contextIsolation` + preload 白名单；IPC 参数 JSON 化防 structured-clone 崩溃 |
-| 路径 | 分段规范化，拦截 `..`、尾随空格、保留设备名；Windows 大小写不敏感包含判断 |
-| 下载 / 改名 | 文件名净化；目标目录必须落在允许根内；完整性校验 |
-| Zip 解压 | zip-slip、符号链接、自引用环、保留名一并拒绝 |
-| Git | 拦截 `ext::`、注入型主机/分支；argv 数组，无 shell |
-| 启动脚本导出 | `.bat` / `.sh` 平台正确转义（防命令注入） |
-| 媒体 URL | `comfy-pilot-media:` 仅放行 thumbs / output 根 + 图片/视频/音频扩展名 |
-| URL / 打开文件 | 仅 http(s)/mailto；禁止打开可执行/脚本类扩展名 |
-| 网络请求 | 监控与内嵌页限制在 localhost 或已注册实例/远程 |
-| 删除保护 | 含 `models/` `custom_nodes/` `user/` `output/` 的旧目录**只归档不删除**；装机清理仅删 ComfyPilot 痕迹或空残骸 |
-| 读路径 | 仅「用户显式选择 + 应用自有根」；词法检查之外，**存在目标再按 realpath 复核**，批准根内的软链也无法外指 |
-| 凭据 | 代理密码与远程 API key 走 `safeStorage` 加密；备份恢复时保留本机密钥并重新加密；解密失败保留密文不覆盖 |
-| 设置端点 | 镜像/索引等 URL 仅接受 http(s)，拒绝 `file:` / `javascript:` |
-| 单实例 | `requestSingleInstanceLock`（`--allow-multiple-instances` 可显式绕过） |
+| 面             | 措施                                                                                                          |
+| -------------- | ------------------------------------------------------------------------------------------------------------- |
+| 渲染进程       | `contextIsolation` + preload 白名单；IPC 参数 JSON 化防 structured-clone 崩溃                                 |
+| 路径           | 分段规范化，拦截 `..`、尾随空格、保留设备名；Windows 大小写不敏感包含判断                                     |
+| 下载 / 改名    | 文件名净化；目标目录必须落在允许根内；完整性校验                                                              |
+| Zip 解压       | zip-slip、符号链接、自引用环、保留名一并拒绝                                                                  |
+| Git            | 拦截 `ext::`、注入型主机/分支；argv 数组，无 shell                                                            |
+| 启动脚本导出   | `.bat` / `.sh` 平台正确转义（防命令注入）                                                                     |
+| 媒体 URL       | `comfy-pilot-media:` 仅放行 thumbs / output 根 + 图片/视频/音频扩展名                                         |
+| URL / 打开文件 | 仅 http(s)/mailto；禁止打开可执行/脚本类扩展名                                                                |
+| 网络请求       | 监控与内嵌页限制在 localhost 或已注册实例/远程                                                                |
+| 删除保护       | 含 `models/` `custom_nodes/` `user/` `output/` 的旧目录**只归档不删除**；装机清理仅删 ComfyPilot 痕迹或空残骸 |
+| 读路径         | 仅「用户显式选择 + 应用自有根」；词法检查之外，**存在目标再按 realpath 复核**，批准根内的软链也无法外指       |
+| 凭据           | 代理密码与远程 API key 走 `safeStorage` 加密；备份恢复时保留本机密钥并重新加密；解密失败保留密文不覆盖        |
+| 设置端点       | 镜像/索引等 URL 仅接受 http(s)，拒绝 `file:` / `javascript:`                                                  |
+| 单实例         | `requestSingleInstanceLock`（`--allow-multiple-instances` 可显式绕过）                                        |
 
 危险操作（强杀、删模型、删节点、恢复备份）均需二次确认。
 
@@ -384,7 +384,7 @@ cmd /c "node node_modules\electron-builder\cli.js --win --config electron-builde
 
 ```text
 ComfyPilot/
-├── package.json                 # v0.2.4 · MIT · ThzxxArt
+├── package.json                 # v0.2.5 · MIT · ThzxxArt
 ├── electron.vite.config.ts
 ├── electron-builder.yml         # Win NSIS（已发布）；macOS/Linux 目标存在但未验证
 ├── vitest.config.ts             # 全量运行时覆盖率门禁
@@ -430,6 +430,16 @@ ComfyPilot/
 
 ## 🗓️ 版本与变更
 
+### 0.2.5 · 运行真相、卡死救援、上游对齐
+
+- **运行真相**：健康状态由 HTTP、TCP、进程、日志、队列/WS 证据共同判定；卡死不再显示绿色“运行中”，默认只告警、不自动杀。
+- **卡死救援**：`ComfyPilot.exe --rescue <id>` / `--safe-rescue` / `--stop` / `--start` / `--status`，锁屏也能通过 second-instance 救回；安全模式只对本次启动追加 `--disable-all-custom-nodes`。
+- **路径真相**：从最终 argv 解析 port/listen/base/user/models/custom_nodes/output 等；所有资产操作使用同一 effective 目录。
+- **更新可信**：stable/nightly 双通道；stable 使用 Release tag；更新后执行真实启动自检，失败自动回滚源码并保留节点版本快照。
+- **上游对齐**：ComfyUI-Manager v4.4 `user/__manager/config.ini`、真实 v4 schema；CUDA 13 / ROCm 7.2 / Windows ROCm 10.0 运行时矩阵。
+- **安全边界**：主进程 PathCapability、模型下载扩展名/目标、实例启动指纹、恶意备份字段白名单、符号链接根拒绝。
+- **资产 P0**：Civitai 文件名/元数据、`.part` 下载、批跑 queue 续期、跨机备份作用域、输出 containment。
+
 ### 0.2.4 · 启动诊断与日志真实性
 
 - **启动参数不再误报**：读取实例自己的 `comfy/cli_args.py` 与 `comfyui_version.py`；ComfyUI 0.43.0 已支持的 `--fast-disk` / `--enable-assets` / `--enable-asset-hashing` 不再被提示“需要新版本”。
@@ -440,16 +450,17 @@ ComfyPilot/
 
 ### 版本里程碑
 
-| 版本 | 主题 |
-| --- | --- |
-| **0.2.4** | 启动诊断、日志真实性、可选依赖归因、uv Python 归属、Impact Pack 配置修复 |
-| **0.2.3** | 全量代码/功能/逻辑/视觉审查修复；IPC 运行时契约全量对齐；覆盖率分母改为全部运行时代码 |
-| **0.2.2** | 依赖直链审计、补装失败回执、Python 3.13 运行时策略、节点包目录识别 |
-| **0.2.1** | 修复 0.2.0 更新/修复环境的三个根因：`version_info`、torch 通道独占、CUDA 通道选择 |
-| **0.2.0** | IPC v2 / JSONC v2 / 备份 v2 / Python 3.13 / 全量架构重构 |
-| **0.1.18** | 发布工程：tag 触发 Release、版本一致性、AUMID、asar 去冗余 |
-| **0.1.14–0.1.17** | 产物全类型、资产系统只读、崩溃可证、日志可信、安全边界、进度诚实 |
-| **0.1.0–0.1.13** | 控制塔、零门槛装机、工作流真库、批跑、监控、诊断、依赖修复 |
+| 版本              | 主题                                                                                         |
+| ----------------- | -------------------------------------------------------------------------------------------- |
+| **0.2.5**         | 健康看门狗、锁屏救援、有效路径解析、Manager v4.4、stable 更新、torch 矩阵、安全边界、资产 P0 |
+| **0.2.4**         | 启动诊断、日志真实性、可选依赖归因、uv Python 归属、Impact Pack 配置修复                     |
+| **0.2.3**         | 全量代码/功能/逻辑/视觉审查修复；IPC 运行时契约全量对齐；覆盖率分母改为全部运行时代码        |
+| **0.2.2**         | 依赖直链审计、补装失败回执、Python 3.13 运行时策略、节点包目录识别                           |
+| **0.2.1**         | 修复 0.2.0 更新/修复环境的三个根因：`version_info`、torch 通道独占、CUDA 通道选择            |
+| **0.2.0**         | IPC v2 / JSONC v2 / 备份 v2 / Python 3.13 / 全量架构重构                                     |
+| **0.1.18**        | 发布工程：tag 触发 Release、版本一致性、AUMID、asar 去冗余                                   |
+| **0.1.14–0.1.17** | 产物全类型、资产系统只读、崩溃可证、日志可信、安全边界、进度诚实                             |
+| **0.1.0–0.1.13**  | 控制塔、零门槛装机、工作流真库、批跑、监控、诊断、依赖修复                                   |
 
 完整提交记录与每个版本的详细说明见 [GitHub Releases](https://github.com/ThzxxArt/ComfyPilot/releases)。
 
@@ -478,7 +489,7 @@ ComfyPilot/
 <details>
 <summary><b>支持 macOS / Linux 吗？</b></summary>
 
-当前**正式发布与验证的是 Windows 10/11**。macOS 与 Linux 的 builder 配置存在，CI 也会做 best-effort 构建，但尚未做真实设备安装/运行验证。
+当前**正式发布与验证的是 Windows 10/11**。macOS 不打包；Linux 仅生成 best-effort artifact。两者都没有真实设备安装/运行认证。
 
 </details>
 
@@ -499,7 +510,7 @@ ComfyPilot/
 <details>
 <summary><b>为什么覆盖率不是 100%？</b></summary>
 
-分母是**全部运行时代码**（main / preload / shared / renderer，172 个文件），不是手选子集。门禁按实测 −2pp 设全局下限，并对每个文件 ratchet；新增代码不能拉低基线。
+分母是**全部运行时代码**（main / preload / shared / renderer），不是手选子集。门禁按实测 −2pp 设全局下限，并对每个文件 ratchet；新增文件低于 30% 行覆盖会直接失败，baseline 只能升不能降。
 
 </details>
 
@@ -542,14 +553,14 @@ npm run build && npm run test:e2e
 
 ComfyPilot 通过 HTTP / WebSocket / 进程管理与 ComfyUI 交互，**不静态链接其源码**。ComfyUI 本身采用 GPL-3.0；本项目独立发布，采用 **MIT**。
 
-| 能力 | 途径 |
-| --- | --- |
-| 版本 / 节点信息 | 读安装目录、受控子进程探测 |
-| 启停 | 主进程 spawn，记录 PID 与日志 |
-| 队列 / 历史 | `GET /queue` `/history` `/system_stats` |
-| 提交工作流 | `POST /prompt` |
-| 实时进度 | `WS /ws` |
-| 节点安装 | Registry API / Git / Manager channel |
+| 能力            | 途径                                    |
+| --------------- | --------------------------------------- |
+| 版本 / 节点信息 | 读安装目录、受控子进程探测              |
+| 启停            | 主进程 spawn，记录 PID 与日志           |
+| 队列 / 历史     | `GET /queue` `/history` `/system_stats` |
+| 提交工作流      | `POST /prompt`                          |
+| 实时进度        | `WS /ws`                                |
+| 节点安装        | Registry API / Git / Manager channel    |
 
 上游仓库：**[Comfy-Org/ComfyUI](https://github.com/Comfy-Org/ComfyUI)**。
 

@@ -107,7 +107,11 @@ describe('PathCapability (0.2.5 WP10)', () => {
     writeFileSync(join(instance, 'python_embeded', 'python.exe'), 'MZ')
     writeFileSync(join(instance, 'python.exe'), 'MZ')
     expect(() =>
-      assertApprovedExecutable(join(instance, 'python_embeded', 'python.exe'), 'pythonPath', instance)
+      assertApprovedExecutable(
+        join(instance, 'python_embeded', 'python.exe'),
+        'pythonPath',
+        instance
+      )
     ).not.toThrow()
     expect(() =>
       assertApprovedExecutable(join(instance, 'python.exe'), 'pythonPath', instance)

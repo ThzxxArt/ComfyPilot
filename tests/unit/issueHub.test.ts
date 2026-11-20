@@ -11,11 +11,15 @@ const h = vi.hoisted(() => ({
   recovery: [] as Array<Record<string, unknown>>,
   installed: [] as string[],
   recipes: [] as string[],
-  cleaned: [] as string[]
+  cleaned: [] as string[],
+  extraInstances: [] as Array<Record<string, unknown>>
 }))
 
 vi.mock('../../src/main/services/db', () => ({
-  loadInstanceConfigs: () => [{ id: 'i1', name: 'One', path: h.root, enabled: true }],
+  loadInstanceConfigs: () => [
+    { id: 'i1', name: 'One', path: h.root, enabled: true },
+    ...h.extraInstances
+  ],
   listIssues: () => h.issues,
   replaceIssues: (items: Array<Record<string, unknown>>) => {
     h.issues = items
@@ -80,6 +84,7 @@ afterAll(() => rmSync(root, { recursive: true, force: true }))
 
 beforeEach(() => {
   h.issues = []
+  h.extraInstances = []
   h.packs = [{ id: 'p1', name: 'Pack', displayName: 'Pack', path: packDir }]
   h.startup = [
     { pack: 'Pack', summary: 'Missing dependency: requests', missingModules: ['requests'] }
@@ -164,5 +169,29 @@ describe('IssueHubService (0.2.0)', () => {
     expect(issue.actions.map((a) => a.id)).toContain('clean-leftover')
     expect(issueHubService.cleanLeftover(issue.id).ok).toBe(true)
     expect(h.cleaned).toEqual(['.disabled/Pack.trash-1'])
+  })
+
+  it('a single-instance scan never resolves another instance issues', async () => {
+    h.extraInstances = [{ id: 'i2', name: 'Two', path: h.root, enabled: true }]
+    h.issues = [
+      {
+        id: 'other',
+        fingerprint: 'fp-other',
+        kind: 'startup',
+        instanceId: 'i2',
+        severity: 'error',
+        title: 'Other instance issue',
+        detail: 'x',
+        actions: [],
+        status: 'open',
+        firstSeen: 1,
+        lastSeen: 1,
+        updatedAt: 1
+      }
+    ]
+    h.startup = []
+    const { issueHubService } = await import('../../src/main/services/issueHub')
+    await issueHubService.scan('i1')
+    expect(h.issues.find((i) => i.id === 'other')?.status).toBe('open')
   })
 })

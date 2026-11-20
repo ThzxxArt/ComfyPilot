@@ -354,27 +354,27 @@ export async function installInner(
   // banned pack could be git-cloned. Query status before any clone — only when
   // a repo URL is already known (otherwise the install API below checks it).
   if (repoUrl) {
-  try {
-    const { session: statusSession } = await import('electron')
-    const statusRes = await statusSession.defaultSession.fetch(
-      `${REGISTRY_API}/nodes/${encodeURIComponent(opts.id)}`,
-      { headers: { 'User-Agent': 'ComfyPilot/0.2' }, signal: withAbort(8000, opts.signal) }
-    )
-    if (statusRes.ok) {
-      const statusBody = (await statusRes.json()) as {
-        status?: string
-        node?: { status?: string }
+    try {
+      const { session: statusSession } = await import('electron')
+      const statusRes = await statusSession.defaultSession.fetch(
+        `${REGISTRY_API}/nodes/${encodeURIComponent(opts.id)}`,
+        { headers: { 'User-Agent': 'ComfyPilot/0.2' }, signal: withAbort(8000, opts.signal) }
+      )
+      if (statusRes.ok) {
+        const statusBody = (await statusRes.json()) as {
+          status?: string
+          node?: { status?: string }
+        }
+        const status = statusBody.status || statusBody.node?.status
+        if (status === 'banned') throw new Error('Node pack is banned on Registry')
+        if (status === 'flagged') {
+          this.opLog?.(`Registry flagged ${opts.id} — installing anyway (warned)`, opts.instanceId)
+        }
       }
-      const status = statusBody.status || statusBody.node?.status
-      if (status === 'banned') throw new Error('Node pack is banned on Registry')
-      if (status === 'flagged') {
-        this.opLog?.(`Registry flagged ${opts.id} — installing anyway (warned)`, opts.instanceId)
-      }
+    } catch (e) {
+      if (e instanceof Error && /banned/i.test(e.message)) throw e
+      /* status API unavailable — the install API still checks when called */
     }
-  } catch (e) {
-    if (e instanceof Error && /banned/i.test(e.message)) throw e
-    /* status API unavailable — the install API still checks when called */
-  }
   }
 
   // If we don't have a repo URL yet, try the /install API for it.

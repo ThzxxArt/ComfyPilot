@@ -593,6 +593,7 @@ describe('restore() path containment (0.1.18 P0)', () => {
   it('aborts when the models list references an unknown path', async () => {
     seedBackup('b-bad-model', { modelPath: join(tmpdir(), 'elsewhere', 'm.safetensors') })
     const svc = await freshBackup()
+    expect(Array.isArray(svc.list())).toBe(true)
     expect(() => svc.restore('b-bad-model')).toThrow(/model/)
   })
 
@@ -619,7 +620,9 @@ describe('restore() path containment (0.1.18 P0)', () => {
     const svc = await freshBackup()
     const result = svc.restore('b-inject')
     expect(result.ok).toBe(true)
-    expect(result.warnings.join(' ')).toMatch(/pythonPath rejected|outputDirectory rejected|extraArgs/)
+    expect(result.warnings.join(' ')).toMatch(
+      /pythonPath rejected|outputDirectory rejected|extraArgs/
+    )
     const rows = JSON.parse(readFileSync(join(h.state.root, 'instances.jsonc'), 'utf-8')) as Array<
       Record<string, unknown>
     >
@@ -645,6 +648,73 @@ describe('restore() path containment (0.1.18 P0)', () => {
     expect((h.state.savedSettings as any).proxy.password).toBe('')
   })
 
+  it('drops node-pack/snapshot paths and unsafe scan roots from a backup', async () => {
+    const dir = join(h.state.root, 'backups', 'b-paths')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'settings.json'), JSON.stringify({ modelScanRoots: ['/', '/tmp'] }))
+    writeFileSync(
+      join(dir, 'node-packs.json'),
+      JSON.stringify([
+        { id: 'ok', name: 'ok', path: join(h.state.root, 'ComfyUI', 'custom_nodes', 'ok') },
+        { id: 'bad', name: 'bad', path: '/etc/evil' }
+      ])
+    )
+    writeFileSync(
+      join(dir, 'node-snapshots.json'),
+      JSON.stringify([
+        {
+          id: 's',
+          name: 's',
+          packs: [
+            { name: 'ok', path: join(h.state.root, 'ComfyUI', 'custom_nodes', 'ok') },
+            { name: 'bad', path: '/etc/evil' }
+          ]
+        }
+      ])
+    )
+    const svc = await freshBackup()
+    const result = svc.restore('b-paths')
+    expect(result.ok).toBe(true)
+    expect(result.warnings.join(' ')).toMatch(/modelScanRoots|outside roots/)
+    const saved = h.state.savedSettings as Record<string, unknown>
+    expect(saved.modelScanRoots).toEqual(['/tmp'].filter((p) => existsSync(p)))
+    const packs = JSON.parse(readFileSync(join(h.state.root, 'node_packs.jsonc'), 'utf-8'))
+    expect(packs.map((p: { id: string }) => p.id)).toEqual(['ok'])
+  })
+
+  it('recovers an interrupted restore from the journal, and reports a missing pre-restore backup', async () => {
+    const dir = join(h.state.root, 'backups', 'pre')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'settings.json'), JSON.stringify({ locale: 'en-US' }))
+    writeFileSync(
+      join(h.state.root, 'restore-journal.json'),
+      JSON.stringify({
+        backupId: 'x',
+        preRestoreId: 'pre',
+        startedAt: Date.now(),
+        status: 'in-progress'
+      })
+    )
+    let svc = await freshBackup()
+    const recovered = svc.recoverInterruptedRestore()
+    expect(recovered.recovered).toBe(true)
+    expect((h.state.savedSettings as Record<string, unknown>).locale).toBe('en-US')
+
+    writeFileSync(
+      join(h.state.root, 'restore-journal.json'),
+      JSON.stringify({
+        backupId: 'x',
+        preRestoreId: 'missing',
+        startedAt: Date.now(),
+        status: 'in-progress'
+      })
+    )
+    svc = await freshBackup()
+    const missing = svc.recoverInterruptedRestore()
+    expect(missing.recovered).toBe(false)
+    expect(missing.error).toMatch(/missing/i)
+  })
+
   it('rejects a concurrent restore (mutex)', async () => {
     seedBackup('b-mutex', {})
     const svc = await freshBackup()
@@ -658,6 +728,6 @@ describe('restore() path containment (0.1.18 P0)', () => {
       }
     }
     svc.restore('b-mutex')
-    expect(nestedError?.message).toMatch(/already in progress/i)
+    expect((nestedError as Error | null)?.message).toMatch(/already in progress/i)
   })
 })

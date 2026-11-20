@@ -465,6 +465,19 @@ async function saveRemote(): Promise<void> {
 }
 
 async function clearRemoteKey(r: RemoteInstanceSummary): Promise<void> {
+  const confirmed = await new Promise<boolean>((resolve) => {
+    dialog.warning({
+      title: t('settings.clearRemoteKeyConfirmTitle'),
+      content: t('settings.clearRemoteKeyConfirmBody', { name: r.name }),
+      positiveText: t('settings.remoteKeyClear'),
+      negativeText: t('common.cancel'),
+      onPositiveClick: () => resolve(true),
+      onNegativeClick: () => resolve(false),
+      onClose: () => resolve(false),
+      onMaskClick: () => resolve(false)
+    })
+  })
+  if (!confirmed) return
   try {
     await ipc('remote.clearApiKey', r.id)
     message.success(t('settings.remoteKeyCleared'))
@@ -910,7 +923,7 @@ onUnmounted(() => {
             </div>
             <NSpace>
               <NButton secondary :loading="testingProxy" @click="testProxy">{{
-                t('settings.testConnection')
+                t('settings.saveAndTest')
               }}</NButton>
               <NButton secondary @click="applyProxy">{{ t('settings.applyNow') }}</NButton>
             </NSpace>

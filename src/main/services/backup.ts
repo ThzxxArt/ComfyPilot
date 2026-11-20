@@ -327,7 +327,9 @@ function sanitizeRestoredInstance(
         }
       }
       if (typeof value === 'string' && /[\0\r\n]/.test(value)) {
-        warnings.push(`instance ${label}: launchProfile.${key} contains control characters — cleared`)
+        warnings.push(
+          `instance ${label}: launchProfile.${key} contains control characters — cleared`
+        )
         continue
       }
       cleaned[key] = value
@@ -340,12 +342,14 @@ function sanitizeRestoredInstance(
   if (pythonPath) {
     const lower = pythonPath.replace(/\\/g, '/').toLowerCase()
     const pythonShaped = /python(3(?:\.\d+)?)?(?:\.exe)?$/.test(lower)
-    const venvShaped = /\/(?:\.?venv|venv-[^/]+)\/(?:bin\/python(?:3(?:\.\d+)?)?|scripts\/python(?:\.exe)?)$/.test(
-      lower
-    )
-    const embedded = /(?:^|\/)(?:python_embeded|python_embedded|python)\/(?:python\.exe|bin\/python(?:3(?:\.\d+)?)?)$/.test(
-      lower
-    )
+    const venvShaped =
+      /\/(?:\.?venv|venv-[^/]+)\/(?:bin\/python(?:3(?:\.\d+)?)?|scripts\/python(?:\.exe)?)$/.test(
+        lower
+      )
+    const embedded =
+      /(?:^|\/)(?:python_embeded|python_embedded|python)\/(?:python\.exe|bin\/python(?:3(?:\.\d+)?)?)$/.test(
+        lower
+      )
     if (!pythonShaped || (!venvShaped && !embedded)) {
       out.pythonPath = ''
       warnings.push(`instance ${label}: pythonPath rejected — cleared`)
@@ -387,7 +391,10 @@ function sanitizeRestoredInstance(
   } else if (extra !== undefined) {
     out.extraArgs = []
   }
-  if (out.updateChannel !== undefined && !['stable', 'nightly'].includes(String(out.updateChannel))) {
+  if (
+    out.updateChannel !== undefined &&
+    !['stable', 'nightly'].includes(String(out.updateChannel))
+  ) {
     delete out.updateChannel
   }
   return out
@@ -756,7 +763,10 @@ export class BackupService {
     }
   }
 
-  private restoreInner(id: string, opts?: { sections?: BackupRestoreSection[] }): BackupRestoreResult {
+  private restoreInner(
+    id: string,
+    opts?: { sections?: BackupRestoreSection[] }
+  ): BackupRestoreResult {
     const plan = this.buildPlan(id)
     if (plan.parseErrors.length) {
       throw new Error(`Backup restore aborted, nothing applied — ${plan.parseErrors.join('; ')}`)
@@ -1115,7 +1125,9 @@ export class BackupService {
     }
     if (lists.snapshots) {
       const kept = (lists.snapshots as Array<Record<string, unknown>>).map((snap) => {
-        const packs = Array.isArray(snap.packs) ? (snap.packs as Array<Record<string, unknown>>) : []
+        const packs = Array.isArray(snap.packs)
+          ? (snap.packs as Array<Record<string, unknown>>)
+          : []
         return {
           ...snap,
           packs: packs.filter((p) => {

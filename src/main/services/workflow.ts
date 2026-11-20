@@ -1058,9 +1058,7 @@ export class WorkflowService {
       )
     }
     // Same effective URL as the launch path — IPv6 and argv overrides included.
-    const url = remote
-      ? remote.baseUrl.replace(/\/+$/, '')
-      : resolveEffectiveInstance(inst!).url
+    const url = remote ? remote.baseUrl.replace(/\/+$/, '') : resolveEffectiveInstance(inst!).url
 
     let rawJson: unknown = null
     const ext = extname(opts.workflowPath).toLowerCase()

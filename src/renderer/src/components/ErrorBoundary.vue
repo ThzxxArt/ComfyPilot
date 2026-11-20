@@ -5,14 +5,25 @@
  * A render error in one view used to blank the whole shell. This catches it,
  * keeps the sidebar usable, and offers a retry that remounts the subtree.
  */
-import { onErrorCaptured, ref } from 'vue'
+import { onErrorCaptured, ref, watch } from 'vue'
 import { NButton, NIcon } from 'naive-ui'
 import { AlertCircleOutline, RefreshOutline } from '@vicons/ionicons5'
 import { useI18n } from 'vue-i18n'
+import { useRoute } from 'vue-router'
 
 const { t } = useI18n()
+const route = useRoute()
 const error = ref<Error | null>(null)
 const key = ref(0)
+
+// 0.2.5 WP7: a crash in page A must not keep page B behind the error card.
+watch(
+  () => route?.fullPath,
+  () => {
+    error.value = null
+    key.value += 1
+  }
+)
 
 onErrorCaptured((err) => {
   error.value = err instanceof Error ? err : new Error(String(err))

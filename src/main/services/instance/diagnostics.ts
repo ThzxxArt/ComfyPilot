@@ -85,8 +85,14 @@ export async function exportDiagnostics(
   if (config) {
     try {
       const { instanceHealthService } = await import('./health')
-      const health =
-        instanceHealthService.get(id) ?? (await instanceHealthService.check(id).catch(() => null))
+      let health = instanceHealthService.get(id)
+      if (!health) {
+        try {
+          health = await instanceHealthService.check(id)
+        } catch {
+          health = undefined
+        }
+      }
       if (health) {
         writeFileSync(join(dir, 'health.json'), JSON.stringify(health, null, 2))
         contents.push('health.json')
@@ -166,16 +172,17 @@ export async function exportDiagnostics(
     }
     const { listBatchJobs } = await import('../db')
     const jobs = listBatchJobs()
+    let batchOutputLinks = 0
+    for (const job of jobs) {
+      for (const item of job.items) batchOutputLinks += item.outputPaths?.length || 0
+    }
     writeFileSync(
       join(dir, 'attribution.json'),
       JSON.stringify(
         {
           promptLinks: linksCount,
           batchJobs: jobs.length,
-          batchOutputLinks: jobs.reduce(
-            (s, j) => s + j.items.reduce((x, it) => x + (it.outputPaths?.length || 0), 0),
-            0
-          )
+          batchOutputLinks
         },
         null,
         2

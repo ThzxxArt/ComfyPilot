@@ -330,9 +330,7 @@ function allowedReadRoots(): string[] {
 export function assertModelScanRootsPatch(roots: unknown): void {
   if (roots === undefined) return
   if (!Array.isArray(roots)) throw new Error('modelScanRoots must be an array')
-  const existing = new Set(
-    (loadSettings().modelScanRoots || []).map((r) => normalizeForCompare(r))
-  )
+  const existing = new Set((loadSettings().modelScanRoots || []).map((r) => normalizeForCompare(r)))
   for (const raw of roots) {
     if (typeof raw !== 'string' || !raw.trim()) {
       throw new Error('modelScanRoots entries must be paths')
@@ -345,9 +343,7 @@ export function assertModelScanRootsPatch(roots: unknown): void {
     }
     if (existing.has(normalized)) continue
     if (!pathCapabilities.covers(raw, 'read')) {
-      throw new Error(
-        `modelScanRoots can only be added through the directory picker: ${raw}`
-      )
+      throw new Error(`modelScanRoots can only be added through the directory picker: ${raw}`)
     }
   }
 }

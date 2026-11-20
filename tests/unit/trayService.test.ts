@@ -65,6 +65,17 @@ vi.mock('../../src/main/services/instance', () => {
   return { instanceService: emitter }
 })
 
+const controlCalls = vi.hoisted(() => [] as Array<{ action: string; instanceId?: string }>)
+const controlState = vi.hoisted(() => ({ fail: false }))
+vi.mock('../../src/main/control', () => ({
+  executeControlCommand: async (cmd: { action: string; instanceId?: string }) => {
+    controlCalls.push(cmd)
+    return controlState.fail
+      ? { ok: false, action: cmd.action, instanceId: cmd.instanceId, error: 'rescue failed' }
+      : { ok: true, action: cmd.action, instanceId: cmd.instanceId }
+  }
+}))
+
 import { createTray, refreshTray } from '../../src/main/services/tray'
 
 const inst = (id: string, status: string): Record<string, unknown> => ({
@@ -115,6 +126,38 @@ describe('tray actions (0.1.11)', () => {
     await new Promise((r) => setTimeout(r, 20))
     expect(h.startAllCalls).toBe(1)
     expect(h.notifications.length).toBe(0)
+  })
+
+  it('exposes per-instance rescue and safe-mode restarts', async () => {
+    h.instances = [inst('a', 'running')]
+    controlCalls.length = 0
+    createTray({ onShowWindow: () => undefined })
+    await refreshTray()
+    const submenu = (h.template || []).find((i) => String(i.label).includes(':8188'))?.submenu as
+      Array<Record<string, unknown>> | undefined
+    expect(submenu).toBeTruthy()
+    ;(submenu!.find((i) => i.label === 'Force restart (rescue)')!.click as () => void)()
+    await new Promise((r) => setTimeout(r, 30))
+    ;(submenu!.find((i) => i.label === 'Safe mode restart')!.click as () => void)()
+    await new Promise((r) => setTimeout(r, 30))
+    expect(controlCalls.map((c) => c.action)).toEqual(['rescue', 'safe-rescue'])
+  })
+
+  it('surfaces a rescue failure through a system notification', async () => {
+    h.instances = [inst('a', 'running')]
+    controlState.fail = true
+    h.notifications.length = 0
+    try {
+      createTray({ onShowWindow: () => undefined })
+      await refreshTray()
+      const submenu = (h.template || []).find((i) => String(i.label).includes(':8188'))
+        ?.submenu as Array<Record<string, unknown>>
+      ;(submenu.find((i) => i.label === 'Force restart (rescue)')!.click as () => void)()
+      await new Promise((r) => setTimeout(r, 40))
+      expect(h.notifications.some((n) => n.body?.includes('rescue failed'))).toBe(true)
+    } finally {
+      controlState.fail = false
+    }
   })
 
   it('stop-all enablement tracks running instances', async () => {

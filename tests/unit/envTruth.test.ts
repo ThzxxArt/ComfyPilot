@@ -51,7 +51,7 @@ vi.mock('child_process', () => {
       return e instanceof Error ? e : new Error(String(e))
     }
   }
-  const execFile: any = (cmd: string, args: string[], _o: unknown, cb?: unknown) => {
+  const execFile = ((cmd: string, args: string[], _o: unknown, cb?: unknown): { pid: number } => {
     const r = run(cmd, args)
     queueMicrotask(() => {
       if (typeof cb !== 'function') return
@@ -59,7 +59,7 @@ vi.mock('child_process', () => {
       else (cb as (...a: unknown[]) => void)(null, r.stdout, '')
     })
     return { pid: 1 }
-  }
+  }) as ((...args: unknown[]) => { pid: number }) & Record<symbol, unknown>
   execFile[PROMISIFY_CUSTOM] = (cmd: string, args: string[]) =>
     new Promise((resolve, reject) => {
       const r = run(cmd, args)

@@ -230,6 +230,10 @@ export type IpcChannelMap = {
     args: [string, ManagerSecurityLevel]
     result: ManagerInfo
   }
+  'instance.setUpdateChannel': {
+    args: [string, 'stable' | 'nightly']
+    result: ComfyInstanceInfo
+  }
   'instance.openManagerConfig': { args: [string]; result: { path: string } }
   'instance.launchArgCatalog': { args: [string?]; result: string[] }
   'instance.migratePython': {
@@ -367,6 +371,16 @@ export type IpcChannelMap = {
   'node.snapshots': { args: [string?]; result: NodeSnapshot[] }
   'node.createSnapshot': { args: [string?, string?]; result: NodeSnapshot }
   'node.restoreSnapshot': { args: [string, string?]; result: boolean }
+  'node.restoreVersions': {
+    args: [string, string?]
+    result: {
+      ok: boolean
+      restored: string[]
+      skipped: Array<{ name: string; reason: string }>
+      failed: Array<{ name: string; error: string }>
+      warnings: string[]
+    }
+  }
   'node.deleteSnapshot': { args: [string, string?]; result: boolean }
   'node.checkUpdates': { args: [string?]; result: NodeUpdateCheckResult[] }
   'node.updateAll': { args: [string?, NodeUpdateAllOptions?]; result: NodeUpdateAllResult[] }
@@ -773,6 +787,7 @@ export const IPC_CHANNELS = [
   'instance.managerInfo',
   'instance.setManagerSecurity',
   'instance.openManagerConfig',
+  'instance.setUpdateChannel',
   'instance.sweepStale',
   'instance.getLogs',
   'instance.launch',
@@ -853,6 +868,7 @@ export const IPC_CHANNELS = [
   'node.recoveryScan',
   'node.refresh',
   'node.restoreSnapshot',
+  'node.restoreVersions',
   'node.smokeTest',
   'node.snapshots',
   'node.toggle',

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, computed, watch, h } from 'vue'
+import TargetBanner from '@/components/TargetBanner.vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import {
@@ -727,8 +728,11 @@ function metaEntries(meta: Record<string, unknown>): Array<{ key: string; value:
 }
 
 watch([type, sort, order, onlyFavorites, batchFilter, workflowFilter, dateRange], () => {
+  // 0.2.5 WP7: resetting the page already triggers the page watcher. Refresh
+  // here only when the page was already 1 (the old code fired twice).
+  const wasFirstPage = page.value === 1
   page.value = 1
-  void refresh()
+  if (wasFirstPage) void refresh()
 })
 
 // 0.1.17 (review fix): the root input is bound with v-model, so every keystroke
@@ -774,11 +778,12 @@ watch(
   () => store.instanceSwitchTick,
   () => {
     root.value = defaultOutputRoot()
+    const wasFirstPage = page.value === 1
     page.value = 1
     selected.value.clear()
     showDetail.value = false
     detail.value = null
-    void refresh()
+    if (wasFirstPage) void refresh()
   }
 )
 
@@ -861,6 +866,7 @@ onUnmounted(() => {
 
 <template>
   <div class="page">
+    <TargetBanner />
     <div class="page-header">
       <div>
         <h1 class="page-title">{{ $t('output.title') }}</h1>

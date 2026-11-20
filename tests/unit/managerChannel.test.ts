@@ -28,7 +28,7 @@ describe('Manager channel schema (0.2.5 WP4)', () => {
   it('accepts an extension-node-map object and marks banned/flagged entries', () => {
     const items = parseManagerChannelPayload({
       KSampler: [{ name: 'core', banned: true }],
-      'SomeNode': [{ title: 'Pack', reference: 'https://example.com/x.git', flagged: true }]
+      SomeNode: [{ title: 'Pack', reference: 'https://example.com/x.git', flagged: true }]
     })
     expect(items.map((i) => i.id)).toEqual(['KSampler', 'SomeNode'])
     expect(items[0].status).toBe('banned')

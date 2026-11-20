@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, h, onMounted, ref } from 'vue'
+import TargetBanner from '@/components/TargetBanner.vue'
 import { useInstanceScope } from '@/composables/useInstanceScope'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
@@ -181,19 +182,26 @@ const originLabel = (o: WorkflowRecord['origin']): string => {
 /** 0.1.18 (WP6 / U7): failed load is not an empty library. */
 const loadError = ref('')
 
+let refreshSeq = 0
 async function refresh(): Promise<void> {
+  const seq = ++refreshSeq
+  const forInstance = store.activeInstanceId || undefined
   loading.value = true
   try {
-    items.value = await ipc('workflow.list', { includeMissing: true })
-    const info = await ipc('workflow.libraryInfo', store.activeInstanceId || undefined)
+    const list = await ipc('workflow.list', { includeMissing: true })
+    const info = await ipc('workflow.libraryInfo', forInstance)
+    // 0.2.5 WP7: ignore a stale response after an instance switch.
+    if (seq !== refreshSeq) return
+    items.value = list
     libraryRoot.value = info.root
     missingCount.value = info.missing
     loadError.value = ''
   } catch (err) {
+    if (seq !== refreshSeq) return
     loadError.value = err instanceof Error ? err.message : String(err)
     message.error(loadError.value)
   } finally {
-    loading.value = false
+    if (seq === refreshSeq) loading.value = false
   }
 }
 
@@ -411,8 +419,15 @@ function openDetail(row: WorkflowRecord): void {
 
 function openQueue(row: WorkflowRecord): void {
   queueTarget.value = row
-  // Local draft — selecting another instance here must not hijack the global switch.
-  queueInstanceId.value = store.activeInstanceId || ''
+  // Local draft — selecting another target here must not hijack the global
+  // switch. Remote-active context must be able to queue remotely even with no
+  // local running instance (0.2.5 WP7).
+  queueInstanceId.value =
+    store.isRemoteActive && store.activeRemoteId
+      ? `remote:${store.activeRemoteId}`
+      : store.activeInstanceId ||
+        store.instances.find((i) => i.status === 'running')?.id ||
+        (store.remotes[0] ? `remote:${store.remotes[0].id}` : '')
   seed.value = null
   showQueue.value = true
 }
@@ -582,6 +597,7 @@ onMounted(async () => {
 
 <template>
   <div class="page">
+    <TargetBanner />
     <div class="page-header">
       <div>
         <h1 class="page-title">{{ $t('workflows.title') }}</h1>

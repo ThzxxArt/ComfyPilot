@@ -325,7 +325,8 @@ export class DoctorService extends EventEmitter {
     })
 
     // 5. custom_nodes — effective (`--base-directory`).
-    const customNodes = effectiveDirs?.customNodes || (installPath ? join(installPath, 'custom_nodes') : '')
+    const customNodes =
+      effectiveDirs?.customNodes || (installPath ? join(installPath, 'custom_nodes') : '')
     const hasCN = customNodes && existsSync(customNodes)
     checks.push({
       id: 'custom-nodes',

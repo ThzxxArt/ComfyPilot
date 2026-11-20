@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync
+} from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import type { ComfyInstanceConfig } from '@shared/types'
@@ -51,14 +59,15 @@ beforeEach(() => {
   comfy = join(root, 'ComfyUI')
   mkdirSync(comfy, { recursive: true })
   mkdirSync(join(comfy, 'user', '__manager'), { recursive: true })
-  h.instances = [cfg(comfy)]
+  h.instances = [cfg(comfy) as unknown as Record<string, unknown>]
 })
 
 afterEach(() => rmSync(root, { recursive: true, force: true }))
 
 describe('Manager config.ini parser (0.2.5 WP4)', () => {
   it('parses [default] values with % literal and keeps unknown keys', () => {
-    const text = '\uFEFF# comment\r\n[default]\r\nsecurity_level = weak\r\nnetwork_mode = private\r\nfoo = 100%\r\n[other]\r\nsecurity_level = strong\r\n'
+    const text =
+      '\uFEFF# comment\r\n[default]\r\nsecurity_level = weak\r\nnetwork_mode = private\r\nfoo = 100%\r\n[other]\r\nsecurity_level = strong\r\n'
     const parsed = parseManagerConfig(text)
     expect(parsed.securityLevel).toBe('weak')
     expect(parsed.networkMode).toBe('private')
@@ -68,7 +77,8 @@ describe('Manager config.ini parser (0.2.5 WP4)', () => {
   })
 
   it('updates only the requested key and preserves comments/CRLF/unknown keys', () => {
-    const text = '# keep me\r\n[default]\r\nsecurity_level = strong\r\nnetwork_mode = public\r\nunknown = yes\r\n'
+    const text =
+      '# keep me\r\n[default]\r\nsecurity_level = strong\r\nnetwork_mode = public\r\nunknown = yes\r\n'
     const next = updateManagerConfigText(text, { securityLevel: 'normal' })
     expect(next).toContain('# keep me')
     expect(next).toContain('security_level = normal')
@@ -95,7 +105,7 @@ describe('Manager facts and writes (0.2.5 WP4)', () => {
     mkdirSync(legacyDir, { recursive: true })
     writeFileSync(join(legacyDir, 'config.ini'), '[default]\nsecurity_level = weak\n')
     mkdirSync(join(comfy, 'custom_nodes', 'ComfyUI-Manager'), { recursive: true })
-    h.instances = [cfg(comfy)]
+    h.instances = [cfg(comfy) as unknown as Record<string, unknown>]
 
     const info = await getManagerInfo(cfg(comfy))
     expect(info.configPath).toBe(paths.configPath)
@@ -126,16 +136,16 @@ describe('Manager facts and writes (0.2.5 WP4)', () => {
     const body = readFileSync(paths.configPath, 'utf-8')
     expect(body).toContain('# header')
     expect(body).toContain('custom = v')
-    expect(readdirSync(join(comfy, 'user', '__manager')).some((n) => n.startsWith('config.ini.bak-'))).toBe(
-      true
-    )
+    expect(
+      readdirSync(join(comfy, 'user', '__manager')).some((n) => n.startsWith('config.ini.bak-'))
+    ).toBe(true)
   })
 
   it('rejects an invalid level and a missing config without creating one', async () => {
     const paths = managerConfigPaths(cfg(comfy))
-    await expect(
-      setManagerSecurityLevel(cfg(comfy), 'permissive' as never)
-    ).rejects.toThrow(/Invalid Manager security level/i)
+    await expect(setManagerSecurityLevel(cfg(comfy), 'permissive' as never)).rejects.toThrow(
+      /Invalid Manager security level/i
+    )
     await expect(setManagerSecurityLevel(cfg(comfy), 'normal')).rejects.toThrow(/missing/i)
     expect(existsSync(paths.configPath)).toBe(false)
   })
