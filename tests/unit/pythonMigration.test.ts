@@ -93,7 +93,8 @@ vi.mock('../../src/main/services/env', () => ({
   installRequirements: async () => undefined
 }))
 vi.mock('../../src/main/services/installer', () => ({
-  officialTorchIndex: () => 'https://download.pytorch.org/whl/cu126/'
+  officialTorchIndex: () => 'https://download.pytorch.org/whl/cu126/',
+  resolveTorchIndex: () => 'https://download.pytorch.org/whl/cu126/'
 }))
 
 const root = mkdtempSync(join(tmpdir(), 'cp-pymig-'))

@@ -1198,7 +1198,11 @@ describe('version probe + cache', () => {
   })
 
   it('returns undefined when nothing identifies the install', () => {
-    register(cfg({ id: 'ver' }))
+    // 0.2.5: resetDirs() now seeds a valid ComfyUI fingerprint, so use a
+    // genuinely empty directory for the "no marker" case.
+    const empty = join(ROOT, 'empty-install')
+    mkdirSync(empty, { recursive: true })
+    register(cfg({ id: 'ver', path: empty }))
     expect(svc.list()[0].version).toBeUndefined()
   })
 
@@ -2304,6 +2308,10 @@ describe('runStartupSelfCheck (0.1.10)', () => {
     const checkCall = seenArgs.find((a) => a.includes('--quick-test-for-ci'))
     expect(checkCall).toBeTruthy()
     expect(checkCall).toContain('--port')
+    // 0.2.5 WP0: the check must not share user/comfyui.db with the live instance.
+    expect(checkCall).toContain('--user-directory')
+    const userArg = checkCall![checkCall!.indexOf('--user-directory') + 1]
+    expect(userArg).toContain('selfcheck')
     rt.process = undefined
     h.state.execHandler = null
 
@@ -2638,5 +2646,65 @@ describe('lifecycle truth (0.1.17 WP3)', () => {
       unknown
     >
     expect(Object.keys(ledger)).toEqual([])
+  })
+})
+
+describe('lifecycle root-cause fixes (0.2.5 WP0)', () => {
+  it('waitReady returns immediately for a stopped instance with no process', async () => {
+    register(cfg({ id: 'idle' }))
+    const t0 = Date.now()
+    const result = await svc.waitReady('idle', 60_000)
+    expect(result.ready).toBe(false)
+    expect(result.error).toMatch(/not running/i)
+    expect(Date.now() - t0).toBeLessThan(500)
+  })
+
+  it('ENV_MISMATCH lands in error instead of leaving the UI on starting', async () => {
+    register(cfg({ id: 'mismatch' }))
+    writeFileSync(
+      join(ROOT, '.comfypilot-env.json'),
+      JSON.stringify({ pythonVersion: '3.12.9', venvPath: '' })
+    )
+    await expect(svc.start('mismatch')).rejects.toMatchObject({ code: 'ENV_MISMATCH' })
+    const info = svc.list().find((i) => i.id === 'mismatch')!
+    expect(info.status).toBe('error')
+    expect(info.lastError).toMatch(/ENV_MISMATCH/)
+  })
+
+  it('an owned adopted process keeps managed=true so stop may kill it', async () => {
+    const restorePlatform = forcePlatform('win32')
+    try {
+      register(cfg({ id: 'adopted-owned' }))
+      h.state.portsInUse.add(8188)
+      h.state.fetchImpl = okStats
+      mkdirSync(LOGS, { recursive: true })
+      writeFileSync(
+        join(LOGS, 'pids.json'),
+        JSON.stringify({
+          'adopted-owned': { pid: process.pid, path: COMFY, startedAt: Date.now() }
+        })
+      )
+      h.state.execHandler = () => ({
+        stdout: `C:\\Python\\python.exe "${COMFY}/main.py" --port 8188`
+      })
+      const info = await svc.start('adopted-owned')
+      expect(info.status).toBe('running')
+      const rt = (svc as unknown as { runtimes: Map<string, { managed: boolean }> }).runtimes.get(
+        'adopted-owned'
+      )
+      expect(rt?.managed).toBe(true)
+      // Do not leave a "managed" handle pointing at this test process.
+      ;(svc as unknown as { runtimes: Map<string, unknown> }).runtimes.delete('adopted-owned')
+    } finally {
+      restorePlatform()
+    }
+  })
+
+  it('suggestPort skips every configured instance port', async () => {
+    register(cfg({ id: 'p1', port: 8188 }), cfg({ id: 'p2', port: 8189 }))
+    const port = await svc.suggestPort()
+    expect(port).not.toBe(8188)
+    expect(port).not.toBe(8189)
+    expect(port).toBe(8190)
   })
 })

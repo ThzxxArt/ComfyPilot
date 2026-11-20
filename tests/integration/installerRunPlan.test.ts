@@ -290,6 +290,33 @@ describe('installer runPlan (integration)', () => {
     expect(h.execCalls.some((c) => c.args[0] === 'pip' || c.args.includes('pip'))).toBe(true)
   })
 
+  it('an old run cannot overwrite a new run progress after reset (0.2.5 WP0)', async () => {
+    let release: (() => void) | null = null
+    h.fetchImpl = () =>
+      new Promise<Response>((resolve) => {
+        release = () => resolve(new Response('zip', { status: 200 }))
+      })
+    const svc = await freshService()
+    const first = await svc.start(plan())
+    await waitStatus(svc, (p) => {
+      const comfy = p.steps.find((s) => s.id === 'comfyui')
+      return comfy?.status === 'running'
+    })
+    svc.reset()
+    // The second run must own progress; the first fetch is still pending.
+    h.fetchImpl = null
+    const second = await svc.start(plan())
+    const done = await waitStatus(svc, (p) => p.status === 'done' || p.status === 'failed')
+    expect(done.status).toBe('done')
+    expect(second.runId).not.toBe(first.runId)
+    // Release the stale transfer: its catch/finally must not touch run #2.
+    release?.()
+    await new Promise((r) => setTimeout(r, 100))
+    const current = svc.getStatus()
+    expect(current?.runId).toBe(second.runId)
+    expect(current?.status).toBe('done')
+  })
+
   it('uv path: uv venv + uv pip install torch and requirements', async () => {
     const svc = await freshService()
     const root = join(ROOT, 'inst')

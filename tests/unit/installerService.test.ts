@@ -531,8 +531,9 @@ describe('installer service internals', () => {
       const { installerService } = await import('../../src/main/services/installer')
       const anySvc = installerService as unknown as {
         progress: unknown
-        children: Set<unknown>
-        runRejects: Set<(e: Error) => void>
+        runToken: object | null
+        childrenByRun: Map<object, Set<unknown>>
+        runRejectsByToken: Map<object, Set<(e: Error) => void>>
         // 0.1.17 (WP1): cancellation is an epoch pair, not a boolean latch.
         runEpoch: number
         cancelledEpoch: number
@@ -548,15 +549,22 @@ describe('installer service internals', () => {
         percent: 0
       }
       expect(installerService.getStatus()).toBeTruthy()
+      // 0.2.5 WP0: children and rejection handlers are owned per run token.
+      const token = {}
+      anySvc.runToken = token
+      const rejects = new Set<(e: Error) => void>()
+      anySvc.runRejectsByToken.set(token, rejects)
       let rejected: Error | null = null
-      anySvc.runRejects.add((e) => {
+      rejects.add((e) => {
         rejected = e
       })
-      anySvc.runRejects.add(() => {
+      rejects.add(() => {
         throw new Error('bad reject handler')
       })
+      const bag = new Set<unknown>()
+      anySvc.childrenByRun.set(token, bag)
       const fakeChild = { pid: 999999, exitCode: null, kill: () => undefined }
-      anySvc.children.add(fakeChild)
+      bag.add(fakeChild)
       const ok = installerService.cancel()
       expect(ok).toBe(true)
       expect(anySvc.cancelledEpoch).toBe(anySvc.runEpoch)
@@ -569,7 +577,7 @@ describe('installer service internals', () => {
         await new Promise((r) => setTimeout(r, 25))
       }
       expect((rejected as unknown as Error).message).toMatch(/cancelled/i)
-      expect(anySvc.runRejects.size).toBe(0)
+      expect(anySvc.runRejectsByToken.get(token)?.size ?? 0).toBe(0)
     })
   })
 

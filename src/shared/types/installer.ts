@@ -57,6 +57,12 @@ export interface InstallPlan {
   skipStarter?: boolean
   /** One-click mode: use defaults for everything not explicitly set. */
   fullAuto?: boolean
+  /**
+   * 0.2.5 WP0: expected SHA256 for the ComfyUI zip. When provided it is
+   * enforced; when absent, the first successful fetch is pinned in the env
+   * marker and later fetches must match it.
+   */
+  comfySha256?: string
 }
 
 export interface InstallStepByteProgress {

@@ -8,12 +8,13 @@ import {
   readdirSync,
   renameSync,
   createWriteStream,
-  cpSync
+  cpSync,
+  readFileSync
 } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { homedir } from 'os'
 import { execFile, type ChildProcess } from 'child_process'
-import { randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import si from 'systeminformation'
 import type {
   ComfyInstanceConfig,
@@ -38,6 +39,7 @@ import {
   clearInstallRuns
 } from './db'
 import { readComfyVersion } from './comfyVersion'
+import { resolveEffectiveInstance } from '@shared/instanceLayout'
 import { resolveWriteTarget } from './target'
 import {
   hasParentHop,
@@ -361,14 +363,44 @@ export class InstallerService extends EventEmitter {
   private runEpoch = 0
   private cancelledEpoch = -1
   private running = false
-  private children = new Set<ChildProcess>()
+  /**
+   * 0.2.5 WP0: children are owned per run token. The old single Set let an
+   * old run's finally clear the new run's cancellation handles.
+   */
+  private childrenByRun = new Map<object, Set<ChildProcess>>()
+  private runRejectsByToken = new Map<object, Set<(err: Error) => void>>()
+
+  private childrenForToken(token: object | null): Set<ChildProcess> {
+    if (!token) return new Set<ChildProcess>()
+    let bag = this.childrenByRun.get(token)
+    if (!bag) {
+      bag = new Set<ChildProcess>()
+      this.childrenByRun.set(token, bag)
+    }
+    return bag
+  }
+
+  private rejectsForToken(token: object | null): Set<(err: Error) => void> {
+    if (!token) return new Set()
+    let bag = this.runRejectsByToken.get(token)
+    if (!bag) {
+      bag = new Set()
+      this.runRejectsByToken.set(token, bag)
+    }
+    return bag
+  }
+
+  private activeChildCount(): number {
+    let n = 0
+    for (const bag of this.childrenByRun.values()) n += bag.size
+    return n
+  }
   /**
    * 0.2.0: identity of the live run. reset() invalidates the token so an old
    * run unwinding after a reset can never write into the new run's progress,
    * children or target directory.
    */
   private runToken: object | null = null
-  private runRejects = new Set<(err: Error) => void>()
 
   private get isCancelled(): boolean {
     return this.cancelledEpoch === this.runEpoch
@@ -417,13 +449,15 @@ export class InstallerService extends EventEmitter {
     // installer let a new run start while the old one was still unwinding —
     // both shared `children`/`progress`, and the old finally cleared the new
     // run's child set. Refuse until the previous run is really gone.
-    if (this.children.size > 0) {
+    if (this.activeChildCount() > 0) {
       throw new Error('Installation is still running — wait for it to stop before resetting')
     }
     // Invalidate the run before clearing state. A download-only run has no
     // child process, so this token is the only thing stopping it from
     // continuing to write after the user pressed Reset.
     this.runToken = null
+    this.childrenByRun.clear()
+    this.runRejectsByToken.clear()
     try {
       bootstrapService.cancelAll()
     } catch {
@@ -453,8 +487,13 @@ export class InstallerService extends EventEmitter {
       /* ignore */
     }
     const kills: Array<Promise<void>> = []
-    for (const child of this.children) {
-      kills.push(this.killTree(child))
+    // Snapshot both bags: a NEW run started after cancel must not inherit the
+    // old run's rejections (0.2.5 WP0).
+    const bagsSnapshot = [...this.childrenByRun.entries()]
+    const rejectsSnapshot = [...this.runRejectsByToken.entries()]
+    const rejectTargets = rejectsSnapshot.flatMap(([, set]) => [...set])
+    for (const [, bag] of bagsSnapshot) {
+      for (const child of bag) kills.push(this.killTree(child))
     }
     // 0.1.17 (WP1): write a terminal state immediately. Relying on the run's
     // own catch left `running` persisted whenever no step was in flight.
@@ -471,15 +510,20 @@ export class InstallerService extends EventEmitter {
     // Reject the awaiting run only AFTER the process tree is gone, so a
     // cancelled install can never keep writing into the target directory.
     void Promise.allSettled(kills).then(() => {
-      this.children.clear()
-      for (const rej of [...this.runRejects]) {
+      for (const rej of rejectTargets) {
         try {
           rej(new Error('Installation cancelled'))
         } catch {
           /* ignore */
         }
       }
-      this.runRejects.clear()
+      // Only the snapshotted (cancelled) runs are cleaned; a run started after
+      // cancel owns different tokens and keeps its own handles.
+      for (const [token] of bagsSnapshot) this.childrenByRun.delete(token)
+      for (const [token, set] of rejectsSnapshot) {
+        set.clear()
+        this.runRejectsByToken.delete(token)
+      }
     })
     return hadActiveRun || Boolean(this.progress)
   }
@@ -518,11 +562,16 @@ export class InstallerService extends EventEmitter {
     trackable: boolean
   ): Promise<string> {
     return new Promise((resolvePromise, reject) => {
+      // Bind the child AND its rejection to the run token that created it.
+      const token = this.runToken
+      const myEpoch = this.runEpoch
+      const bag = trackable ? this.childrenForToken(token) : null
+      const rejBag = trackable ? this.rejectsForToken(token) : null
       const onReject = (err: Error): void => {
-        this.runRejects.delete(onReject)
+        rejBag?.delete(onReject)
         reject(err)
       }
-      if (trackable) this.runRejects.add(onReject)
+      if (rejBag) rejBag.add(onReject)
       const child = execFile(
         cmd,
         args,
@@ -540,11 +589,13 @@ export class InstallerService extends EventEmitter {
           }
         },
         (err, stdout, stderr) => {
-          if (trackable) {
-            this.children.delete(child)
-            this.runRejects.delete(onReject)
+          bag?.delete(child)
+          rejBag?.delete(onReject)
+          if (trackable && token && this.runToken !== token) {
+            reject(new Error('Installation reset'))
+            return
           }
-          if (trackable && this.isCancelled) {
+          if (trackable && this.cancelledEpoch === myEpoch) {
             reject(new Error('Installation cancelled'))
             return
           }
@@ -555,7 +606,7 @@ export class InstallerService extends EventEmitter {
           resolvePromise(stdout)
         }
       )
-      if (trackable) this.children.add(child)
+      bag?.add(child)
     })
   }
 
@@ -1229,6 +1280,7 @@ export class InstallerService extends EventEmitter {
         comfySource === 'git' ? 'stepMsg.comfyGit' : 'stepMsg.comfyZip'
       )
       let comfyFetched = false
+      let fetchedZipSha256 = ''
       let preservedArchive = ''
       let preservedDirs: string[] = []
       if (existsSync(join(comfyDir, 'main.py'))) {
@@ -1270,7 +1322,7 @@ export class InstallerService extends EventEmitter {
           const gitBin = resolveGitBinary()
           await this.run(gitBin, args, { timeout: 300000 })
         } else {
-          await this.fetchComfyZip(comfyDir, token)
+          fetchedZipSha256 = await this.fetchComfyZip(comfyDir, token, plan.comfySha256)
         }
         if (!existsSync(join(comfyDir, 'main.py'))) {
           // zip extracts to ComfyUI-master/ — flatten if needed
@@ -1472,6 +1524,8 @@ export class InstallerService extends EventEmitter {
             // Semantic version of the tree we actually installed. Without it
             // the instance card fell back to the short commit sha.
             comfyVersion: readComfyVersion(comfyDir),
+            // 0.2.5 WP0: content pin for the archive actually extracted.
+            ...(fetchedZipSha256 ? { comfyZipSha256: fetchedZipSha256 } : {}),
             // Only a real fetch updates this timestamp; reusing an existing
             // tree must not pretend it was just downloaded.
             ...(comfyFetched ? { comfyFetchedAt: Date.now() } : {})
@@ -1572,6 +1626,9 @@ export class InstallerService extends EventEmitter {
       }
       this.emitProgress('Install complete')
     } catch (err) {
+      // 0.2.5 WP0: a stale run must not write into the new run's progress or
+      // delete the new run's freshly built target directory.
+      if (this.runToken !== token) return
       const message = err instanceof Error ? err.message : String(err)
       const cancelled = this.isCancelled || /Installation cancelled/i.test(message)
       const cleaned: string[] = []
@@ -1625,68 +1682,141 @@ export class InstallerService extends EventEmitter {
       }
       this.emitProgress(message)
     } finally {
-      this.children.clear()
+      // Remove only THIS run's bookkeeping. Never clear a newer run's children.
+      this.childrenByRun.delete(token)
+      this.runRejectsByToken.delete(token)
     }
   }
 
-  /** Download ComfyUI GitHub archive zip into comfyDir (extracted + flattened). */
-  private async fetchComfyZip(comfyDir: string, token?: object): Promise<void> {
+  /**
+   * Download the ComfyUI source archive into comfyDir.
+   * 0.2.5 WP0: abortable, token-checked per chunk, real byte progress, and a
+   * SHA256 content pin. HTTPS is mandatory — the old mirror path accepted
+   * `http://`, so a network attacker could serve executable `main.py`.
+   */
+  private async fetchComfyZip(
+    comfyDir: string,
+    token?: object,
+    expectedSha256?: string
+  ): Promise<string> {
     const url = applyGithubMirror(COMFY_ZIP_URL)
+    if (!/^https:\/\//i.test(url)) throw new Error('ComfyUI archive URL must use https')
     if (!isSafeExternalUrl(url)) throw new Error('Blocked ComfyUI archive URL')
+    // TOFU continuity: once an archive hash is recorded for this install, a
+    // different archive is refused instead of silently swapped.
+    const markerFile = join(dirname(comfyDir), '.comfypilot-env.json')
+    let pinned: string | undefined
+    try {
+      if (existsSync(markerFile)) {
+        const marker = JSON.parse(readFileSync(markerFile, 'utf-8')) as {
+          comfyZipSha256?: string
+        }
+        pinned = marker.comfyZipSha256
+      }
+    } catch {
+      /* unreadable marker is advisory */
+    }
     const { session } = await import('electron')
     const tmpZip = join(dirname(comfyDir), `._comfyui_${Date.now()}.zip`)
-    const res = await session.defaultSession.fetch(url, {
-      headers: { 'User-Agent': 'ComfyPilot/0.1' },
-      signal: AbortSignal.timeout(10 * 60 * 1000)
-    })
-    if (!res.ok) throw new Error(`ComfyUI archive download failed: HTTP ${res.status}`)
-    const total = Number(res.headers.get('content-length') || 0)
-    const received = await this.streamBodyToFile(res, tmpZip)
-    // A reset/failed run must not extract an archive into the target after the
-    // user already started a different run.
-    if (token && this.runToken !== token) {
+    const controller = new AbortController()
+    const timer = setInterval(() => {
+      // A direct (test/internal) call without a token is not part of a run.
+      if (token && (this.runToken !== token || this.isCancelled)) controller.abort()
+    }, 250)
+    const startedAt = Date.now()
+    const hash = createHash('sha256')
+    try {
+      const res = await session.defaultSession.fetch(url, {
+        headers: { 'User-Agent': 'ComfyPilot/0.2' },
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10 * 60 * 1000)])
+      })
+      if (!res.ok) throw new Error(`ComfyUI archive download failed: HTTP ${res.status}`)
+      const total = Number(res.headers.get('content-length') || 0)
+      let lastTick = 0
+      const received = await this.streamBodyToFile(res, tmpZip, {
+        token,
+        onChunk: (chunk, bytes) => {
+          hash.update(chunk)
+          const now = Date.now()
+          if (now - lastTick < 200) return
+          lastTick = now
+          this.setBytes({
+            receivedBytes: bytes,
+            totalBytes: total,
+            speedBps: Math.round(bytes / Math.max(1, (now - startedAt) / 1000)),
+            label: 'ComfyUI archive'
+          })
+        }
+      })
+      const actual = hash.digest('hex')
+      const want = String(expectedSha256 || pinned || '').toLowerCase()
+      if (want && actual !== want) {
+        throw new Error(
+          `ComfyUI archive checksum mismatch: expected ${want.slice(0, 12)}…, got ${actual.slice(0, 12)}…`
+        )
+      }
+      if (!want && existsSync(markerFile)) {
+        // First fetch without any pin: keep going, but the hash is persisted
+        // with the marker below so future fetches are continuity-checked.
+      }
+      this.setBytes({
+        receivedBytes: received,
+        totalBytes: total || received,
+        speedBps: Math.round(received / Math.max(1, (Date.now() - startedAt) / 1000)),
+        label: 'ComfyUI archive'
+      })
+      if (token && this.runToken !== token) throw new Error('Installation reset')
+      mkdirSync(comfyDir, { recursive: true })
+      const { safeUnzip } = await import('./zipSafe')
+      await safeUnzip(tmpZip, comfyDir)
       try {
         rmSync(tmpZip, { force: true })
       } catch {
         /* ignore */
       }
-      throw new Error('Installation reset')
+      await this.flattenArchiveRoot(comfyDir)
+      this.setBytes(undefined)
+      return actual
+    } catch (err) {
+      try {
+        rmSync(tmpZip, { force: true })
+      } catch {
+        /* ignore */
+      }
+      throw err
+    } finally {
+      clearInterval(timer)
     }
-    this.setBytes({
-      receivedBytes: received,
-      totalBytes: total || received,
-      speedBps: 0,
-      label: 'ComfyUI archive'
-    })
-
-    mkdirSync(comfyDir, { recursive: true })
-    const { safeUnzip } = await import('./zipSafe')
-    await safeUnzip(tmpZip, comfyDir)
-    try {
-      rmSync(tmpZip, { force: true })
-    } catch {
-      /* ignore */
-    }
-    await this.flattenArchiveRoot(comfyDir)
-    this.setBytes(undefined)
   }
 
   /**
    * Stream the response body to disk so a multi-hundred-MB archive never
-   * lands in one Buffer. Falls back to buffering when the fetch
-   * implementation exposes no readable body.
+   * lands in one Buffer. The token check runs for EVERY chunk: a cancel must
+   * stop the transfer immediately, not after the archive finishes.
    */
-  protected async streamBodyToFile(res: Response, dest: string): Promise<number> {
+  protected async streamBodyToFile(
+    res: Response,
+    dest: string,
+    opts?: { token?: object; onChunk?: (chunk: Buffer, received: number) => void }
+  ): Promise<number> {
+    const checkLive = (): void => {
+      if (opts?.token && (this.runToken !== opts.token || this.isCancelled)) {
+        throw new Error('Installation cancelled')
+      }
+    }
     const reader = res.body?.getReader()
     if (!reader) {
       const buf = Buffer.from(await res.arrayBuffer())
+      checkLive()
       writeFileSync(dest, buf)
+      opts?.onChunk?.(buf, buf.byteLength)
       return buf.byteLength
     }
     const file = createWriteStream(dest)
     let received = 0
     try {
       for (;;) {
+        checkLive()
         const { done, value } = await reader.read()
         if (done) break
         if (value) {
@@ -1695,8 +1825,16 @@ export class InstallerService extends EventEmitter {
             file.write(chunk, (err) => (err ? reject(err) : resolve()))
           })
           received += chunk.byteLength
+          opts?.onChunk?.(chunk, received)
         }
       }
+    } catch (err) {
+      try {
+        await reader.cancel()
+      } catch {
+        /* ignore */
+      }
+      throw err
     } finally {
       await new Promise<void>((resolve) => {
         try {
@@ -1753,7 +1891,7 @@ export class InstallerService extends EventEmitter {
     // Explicit id wins; never silently fall back when an id was given. A write
     // target is only obtainable from the strict resolver.
     const config = resolveWriteTarget(opts.instanceId)
-    const destDir = join(config.path, 'models', starter.category)
+    const destDir = join(resolveEffectiveInstance(config).dirs.models, starter.category)
     mkdirSync(destDir, { recursive: true })
     const { modelService } = await import('./model')
     return modelService.download({ url: starter.url, destDir })
@@ -1761,6 +1899,16 @@ export class InstallerService extends EventEmitter {
 
   private async pickPort(): Promise<number> {
     const net = await import('net')
+    // 0.2.5 WP0: never hand a new instance a port another instance already
+    // claims, even when that instance is currently stopped.
+    const claimed = new Set<number>()
+    for (const c of loadInstanceConfigs()) {
+      try {
+        claimed.add(resolveEffectiveInstance(c).port)
+      } catch {
+        if (c.port) claimed.add(c.port)
+      }
+    }
     const tryPort = (port: number) =>
       new Promise<boolean>((resolvePort) => {
         const server = net.createServer()
@@ -1769,10 +1917,11 @@ export class InstallerService extends EventEmitter {
         server.listen(port, '127.0.0.1')
       })
     for (const p of [8188, 8189, 8190, 8191, 8288, 8388, 8488, 8588, 8688, 8788]) {
+      if (claimed.has(p)) continue
       if (await tryPort(p)) return p
     }
-    // Do not return a port we know is busy. Scan upward until one is free.
     for (let p = 8888; p < 8998; p += 1) {
+      if (claimed.has(p)) continue
       if (await tryPort(p)) return p
     }
     throw new Error('No free ComfyUI port found in 8188–8997')

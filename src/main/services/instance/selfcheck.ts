@@ -1,10 +1,11 @@
 import { execFile } from 'child_process'
-import { existsSync } from 'fs'
+import { existsSync, mkdirSync, rmSync } from 'fs'
 import { join } from 'path'
 import type { InstanceStartupIssues } from '@shared/types'
+import { resolveEffectiveInstance } from '@shared/instanceLayout'
 import { comfyChildEnv } from '../childEnv'
 import { parseStartupIssues } from '../startupIssues'
-import { loadInstanceConfigs, loadSettings } from '../db'
+import { loadInstanceConfigs, loadSettings, userDataDir } from '../db'
 import type { InstanceServiceContext } from './types'
 
 /**
@@ -28,11 +29,19 @@ export async function runStartupSelfCheck(
   const python = ctx.resolvePython(config)
   // 0.1.11: a running instance no longer blocks the self-check. The runner
   // keeps its port and GPU; the check loads nodes on CPU with
-  // --quick-test-for-ci on an ephemeral port and exits. Only the user/db
-  // files are shared (same trade-off ComfyUI makes for concurrent runs).
+  // --quick-test-for-ci on an ephemeral port and exits.
+  // 0.2.5 WP0: but it must NOT share user/comfyui.db with the live instance.
+  // Use an isolated temporary user dir and the effective base directory.
+  const effective = resolveEffectiveInstance(config)
+  const isolatedUser = join(userDataDir(), 'selfcheck', `${id}-${Date.now()}`)
+  mkdirSync(isolatedUser, { recursive: true })
   const args = [join(config.path, 'main.py'), '--quick-test-for-ci', '--cpu']
+  if (effective.dirs.base !== config.path) {
+    args.push('--base-directory', effective.dirs.base)
+  }
+  args.push('--user-directory', isolatedUser)
   if (running) {
-    const port = await ctx.pickEphemeralPort(config.port || 8188)
+    const port = await ctx.pickEphemeralPort(effective.port)
     args.push('--port', String(port))
   }
   ctx.pushLog(rt, 'info', '=== ComfyPilot selfcheck start ===')
@@ -74,6 +83,11 @@ export async function runStartupSelfCheck(
     result.ok ? 'Startup self-check passed' : `Startup self-check failed (exit ${result.exitCode})`
   )
   ctx.pushLog(rt, 'info', '=== ComfyPilot selfcheck end ===')
+  try {
+    rmSync(isolatedUser, { recursive: true, force: true })
+  } catch {
+    /* temp cleanup is best-effort */
+  }
   return result
 }
 

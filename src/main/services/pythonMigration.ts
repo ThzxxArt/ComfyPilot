@@ -15,7 +15,8 @@ import type { ComfyInstanceConfig, TorchChannel } from '@shared/types'
 import { loadInstanceConfigs, upsertInstanceConfig } from './db'
 import { findInRuntimes, bootstrapService } from './bootstrap'
 import { envService, installRequirements } from './env'
-import { officialTorchIndex } from './installer'
+import { acquireEnvLock } from './envLock'
+import { resolveTorchIndex } from './installer'
 
 const execFileAsync = promisify(execFile)
 
@@ -46,16 +47,23 @@ function resolveVenvPath(config: ComfyInstanceConfig): string {
   return join(config.path, '.venv')
 }
 
-async function versionOf(python: string): Promise<string> {
+async function versionOf(python: string, signal?: AbortSignal): Promise<string> {
   try {
-    const { stdout } = await execFileAsync(python, ['--version'], {
+    const { stdout, stderr } = await execFileAsync(python, ['--version'], {
       timeout: 8000,
-      windowsHide: true
+      windowsHide: true,
+      signal
     })
-    return String(stdout || '').trim()
+    return `${String(stdout || '')}\n${String(stderr || '')}`.trim()
   } catch {
     return ''
   }
+}
+
+/** "Python 3.13.18" → "3.13.18"; undefined when unparseable. */
+function parseVersion(versionText: string): string | undefined {
+  const m = String(versionText).match(/Python\s+(\d+\.\d+(?:\.\d+)?)/i)
+  return m ? m[1] : undefined
 }
 
 function is313(versionText: string): boolean {
@@ -95,14 +103,16 @@ async function installTorchAndRequirements(
   python: string,
   channel: TorchChannel,
   requirementsFile: string,
-  warnings: string[]
+  warnings: string[],
+  signal?: AbortSignal
 ): Promise<void> {
-  const index = officialTorchIndex(channel)
+  // 0.2.5 WP0: respect the configured torch mirror, not only the official index.
+  const index = resolveTorchIndex(channel)
   await envService.installTorch({ pythonPath: python, index })
   const { stdout } = await execFileAsync(
     python,
     ['-c', 'import json,torch;print(json.dumps({"v":torch.__version__}))'],
-    { timeout: 60000, windowsHide: true }
+    { timeout: 60000, windowsHide: true, signal }
   )
   const line =
     String(stdout || '')
@@ -131,7 +141,8 @@ async function installTorchAndRequirements(
           cwd: opts?.cwd,
           timeout: opts?.timeout ?? 30 * 60 * 1000,
           windowsHide: true,
-          maxBuffer: 20 * 1024 * 1024
+          maxBuffer: 20 * 1024 * 1024,
+          signal
         })
         return `${res.stdout || ''}\n${res.stderr || ''}`
       },
@@ -148,9 +159,17 @@ export async function migrateInstancePython(
 ): Promise<PythonMigrationResult> {
   const config = loadInstanceConfigs().find((c) => c.id === instanceId)
   if (!config) throw new Error(`Instance not found: ${instanceId}`)
+  const signal = opts?.signal
+  const checkAbort = (): void => {
+    if (!signal?.aborted) return
+    const e = new Error('Python migration cancelled')
+    e.name = 'AbortError'
+    throw e
+  }
+  checkAbort()
   const venvPath = resolveVenvPath(config)
   const oldPython = venvPython(venvPath)
-  const fromVersion = (await versionOf(oldPython)) || 'unknown'
+  const fromVersion = (await versionOf(oldPython, signal)) || 'unknown'
   if (is313(fromVersion)) {
     return {
       ok: true,
@@ -167,25 +186,30 @@ export async function migrateInstancePython(
   const warnings: string[] = []
   const channel = await chooseChannel(venvPath, oldPython, warnings)
 
+  // 0.2.5 WP0: migration writes the same venv as repair/install — one lock.
+  const releaseEnvLock = acquireEnvLock(instanceId, 'python-migration')
+  try {
   upsertInstanceConfig({ ...config, migrationState: 'migrating', migrationError: undefined })
 
-  // 1. Base interpreter: portable 3.13, or download it.
-  let basePython = findInRuntimes('python')
-  if (!basePython) {
-    const status = await bootstrapService.ensure({
-      kinds: ['python'],
-      downloadIfMissing: true,
-      signal: opts?.signal
-    })
-    basePython = status.components.find((c) => c.kind === 'python' && c.installed)?.path || null
-  }
-  if (!basePython) {
-    upsertInstanceConfig({
-      ...config,
-      migrationState: 'failed',
-      migrationError: 'No Python 3.13 runtime available — download it in Settings → Runtimes'
-    })
-    throw new Error('PYTHON_UNSUPPORTED: no Python 3.13 runtime available')
+  // 1. Base interpreter: portable 3.13, or download it. This resolution used
+  // to sit outside any try, so a download failure left the instance stuck in
+  // `migrating` forever (0.2.5 WP0).
+  let basePython: string | null = findInRuntimes('python')
+  try {
+    if (!basePython) {
+      const status = await bootstrapService.ensure({
+        kinds: ['python'],
+        downloadIfMissing: true,
+        signal
+      })
+      basePython = status.components.find((c) => c.kind === 'python' && c.installed)?.path || null
+    }
+    if (!basePython) throw new Error('PYTHON_UNSUPPORTED: no Python 3.13 runtime available')
+    checkAbort()
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    upsertInstanceConfig({ ...config, migrationState: 'failed', migrationError: message })
+    throw err
   }
 
   // 2. Archive the old venv. Never delete it before the new one is verified.
@@ -196,15 +220,19 @@ export async function migrateInstancePython(
       renameSync(venvPath, archivedVenv)
       archived = true
     }
+    checkAbort()
     // 3. Create the 3.13 venv.
     await execFileAsync(basePython, ['-m', 'venv', venvPath], {
       timeout: 5 * 60 * 1000,
-      windowsHide: true
+      windowsHide: true,
+      signal
     })
+    checkAbort()
     const newPython = venvPython(venvPath)
     if (!existsSync(newPython)) throw new Error(`venv creation failed — missing ${newPython}`)
-    const newVersion = await versionOf(newPython)
-    if (!is313(newVersion)) {
+    const newVersion = await versionOf(newPython, signal)
+    const parsedNewVersion = parseVersion(newVersion)
+    if (!is313(newVersion) || !parsedNewVersion) {
       throw new Error(`venv reports ${newVersion || 'unknown'} — expected Python 3.13`)
     }
 
@@ -213,8 +241,10 @@ export async function migrateInstancePython(
       newPython,
       channel,
       join(config.path, 'requirements.txt'),
-      warnings
+      warnings,
+      signal
     )
+    checkAbort()
 
     // 5. Only now write the config + EnvMarker. A stale marker from the old
     // 3.12 era would block the next launch with ENV_MISMATCH.
@@ -225,7 +255,7 @@ export async function migrateInstancePython(
           {
             venvPath,
             pythonPath: newPython,
-            pythonVersion: '3.13.18',
+            pythonVersion: parsedNewVersion,
             migratedAt: Date.now()
           },
           null,
@@ -239,7 +269,7 @@ export async function migrateInstancePython(
       ...config,
       venvPath,
       pythonPath: '',
-      pythonVersion: '3.13.18',
+      pythonVersion: parsedNewVersion,
       migrationState: 'none',
       migrationError: undefined
     })
@@ -264,5 +294,8 @@ export async function migrateInstancePython(
     const message = err instanceof Error ? err.message : String(err)
     upsertInstanceConfig({ ...config, migrationState: 'failed', migrationError: message })
     throw err
+  }
+  } finally {
+    releaseEnvLock()
   }
 }

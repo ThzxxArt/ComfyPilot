@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { execFile, spawn } from 'child_process'
 import { promisify } from 'util'
@@ -14,6 +14,7 @@ import type {
 import { loadSettings } from './db'
 import { killProcessTree } from './processTree'
 import { comfyChildEnv } from './childEnv'
+import { acquireEnvLock } from './envLock'
 import { parsePipRequirement } from '@shared/pipVersion'
 
 const execFileAsync = promisify(execFile)
@@ -799,7 +800,7 @@ export class EnvService extends EventEmitter {
   }): Promise<EnvProbe> {
     const { loadInstanceConfigs } = await import('./db')
     const { join } = await import('path')
-    const { existsSync, mkdirSync, rmSync } = await import('fs')
+    const { existsSync, mkdirSync } = await import('fs')
     const id = opts.instanceId
     const throwIfAborted = (): void => {
       if (!signal?.aborted) return
@@ -828,6 +829,8 @@ export class EnvService extends EventEmitter {
       'update.msgPreflightRun'
     )
 
+    // 0.2.5 WP0: repair writes the same venv as node installs/migration.
+    const releaseEnvLock = acquireEnvLock(id, 'env-repair')
     try {
       throwIfAborted()
       const config = loadInstanceConfigs().find((c) => c.id === id)
@@ -862,7 +865,17 @@ export class EnvService extends EventEmitter {
 
       if (opts.recreateVenv && existsSync(venvPath)) {
         this.emitRepair(id, 'venv', 'running', 'Recreating virtual env…')
-        rmSync(venvPath, { recursive: true, force: true })
+        // 0.2.5 WP0: archive before delete. A failed recreate must leave the
+        // previous environment recoverable instead of destroying it.
+        const archive = `${venvPath}.pre-recreate-${Date.now()}`
+        try {
+          renameSync(venvPath, archive)
+          this.repairLog(`Archived previous venv → ${archive}`)
+        } catch (e) {
+          throw new Error(
+            `Could not archive ${venvPath} before recreating it: ${e instanceof Error ? e.message : String(e)}`
+          )
+        }
       }
 
       if (!existsSync(pythonInVenv)) {
@@ -920,7 +933,42 @@ export class EnvService extends EventEmitter {
           )
         }
       } else {
-        this.emitRepair(id, 'venv', 'running', 'venv already present — checking pip…')
+        // 0.2.5 WP0: never claim 3.13 for an existing 3.12/3.14 venv. The old
+        // repair wrote `pythonVersion: 3.13.18` unconditionally, so the next
+        // launch failed only after the user thought the repair succeeded.
+        const existingVersion = await safeExec(pythonInVenv, ['--version'], undefined, 8000)
+        const vm = existingVersion.match(/Python\s+(\d+)\.(\d+)(?:\.(\d+))?/i)
+        if (!vm) {
+          const e = new Error(
+            `Could not determine the venv Python version (${existingVersion.trim() || 'no output'})`
+          ) as Error & { code?: string }
+          e.code = 'PYTHON_UNKNOWN'
+          throw e
+        }
+        const version = `${vm[1]}.${vm[2]}${vm[3] ? `.${vm[3]}` : ''}`
+        if (!(Number(vm[1]) === 3 && Number(vm[2]) === 13)) {
+          const { upsertInstanceConfig } = await import('./db')
+          const legacy = Number(vm[1]) === 3 && Number(vm[2]) === 12
+          const message = legacy
+            ? `Python ${version} venv cannot be repaired in place — migrate it to the bundled Python 3.13 runtime`
+            : `Unsupported Python ${version} — use the bundled Python 3.13 runtime`
+          upsertInstanceConfig({
+            ...config,
+            venvPath,
+            pythonVersion: version,
+            migrationState: legacy ? 'required' : 'failed',
+            migrationError: message
+          })
+          const e = new Error(message) as Error & { code?: string }
+          e.code = legacy ? 'PYTHON_MIGRATION_REQUIRED' : 'PYTHON_UNSUPPORTED'
+          throw e
+        }
+        this.emitRepair(
+          id,
+          'venv',
+          'running',
+          `venv already present (Python ${version}) — checking pip…`
+        )
       }
       // WP4 (0.1.12): pip must work for the pip fallback paths, the user's own
       // manual installs and the dependency-fix features. uv-only environments
@@ -1085,6 +1133,9 @@ export class EnvService extends EventEmitter {
       }
 
       const probe = await this.probe({ pythonPath: pythonInVenv, venvPath })
+      // Record the version the interpreter ACTUALLY reports (0.2.5 WP0).
+      const actualMatch = String(probe.pythonVersion || '').match(/3\.13(?:\.\d+)?/)
+      const actualPythonVersion = actualMatch ? actualMatch[0] : '3.13'
       // EnvMarker: audit/launch/install all check this before trusting a venv.
       try {
         writeFileSync(
@@ -1093,7 +1144,7 @@ export class EnvService extends EventEmitter {
             {
               venvPath,
               pythonPath: pythonInVenv,
-              pythonVersion: '3.13.18',
+              pythonVersion: actualPythonVersion,
               updatedAt: Date.now()
             },
             null,
@@ -1107,11 +1158,11 @@ export class EnvService extends EventEmitter {
       // instance kept an empty venvPath and later launch/pip fell back to
       // `dirname(comfyDir)/.venv` — a different environment.
       const { upsertInstanceConfig } = await import('./db')
-      if (config.venvPath !== venvPath || config.pythonVersion !== '3.13.18') {
+      if (config.venvPath !== venvPath || config.pythonVersion !== actualPythonVersion) {
         upsertInstanceConfig({
           ...config,
           venvPath,
-          pythonVersion: '3.13.18',
+          pythonVersion: actualPythonVersion,
           migrationState: 'none',
           migrationError: undefined
         })
@@ -1129,6 +1180,7 @@ export class EnvService extends EventEmitter {
       if (rp) rp.errorCode = (err as { code?: string })?.code || 'REPAIR_FAILED'
       throw err
     } finally {
+      releaseEnvLock()
       if (this.repairAbort === ac) this.repairAbort = null
     }
   }
