@@ -81,6 +81,55 @@ export async function exportDiagnostics(
     }
   }
 
+  // 0.2.5 WP2: health evidence, process and port facts.
+  if (config) {
+    try {
+      const { instanceHealthService } = await import('./health')
+      const health =
+        instanceHealthService.get(id) ?? (await instanceHealthService.check(id).catch(() => null))
+      if (health) {
+        writeFileSync(join(dir, 'health.json'), JSON.stringify(health, null, 2))
+        contents.push('health.json')
+      }
+      const effective = resolveEffectiveInstance(config)
+      writeFileSync(
+        join(dir, 'ports.json'),
+        JSON.stringify(
+          {
+            configuredPort: config.port,
+            effectivePort: effective.port,
+            configuredListen: config.listen,
+            effectiveListen: effective.listen,
+            probeHost: effective.probeHost,
+            url: effective.url
+          },
+          null,
+          2
+        )
+      )
+      contents.push('ports.json')
+      writeFileSync(
+        join(dir, 'process.json'),
+        JSON.stringify(
+          {
+            instanceId: id,
+            pid: rt?.pid,
+            status: rt?.status,
+            managed: rt?.managed,
+            startedAt: rt?.startedAt,
+            lastLogAt: rt?.lastLogAt,
+            lastExit: rt?.lastExit
+          },
+          null,
+          2
+        )
+      )
+      contents.push('process.json')
+    } catch {
+      /* health evidence is best-effort */
+    }
+  }
+
   // Online facts (0.1.10): /system_stats + /features give offline diagnosis
   // the exact version/packages/argv/feature-flag surface of the instance.
   if (config?.port) {

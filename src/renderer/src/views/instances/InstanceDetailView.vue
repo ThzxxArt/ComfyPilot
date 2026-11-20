@@ -16,6 +16,7 @@ import {
   ArrowDownOutline
 } from '@vicons/ionicons5'
 import {
+  NAlert,
   NButton,
   NIcon,
   NInput,
@@ -38,6 +39,7 @@ import {
 } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
 import { ipc, onInstanceStatus, onInstanceLogBatch } from '@/composables/useIpc'
+import HealthBadge from '@/components/HealthBadge.vue'
 import { useLaunch } from '@/composables/useLaunch'
 import { useComfyUpdate } from '@/composables/useComfyUpdate'
 import { useAutoFollow } from '@/composables/useAutoFollow'
@@ -202,6 +204,32 @@ async function restartWithProfile(): Promise<void> {
  * 0.1.17 (WP3): recover from a classified crash. OOM gets a one-click
  * "--lowvram" retry; anything else restarts with the current arguments.
  */
+/** 0.2.5 WP3: force-kill + relaunch, optionally without custom nodes. */
+async function rescueInstance(safe: boolean): Promise<void> {
+  const target = instance.value
+  if (!target) return
+  try {
+    const result = await ipc('instance.rescue', target.id, { safe })
+    if (!result.ok) {
+      message.error(result.error || t('instance.rescueFailed'))
+      return
+    }
+    message.success(safe ? t('instance.safeModeStarted') : t('instance.rescued'))
+    store.health[target.id] = await ipc('instance.checkHealth', target.id)
+    await refresh()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function copyRescueCommand(): Promise<void> {
+  const target = instance.value
+  if (!target) return
+  const command = `ComfyPilot.exe --rescue ${target.id}`
+  await ipc('shell.writeClipboard', command)
+  message.success(t('instance.rescueCommandCopied'))
+}
+
 async function recoverCrash(lowerVram: boolean): Promise<void> {
   const target = instance.value
   if (!target) return
@@ -1205,6 +1233,20 @@ watch(
                 }}
               </NButton>
             </section>
+            <NAlert
+              v-if="instance?.safeMode"
+              type="warning"
+              :title="$t('instance.safeModeBanner')"
+              closable
+              class="safe-mode-banner"
+            >
+              <NSpace align="center">
+                <span>{{ $t('instance.safeModeBannerMsg') }}</span>
+                <NButton size="tiny" type="warning" @click="rescueInstance(false)">
+                  {{ $t('instance.exitSafeMode') }}
+                </NButton>
+              </NSpace>
+            </NAlert>
             <section class="card panel">
               <NDescriptions bordered size="small" :column="2" label-placement="left" class="desc">
                 <NDescriptionsItem :label="$t('common.status')" :span="2">
@@ -1223,6 +1265,30 @@ watch(
                     >
                       {{ statusLabel(instance?.status) }}
                     </NTag>
+                    <HealthBadge
+                      :health="instance ? store.health[instance.id] : undefined"
+                      :status="instance?.status"
+                    />
+                    <NButton
+                      v-if="instance"
+                      size="tiny"
+                      secondary
+                      @click="rescueInstance(false)"
+                    >
+                      {{ $t('instance.forceRestart') }}
+                    </NButton>
+                    <NButton
+                      v-if="instance"
+                      size="tiny"
+                      type="warning"
+                      secondary
+                      @click="rescueInstance(true)"
+                    >
+                      {{ $t('instance.safeMode') }}
+                    </NButton>
+                    <NButton size="tiny" quaternary @click="copyRescueCommand()">
+                      {{ $t('instance.copyRescueCommand') }}
+                    </NButton>
                     <span
                       v-if="instance?.status === 'error' && instance?.lastError"
                       class="last-error"

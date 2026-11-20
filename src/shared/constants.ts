@@ -32,6 +32,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   torchIndexMirror: '',
   outputScanDepth: 4,
   stopMode: 'fast',
+  healthCheckEnabled: true,
+  healthCheckIntervalMs: 5000,
+  healthCheckTimeoutMs: 2000,
+  healthStaleMs: 180_000,
+  autoRecover: false,
+  autoRecoverCooldownMs: 300_000,
+  autoRecoverMaxAttempts: 3,
   proxy: {
     enabled: false,
     protocol: 'http',

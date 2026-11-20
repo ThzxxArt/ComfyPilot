@@ -176,6 +176,16 @@ export interface AppSettings {
    * trust (and permanently pin) whatever the first download produced.
    */
   allowUnverifiedRuntime?: boolean
+  // ---------- 0.2.5 WP2/WP3: instance health watchdog ----------
+  healthCheckEnabled?: boolean
+  healthCheckIntervalMs?: number
+  healthCheckTimeoutMs?: number
+  /** Log/progress silence before `unresponsive` is allowed (60–1800s). */
+  healthStaleMs?: number
+  /** Default false: 0.2.5 only warns. */
+  autoRecover?: boolean
+  autoRecoverCooldownMs?: number
+  autoRecoverMaxAttempts?: number
 }
 
 // ---------- Notifications ----------

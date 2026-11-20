@@ -162,10 +162,48 @@ export function save(ctx: InstanceServiceContext, config: ComfyInstanceConfig): 
     launchProfile: normalizeLaunchProfile(config.launchProfile),
     pythonVersion: config.pythonVersion,
     migrationState: config.migrationState,
-    migrationError: config.migrationError
+    migrationError: config.migrationError,
+    // 0.2.5 WP5: optional; absent means "nightly" for legacy instances.
+    updateChannel: config.updateChannel,
+    comfyChannel: config.comfyChannel
   }
   upsertInstanceConfig(next)
   return ctx.toInfo(ctx.ensureRuntime(next))
+}
+
+/**
+ * 0.2.5 WP0/P0-6: merge a partial update into the stored record instead of
+ * replacing it. `save()` is a whole-record write; using it for a port change
+ * silently dropped pythonVersion/migrationState/migrationError.
+ */
+export function patch(
+  ctx: InstanceServiceContext,
+  id: string,
+  partial: Partial<ComfyInstanceConfig>
+): ComfyInstanceInfo {
+  const existing = loadInstanceConfigs().find((c) => c.id === id)
+  if (!existing) throw new Error(`Instance not found: ${id}`)
+  const allowed: Array<keyof ComfyInstanceConfig> = [
+    'name',
+    'port',
+    'listen',
+    'extraArgs',
+    'argTemplateId',
+    'enabled',
+    'notes',
+    'autoStart',
+    'frontendVersion',
+    'pinned',
+    'launchProfile',
+    'updateChannel',
+    'comfyChannel'
+  ]
+  const next: ComfyInstanceConfig = { ...existing }
+  for (const key of allowed) {
+    if (partial[key] === undefined) continue
+    ;(next as unknown as Record<string, unknown>)[key] = partial[key]
+  }
+  return save(ctx, next)
 }
 
 export async function remove(ctx: InstanceServiceContext, id: string): Promise<boolean> {

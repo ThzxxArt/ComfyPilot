@@ -21,6 +21,13 @@ export type {
 } from './app'
 
 export type {
+  HealthState,
+  InstanceHealth,
+  HealthRecoveryPolicy
+} from './health'
+export { DEFAULT_HEALTH_RECOVERY_POLICY } from './health'
+
+export type {
   InstanceStatus,
   LaunchArgTemplate,
   LaunchProfile,
@@ -41,6 +48,7 @@ export type {
   ModelReconcileResult,
   InstanceActionResult,
   InstanceStopResult,
+  InstanceControlResult,
   DiagnosticPackage
 } from './instance'
 

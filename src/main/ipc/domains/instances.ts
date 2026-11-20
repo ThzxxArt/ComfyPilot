@@ -213,6 +213,46 @@ export function createInstanceHandlers(ctx: IpcContext) {
       const { migrateInstancePython } = await import('../../services/pythonMigration')
       return migrateInstancePython(safeId)
     }),
+    patch: wrap((id: string, partial: Partial<ComfyInstanceConfig>) => {
+      const safeId = sanitizeId(id)
+      const existing = instanceService.list().find((i) => i.id === safeId)
+      if (!existing) throw new Error(`Instance not found: ${safeId}`)
+      if (!partial || typeof partial !== 'object' || Array.isArray(partial)) {
+        throw new Error('instance.patch expects an object')
+      }
+      const merged = { ...existing, ...partial } as ComfyInstanceConfig
+      assertSafeLaunchConfig(merged)
+      return instanceService.patch(safeId, partial)
+    }),
+    setPort: wrap((id: string, port: number) => {
+      const safeId = sanitizeId(id)
+      const existing = instanceService.list().find((i) => i.id === safeId)
+      if (!existing) throw new Error(`Instance not found: ${safeId}`)
+      assertSafeLaunchConfig({ ...existing, port } as ComfyInstanceConfig)
+      // Only the port changes — migration/version fields stay intact.
+      return instanceService.patch(safeId, { port })
+    }),
+    health: wrap(async (id: string) => {
+      const safeId = sanitizeId(id)
+      const { instanceHealthService } = await import('../../services/instance/health')
+      return instanceHealthService.get(safeId) ?? (await instanceHealthService.check(safeId))
+    }),
+    checkHealth: wrap(async (id: string) => {
+      const safeId = sanitizeId(id)
+      const { instanceHealthService } = await import('../../services/instance/health')
+      return instanceHealthService.check(safeId)
+    }),
+    rescue: wrap(async (id: string, opts?: { safe?: boolean }) => {
+      const { executeControlCommand } = await import('../../control')
+      return executeControlCommand({
+        action: opts?.safe ? 'safe-rescue' : 'rescue',
+        instanceId: sanitizeId(id)
+      })
+    }),
+    exportRescueScript: wrap(async (id: string) => {
+      const { exportRescueScript } = await import('../../control')
+      return exportRescueScript(sanitizeId(id))
+    }),
     remove: wrap((id: string) => instanceService.remove(sanitizeId(id))),
     launch: wrap(async (id: string, opts?: LaunchOptions) => {
       const safeId = sanitizeId(id)

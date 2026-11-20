@@ -4,6 +4,13 @@ import { pathToFileURL } from 'url'
 import { existsSync, mkdirSync, appendFileSync } from 'fs'
 import { registerIpcHandlers, broadcast, broadcastNotification } from './ipc/handlers'
 import { instanceService } from './services/instance'
+import { instanceHealthService } from './services/instance/health'
+import {
+  executeControlCommand,
+  noteHealthForRecovery,
+  parseControlArgv,
+  type ControlCommand
+} from './control'
 import { modelService } from './services/model'
 import { monitorService } from './services/monitor'
 import { batchService } from './services/p1p2'
@@ -442,11 +449,33 @@ const allowMultipleInstances =
   process.argv.includes('--allow-multiple-instances') ||
   process.env.COMFYPILOT_ALLOW_MULTIPLE === '1'
 const gotSingleInstanceLock = allowMultipleInstances || app.requestSingleInstanceLock()
+const startupControl: ControlCommand | null = parseControlArgv(process.argv)
 if (!gotSingleInstanceLock) {
   crashLog('another instance owns the lock — quitting this one')
   app.quit()
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, argv) => {
+    const command = parseControlArgv(argv || [])
+    if (command) {
+      crashLog(`second-instance control: ${command.action} ${command.instanceId || ''}`)
+      void executeControlCommand(command).then((result) => {
+        crashLog(`control ${command.action}: ${result.ok ? 'ok' : result.error || 'failed'}`)
+        broadcastNotification({
+          type: result.ok ? 'success' : 'error',
+          title: result.ok ? 'Instance control completed' : 'Instance control failed',
+          titleKey: result.ok ? 'notify.controlOk' : 'notify.controlFailed',
+          message: result.error || `${command.action} ${command.instanceId || ''}`,
+          messageKey: result.ok ? 'notify.controlOkMsg' : 'notify.controlFailedMsg',
+          params: {
+            action: command.action,
+            id: command.instanceId || '',
+            error: result.error || ''
+          },
+          duration: 10000
+        })
+      })
+      return
+    }
     crashLog('second-instance: focusing existing window')
     revealWindow()
   })
@@ -723,7 +752,31 @@ app.whenReady().then(async () => {
   instanceService.on('status', (info) => {
     broadcast(IPC_EVENTS.instanceStatus, info)
     void refreshTray()
+    // 0.2.5 WP2: a start/stop changes which instances the watchdog polls.
+    instanceHealthService.refresh()
   })
+  instanceHealthService.on('health', (payload: { instanceId: string; health: unknown }) => {
+    broadcast(IPC_EVENTS.instanceHealth, payload)
+    try {
+      noteHealthForRecovery(payload.health as Parameters<typeof noteHealthForRecovery>[0])
+    } catch {
+      /* recovery policy must never break health broadcast */
+    }
+  })
+  try {
+    instanceHealthService.start(
+      instanceService as unknown as Parameters<typeof instanceHealthService.start>[0]
+    )
+  } catch (err) {
+    crashLog('health watchdog failed: ' + String(err))
+  }
+  // 0.2.5 WP3: this process may itself be the first one (no running app); a
+  // `--rescue`/`--status` passed at launch executes after the app is ready.
+  if (startupControl) {
+    void executeControlCommand(startupControl).then((result) => {
+      crashLog(`startup control ${startupControl.action}: ${result.ok ? 'ok' : result.error}`)
+    })
+  }
   instanceService.on('log', (id, line) => {
     // 0.2.0: coalesce bursts into one IPC message per 100ms. ComfyUI startup
     // can emit thousands of lines in seconds; one IPC per line flooded the

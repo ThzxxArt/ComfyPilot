@@ -130,6 +130,36 @@ async function buildMenu(): Promise<Menu> {
           }
         },
         {
+          label: 'Force restart (rescue)',
+          enabled: inst.status !== 'starting',
+          click: () => {
+            void import('../control')
+              .then((m) =>
+                m.executeControlCommand({ action: 'rescue', instanceId: inst.id })
+              )
+              .then((r) => {
+                if (!r.ok) showSystemNotification('Rescue failed', r.error || inst.name)
+                refreshTray()
+              })
+              .catch(() => undefined)
+          }
+        },
+        {
+          label: 'Safe mode restart',
+          enabled: inst.status !== 'starting',
+          click: () => {
+            void import('../control')
+              .then((m) =>
+                m.executeControlCommand({ action: 'safe-rescue', instanceId: inst.id })
+              )
+              .then((r) => {
+                if (!r.ok) showSystemNotification('Safe mode failed', r.error || inst.name)
+                refreshTray()
+              })
+              .catch(() => undefined)
+          }
+        },
+        {
           label: s.openFrontend,
           enabled: Boolean(inst.url),
           click: () => {

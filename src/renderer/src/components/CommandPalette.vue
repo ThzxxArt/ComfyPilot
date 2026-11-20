@@ -84,6 +84,36 @@ const commands = computed<Command[]>(() => {
       hint: store.activeInstance.name,
       run: () => void stop(store.activeInstance!)
     })
+    const target = store.activeInstance
+    list.push({
+      id: 'action:force-restart',
+      label: t('palette.forceRestart'),
+      hint: target.name,
+      run: async () => {
+        const r = await ipc('instance.rescue', target.id, { safe: false })
+        if (!r.ok) message.error(r.error || t('instance.rescueFailed'))
+        else message.success(t('instance.rescued'))
+      }
+    })
+    list.push({
+      id: 'action:safe-restart',
+      label: t('palette.safeRestart'),
+      hint: target.name,
+      run: async () => {
+        const r = await ipc('instance.rescue', target.id, { safe: true })
+        if (!r.ok) message.error(r.error || t('instance.rescueFailed'))
+        else message.success(t('instance.safeModeStarted'))
+      }
+    })
+    list.push({
+      id: 'action:copy-rescue',
+      label: t('palette.copyRescue'),
+      hint: target.id,
+      run: async () => {
+        await ipc('shell.writeClipboard', `ComfyPilot.exe --rescue ${target.id}`)
+        message.success(t('instance.rescueCommandCopied'))
+      }
+    })
   }
   list.push({
     id: 'action:logs',

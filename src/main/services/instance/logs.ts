@@ -17,7 +17,9 @@ export function pushLog(
   level: ComfyLogLine['level'],
   message: string
 ): void {
-  const line: ComfyLogLine = { ts: Date.now(), level, message, source: 'comfy' }
+  const nowTs = Date.now()
+  const line: ComfyLogLine = { ts: nowTs, level, message, source: 'comfy' }
+  rt.lastLogAt = nowTs
   rt.logs.push(line)
   if (rt.logs.length > LOG_CAP) rt.logs.splice(0, rt.logs.length - LOG_CAP)
   ctx.emit('log', rt.config.id, line)

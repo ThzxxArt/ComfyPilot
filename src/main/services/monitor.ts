@@ -204,6 +204,13 @@ export class MonitorService extends EventEmitter {
   private wsGeneration = 0
   /** Preview frame throttle (0.1.10): at most one emitted frame per 300ms. */
   private lastPreviewAt = 0
+  /** 0.2.5 WP2: last real progress event per instance base URL. */
+  private progressAtByBase = new Map<string, number>()
+
+  lastProgressAt(baseUrl?: string): number | undefined {
+    if (!baseUrl) return undefined
+    return this.progressAtByBase.get(baseUrl.replace(/\/+$/, ''))
+  }
 
   /**
    * 0.1.18 (WP4): sampling used to take 2.6–3.4 s per tick and ticks could
@@ -548,7 +555,11 @@ export class MonitorService extends EventEmitter {
             type: string
             data?: Record<string, unknown>
           }
-          this.emit('ws', this.buildExecEvent(msg))
+          const event = this.buildExecEvent(msg)
+          if (event.type !== 'status') {
+            this.progressAtByBase.set(baseUrl.replace(/\/+$/, ''), Date.now())
+          }
+          this.emit('ws', event)
         } catch {
           /* ignore malformed */
         }
@@ -611,6 +622,7 @@ export class MonitorService extends EventEmitter {
     const now = Date.now()
     if (now - this.lastPreviewAt < 300) return
     this.lastPreviewAt = now
+    if (this.wsBaseUrl) this.progressAtByBase.set(this.wsBaseUrl.replace(/\/+$/, ''), now)
     this.emit('ws', {
       type: 'preview',
       image: `data:${mime};base64,${image.toString('base64')}`,

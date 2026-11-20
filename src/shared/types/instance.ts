@@ -108,6 +108,10 @@ export interface ComfyInstanceConfig {
   /** 0.2.0: one-way migration state; 3.12 instances cannot start until migrated. */
   migrationState?: 'none' | 'required' | 'migrating' | 'failed'
   migrationError?: string
+  /** 0.2.5 WP5: update channel. Absent on 0.2.4 records → nightly + prompt. */
+  updateChannel?: 'stable' | 'nightly'
+  /** 0.2.5 WP5: the channel the installed tree actually came from. */
+  comfyChannel?: 'stable' | 'nightly'
 }
 
 /**
@@ -341,6 +345,23 @@ export interface InstanceStopResult extends ComfyInstanceInfo {
    * window. `false` means it may still be running — the UI must say so.
    */
   exited?: boolean
+}
+
+/** Result of an out-of-band rescue/stop/start command (0.2.5 WP3). */
+export interface InstanceControlResult {
+  ok: boolean
+  action: 'rescue' | 'safe-rescue' | 'stop' | 'start' | 'status'
+  instanceId?: string
+  status?: InstanceStatus
+  exited?: boolean
+  merged?: boolean
+  error?: string
+  statuses?: Array<{
+    id: string
+    name: string
+    status: InstanceStatus
+    health?: import('./health').InstanceHealth
+  }>
 }
 
 export interface DiagnosticPackage {

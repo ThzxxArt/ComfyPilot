@@ -38,6 +38,8 @@ interface RuntimeEntry {
   }>
   /** Interval that polls /system_stats until ready. */
   readyPollTimer?: NodeJS.Timeout
+  /** 0.2.5 WP2: timestamp of the most recent log line for this runtime. */
+  lastLogAt?: number
   /** Last status value pushed over IPC (change detection for pushLog). */
   lastEmittedStatus?: InstanceStatus
   /** Timestamp of the last status IPC (same-status throttle). */

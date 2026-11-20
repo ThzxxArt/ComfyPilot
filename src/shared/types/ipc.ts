@@ -46,6 +46,7 @@ import type {
   DiagnosticPackage,
   InstanceActionResult,
   InstanceCapabilities,
+  InstanceControlResult,
   InstanceDiscoveryCandidate,
   InstanceStopResult,
   LaunchArgTemplate,
@@ -55,6 +56,7 @@ import type {
   NodeLoadReport,
   PortCheckResult
 } from './instance'
+import type { InstanceHealth } from './health'
 import type {
   DownloadTask,
   DuplicateGroup,
@@ -211,6 +213,16 @@ export type IpcChannelMap = {
   'instance.list': { args: []; result: ComfyInstanceInfo[] }
   'instance.discover': { args: [string?]; result: InstanceDiscoveryCandidate[] }
   'instance.save': { args: [ComfyInstanceConfig]; result: ComfyInstanceInfo }
+  /** 0.2.5: partial update — never replaces migration fields (port conflict fix). */
+  'instance.patch': { args: [string, Partial<ComfyInstanceConfig>]; result: ComfyInstanceInfo }
+  'instance.setPort': { args: [string, number]; result: ComfyInstanceInfo }
+  'instance.health': { args: [string]; result: InstanceHealth }
+  'instance.checkHealth': { args: [string]; result: InstanceHealth }
+  'instance.rescue': {
+    args: [string, { safe?: boolean }?]
+    result: InstanceControlResult
+  }
+  'instance.exportRescueScript': { args: [string]; result: { path: string } }
   'instance.launchArgCatalog': { args: [string?]; result: string[] }
   'instance.migratePython': {
     args: [string]
@@ -744,6 +756,12 @@ export const IPC_CHANNELS = [
   'instance.exportLaunchScript',
   'instance.exportLogs',
   'instance.forceKill',
+  'instance.health',
+  'instance.checkHealth',
+  'instance.patch',
+  'instance.setPort',
+  'instance.rescue',
+  'instance.exportRescueScript',
   'instance.sweepStale',
   'instance.getLogs',
   'instance.launch',
@@ -910,6 +928,8 @@ export const IPC_EVENTS = {
   instanceLog: 'event:instance-log',
   /** Batched log lines (0.2.0) — one IPC message per 100ms instead of per line. */
   instanceLogBatch: 'event:instance-log-batch',
+  /** 0.2.5 WP2: `{ instanceId, health }` on every health-state transition. */
+  instanceHealth: 'event:instance-health',
   /** IssueCenter changed (0.2.0) — payload: AppIssue[]. */
   issuesChanged: 'event:issues-changed',
   modelScanProgress: 'event:model-scan-progress',

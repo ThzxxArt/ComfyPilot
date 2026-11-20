@@ -139,6 +139,20 @@ export default {
     modelScanRoots: 'Model scan roots',
     modelScanRootsHint:
       'Extra directories to scan besides instance models/. Saved roots are picked up by the model library.',
+    healthTitle: 'Instance health',
+    healthEnabled: 'Enable health watchdog',
+    healthEnabledHint:
+      'Notify-only by default. HTTP, port, process, logs and queue are combined; one timeout never kills an instance.',
+    healthInterval: 'Probe interval (ms)',
+    healthIntervalHint: 'Default 5000ms with ±20% jitter.',
+    healthStale: 'Log/progress stale threshold (ms)',
+    healthStaleHint:
+      'Unresponsive requires repeated HTTP failures + listening port + live process + stale logs/progress.',
+    autoRecover: 'Automatic recovery (off by default)',
+    autoRecoverHint:
+      'Only managed local instances are eligible; adopted external instances are never killed.',
+    autoRecoverMax: 'Max attempts per 10 minutes',
+    autoRecoverCooldown: 'Minimum gap between attempts (ms)',
     outputScanDepth: 'Output scan depth',
     outputScanDepthHint:
       'Recursion depth under the output folder (default 4; deeper is slower — raise to 6-8 for deeply nested date folders).',
@@ -323,9 +337,31 @@ export default {
     start: 'Start',
     collapseSidebar: 'Collapse/expand sidebar'
   },
+  health: {
+    state: {
+      unknown: 'Unknown',
+      healthy: 'Healthy',
+      busy: 'Busy',
+      suspect: 'Suspect',
+      unresponsive: 'Unresponsive',
+      crashed: 'Crashed',
+      stopped: 'Stopped'
+    }
+  },
   instance: {
     title: 'Instances',
     subtitle: 'Discover, launch and manage multiple ComfyUI instances.',
+    forceRestart: 'Force restart',
+    safeMode: 'Safe mode',
+    safeModeStarted: 'Started in safe mode',
+    safeModeBanner: 'Safe mode: custom nodes were not loaded',
+    safeModeBannerMsg:
+      'This launch added --disable-all-custom-nodes. No pack was deleted or disabled.',
+    exitSafeMode: 'Exit safe mode and restart',
+    copyRescueCommand: 'Copy rescue command',
+    rescueCommandCopied: 'Rescue command copied',
+    rescueFailed: 'Rescue failed',
+    rescued: 'Instance rescued and restarted',
     add: 'Add instance',
     discover: 'Auto-discover',
     launchOpen: 'Launch & open',
@@ -785,6 +821,9 @@ export default {
     switchInstance: 'Switch instance',
     launch: 'Launch current instance',
     stop: 'Stop current instance',
+    forceRestart: 'Force restart current instance',
+    safeRestart: 'Restart current instance in safe mode',
+    copyRescue: 'Copy the current instance rescue command',
     openLogs: 'Open logs directory'
   },
   migration: {
@@ -1712,6 +1751,10 @@ export default {
   notify: {
     bootstrapFailed: 'ComfyPilot could not load its data',
     bootstrapFailedMsg: '{error}',
+    controlOk: 'Instance control completed',
+    controlOkMsg: '{action} {id}',
+    controlFailed: 'Instance control failed',
+    controlFailedMsg: '{action} {id}: {error}',
     updateRolledBack: 'Update rolled back',
     updateRolledBackMsg: 'Core files restored from the pre-update backup',
     instanceCrash: 'ComfyUI exited unexpectedly',

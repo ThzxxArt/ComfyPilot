@@ -57,7 +57,14 @@ const KNOWN_SETTINGS_KEYS = new Set([
   'torchIndexMirror',
   'outputScanDepth',
   'stopMode',
-  'allowUnverifiedRuntime'
+  'allowUnverifiedRuntime',
+  'healthCheckEnabled',
+  'healthCheckIntervalMs',
+  'healthCheckTimeoutMs',
+  'healthStaleMs',
+  'autoRecover',
+  'autoRecoverCooldownMs',
+  'autoRecoverMaxAttempts'
 ])
 
 export function saveSettings(patch: Partial<AppSettings>): AppSettings {

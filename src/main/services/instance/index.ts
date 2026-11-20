@@ -126,6 +126,11 @@ export class InstanceService extends EventEmitter {
     return discovery.save(this.ctx, config)
   }
 
+  /** 0.2.5: field-merge update; never replaces migration/version fields. */
+  patch(id: string, partial: Partial<ComfyInstanceConfig>): ComfyInstanceInfo {
+    return discovery.patch(this.ctx, id, partial)
+  }
+
   async remove(id: string): Promise<boolean> {
     return discovery.remove(this.ctx, id)
   }

@@ -24,6 +24,7 @@ import {
   ConstructOutline,
   AlertCircleOutline
 } from '@vicons/ionicons5'
+import HealthBadge from '@/components/HealthBadge.vue'
 import {
   NButton,
   NEmpty,
@@ -928,6 +929,7 @@ function statusClass(s: string): string {
               <span class="chip" :class="statusClass(item.status)">{{
                 statusLabel(item.status)
               }}</span>
+              <HealthBadge :health="store.health[item.id]" :status="item.status" />
             </div>
 
             <div class="meta-row">

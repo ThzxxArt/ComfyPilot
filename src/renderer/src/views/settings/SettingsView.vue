@@ -719,6 +719,55 @@ onUnmounted(() => {
             </NFormItem>
           </NForm>
         </NCard>
+        <NCard :title="t('settings.healthTitle')" class="card" size="small">
+          <NForm label-placement="top">
+            <NFormItem :label="t('settings.healthEnabled')">
+              <NSwitch v-model:value="form.healthCheckEnabled" />
+              <div class="hint">{{ t('settings.healthEnabledHint') }}</div>
+            </NFormItem>
+            <NFormItem :label="t('settings.healthInterval')">
+              <NInputNumber
+                v-model:value="form.healthCheckIntervalMs"
+                :min="1000"
+                :max="60000"
+                :step="1000"
+                style="width: 180px"
+              />
+              <div class="hint">{{ t('settings.healthIntervalHint') }}</div>
+            </NFormItem>
+            <NFormItem :label="t('settings.healthStale')">
+              <NInputNumber
+                v-model:value="form.healthStaleMs"
+                :min="60000"
+                :max="1800000"
+                :step="30000"
+                style="width: 200px"
+              />
+              <div class="hint">{{ t('settings.healthStaleHint') }}</div>
+            </NFormItem>
+            <NFormItem :label="t('settings.autoRecover')">
+              <NSwitch v-model:value="form.autoRecover" />
+              <div class="hint">{{ t('settings.autoRecoverHint') }}</div>
+            </NFormItem>
+            <NFormItem :label="t('settings.autoRecoverMax')">
+              <NInputNumber
+                v-model:value="form.autoRecoverMaxAttempts"
+                :min="1"
+                :max="10"
+                style="width: 140px"
+              />
+            </NFormItem>
+            <NFormItem :label="t('settings.autoRecoverCooldown')">
+              <NInputNumber
+                v-model:value="form.autoRecoverCooldownMs"
+                :min="10000"
+                :max="3600000"
+                :step="10000"
+                style="width: 200px"
+              />
+            </NFormItem>
+          </NForm>
+        </NCard>
         <NCard :title="t('settings.network')" class="card" size="small">
           <NForm label-placement="top">
             <NFormItem :label="t('settings.githubEndpoint')">

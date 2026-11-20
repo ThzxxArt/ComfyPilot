@@ -537,7 +537,9 @@ const SETTINGS_BOOLEAN_KEYS = [
   'launchOnBoot',
   'minimizeToTray',
   'autoStartInstancesOnLaunch',
-  'allowUnverifiedRuntime'
+  'allowUnverifiedRuntime',
+  'healthCheckEnabled',
+  'autoRecover'
 ] as const
 
 /**
@@ -568,6 +570,20 @@ export function assertSafeSettingsPatch(patch: Record<string, unknown>): void {
         throw new Error('modelScanRoots entries must be paths')
       if (raw.includes('\0')) throw new Error('modelScanRoots contains an invalid path')
       if (!existsSync(raw)) throw new Error(`modelScanRoots entry does not exist: ${raw}`)
+    }
+  }
+  const numericSettings: Array<[string, number, number]> = [
+    ['healthCheckIntervalMs', 1000, 60_000],
+    ['healthCheckTimeoutMs', 250, 30_000],
+    ['healthStaleMs', 60_000, 1_800_000],
+    ['autoRecoverCooldownMs', 10_000, 3_600_000],
+    ['autoRecoverMaxAttempts', 1, 10]
+  ]
+  for (const [key, min, max] of numericSettings) {
+    const value = patch[key]
+    if (value === undefined) continue
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
+      throw new Error(`${key} must be a number between ${min} and ${max}`)
     }
   }
   if (patch.outputScanDepth !== undefined) {

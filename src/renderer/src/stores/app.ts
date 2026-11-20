@@ -3,6 +3,7 @@ import { ref, computed, watch } from 'vue'
 import type {
   AppSettingsView,
   ComfyInstanceInfo,
+  InstanceHealth,
   SystemSnapshot,
   DoctorReport,
   AppNotification,
@@ -10,7 +11,13 @@ import type {
   RemoteInstanceSummary,
   TargetRef
 } from '@shared/types'
-import { ipc, onInstanceStatus, onMonitorTick, onNotification } from '@/composables/useIpc'
+import {
+  ipc,
+  onInstanceHealth,
+  onInstanceStatus,
+  onMonitorTick,
+  onNotification
+} from '@/composables/useIpc'
 
 /**
  * 0.1.18 (regression): the notification center claimed to persist notices but
@@ -73,6 +80,8 @@ export const useAppStore = defineStore('app', () => {
   const ready = ref(false)
   const settings = ref<AppSettingsView | null>(null)
   const instances = ref<ComfyInstanceInfo[]>([])
+  /** 0.2.5 WP2: latest health fact per instance (event-driven, never guessed). */
+  const health = ref<Record<string, InstanceHealth>>({})
   const activeInstanceId = ref<string | null>(null)
   /** Remote ComfyUI instances (LAN / cloud) — read-only targets; keys never cross IPC. */
   const remotes = ref<RemoteInstanceSummary[]>([])
@@ -316,10 +325,15 @@ export const useAppStore = defineStore('app', () => {
     const off4 = onNotification((n) => {
       pushNotification(n as AppNotificationInput)
     })
+    const off5 = onInstanceHealth((payload) => {
+      const p = payload as { instanceId?: string; health?: InstanceHealth }
+      if (p?.instanceId && p.health) health.value[p.instanceId] = p.health
+    })
     return () => {
       off1()
       off2()
       off4()
+      off5()
     }
   }
 
@@ -327,6 +341,7 @@ export const useAppStore = defineStore('app', () => {
     ready,
     settings,
     instances,
+    health,
     activeInstanceId,
     instanceSwitchTick,
     remotes,
