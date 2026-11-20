@@ -19,6 +19,7 @@ npm run test:behavior            # behaviour ratio (target >= 90%)
 node scripts/check-version.cjs
 node scripts/check-i18n.cjs
 node scripts/check-hardcoded-zh.cjs
+node scripts/check-csp.cjs
 node scripts/check-test-polarity.cjs
 npm run build
 node scripts/check-asar.cjs
@@ -49,7 +50,9 @@ while iterating.
 | Stable updates / node rollback      | `tests/unit/updaterPipeline.test.ts`, `tests/unit/nodePackUpdate.test.ts`                                |
 | Runtime matrix                      | `tests/unit/wp6RuntimeMatrix.test.ts`                                                                    |
 | Security boundaries                 | `tests/unit/wp025PathCapability.test.ts`, `wp025DownloadSecurity.test.ts`, `wp025OutputSecurity.test.ts` |
-| Release gates                       | `tests/unit/gates.test.ts`                                                                               |
+| Desktop shortcuts / autostart       | `tests/unit/desktopService.test.ts`, `tests/unit/trayService.test.ts`                                    |
+| Migration failure / rollback        | `tests/unit/dataMigration.test.ts`                                                                       |
+| Release gates                       | `tests/unit/gates.test.ts` (coverage ratchet, asar, CSP)                                                 |
 
 ## Windows packaged smoke
 

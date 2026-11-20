@@ -37,6 +37,7 @@ export function loadSettings(): AppSettings {
 /** Known top-level AppSettings keys — unknown keys are stripped on save. */
 const KNOWN_SETTINGS_KEYS = new Set([
   'locale',
+  'activeInstance',
   'modelScanRoots',
   'githubEndpoint',
   'hfEndpoint',

@@ -25,6 +25,11 @@
   backup field whitelist and restore mutex, symlink-root refusal, realpath output containment.
 - Civitai filename resolution (Content-Disposition → API files → safe extension) and metadata;
   `.part` downloads; queue-aware batch deadlines; scoped backup restore; ghost output pruning.
+- Doctor now reports Manager version/source, real `config.ini`, security/network mode, legacy
+  backup and ComfyPilot-vs-Manager policy mismatches; the instance card offers an explicit,
+  confirmed pip install of Manager 4.4.2 that reuses the mirror/proxy pipeline.
+- The last selected local target is persisted (`activeInstance`), so a restart no longer redirects
+  destructive work to the first registered instance.
 
 ### Changed
 
@@ -40,7 +45,12 @@
 - Installer run isolation, abortable/checksum-pinned ComfyUI zip, venv archive-before-recreate,
   truthful Python version reporting, env lock coverage, spawn-after-stop orphans, owned adoption.
 - Port-conflict save no longer drops `pythonVersion` / `migrationState` / `migrationError`
-  (`instance.patch` / `instance.setPort`).
+  (`instance.patch` / `instance.setPort`), and a whole-record save preserves fields the caller
+  did not know about.
 - Manager v4 list schema (`{custom_nodes:[...]}`), v4-first merge, ETag/cache/offline fallback.
+- TaskCenter reports an interrupted batch as `interrupted`, not `done`; a failed list read renders
+  an error with retry instead of an empty state (Instances/Batch/IssueCenter).
+- A migration-state IPC read failure is a dismissible warning, not a shell-wide migration block.
+- Node version rollback creates a `pre-restore-*` snapshot before changing any pack.
 - Hard-coded `config.port` and `<instance>/models|custom_nodes|user` assumptions across asset paths.
 - IPC sender-frame fail-closed, dev URL exact origin, high-risk zod object schemas.

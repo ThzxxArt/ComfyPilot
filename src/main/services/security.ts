@@ -562,6 +562,12 @@ export function assertSafeSettingsPatch(patch: Record<string, unknown>): void {
     if (patch[key] === undefined) continue
     if (typeof patch[key] !== 'boolean') throw new Error(`${key} must be a boolean`)
   }
+  if (patch.activeInstance !== undefined) {
+    const value = patch.activeInstance
+    if (typeof value !== 'string' || value.length > 200 || /[\0\r\n]/.test(value)) {
+      throw new Error('activeInstance must be a single-line instance id')
+    }
+  }
   if (patch.modelScanRoots !== undefined) {
     const roots = patch.modelScanRoots
     if (!Array.isArray(roots)) throw new Error('modelScanRoots must be an array')

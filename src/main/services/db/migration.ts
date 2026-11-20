@@ -128,6 +128,9 @@ export function retryDataMigration(): {
   dataMigration.checked = false
   dataMigration.ok = true
   dataMigration.error = undefined
+  // 0.2.5 WP8: a retry must report THIS run's progress, not add to the failed
+  // attempt's count (which made a single migrated file look like two).
+  dataMigration.migratedFiles = 0
   migrateData()
   return { ...dataMigration }
 }

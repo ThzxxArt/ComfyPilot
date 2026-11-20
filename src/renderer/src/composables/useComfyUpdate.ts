@@ -285,6 +285,20 @@ function clearProgressInternal(): void {
   progressFinished.value = false
 }
 
+/**
+ * 0.2.5 WP7: never steal the shared modal from a live operation of another
+ * kind. Callers get a coded OP_BUSY that `describeNodeError` localizes.
+ */
+function claimProgressOwner(kind: 'comfy-update' | 'repair'): void {
+  if (progressKind.value && progressKind.value !== kind && !progressFinished.value) {
+    const err = new Error('Another operation is already running') as Error & { code?: string }
+    err.code = 'OP_BUSY'
+    throw err
+  }
+  progressKind.value = kind
+  progressFinished.value = false
+}
+
 function upsertBatchEntry(
   view: NodeBatchView,
   index: number,
@@ -528,8 +542,7 @@ export function useComfyUpdate() {
     } catch {
       /* updateStatus is best-effort */
     }
-    progressKind.value = 'comfy-update'
-    progressFinished.value = false
+    claimProgressOwner('comfy-update')
     updatingComfy.value = true
     updatingInstanceId.value = instanceId
     cancelling.value = false
@@ -573,8 +586,7 @@ export function useComfyUpdate() {
 
   async function repairEnv(instanceId: string, opts?: RepairEnvOptions): Promise<EnvProbe> {
     ensureRepairSubscribed()
-    progressKind.value = 'repair'
-    progressFinished.value = false
+    claimProgressOwner('repair')
     repairing.value = true
     updatingInstanceId.value = instanceId
     try {

@@ -8,7 +8,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 
-const ipcMock = vi.hoisted(() => vi.fn(async (_channel: string, ..._args: unknown[]) => undefined))
+const ipcMock = vi.hoisted(() =>
+  vi.fn(async (_channel: string, ..._args: unknown[]): Promise<unknown> => undefined)
+)
 const healthHook = vi.hoisted(() => ({ listener: null as null | ((p: unknown) => void) }))
 
 vi.mock('@/composables/useIpc', () => ({
@@ -97,6 +99,42 @@ describe('app store activeTargetUrl (0.1.10)', () => {
     store.activeInstanceId = null
     store.activeRemoteId = null
     expect(store.activeTargetUrl).toBeNull()
+  })
+
+  it('restores the persisted local target and respects an explicit empty selection', async () => {
+    const store = await freshStore()
+    ipcMock.mockImplementation(async (channel: string) => {
+      if (channel === 'settings.get') {
+        return { locale: 'en-US', activeInstance: 'i2', modelScanRoots: [], proxy: {} }
+      }
+      if (channel === 'instance.list') {
+        return [
+          { id: 'i1', name: 'One', url: 'http://127.0.0.1:8181', status: 'stopped' },
+          { id: 'i2', name: 'Two', url: 'http://127.0.0.1:8182', status: 'stopped' }
+        ]
+      }
+      if (channel === 'remote.list') return []
+      if (channel === 'monitor.system') return null
+      return undefined
+    })
+    await store.bootstrap()
+    expect(store.activeInstanceId).toBe('i2')
+    ipcMock.mockClear()
+
+    const empty = await freshStore()
+    ipcMock.mockImplementation(async (channel: string) => {
+      if (channel === 'settings.get') {
+        return { locale: 'en-US', activeInstance: '', modelScanRoots: [], proxy: {} }
+      }
+      if (channel === 'instance.list') {
+        return [{ id: 'i1', name: 'One', url: 'http://127.0.0.1:8181', status: 'stopped' }]
+      }
+      if (channel === 'remote.list') return []
+      if (channel === 'monitor.system') return null
+      return undefined
+    })
+    await empty.bootstrap()
+    expect(empty.activeInstanceId).toBeNull()
   })
 })
 

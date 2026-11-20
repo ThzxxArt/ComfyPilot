@@ -113,7 +113,7 @@ async function buildMenu(): Promise<Menu> {
   const instanceItems: Electron.MenuItemConstructorOptions[] = instances
     .slice(0, 12)
     .map((inst) => ({
-      label: `${inst.status === 'running' ? '●' : '○'} ${inst.name} :${inst.port}`,
+      label: `${inst.status === 'running' ? '●' : '○'} ${inst.name} :${inst.effectivePort || inst.port}`,
       submenu: [
         {
           label: inst.status === 'running' ? s.stop : s.launch,

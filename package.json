@@ -35,6 +35,7 @@
     "lint:check": "eslint . --max-warnings=0",
     "check:version": "node scripts/check-version.cjs",
     "check:asar": "node scripts/check-asar.cjs",
+    "check:csp": "node scripts/check-csp.cjs",
     "check:test-polarity": "node scripts/check-test-polarity.cjs",
     "format": "prettier --write \"src/**/*.{vue,ts,tsx,css,scss,json,md}\"",
     "format:check": "prettier --check \"src/**/*.{vue,ts,tsx,css,scss,json,md}\" \"tests/**/*.{ts,vue}\" \"scripts/**/*.cjs\" \"docs/**/*.md\" \"*.{md,json,yml}\" \".github/**/*.yml\"",
@@ -44,7 +45,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage && node scripts/coverage-ratchet.cjs",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
-    "test:all": "npm run typecheck && npm run typecheck:test && npm run lint:check && npm run format:check && npm run test:coverage && npm run test:behavior && npm run check:version && node scripts/check-i18n.cjs && node scripts/check-hardcoded-zh.cjs && node scripts/check-test-polarity.cjs && npm run build && node scripts/check-asar.cjs && npm run test:e2e",
+    "test:all": "npm run typecheck && npm run typecheck:test && npm run lint:check && npm run format:check && npm run test:coverage && npm run test:behavior && npm run check:version && node scripts/check-i18n.cjs && node scripts/check-hardcoded-zh.cjs && node scripts/check-csp.cjs && node scripts/check-test-polarity.cjs && npm run build && node scripts/check-asar.cjs && npm run test:e2e",
     "test:quick": "npm run typecheck && npm run test",
     "coverage:accept": "node scripts/coverage-ratchet.cjs --update --accept"
   },

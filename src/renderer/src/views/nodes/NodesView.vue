@@ -65,9 +65,12 @@ import type {
 } from '@shared/types'
 import TargetBanner from '@/components/TargetBanner.vue'
 import ListState from '@/components/ListState.vue'
+import { useActiveTarget } from '@/composables/useActiveTarget'
 
 const { t, locale } = useI18n()
 const store = useAppStore()
+const { target: activeTarget, localOnlyHint } = useActiveTarget()
+const localMutable = computed(() => activeTarget.value.canLocalMutate)
 const router = useRouter()
 const route = useRoute()
 const message = useMessage()
@@ -844,6 +847,9 @@ async function applyFocus(): Promise<void> {
   if (!f && !requestedInstance && !source) return
   tab.value = 'installed'
   if (requestedInstance && requestedInstance !== store.activeInstanceId) {
+    // 0.2.5 WP7: a local deep link must leave remote context — otherwise
+    // localTargetId stays null and the focus lookup runs against no instance.
+    store.activeRemoteId = null
     store.activeInstanceId = requestedInstance
     await store.refreshInstances()
     await refresh()
@@ -1319,9 +1325,14 @@ watch(
                 </div>
                 <NPopconfirm v-if="!pack.locked" @positive-click="uninstall(pack)">
                   <template #trigger>
-                    <NButton size="tiny" type="error" secondary>{{
-                      $t('nodes.uninstall')
-                    }}</NButton>
+                    <NButton
+                      size="tiny"
+                      type="error"
+                      secondary
+                      :disabled="!localMutable"
+                      :title="localOnlyHint"
+                      >{{ $t('nodes.uninstall') }}</NButton
+                    >
                   </template>
                   {{ $t('nodes.confirmUninstall', { name: pack.name }) }}
                 </NPopconfirm>
@@ -1329,6 +1340,7 @@ watch(
                   size="tiny"
                   quaternary
                   :loading="lockingOne === pack.name"
+                  :disabled="!localMutable"
                   :title="pack.locked ? $t('nodes.unlocked') : $t('nodes.locked')"
                   :aria-label="pack.locked ? $t('nodes.unlocked') : $t('nodes.locked')"
                   @click="lockPack(pack, !pack.locked)"
@@ -1339,7 +1351,7 @@ watch(
                 </NButton>
                 <NSwitch
                   :value="pack.status !== 'disabled'"
-                  :disabled="pack.locked"
+                  :disabled="pack.locked || !localMutable"
                   @update:value="(v: boolean) => toggle(pack, v)"
                 />
               </div>

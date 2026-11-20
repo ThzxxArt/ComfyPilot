@@ -13,7 +13,7 @@ const h = vi.hoisted(() => {
   const state = {
     root: '',
     instances: [] as Array<Record<string, unknown>>,
-    settings: { networkMode: 'public', modelScanRoots: [] as string[] },
+    settings: { networkMode: 'public', modelScanRoots: [] as string[], securityLevel: 'normal' },
     execHandler: null as ((cmd: string, args: string[]) => { stdout: string } | Error) | null,
     proxyOk: true,
     runtimeComponent: {
@@ -183,6 +183,7 @@ function seedMinimalInstall(name: string): string {
 describe('DoctorService (0.1.10 behaviour)', () => {
   beforeEach(() => {
     h.state.root = mkdtempSync(join(tmpdir(), 'cp-doctor-'))
+    h.state.settings = { networkMode: 'public', modelScanRoots: [], securityLevel: 'normal' }
     h.state.execHandler = defaultExec
     h.state.proxyOk = true
     h.state.runtimeComponent = {
@@ -216,8 +217,49 @@ describe('DoctorService (0.1.10 behaviour)', () => {
     expect(byId.get('requirements')?.severity).toBe('pass')
     expect(byId.get('port')?.severity).toBeDefined()
     expect(byId.get('registry')?.severity).toBe('pass')
+    expect(byId.get('manager-v4')?.severity).toBeDefined()
     expect(report.summary.pass).toBeGreaterThan(5)
     expect(report.durationMs).toBeGreaterThanOrEqual(0)
+  })
+
+  it('reports Manager v4 facts, legacy backup and policy mismatch (0.2.5 WP4)', async () => {
+    const dir = seedMinimalInstall('manager-v4')
+    h.state.settings = { networkMode: 'public', modelScanRoots: [], securityLevel: 'weak' }
+    const gitDir = join(dir, 'custom_nodes', 'ComfyUI-Manager')
+    mkdirSync(gitDir, { recursive: true })
+    writeFileSync(join(gitDir, 'pyproject.toml'), 'name = "comfyui-manager"\nversion = "4.4.2"\n')
+    const managerDir = join(dir, 'user', '__manager')
+    mkdirSync(managerDir, { recursive: true })
+    writeFileSync(
+      join(managerDir, 'config.ini'),
+      '[default]\nsecurity_level = strong\nnetwork_mode = private\n'
+    )
+    const legacyDir = join(dir, 'user', 'default', 'ComfyUI-Manager')
+    mkdirSync(legacyDir, { recursive: true })
+    writeFileSync(join(legacyDir, 'config.ini'), '[default]\nsecurity_level = weak\n')
+
+    const svc = await freshDoctor()
+    const report = await svc.run('inst-1')
+    const check = report.checks.find((c: any) => c.id === 'manager-v4') as
+      { severity: string; detail: string } | undefined
+    expect(check).toBeTruthy()
+    expect(check!.severity).toBe('warn')
+    expect(check!.detail).toContain('git 4.4.2')
+    expect(check!.detail).toContain('security_level=strong')
+    expect(check!.detail).toContain('network_mode=private')
+    expect(check!.detail).toMatch(/legacy/i)
+    expect(check!.detail).toMatch(/ComfyPilot install policy is weak/i)
+  })
+
+  it('warns when Manager is installed but config.ini is missing', async () => {
+    const dir = seedMinimalInstall('manager-noconfig')
+    mkdirSync(join(dir, 'custom_nodes', 'ComfyUI-Manager'), { recursive: true })
+    const svc = await freshDoctor()
+    const report = await svc.run('inst-1')
+    const check = report.checks.find((c: any) => c.id === 'manager-v4') as
+      { severity: string; detail: string } | undefined
+    expect(check?.severity).toBe('warn')
+    expect(check?.detail).toMatch(/config\.ini missing/i)
   })
 
   it('reports broken extra_model_paths entries and accepts a valid one', async () => {

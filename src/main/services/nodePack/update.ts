@@ -1044,6 +1044,14 @@ export async function restoreNodeVersions(
     failed: [],
     warnings: []
   }
+  // 0.2.5 WP5: create a pre-restore snapshot so a failed rollback is itself
+  // recoverable. Never block the rollback on it, but say so when it fails.
+  try {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    this.createSnapshot(`pre-restore-${stamp}`, instanceId || snap.instanceId || undefined)
+  } catch (e) {
+    out.warnings.push(`pre-restore snapshot failed: ${e instanceof Error ? e.message : String(e)}`)
+  }
   const gitBin = resolveGitBinary()
   const git = (args: string[], timeout = 10000): Promise<string> =>
     new Promise((resolveGit, rejectGit) => {

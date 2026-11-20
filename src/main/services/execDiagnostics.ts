@@ -20,6 +20,7 @@ import { parseExecErrors, stripAnsi } from '@shared/execError'
 import { instanceService } from './instance'
 import { capabilityService } from './capabilities'
 import { loadInstanceConfigs } from './db'
+import { resolveEffectiveInstance } from '@shared/instanceLayout'
 
 const MAX_FAILURES = 20
 /** Rescan debounce after a trigger line (the traceback streams in right after). */
@@ -51,11 +52,10 @@ export class ExecDiagnosticsService extends EventEmitter {
       return undefined
     }
     for (const c of loadInstanceConfigs()) {
-      const host =
-        c.listen === '0.0.0.0' || c.listen === '::' || c.listen === '[::]'
-          ? '127.0.0.1'
-          : c.listen || '127.0.0.1'
-      if (`http://${host}:${c.port || 8188}` === origin) return c.id
+      // 0.2.5 WP1: map by the effective URL, not config.port/listen — an
+      // argv `--port 9999` instance never matched its own monitor URL.
+      const url = resolveEffectiveInstance(c).url
+      if (url === origin) return c.id
     }
     return undefined
   }

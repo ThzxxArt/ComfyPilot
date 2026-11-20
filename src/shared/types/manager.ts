@@ -15,3 +15,11 @@ export interface ManagerInfo {
   legacyConfigPath?: string
   warnings: string[]
 }
+
+/** Explicit pip install/repair result (never silent). */
+export interface ManagerInstallResult {
+  ok: boolean
+  info: ManagerInfo
+  message?: string
+  rolledBack?: boolean
+}

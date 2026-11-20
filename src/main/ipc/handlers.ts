@@ -103,6 +103,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle('instance.rescue', instances.rescue)
   ipcMain.handle('instance.exportRescueScript', instances.exportRescueScript)
   ipcMain.handle('instance.managerInfo', instances.managerInfo)
+  ipcMain.handle('instance.installManager', instances.installManager)
   ipcMain.handle('instance.setManagerSecurity', instances.setManagerSecurity)
   ipcMain.handle('instance.openManagerConfig', instances.openManagerConfig)
   ipcMain.handle('instance.setUpdateChannel', instances.setUpdateChannel)

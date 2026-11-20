@@ -11,7 +11,7 @@
 import { EventEmitter } from 'events'
 import type { BackgroundOp, BackgroundOpKind } from '@shared/types'
 
-type Terminal = 'done' | 'failed' | 'cancelled'
+type Terminal = 'done' | 'failed' | 'cancelled' | 'interrupted'
 
 interface InternalOp extends BackgroundOp {
   /** In-memory only: how to stop this operation. */
@@ -389,8 +389,17 @@ export class OperationRegistry extends EventEmitter {
           }
           this.update(id, { percent })
         } else if (this.isRunning(id)) {
+          // 0.2.5 WP7: an interrupted job is NOT a success. After a reload the
+          // batch self-heals a ghost `running` row to `interrupted`; mapping
+          // every non-error terminal to `done` made the task center lie.
           const status: Terminal =
-            job.status === 'cancelled' ? 'cancelled' : job.status === 'error' ? 'failed' : 'done'
+            job.status === 'cancelled'
+              ? 'cancelled'
+              : job.status === 'interrupted'
+                ? 'interrupted'
+                : job.status === 'error'
+                  ? 'failed'
+                  : 'done'
           this.finish(id, status, job.errorSummary)
         }
       }

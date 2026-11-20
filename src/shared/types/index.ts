@@ -22,7 +22,12 @@ export type {
 
 export type { HealthState, InstanceHealth, HealthRecoveryPolicy } from './health'
 
-export type { ManagerInfo, ManagerSecurityLevel, ManagerNetworkMode } from './manager'
+export type {
+  ManagerInfo,
+  ManagerInstallResult,
+  ManagerSecurityLevel,
+  ManagerNetworkMode
+} from './manager'
 export { DEFAULT_HEALTH_RECOVERY_POLICY } from './health'
 
 export type {

@@ -155,6 +155,13 @@ export const useAppStore = defineStore('app', () => {
 
   watch([activeInstanceId, activeRemoteId], () => {
     instanceSwitchTick.value += 1
+    if (!ready.value) return
+    // 0.2.5 WP7/P1-67: persist the explicit selection. Without this the
+    // documented `activeInstance` fallback never existed and a restart always
+    // jumped back to instances[0].
+    void ipc('settings.set', { activeInstance: activeInstanceId.value || '' }).catch(() => {
+      /* selection persistence is best-effort */
+    })
   })
 
   function pushNotification(input: AppNotificationInput): void {
@@ -219,7 +226,15 @@ export const useAppStore = defineStore('app', () => {
       instances.value = await ipc('instance.list')
       remotes.value = await ipc('remote.list')
       if (!opts?.keepSelection || !activeInstanceId.value) {
-        if (!activeRemoteId.value) activeInstanceId.value = instances.value[0]?.id ?? null
+        if (!activeRemoteId.value) {
+          const saved = settings.value?.activeInstance
+          if (saved === '') activeInstanceId.value = null
+          else if (saved && instances.value.some((i) => i.id === saved)) {
+            activeInstanceId.value = saved
+          } else {
+            activeInstanceId.value = instances.value[0]?.id || null
+          }
+        }
       }
       pruneActiveInstance()
       system.value = await ipc('monitor.system')

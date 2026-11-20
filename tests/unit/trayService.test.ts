@@ -102,6 +102,12 @@ describe('tray actions (0.1.11)', () => {
     h.startAllCalls = 0
   })
 
+  it('shows the effective port, not the overridden config port', () => {
+    h.instances = [{ ...inst('a', 'running'), port: 8188, effectivePort: 9999 }]
+    createTray({ onShowWindow: () => undefined })
+    expect(findItem('● a :9999')).toBeTruthy()
+  })
+
   it('start-all failure surfaces a system notification instead of silence', async () => {
     h.instances = [inst('a', 'stopped')]
     h.startAllImpl = async () => {

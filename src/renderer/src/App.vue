@@ -39,7 +39,8 @@ import { useAppStore } from '@/stores/app'
 import { ipc, onIssuesChanged } from '@/composables/useIpc'
 import { useLaunch } from '@/composables/useLaunch'
 import { usePipOps } from '@/composables/usePipOps'
-import { createDiscreteApi, dateEnUS, dateZhCN, enUS, zhCN } from 'naive-ui'
+import { dateEnUS, dateZhCN, enUS, zhCN } from 'naive-ui'
+import { discreteUi } from '@/utils/discrete'
 import { useI18n } from 'vue-i18n'
 import { APP_VERSION } from '@shared/constants'
 import { COLORS } from '@/styles/tokens'
@@ -49,10 +50,9 @@ import NotificationCenter from '@/components/NotificationCenter.vue'
 import ErrorBoundary from '@/components/ErrorBoundary.vue'
 import CommandPalette from '@/components/CommandPalette.vue'
 
-// App.vue sits outside NMessageProvider — use discrete message/dialog APIs.
-const discreteApi = createDiscreteApi(['message', 'dialog'])
-const discreteMessage = discreteApi.message
-const discreteDialog = discreteApi.dialog
+// App.vue sits outside NMessageProvider — one shared discrete API instance
+// with the launcher (a second instance created a second theme root).
+const { message: discreteMessage, dialog: discreteDialog } = discreteUi()
 import type { ComfyInstanceInfo } from '@shared/types'
 
 const router = useRouter()
@@ -64,6 +64,17 @@ const { t, locale } = useI18n()
  *  must follow the app language instead of staying on its default. */
 const naiveLocale = computed(() => (locale.value === 'en-US' ? enUS : zhCN))
 const naiveDateLocale = computed(() => (locale.value === 'en-US' ? dateEnUS : dateZhCN))
+
+// 0.2.5 WP7: the document language must follow the UI locale (screen readers).
+watch(
+  locale,
+  (value) => {
+    if (typeof document !== 'undefined') {
+      document.documentElement.lang = value === 'en-US' ? 'en' : 'zh-CN'
+    }
+  },
+  { immediate: true }
+)
 const { launch, stop, busy } = useLaunch()
 // 0.1.12: restore pip-op state after a renderer reload so the banner/modal
 // stop being invisible while main is still installing.
@@ -348,33 +359,35 @@ const migration = ref<{
   migratedFiles: number
   error?: string
 } | null>(null)
-const migrationBlocked = computed(() => Boolean(migration.value && !migration.value.ok))
+/**
+ * 0.2.5 WP7: a failed READ is not a failed MIGRATION. Treating an IPC hiccup
+ * as `ok:false` locked the whole shell into the migration blocker until the
+ * next launch. Keep the read error separate and dismissible.
+ */
+const migrationReadError = ref('')
+const migrationBlocked = computed(
+  () => !migrationReadError.value && Boolean(migration.value && !migration.value.ok)
+)
 
 async function loadMigrationState(): Promise<void> {
   try {
     migration.value = await ipc('data.migrationState')
+    migrationReadError.value = ''
   } catch (err) {
-    migration.value = {
-      ok: false,
-      migratedFiles: 0,
-      error: err instanceof Error ? err.message : String(err)
-    }
+    migrationReadError.value = err instanceof Error ? err.message : String(err)
   }
 }
 
 async function retryMigration(): Promise<void> {
   try {
     migration.value = await ipc('data.retryMigration')
+    migrationReadError.value = ''
     if (migration.value.ok) {
       await store.bootstrap({ keepSelection: true })
       await refreshIssueCount()
     }
   } catch (err) {
-    migration.value = {
-      ok: false,
-      migratedFiles: 0,
-      error: err instanceof Error ? err.message : String(err)
-    }
+    migrationReadError.value = err instanceof Error ? err.message : String(err)
   }
 }
 
@@ -764,6 +777,22 @@ async function toggleInstanceRun(): Promise<void> {
                       {{ t('palette.openLogs') }}
                     </NButton>
                   </NSpace>
+                </div>
+              </NAlert>
+              <NAlert
+                v-if="migrationReadError"
+                type="warning"
+                closable
+                class="bootstrap-alert"
+                @close="migrationReadError = ''"
+              >
+                <template #header>{{ t('migration.readFailed') }}</template>
+                <div class="bootstrap-alert-body">
+                  <span>{{ t('migration.readFailedBody') }}</span>
+                  <span class="mono">{{ migrationReadError }}</span>
+                  <NButton size="tiny" secondary @click="loadMigrationState">
+                    {{ t('common.retry') }}
+                  </NButton>
                 </div>
               </NAlert>
               <div v-if="migrationBlocked" class="migration-block card">

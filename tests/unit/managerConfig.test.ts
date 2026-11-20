@@ -12,7 +12,14 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import type { ComfyInstanceConfig } from '@shared/types'
 
-const h = vi.hoisted(() => ({ root: '', instances: [] as Array<Record<string, unknown>> }))
+const h = vi.hoisted(() => ({
+  root: '',
+  instances: [] as Array<Record<string, unknown>>,
+  pipVersion: '',
+  pipCalls: 0,
+  installCalls: [] as string[],
+  installResults: [] as Array<{ ok: boolean; error?: string }>
+}))
 
 vi.mock('electron', () => ({ app: { getPath: () => h.root } }))
 vi.mock('../../src/main/services/db', () => ({
@@ -22,9 +29,54 @@ vi.mock('../../src/main/services/db', () => ({
 vi.mock('../../src/main/services/instance', () => ({
   resolveInstancePythonPath: () => 'python-does-not-exist'
 }))
+vi.mock('child_process', () => ({
+  execFile: (
+    _cmd: string,
+    _args: string[],
+    optsOrCb: unknown,
+    maybeCb?: (e: Error | null, stdout?: string, stderr?: string) => void
+  ) => {
+    h.pipCalls += 1
+    const done = (typeof optsOrCb === 'function' ? optsOrCb : maybeCb) as
+      ((e: Error | null, stdout?: string, stderr?: string) => void) | undefined
+    queueMicrotask(() => {
+      if (!done) return
+      if (h.pipVersion) {
+        done(
+          null,
+          {
+            stdout: `Name: comfyui-manager\nVersion: ${h.pipVersion}\n`,
+            stderr: ''
+          } as unknown as string,
+          ''
+        )
+      } else {
+        done(new Error('pip show: not found'), '', '')
+      }
+    })
+    return { pid: 1 }
+  }
+}))
+vi.mock('../../src/main/services/pipOps', () => ({
+  pipOpsService: {
+    installSpec: async (_id: string, spec: string) => {
+      h.installCalls.push(spec)
+      const result = h.installResults.shift() || { ok: true }
+      const version = /^comfyui-manager==(.+)$/.exec(spec)?.[1]
+      if (result.ok && version) h.pipVersion = version
+      return {
+        ok: result.ok,
+        installed: [],
+        unresolved: [],
+        error: result.error
+      }
+    }
+  }
+}))
 
 import {
   getManagerInfo,
+  installManagerV4,
   managerConfigPaths,
   parseManagerConfig,
   setManagerSecurityLevel,
@@ -60,6 +112,10 @@ beforeEach(() => {
   mkdirSync(comfy, { recursive: true })
   mkdirSync(join(comfy, 'user', '__manager'), { recursive: true })
   h.instances = [cfg(comfy) as unknown as Record<string, unknown>]
+  h.pipVersion = ''
+  h.pipCalls = 0
+  h.installCalls = []
+  h.installResults = []
 })
 
 afterEach(() => rmSync(root, { recursive: true, force: true }))
@@ -148,5 +204,40 @@ describe('Manager facts and writes (0.2.5 WP4)', () => {
     )
     await expect(setManagerSecurityLevel(cfg(comfy), 'normal')).rejects.toThrow(/missing/i)
     expect(existsSync(paths.configPath)).toBe(false)
+  })
+
+  it('installs 4.4.2 through pip only when missing and refreshes the cached version', async () => {
+    const info = await installManagerV4(cfg(comfy))
+    expect(info.ok).toBe(true)
+    expect(h.installCalls).toEqual(['comfyui-manager==4.4.2'])
+    expect(info.info.version).toBe('4.4.2')
+    expect(info.info.source).toBe('pip')
+  })
+
+  it('does not reinstall an already-installed 4.4.2', async () => {
+    h.pipVersion = '4.4.2'
+    const info = await installManagerV4(cfg(comfy))
+    expect(info.ok).toBe(true)
+    expect(h.installCalls).toEqual([])
+    expect(info.message).toMatch(/already installed/i)
+  })
+
+  it('rolls back to the previous pip version when an upgrade fails', async () => {
+    h.pipVersion = '4.4.1'
+    h.installResults = [{ ok: false, error: 'mirror 500' }, { ok: true }]
+    const result = await installManagerV4(cfg(comfy))
+    expect(result.ok).toBe(false)
+    expect(result.rolledBack).toBe(true)
+    expect(result.message).toMatch(/mirror 500/)
+    expect(h.installCalls).toEqual(['comfyui-manager==4.4.2', 'comfyui-manager==4.4.1'])
+    expect(result.info.version).toBe('4.4.1')
+  })
+
+  it('reports no rollback when there was no previous pip version', async () => {
+    h.installResults = [{ ok: false, error: 'no network' }]
+    const result = await installManagerV4(cfg(comfy))
+    expect(result.ok).toBe(false)
+    expect(result.rolledBack).toBe(false)
+    expect(h.installCalls).toEqual(['comfyui-manager==4.4.2'])
   })
 })

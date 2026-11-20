@@ -25,6 +25,7 @@ import {
   AlertCircleOutline
 } from '@vicons/ionicons5'
 import HealthBadge from '@/components/HealthBadge.vue'
+import ListState from '@/components/ListState.vue'
 import {
   NButton,
   NEmpty,
@@ -50,7 +51,7 @@ import {
 import { useAppStore } from '@/stores/app'
 import { ipc } from '@/composables/useIpc'
 import { useLaunch } from '@/composables/useLaunch'
-import { useComfyUpdate } from '@/composables/useComfyUpdate'
+import { useComfyUpdate, describeNodeError } from '@/composables/useComfyUpdate'
 import { LAUNCH_ARG_ERROR_KEYS, launchArgWarningKey } from '@shared/launchArgs'
 import ComfyUpdateProgressModal from '@/components/ComfyUpdateProgressModal.vue'
 import LaunchProfileEditor from '@/components/LaunchProfileEditor.vue'
@@ -79,6 +80,8 @@ const { t, locale } = useI18n()
 const { launch, stop, restart, forceKill, busy } = useLaunch()
 
 const loading = ref(false)
+/** 0.2.5 WP7: a failed list must not render as "no instances". */
+const loadError = ref('')
 const showCreate = ref(false)
 const saving = ref(false)
 const templates = ref<LaunchArgTemplate[]>([])
@@ -126,7 +129,7 @@ const filtered = computed(() => {
       (i) =>
         i.name.toLowerCase().includes(q) ||
         i.path.toLowerCase().includes(q) ||
-        String(i.port).includes(q)
+        String(i.effectivePort || i.port).includes(q)
     )
   }
   return list.sort((a, b) => {
@@ -181,18 +184,24 @@ function onCardEnter(e: KeyboardEvent, id: string): void {
 }
 
 onMounted(async () => {
+  await reload()
+  const editId = consumeEditQuery()
+  if (editId) await openEditById(editId)
+})
+
+/** Shared by the first load and the ListState retry button. */
+async function reload(): Promise<void> {
   loading.value = true
+  loadError.value = ''
   try {
     await store.refreshInstances()
     templates.value = await ipc('settings.launchTemplates')
   } catch (err) {
-    message.error(err instanceof Error ? err.message : String(err))
+    loadError.value = err instanceof Error ? err.message : String(err)
   } finally {
     loading.value = false
   }
-  const editId = consumeEditQuery()
-  if (editId) await openEditById(editId)
-})
+}
 
 watch(
   () => route.query.edit,
@@ -609,7 +618,7 @@ async function runUpdateComfy(item: ComfyInstanceInfo): Promise<void> {
       message.error(result.error)
     }
   } catch (err) {
-    message.error(err instanceof Error ? err.message : String(err))
+    message.error(describeNodeError(t, err))
   }
 }
 
@@ -633,9 +642,7 @@ async function runRepairEnv(item: ComfyInstanceInfo): Promise<void> {
     envProbes.value[item.id] = await repairEnv(item.id)
     message.success(t('instance.repairDone'))
   } catch (err) {
-    message.error(
-      t('instance.repairFailed', { error: err instanceof Error ? err.message : String(err) })
-    )
+    message.error(t('instance.repairFailed', { error: describeNodeError(t, err) }))
   }
 }
 
@@ -906,7 +913,8 @@ function statusClass(s: string): string {
         }}</NButton>
       </div>
       <NSpin :show="loading">
-        <div v-if="filtered.length" class="grid cards">
+        <ListState v-if="loadError" :error="loadError" :rows="4" @retry="reload" />
+        <div v-else-if="filtered.length" class="grid cards">
           <article
             v-for="item in filtered"
             :key="item.id"
@@ -935,7 +943,11 @@ function statusClass(s: string): string {
             <div class="meta-row">
               <span
                 >{{ $t('instance.listen') }}
-                <b class="mono">{{ item.listen }}:{{ item.port }}</b></span
+                <b class="mono"
+                  >{{ item.effectiveListen || item.listen }}:{{
+                    item.effectivePort || item.port
+                  }}</b
+                ></span
               >
               <span v-if="visibleVersion(item.version) || item.onlineVersion"
                 >{{ $t('instance.versionLabel') }}
@@ -1089,17 +1101,24 @@ function statusClass(s: string): string {
           </article>
         </div>
         <div v-else class="empty">
-          <NEmpty :description="$t('instance.emptyInstances')">
+          <NEmpty
+            :description="search.trim() ? $t('common.noMatch') : $t('instance.emptyInstances')"
+          >
             <template #extra>
               <NSpace>
-                <NButton type="primary" @click="openCreate">{{
-                  $t('instance.addExistingManually')
-                }}</NButton>
-                <NButton secondary @click="router.push('/install')">
-                  <template #icon><NIcon :component="RocketOutline" /></template>
-                  {{ $t('instance.installIsolated') }}
+                <NButton v-if="search.trim()" type="primary" @click="search = ''">
+                  {{ $t('common.clearFilters') }}
                 </NButton>
-                <NButton secondary @click="openDiscover">{{ $t('instance.discover') }}</NButton>
+                <template v-else>
+                  <NButton type="primary" @click="openCreate">{{
+                    $t('instance.addExistingManually')
+                  }}</NButton>
+                  <NButton secondary @click="router.push('/install')">
+                    <template #icon><NIcon :component="RocketOutline" /></template>
+                    {{ $t('instance.installIsolated') }}
+                  </NButton>
+                  <NButton secondary @click="openDiscover">{{ $t('instance.discover') }}</NButton>
+                </template>
               </NSpace>
             </template>
           </NEmpty>

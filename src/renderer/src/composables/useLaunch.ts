@@ -1,9 +1,10 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { createDiscreteApi, type MessageApi, type DialogApi } from 'naive-ui'
+import type { MessageApi, DialogApi } from 'naive-ui'
 import { ipc, ComfyPilotIpcError } from '@/composables/useIpc'
 import { useAppStore } from '@/stores/app'
 import { i18n } from '@/i18n'
+import { discreteUi } from '@/utils/discrete'
 import type { ComfyInstanceInfo, LaunchOptions } from '@shared/types'
 
 const t = (key: string, params?: Record<string, unknown>): string =>
@@ -15,9 +16,7 @@ const t = (key: string, params?: Record<string, unknown>): string =>
  */
 let discrete: { message: MessageApi; dialog: DialogApi } | null = null
 function ui(): { message: MessageApi; dialog: DialogApi } {
-  if (!discrete) {
-    discrete = createDiscreteApi(['message', 'dialog'])
-  }
+  if (!discrete) discrete = discreteUi()
   return discrete
 }
 
@@ -150,24 +149,10 @@ export function useLaunch() {
           void (async () => {
             setBusy(info.id, true)
             try {
-              // Persist the new port first so the UI/config stay consistent.
-              await ipc('instance.save', {
-                id: info.id,
-                name: info.name,
-                path: info.path,
-                pythonPath: info.pythonPath || '',
-                venvPath: info.venvPath || '',
-                port: suggested,
-                listen: info.listen || '127.0.0.1',
-                extraArgs: info.extraArgs || [],
-                argTemplateId: info.argTemplateId || 'default',
-                enabled: info.enabled !== false,
-                notes: info.notes || '',
-                autoStart: Boolean(info.autoStart),
-                frontendVersion: info.frontendVersion || '',
-                pinned: Boolean(info.pinned),
-                launchProfile: info.launchProfile
-              })
+              // 0.2.5 WP0/WP7: persist ONLY the port. A whole-record save here
+              // dropped pythonVersion / migrationState / migrationError and
+              // silently downgraded a 3.12 instance's migration state.
+              await ipc('instance.setPort', info.id, suggested)
               await store.refreshInstances()
               const result = await ipc('instance.launch', info.id, {
                 relocatePort: true,

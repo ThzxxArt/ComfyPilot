@@ -404,11 +404,13 @@ export class DoctorService extends EventEmitter {
       })
     }
 
-    // 7. port
-    const port = config?.port || 8188
+    // 7. port — the final argv decides; `config.port` can be overridden by a
+    // template/profile/extra arg (0.2.5 WP1).
+    const effective = config ? resolveEffectiveInstance(config) : undefined
+    const port = effective?.port || 8188
     const portBusy = await isPortInUse(port)
     let portSeverity: DoctorSeverity = 'pass'
-    let portDetail = `${config?.listen || '127.0.0.1'}:${port}`
+    let portDetail = `${effective?.listen || config?.listen || '127.0.0.1'}:${port}`
     let portSuggestion: string | undefined
     if (portBusy) {
       const ownComfy = await isComfyListening(port)
@@ -563,6 +565,64 @@ export class DoctorService extends EventEmitter {
       suggestion: managerEnabled ? undefined : 'Enable Manager launch template if you use it.',
       fixable: false
     })
+
+    // 11a. ComfyUI-Manager v4 facts (0.2.5 WP4): version/source/config path,
+    // security + network mode, legacy backup and strategy mismatch.
+    if (config) {
+      try {
+        const { getManagerInfo } = await import('./manager')
+        const info = await getManagerInfo(config)
+        const notes: string[] = []
+        let severity: DoctorSeverity = 'pass'
+        if (!info.installed) {
+          severity = 'info'
+          notes.push('Manager not installed at the instance level')
+        } else {
+          notes.push(`${info.source}${info.version ? ` ${info.version}` : ''}`)
+          if (!info.configExists) {
+            severity = 'warn'
+            notes.push('config.ini missing — start ComfyUI once with Manager enabled')
+          }
+        }
+        if (info.configPath) notes.push(info.configPath)
+        if (info.securityLevel) notes.push(`security_level=${info.securityLevel}`)
+        if (info.networkMode) notes.push(`network_mode=${info.networkMode}`)
+        if (info.legacyBackup) {
+          severity = severity === 'pass' ? 'warn' : severity
+          notes.push(`legacy config also present: ${info.legacyBackup}`)
+        }
+        // ComfyPilot's install policy and Manager's security_level are two
+        // different gates. A mismatch is legitimate, but it is the usual
+        // reason "the app allowed it / Manager refused it".
+        if (info.installed && info.securityLevel && settings.securityLevel !== info.securityLevel) {
+          severity = severity === 'pass' ? 'warn' : severity
+          notes.push(
+            `ComfyPilot install policy is ${settings.securityLevel}, Manager is ${info.securityLevel}`
+          )
+        }
+        checks.push({
+          id: 'manager-v4',
+          group: 'Extensions',
+          title: 'ComfyUI-Manager v4.4',
+          severity,
+          detail: notes.join(' · '),
+          suggestion:
+            severity === 'warn'
+              ? 'Open the instance Manager card to inspect/repair the v4 config; changes take effect on the next launch.'
+              : undefined,
+          fixable: false
+        })
+      } catch (err) {
+        checks.push({
+          id: 'manager-v4',
+          group: 'Extensions',
+          title: 'ComfyUI-Manager v4.4',
+          severity: 'info',
+          detail: `Manager facts unavailable: ${err instanceof Error ? err.message : String(err)}`,
+          fixable: false
+        })
+      }
+    }
 
     // 11b. ComfyUI metadata flag (0.1.14): --disable-metadata stops ComfyUI from
     // writing PNG metadata, which breaks ComfyPilot's workflow attribution

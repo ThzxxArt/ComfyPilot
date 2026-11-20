@@ -41,7 +41,7 @@ import { useAppStore } from '@/stores/app'
 import { ipc, onInstanceStatus, onInstanceLogBatch } from '@/composables/useIpc'
 import HealthBadge from '@/components/HealthBadge.vue'
 import { useLaunch } from '@/composables/useLaunch'
-import { useComfyUpdate } from '@/composables/useComfyUpdate'
+import { useComfyUpdate, describeNodeError } from '@/composables/useComfyUpdate'
 import { useAutoFollow } from '@/composables/useAutoFollow'
 import { useExecDiagnostics } from '@/composables/useExecDiagnostics'
 import { usePipOps } from '@/composables/usePipOps'
@@ -284,6 +284,49 @@ async function openManagerConfig(): Promise<void> {
     await ipc('instance.openManagerConfig', target.id)
   } catch (err) {
     message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+/** 0.2.5 WP4: explicit pip install only — never a silent background install. */
+async function installManager(): Promise<void> {
+  const target = instance.value
+  if (!target) return
+  const confirmed = await new Promise<boolean>((resolve) => {
+    dialog.warning({
+      title: t('instance.managerInstallConfirmTitle'),
+      content: t('instance.managerInstallConfirmBody'),
+      positiveText: t('instance.managerInstall'),
+      negativeText: t('common.cancel'),
+      onPositiveClick: () => resolve(true),
+      onNegativeClick: () => resolve(false),
+      onClose: () => resolve(false),
+      onMaskClick: () => resolve(false)
+    })
+  })
+  if (!confirmed) return
+  managerBusy.value = true
+  // Show the shared pip progress modal — the install is a real pip operation,
+  // not a silent button spinner.
+  void openPipFor(target.id)
+  try {
+    const result = await ipc('instance.installManager', target.id)
+    managerInfo.value = result.info
+    if (result.ok) {
+      message.success(t('instance.managerInstalled'))
+    } else {
+      message.error(
+        t('instance.managerInstallFailed', {
+          error: result.message || '',
+          rollback: result.rolledBack
+            ? t('instance.managerRolledBack')
+            : t('instance.managerRollbackUnavailable')
+        })
+      )
+    }
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    managerBusy.value = false
   }
 }
 const instanceRunning = computed(() => instance.value?.status === 'running')
@@ -942,7 +985,7 @@ async function runUpdateComfy(): Promise<void> {
       message.error(result.error)
     }
   } catch (err) {
-    message.error(err instanceof Error ? err.message : String(err))
+    message.error(describeNodeError(t, err))
   }
 }
 
@@ -956,9 +999,7 @@ async function runRepairEnv(): Promise<void> {
     await repairEnv(instance.value.id)
     message.success(t('instance.repairDone'))
   } catch (err) {
-    message.error(
-      t('instance.repairFailed', { error: err instanceof Error ? err.message : String(err) })
-    )
+    message.error(t('instance.repairFailed', { error: describeNodeError(t, err) }))
   } finally {
     repairing.value = false
   }
@@ -1415,7 +1456,9 @@ watch(
                   instance?.pid || '—'
                 }}</NDescriptionsItem>
                 <NDescriptionsItem :label="$t('instance.listen')"
-                  >{{ instance?.listen }}:{{ instance?.port }}</NDescriptionsItem
+                  >{{ instance?.effectiveListen || instance?.listen }}:{{
+                    instance?.effectivePort || instance?.port
+                  }}</NDescriptionsItem
                 >
                 <NDescriptionsItem :label="$t('common.version')">
                   <NSpace align="center" :size="6">
@@ -1522,6 +1565,15 @@ watch(
                   </NTag>
                   <NButton size="tiny" secondary @click="openManagerConfig()">
                     {{ $t('instance.openManagerConfig') }}
+                  </NButton>
+                  <NButton
+                    v-if="managerInfo && !managerInfo.installed"
+                    size="tiny"
+                    type="primary"
+                    :loading="managerBusy"
+                    @click="installManager"
+                  >
+                    {{ $t('instance.managerInstall') }}
                   </NButton>
                 </div>
                 <NDescriptions v-if="managerInfo" bordered size="small" :column="2">

@@ -55,6 +55,7 @@ import { resolveTorchIndex, officialTorchIndex, applyGithubMirror } from './inst
 import { versionAtLeast } from '@shared/launchArgs'
 import { resolveGitBinary } from './nodePack'
 import { bootstrapService } from './bootstrap'
+import { resolveEffectiveInstance } from '@shared/instanceLayout'
 
 const EXEC_OPTS = {
   timeout: 30 * 60 * 1000,
@@ -913,7 +914,10 @@ export class ComfyUpdaterService extends EventEmitter {
       try {
         const { instanceService } = await import('./instance')
         const info = instanceService.list().find((i) => i.id === config.id)
-        const port = config.port || 8188
+        // 0.2.5 WP1: the update preflight must probe the port the final argv
+        // actually uses, otherwise `--port 9999` lets an external ComfyUI keep
+        // the real port while the check looks at 8188.
+        const port = resolveEffectiveInstance(config).port
         // 0.2.0: an external ComfyUI can hold the port without appearing in
         // our in-memory status. Refuse to overwrite its files.
         if (!info || (info.status !== 'running' && info.status !== 'starting')) {

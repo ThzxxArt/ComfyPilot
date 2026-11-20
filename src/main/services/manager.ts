@@ -21,6 +21,7 @@ import { promisify } from 'util'
 import type {
   ComfyInstanceConfig,
   ManagerInfo,
+  ManagerInstallResult,
   ManagerNetworkMode,
   ManagerSecurityLevel
 } from '@shared/types'
@@ -159,6 +160,12 @@ async function pipManagerVersion(config: ComfyInstanceConfig): Promise<string | 
   return version
 }
 
+/** Drop the cached `pip show` answer for this interpreter (after install). */
+function invalidatePipCache(config: ComfyInstanceConfig): void {
+  const python = resolveInstancePythonPath(config)
+  pipCache.delete(`${python}|${config.path}`)
+}
+
 function gitManagerVersion(dir: string): string | undefined {
   try {
     const pyproject = join(dir, 'pyproject.toml')
@@ -257,6 +264,46 @@ export async function getManagerInfo(config: ComfyInstanceConfig): Promise<Manag
     legacyConfigPath: legacyConfig ? paths.legacyConfigPath : undefined,
     warnings
   }
+}
+
+/**
+ * Explicit pip install of ComfyUI-Manager 4.4.2 (0.2.5 WP4). Never silent:
+ * the renderer must confirm first, pip runs through the normal mirror/proxy
+ * pipeline, and a failed upgrade is rolled back to the previously installed
+ * version when one is known.
+ */
+export async function installManagerV4(config: ComfyInstanceConfig): Promise<ManagerInstallResult> {
+  const target = 'comfyui-manager==4.4.2'
+  const before = await getManagerInfo(config)
+  if (before.source === 'pip' && before.version === '4.4.2') {
+    return { ok: true, info: before, message: 'ComfyUI-Manager 4.4.2 is already installed' }
+  }
+  const { pipOpsService } = await import('./pipOps')
+  const result = await pipOpsService.installSpec(config.id, target)
+  invalidatePipCache(config)
+  if (!result.ok) {
+    let rolledBack = false
+    if (before.source === 'pip' && before.version && before.version !== '4.4.2') {
+      try {
+        const rollback = await pipOpsService.installSpec(
+          config.id,
+          `comfyui-manager==${before.version}`
+        )
+        rolledBack = rollback.ok
+        invalidatePipCache(config)
+      } catch {
+        rolledBack = false
+      }
+    }
+    const info = await getManagerInfo(config)
+    return {
+      ok: false,
+      info,
+      message: result.error || 'pip install comfyui-manager==4.4.2 failed',
+      rolledBack
+    }
+  }
+  return { ok: true, info: await getManagerInfo(config) }
 }
 
 /**

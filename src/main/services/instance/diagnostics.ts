@@ -138,7 +138,8 @@ export async function exportDiagnostics(
 
   // Online facts (0.1.10): /system_stats + /features give offline diagnosis
   // the exact version/packages/argv/feature-flag surface of the instance.
-  if (config?.port) {
+  // Probe by the effective URL even when config.port is absent (argv-only).
+  if (config) {
     const base = ctx.baseUrlOf(config)
     for (const [file, path] of [
       ['system-stats.json', '/system_stats'],

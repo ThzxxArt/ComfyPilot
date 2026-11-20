@@ -361,6 +361,14 @@ export default {
     managerLegacy: 'Legacy 配置',
     managerNextLaunch: '修改后下次启动生效；写入前会备份。',
     managerSaved: 'Manager 配置已更新（下次启动生效）',
+    managerInstall: '安装 Manager 4.4.2（pip）',
+    managerInstallConfirmTitle: '安装 ComfyUI-Manager 4.4.2？',
+    managerInstallConfirmBody:
+      '将在实例环境中通过已配置的镜像/代理执行 pip install comfyui-manager==4.4.2。不会静默安装；若升级失败且此前有可用版本，会尝试回滚到旧版本。下次启动生效。',
+    managerInstalled: 'ComfyUI-Manager 4.4.2 已安装',
+    managerInstallFailed: 'Manager 安装失败：{error}（{rollback}）',
+    managerRolledBack: '已回滚旧版本',
+    managerRollbackUnavailable: '没有可回滚的旧 pip 版本',
     managerPolicyNote:
       '“ComfyPilot 安装策略”是应用自己的门禁，与 Manager 的 security_level 不是同一个设置。',
     openManagerConfig: '打开 config.ini',
@@ -840,7 +848,10 @@ export default {
     retry: '重试迁移',
     openSnapshot: '打开快照目录',
     reinstallHint:
-      '如果重试仍然失败：保留该快照，卸载 0.2.0 并重装 0.1.18，然后把快照内容复制回数据目录即可回退。'
+      '如果重试仍然失败：保留该快照，卸载 0.2.0 并重装 0.1.18，然后把快照内容复制回数据目录即可回退。',
+    readFailed: '无法读取数据迁移状态',
+    readFailedBody:
+      '这是 IPC/桥接读取失败，不是迁移失败。应用会继续运行；在做出任何数据决定前请先重试读取。'
   },
   errorBoundary: {
     title: '页面渲染失败',
@@ -868,6 +879,7 @@ export default {
     status_done: '已完成',
     status_failed: '失败',
     status_cancelled: '已取消',
+    status_interrupted: '已中断',
     kind_install: '安装',
     'kind_comfy-update': 'ComfyUI 更新',
     'kind_env-repair': '环境修复',
@@ -1207,6 +1219,7 @@ export default {
     height: '高',
     steps: '步数',
     viewOutputs: '查看产物',
+    remoteOutputsHint: '该任务运行在远程实例上，产物在远程机器，不在本地产物库。',
     cfg: 'CFG',
     itemFailed: '失败 {n}',
     itemPending: '{n} 待出图',

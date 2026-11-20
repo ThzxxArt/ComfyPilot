@@ -77,7 +77,8 @@ const STATUS_KEYS: Record<BackgroundOp['status'], string> = {
   running: 'ops.status_running',
   done: 'ops.status_done',
   failed: 'ops.status_failed',
-  cancelled: 'ops.status_cancelled'
+  cancelled: 'ops.status_cancelled',
+  interrupted: 'ops.status_interrupted'
 }
 
 function kindLabel(kind: BackgroundOpKind): string {
@@ -92,6 +93,7 @@ function statusType(op: BackgroundOp): 'success' | 'error' | 'warning' | 'info' 
   if (op.status === 'done') return 'success'
   if (op.status === 'failed') return 'error'
   if (op.status === 'cancelled') return 'warning'
+  if (op.status === 'interrupted') return 'warning'
   return 'info'
 }
 

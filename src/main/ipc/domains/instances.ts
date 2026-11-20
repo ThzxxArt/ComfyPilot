@@ -266,6 +266,13 @@ export function createInstanceHandlers(ctx: IpcContext) {
       const { managerInfoForId } = await import('../../services/manager')
       return managerInfoForId(sanitizeId(id))
     }),
+    installManager: wrap(async (id: string) => {
+      const safeId = sanitizeId(id)
+      const { installManagerV4 } = await import('../../services/manager')
+      const cfg = loadInstanceConfigs().find((c) => c.id === safeId)
+      if (!cfg) throw new Error(`Instance not found: ${safeId}`)
+      return installManagerV4(cfg)
+    }),
     setManagerSecurity: wrap(
       async (id: string, level: import('@shared/types').ManagerSecurityLevel) => {
         const safeId = sanitizeId(id)

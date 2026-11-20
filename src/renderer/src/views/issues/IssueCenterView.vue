@@ -24,6 +24,7 @@ import {
 import { AlertCircleOutline, RefreshOutline } from '@vicons/ionicons5'
 import { ipc, onIssuesChanged } from '@/composables/useIpc'
 import { useAppStore } from '@/stores/app'
+import ListState from '@/components/ListState.vue'
 import type { AppIssue } from '@shared/types'
 
 const { t } = useI18n()
@@ -37,6 +38,8 @@ const issues = ref<AppIssue[]>([])
 const showResolved = ref(false)
 const loading = ref(false)
 const scanning = ref(false)
+/** 0.2.5 WP7: load failure must not render as "no issues". */
+const loadError = ref('')
 const actionBusy = ref('')
 const severityFilter = ref<'all' | AppIssue['severity']>('all')
 const kindFilter = ref<'all' | AppIssue['kind']>('all')
@@ -79,12 +82,18 @@ const groups = computed(() => {
   return [...map.entries()].map(([kind, items]) => ({ kind, items }))
 })
 
+const hasFilters = computed(
+  () =>
+    Boolean(instanceFilter.value) || severityFilter.value !== 'all' || kindFilter.value !== 'all'
+)
+
 async function load(): Promise<void> {
   loading.value = true
+  loadError.value = ''
   try {
     issues.value = await ipc('issue.list', showResolved.value)
   } catch (err) {
-    message.error(err instanceof Error ? err.message : String(err))
+    loadError.value = err instanceof Error ? err.message : String(err)
   } finally {
     loading.value = false
   }
@@ -133,18 +142,30 @@ async function runAction(issue: AppIssue, target: string): Promise<void> {
 }
 
 async function restore(issue: AppIssue): Promise<void> {
-  await ipc('issue.restore', issue.id)
-  await load()
+  try {
+    await ipc('issue.restore', issue.id)
+    await load()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 async function dismiss(issue: AppIssue): Promise<void> {
-  await ipc('issue.dismiss', issue.id)
-  await load()
+  try {
+    await ipc('issue.dismiss', issue.id)
+    await load()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 async function resolveIssue(issue: AppIssue): Promise<void> {
-  await ipc('issue.resolve', issue.id)
-  await load()
+  try {
+    await ipc('issue.resolve', issue.id)
+    await load()
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
 }
 
 async function ignoreAll(): Promise<void> {
@@ -227,7 +248,26 @@ onUnmounted(() => {
     </div>
 
     <NSpin :show="loading">
-      <NEmpty v-if="!visible.length" :description="t('issues.empty')" />
+      <ListState v-if="loadError" :error="loadError" :rows="4" @retry="load" />
+      <NEmpty
+        v-else-if="!visible.length"
+        :description="hasFilters ? $t('common.noMatch') : $t('issues.empty')"
+      >
+        <template v-if="hasFilters" #extra>
+          <NButton
+            secondary
+            @click="
+              () => {
+                severityFilter = 'all'
+                kindFilter = 'all'
+                if (instanceFilter) setInstance('')
+              }
+            "
+          >
+            {{ $t('common.clearFilters') }}
+          </NButton>
+        </template>
+      </NEmpty>
       <div v-for="group in groups" v-else :key="group.kind" class="issue-group">
         <div class="group-title">
           {{ t(`issues.kind_${group.kind}`) }}

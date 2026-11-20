@@ -39,6 +39,7 @@ jobs:
       - run: npm run test:behavior
       - run: node scripts/check-i18n.cjs
       - run: node scripts/check-hardcoded-zh.cjs
+      - run: node scripts/check-csp.cjs
       - run: node scripts/check-version.cjs
       - run: npm run build
       - run: node scripts/check-asar.cjs

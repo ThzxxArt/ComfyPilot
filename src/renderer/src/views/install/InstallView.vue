@@ -388,6 +388,7 @@ async function resetInstall(): Promise<void> {
 }
 
 function errText(err: unknown): string {
+  if ((err as { code?: string })?.code === 'OP_BUSY') return t('nodes.opBusy')
   return err instanceof Error ? err.message : String(err)
 }
 

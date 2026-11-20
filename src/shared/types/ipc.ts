@@ -57,7 +57,7 @@ import type {
   PortCheckResult
 } from './instance'
 import type { InstanceHealth } from './health'
-import type { ManagerInfo, ManagerSecurityLevel } from './manager'
+import type { ManagerInfo, ManagerInstallResult, ManagerSecurityLevel } from './manager'
 import type {
   DownloadTask,
   DuplicateGroup,
@@ -130,7 +130,7 @@ export interface BackgroundOp {
   target: string
   /** Optional context (pack name / batch name). */
   title?: string
-  status: 'running' | 'done' | 'failed' | 'cancelled'
+  status: 'running' | 'done' | 'failed' | 'cancelled' | 'interrupted'
   /** 0..100, or null when the op has no real denominator. */
   percent: number | null
   detail: string
@@ -226,6 +226,7 @@ export type IpcChannelMap = {
   'instance.exportRescueScript': { args: [string]; result: { path: string } }
   /** 0.2.5 WP4: ComfyUI-Manager v4.4 facts (config path/level/network/snapshots). */
   'instance.managerInfo': { args: [string]; result: ManagerInfo }
+  'instance.installManager': { args: [string]; result: ManagerInstallResult }
   'instance.setManagerSecurity': {
     args: [string, ManagerSecurityLevel]
     result: ManagerInfo
@@ -785,6 +786,7 @@ export const IPC_CHANNELS = [
   'instance.rescue',
   'instance.exportRescueScript',
   'instance.managerInfo',
+  'instance.installManager',
   'instance.setManagerSecurity',
   'instance.openManagerConfig',
   'instance.setUpdateChannel',

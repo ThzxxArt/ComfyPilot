@@ -454,6 +454,7 @@ describe('node version rollback v1 (0.2.5 WP5)', () => {
   it('checks out the exact git revision and reports local packs as skipped', async () => {
     const db = await import('../../src/main/services/db')
     const cp = await import('child_process')
+    const snapSpy = vi.spyOn(nodePackService, 'createSnapshot')
     h.state.dirs.set('C:/packs/GitPack', ['.git'])
     h.state.exists.add('C:/packs/GitPack')
     h.state.dirs.set('C:/packs/LocalPack', [])
@@ -499,6 +500,7 @@ describe('node version rollback v1 (0.2.5 WP5)', () => {
       expect.arrayContaining([expect.objectContaining({ name: 'LocalPack' })])
     )
     expect(out.warnings.join(' ')).toMatch(/local pack/i)
+    expect(snapSpy).toHaveBeenCalledWith(expect.stringMatching(/^pre-restore-/), 'inst-1')
   })
 
   it('skips a git pack without a revision and a registry pack without a version', async () => {

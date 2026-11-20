@@ -619,6 +619,11 @@
     "branches": 8.89,
     "functions": 32.26
   },
+  "src/renderer/src/composables/useActiveTarget.ts": {
+    "lines": 100,
+    "branches": 75,
+    "functions": 100
+  },
   "src/renderer/src/composables/useAsyncAction.ts": {
     "lines": 100,
     "branches": 66.67,
@@ -703,6 +708,11 @@
     "lines": 50,
     "branches": 0,
     "functions": 0
+  },
+  "src/renderer/src/utils/discrete.ts": {
+    "lines": 100,
+    "branches": 100,
+    "functions": 100
   },
   "src/renderer/src/utils/format.ts": {
     "lines": 70.59,

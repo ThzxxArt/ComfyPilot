@@ -377,6 +377,14 @@ export default {
     managerLegacy: 'Legacy config',
     managerNextLaunch: 'Applies on the next start; the file is backed up before writing.',
     managerSaved: 'Manager config updated (applies on next start)',
+    managerInstall: 'Install Manager 4.4.2 (pip)',
+    managerInstallConfirmTitle: 'Install ComfyUI-Manager 4.4.2?',
+    managerInstallConfirmBody:
+      'This runs pip install comfyui-manager==4.4.2 in the instance environment through your configured mirror/proxy. Nothing is installed silently; a failed upgrade is rolled back to the previously installed version when possible. It takes effect on the next start.',
+    managerInstalled: 'ComfyUI-Manager 4.4.2 installed',
+    managerInstallFailed: 'Manager install failed: {error} ({rollback})',
+    managerRolledBack: 'previous version restored',
+    managerRollbackUnavailable: 'no previous pip version to restore',
     managerPolicyNote:
       '"ComfyPilot install policy" is this app’s own gate — not Manager’s security_level.',
     openManagerConfig: 'Open config.ini',
@@ -867,7 +875,10 @@ export default {
     retry: 'Retry migration',
     openSnapshot: 'Open snapshot folder',
     reinstallHint:
-      'If retry still fails: keep this snapshot, uninstall 0.2.0, reinstall 0.1.18, then copy the snapshot back into the data directory.'
+      'If retry still fails: keep this snapshot, uninstall 0.2.0, reinstall 0.1.18, then copy the snapshot back into the data directory.',
+    readFailed: 'Could not read the data-migration state',
+    readFailedBody:
+      'This is an IPC/bridge failure, not a failed migration. The app keeps running; retry the read before making any data decisions.'
   },
   errorBoundary: {
     title: 'This page failed to render',
@@ -895,6 +906,7 @@ export default {
     status_done: 'Done',
     status_failed: 'Failed',
     status_cancelled: 'Cancelled',
+    status_interrupted: 'Interrupted',
     kind_install: 'Install',
     'kind_comfy-update': 'ComfyUI update',
     'kind_env-repair': 'Environment repair',
@@ -1253,6 +1265,8 @@ export default {
     height: 'Height',
     steps: 'Steps',
     viewOutputs: 'View outputs',
+    remoteOutputsHint:
+      'This job ran on a remote instance — outputs live on that machine, not in the local output library.',
     cfg: 'CFG',
     itemFailed: 'failed {n}',
     itemPending: '{n} pending',

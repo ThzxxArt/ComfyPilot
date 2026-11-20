@@ -44,9 +44,12 @@ import type {
   ModelCategory
 } from '@shared/types'
 import TargetBanner from '@/components/TargetBanner.vue'
+import { useActiveTarget } from '@/composables/useActiveTarget'
 
 const { t, te } = useI18n()
 const store = useAppStore()
+const { target: activeTarget, localOnlyHint } = useActiveTarget()
+const localMutable = computed(() => activeTarget.value.canLocalMutate)
 const message = useMessage()
 const dialog = useDialog()
 const route = useRoute()
@@ -608,6 +611,8 @@ const columns = computed<DataTableColumns<ModelRecord>>(() => [
           {
             size: 'tiny',
             secondary: true,
+            disabled: !localMutable.value,
+            title: localOnlyHint.value,
             onClick: () => openRenameOne(row)
           },
           { default: () => t('models.renameOneAction') }
@@ -617,6 +622,8 @@ const columns = computed<DataTableColumns<ModelRecord>>(() => [
           {
             size: 'tiny',
             secondary: true,
+            disabled: !localMutable.value,
+            title: localOnlyHint.value,
             onClick: () => doSymlink(row)
           },
           { default: () => t('models.symlinkAction') }
@@ -627,6 +634,8 @@ const columns = computed<DataTableColumns<ModelRecord>>(() => [
             size: 'tiny',
             type: 'error',
             secondary: true,
+            disabled: !localMutable.value,
+            title: localOnlyHint.value,
             onClick: () => confirmDelete(row)
           },
           { default: () => t('models.deleteAction') }
@@ -636,6 +645,8 @@ const columns = computed<DataTableColumns<ModelRecord>>(() => [
           {
             size: 'tiny',
             secondary: true,
+            disabled: !localMutable.value,
+            title: localOnlyHint.value,
             onClick: async () => {
               try {
                 const dir = await ipc('shell.pickDirectory')
@@ -965,16 +976,41 @@ onUnmounted(() => {
           clearable
           style="width: 150px"
         />
-        <NButton secondary :loading="scanning" @click="scan(false)">
+        <NButton
+          secondary
+          :loading="scanning"
+          :disabled="!localMutable"
+          :title="localOnlyHint"
+          @click="scan(false)"
+        >
           <template #icon><NIcon :component="RefreshOutline" /></template>{{ $t('models.scan') }}
         </NButton>
-        <NButton secondary :loading="scanning" @click="scan(true)">
+        <NButton
+          secondary
+          :loading="scanning"
+          :disabled="!localMutable"
+          :title="localOnlyHint"
+          @click="scan(true)"
+        >
           <template #icon><NIcon :component="DuplicateOutline" /></template
           >{{ $t('models.scanHash') }}
         </NButton>
-        <NButton secondary @click="ensureThumbs">{{ $t('models.genThumbs') }}</NButton>
-        <NButton secondary @click="showRename = true">{{ $t('models.batchRename') }}</NButton>
-        <NButton type="primary" @click="showDownload = true">
+        <NButton secondary :disabled="!localMutable" :title="localOnlyHint" @click="ensureThumbs">{{
+          $t('models.genThumbs')
+        }}</NButton>
+        <NButton
+          secondary
+          :disabled="!localMutable"
+          :title="localOnlyHint"
+          @click="showRename = true"
+          >{{ $t('models.batchRename') }}</NButton
+        >
+        <NButton
+          type="primary"
+          :disabled="!localMutable"
+          :title="localOnlyHint"
+          @click="showDownload = true"
+        >
           <template #icon><NIcon :component="CloudDownloadOutline" /></template
           >{{ $t('models.download') }}
         </NButton>
@@ -1114,10 +1150,23 @@ onUnmounted(() => {
                 · {{ $t('models.batchHiddenSkipped', { n: selection.hiddenCount.value }) }}
               </template>
             </span>
-            <NButton size="small" secondary type="error" @click="confirmBatchDelete">
+            <NButton
+              size="small"
+              secondary
+              type="error"
+              :disabled="!localMutable"
+              :title="localOnlyHint"
+              @click="confirmBatchDelete"
+            >
               {{ $t('models.batchDelete') }}
             </NButton>
-            <NButton size="small" secondary @click="batchMove">
+            <NButton
+              size="small"
+              secondary
+              :disabled="!localMutable"
+              :title="localOnlyHint"
+              @click="batchMove"
+            >
               {{ $t('models.batchMove') }}
             </NButton>
           </NSpace>

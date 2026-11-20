@@ -83,4 +83,14 @@ describe('OperationRegistry', () => {
     expect(reg.list()[0].percent).toBe(0)
     expect(reg.list()[0].detail).toBe('')
   })
+
+  it('keeps an interrupted batch interrupted instead of claiming 100% done', () => {
+    const reg = new OperationRegistry()
+    const op = reg.begin({ kind: 'batch', target: 'i1', percent: 40 })
+    op.finish('interrupted')
+    expect(reg.list()[0].status).toBe('interrupted')
+    expect(reg.list()[0].percent).toBe(40)
+    op.update({ percent: 100 })
+    expect(reg.list()[0].percent).toBe(40)
+  })
 })

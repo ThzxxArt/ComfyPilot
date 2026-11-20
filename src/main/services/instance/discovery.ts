@@ -143,6 +143,15 @@ export function list(ctx: InstanceServiceContext): ComfyInstanceInfo[] {
 
 export function save(ctx: InstanceServiceContext, config: ComfyInstanceConfig): ComfyInstanceInfo {
   const id = config.id || randomUUID()
+  const existing = loadInstanceConfigs().find((c) => c.id === id)
+  // 0.2.5 WP0/P0-6: a whole-record save from an older renderer may omit the
+  // migration bookkeeping entirely. Absent means "caller did not know about
+  // it" — preserve it. Explicit `undefined` still clears (repair/migration
+  // success paths rely on that).
+  const keep = <K extends keyof ComfyInstanceConfig>(key: K): ComfyInstanceConfig[K] =>
+    Object.prototype.hasOwnProperty.call(config, key)
+      ? config[key]
+      : (existing?.[key] as ComfyInstanceConfig[K])
   // Persist ONLY config fields — never runtime status/pid/url/uptime.
   const next: ComfyInstanceConfig = {
     id,
@@ -160,12 +169,12 @@ export function save(ctx: InstanceServiceContext, config: ComfyInstanceConfig): 
     frontendVersion: config.frontendVersion || '',
     pinned: Boolean(config.pinned),
     launchProfile: normalizeLaunchProfile(config.launchProfile),
-    pythonVersion: config.pythonVersion,
-    migrationState: config.migrationState,
-    migrationError: config.migrationError,
+    pythonVersion: keep('pythonVersion'),
+    migrationState: keep('migrationState'),
+    migrationError: keep('migrationError'),
     // 0.2.5 WP5: optional; absent means "nightly" for legacy instances.
-    updateChannel: config.updateChannel,
-    comfyChannel: config.comfyChannel
+    updateChannel: keep('updateChannel'),
+    comfyChannel: keep('comfyChannel')
   }
   upsertInstanceConfig(next)
   return ctx.toInfo(ctx.ensureRuntime(next))

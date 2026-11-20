@@ -1733,29 +1733,42 @@ snapshots = managerDir/snapshots
 
 ---
 
-## 14. 实施状态（2026-11-20）
+## 14. 实施状态（2026-11-21 全量 review 后）
 
-本计划已按 M1 → M4 全部落地，11 个 WP 均在 0.2.5 内完成，未拆分到后续版本。
+本计划已按 M1 → M4 全部落地，11 个 WP 均在 0.2.5 内完成，未拆分到后续版本。2026-11-21 又做了一轮全量 review，修复了“声称完成但实际半实现”的问题，并把对应反例测试补齐。
 
 | WP                  | 状态 | 主要落点                                                                  |
 | ------------------- | ---- | ------------------------------------------------------------------------- |
 | WP0 生命周期/安装器 | ✅   | `instance/lifecycle.ts`、`installer.ts`、`env.ts`、`pythonMigration.ts`   |
-| WP1 有效路径        | ✅   | `shared/instanceLayout.ts`、各资产服务与 IPC                              |
+| WP1 有效路径        | ✅   | `shared/instanceLayout.ts`、各资产服务与 IPC、Doctor/托盘/诊断有效端口    |
 | WP2 健康模型        | ✅   | `instance/health.ts`、`HealthBadge.vue`、诊断包                           |
 | WP3 救援/安全模式   | ✅   | `main/control.ts`、托盘/命令面板/详情页、恢复策略                         |
-| WP4 Manager v4.4    | ✅   | `services/manager.ts`、`nodePack/list.ts`、实例详情                       |
-| WP5 稳定更新        | ✅   | `updater.ts` stable/nightly、真实启动自检、节点版本回滚                   |
+| WP4 Manager v4.4    | ✅   | `services/manager.ts`、Doctor Manager 检查、显式 pip 安装、实例详情       |
+| WP5 稳定更新        | ✅   | `updater.ts` stable/nightly、真实启动自检、节点版本回滚/回滚前快照        |
 | WP6 运行时矩阵      | ✅   | `installer.ts`、`shared/launchArgs.ts`、`LaunchProfileEditor.vue`         |
-| WP7 渲染层反馈      | ✅   | 远程作用域、错误态、竞态、确认、i18n、CSP、壳层恢复                       |
-| WP8 测试/发布       | ✅   | release/ci gate、ratchet、gates.test.ts、文档                             |
+| WP7 渲染层反馈      | ✅   | `useActiveTarget`、ListState、操作协调、迁移读取错误、远程入队、CSP/aria  |
+| WP8 测试/发布       | ✅   | release/ci gate、ratchet、CSP gate、迁移/desktop/深链 DOM 测试、文档      |
 | WP9 资产 P0         | ✅   | `model.ts`、`p1p2/batch.ts`、`backup.ts`、`p1p2/output.ts`、`issueHub.ts` |
 | WP10 安全边界       | ✅   | `pathCapability.ts`、IPC 契约、备份/下载/输出 containment                 |
 
-验证记录（本机 WSL）：
+本轮 review 额外修复：
 
-- `npm test`：159 文件 / 2071 用例通过。
-- `npm run test:coverage`：全局 lines 68.88%、branches 55.95%；179 文件 ratchet 通过。
-- `npm run test:behavior`：97.6%（目标 ≥90%）。
+- 端口冲突只调用 `instance.setPort`；整条 `instance.save` 对调用方不认识的迁移字段做保留。
+- 3.12 实例拒绝启动后状态为 `migration-required`（不是泛化 `error`），且不 spawn。
+- TaskCenter 将 `interrupted` 作为终态展示，不再标成 `done`。
+- Instances / Batch / IssueCenter 加载失败显示错误与重试，不再渲染空数据。
+- 迁移状态 **IPC 读取失败** 是可关闭警告，不再锁死整个壳层；真实迁移失败仍阻断。
+- Nodes 深链先刷新再聚焦，并清除远程选择；Workflows 在远程 ready 时可入队；远程批跑卡片显示实例名并禁用本地“查看产物”。
+- Manager 卡片支持显式确认的 4.4.2 pip 安装（镜像/代理复用，失败回滚旧版本），Doctor 增加 Manager 路径/等级/网络/legacy/策略不一致检查。
+- 节点版本回滚前创建 `pre-restore-*` 快照。
+- 选定实例持久化（`activeInstance`），重启不再静默落到第一个实例。
+- 新增 CSP gate（白名单外 connect/frame 源失败）、`aria-modal`、`document.lang`、Output 卡片键盘操作与单一 discrete API 实例。
+
+验证记录（本机 WSL，2026-11-21）：
+
+- `npm test`：161 文件 / 2111 用例通过。
+- `npm run test:coverage`：全局 lines 70.40%、branches 57.50%、functions 53.96%、statements 68.01%；181 文件 ratchet 通过。
+- `npm run test:behavior`：97.4%（目标 ≥90%）。
 - `npm run lint:check` / `format:check` / `typecheck` / `typecheck:test` 通过。
 - `npm run build`、`npm run test:e2e` 通过。
 - `npx electron-builder --win --dir` 后 `release/win-unpacked/ComfyPilot.exe --e2e-smoke` 通过，

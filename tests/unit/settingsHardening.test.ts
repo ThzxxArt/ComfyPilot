@@ -77,3 +77,13 @@ describe('assertSafeSettingsPatch — aria2Path', () => {
     expect(() => assertSafeSettingsPatch({ aria2Path: '' })).not.toThrow()
   })
 })
+
+describe('assertSafeSettingsPatch — activeInstance', () => {
+  it('accepts a plain id / explicit empty and rejects injected lines', () => {
+    expect(() => assertSafeSettingsPatch({ activeInstance: 'i-123_abc' })).not.toThrow()
+    expect(() => assertSafeSettingsPatch({ activeInstance: '' })).not.toThrow()
+    for (const bad of ['a\nb', 'a\rb', 'a\0b', 42, 'x'.repeat(201)]) {
+      expect(() => assertSafeSettingsPatch({ activeInstance: bad as never })).toThrow()
+    }
+  })
+})

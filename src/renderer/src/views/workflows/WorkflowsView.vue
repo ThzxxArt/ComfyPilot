@@ -171,6 +171,10 @@ async function runCompare(): Promise<void> {
 
 /** ComfyPilot never auto-starts an instance —gate every live action on this. */
 const instanceRunning = computed(() => store.activeInstance?.status === 'running')
+/** 0.2.5 WP7: queueing is legal for a local running instance OR a ready remote. */
+const queueEntryReady = computed(
+  () => instanceRunning.value || (store.isRemoteActive && Boolean(store.activeRemote))
+)
 const needInstanceHint = computed(() => t('workflows.needRunningInstance'))
 
 const originLabel = (o: WorkflowRecord['origin']): string => {
@@ -746,13 +750,13 @@ onMounted(async () => {
                 </template>
                 {{ needInstanceHint }}
               </NTooltip>
-              <NTooltip trigger="hover" :disabled="instanceRunning">
+              <NTooltip trigger="hover" :disabled="queueEntryReady">
                 <template #trigger>
                   <span class="btn-wrap">
                     <NButton
                       size="tiny"
                       secondary
-                      :disabled="wf.missing || !instanceRunning"
+                      :disabled="wf.missing || !queueEntryReady"
                       @click="openQueue(wf)"
                     >
                       <template #icon><NIcon :component="SendOutline" /></template

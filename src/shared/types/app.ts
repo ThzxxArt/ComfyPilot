@@ -138,6 +138,9 @@ export interface AppSettingsView extends Omit<AppSettings, 'proxy'> {
 
 export interface AppSettings {
   locale: AppLocale
+  /** Last selected local instance id ('' = explicitly none). Optional so a
+   * 0.2.4 settings file still falls back to its first instance. */
+  activeInstance?: string
   modelScanRoots: string[]
   githubEndpoint: string
   hfEndpoint: string

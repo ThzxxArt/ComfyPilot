@@ -28,6 +28,7 @@ import {
   NPopconfirm,
   NCard,
   NText,
+  NAlert,
   NTooltip
 } from 'naive-ui'
 import { useAppStore } from '@/stores/app'
@@ -35,6 +36,7 @@ import { ipc, onIpc, IPC_EVENTS } from '@/composables/useIpc'
 import { useLaunch } from '@/composables/useLaunch'
 import { clampPercent } from '@/utils/format'
 import ListSkeleton from '@/components/ListSkeleton.vue'
+import ListState from '@/components/ListState.vue'
 import type { BatchJob, WorkflowRecord, SeedMode } from '@shared/types'
 
 const { t } = useI18n()
@@ -44,6 +46,8 @@ const dialog = useDialog()
 const router = useRouter()
 const route = useRoute()
 const loading = ref(false)
+/** 0.2.5 WP7: a failed list must not render as "no batch jobs". */
+const loadError = ref('')
 const jobs = ref<BatchJob[]>([])
 const workflows = ref<WorkflowRecord[]>([])
 const showCreate = ref(false)
@@ -119,6 +123,17 @@ function statusLabel(status: string): string {
   return s === key ? status : s
 }
 
+/** 0.2.5 WP7: a batch card must name the instance/job target it belongs to. */
+function jobTargetLabel(job: BatchJob): string {
+  const id = job.instanceId || ''
+  if (id.startsWith('remote:')) {
+    const rid = id.slice('remote:'.length)
+    const remote = store.remotes.find((r) => r.id === rid)
+    return `☁ ${remote?.name || rid}`
+  }
+  return store.instances.find((i) => i.id === id)?.name || id || '—'
+}
+
 function statusType(status: string): 'success' | 'error' | 'info' | 'default' | 'warning' {
   if (status === 'done') return 'success'
   if (status === 'error') return 'error'
@@ -131,18 +146,20 @@ function statusType(status: string): 'success' | 'error' | 'info' | 'default' | 
 async function refreshJobs(): Promise<void> {
   try {
     jobs.value = await ipc('batch.list')
+    loadError.value = ''
     if (!draft.value.instanceId) {
       draft.value.instanceId = store.activeRemoteId
         ? `remote:${store.activeRemoteId}`
         : store.activeInstanceId || ''
     }
   } catch (err) {
-    message.error(err instanceof Error ? err.message : String(err))
+    loadError.value = err instanceof Error ? err.message : String(err)
   }
 }
 
 async function refresh(): Promise<void> {
   loading.value = true
+  loadError.value = ''
   try {
     jobs.value = await ipc('batch.list')
     // workflow.list is a full disk walk — only fetch it when the create modal
@@ -153,7 +170,7 @@ async function refresh(): Promise<void> {
         : store.activeInstanceId || ''
     }
   } catch (err) {
-    message.error(err instanceof Error ? err.message : String(err))
+    loadError.value = err instanceof Error ? err.message : String(err)
   } finally {
     loading.value = false
   }
@@ -559,8 +576,26 @@ onUnmounted(() => {
     </div>
 
     <div class="page-body">
+      <NAlert
+        v-if="loadError && jobs.length"
+        type="error"
+        closable
+        style="margin-bottom: 12px"
+        @close="loadError = ''"
+      >
+        {{ loadError }}
+        <NButton size="tiny" secondary style="margin-left: 10px" @click="refresh">{{
+          $t('common.retry')
+        }}</NButton>
+      </NAlert>
       <NSpin :show="loading && jobs.length > 0">
         <ListSkeleton v-if="loading && !jobs.length" :rows="4" variant="card" />
+        <ListState
+          v-else-if="loadError && !jobs.length"
+          :error="loadError"
+          :rows="4"
+          @retry="refresh"
+        />
         <div v-else-if="jobs.length" class="grid cards">
           <article
             v-for="job in jobs"
@@ -582,6 +617,7 @@ onUnmounted(() => {
               <NTag size="small" round :type="statusType(job.status)">
                 {{ statusLabel(job.status) }}
               </NTag>
+              <NTag size="small" round>{{ jobTargetLabel(job) }}</NTag>
             </div>
 
             <div class="job-progress">
@@ -734,7 +770,18 @@ onUnmounted(() => {
                 <template #icon><NIcon :component="CloseOutline" /></template
                 >{{ $t('batch.cancel') }}
               </NButton>
-              <NButton size="small" secondary @click="viewOutputs(job)">
+              <NTooltip v-if="job.instanceId?.startsWith('remote:')" trigger="hover">
+                <template #trigger>
+                  <span class="btn-wrap">
+                    <NButton size="small" secondary disabled>
+                      <template #icon><NIcon :component="ImagesOutline" /></template
+                      >{{ $t('batch.viewOutputs') }}
+                    </NButton>
+                  </span>
+                </template>
+                {{ $t('batch.remoteOutputsHint') }}
+              </NTooltip>
+              <NButton v-else size="small" secondary @click="viewOutputs(job)">
                 <template #icon><NIcon :component="ImagesOutline" /></template
                 >{{ $t('batch.viewOutputs') }}
               </NButton>

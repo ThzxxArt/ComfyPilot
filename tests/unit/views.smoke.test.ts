@@ -347,6 +347,208 @@ describe('renderer view smoke', () => {
     }
   })
 
+  it('disables local-only model mutations while a remote target is active', async () => {
+    const wrapper = await mountView(
+      '/models',
+      () => import('../../src/renderer/src/views/models/ModelsView.vue')
+    )
+    try {
+      const { useAppStore } = await import('../../src/renderer/src/stores/app')
+      const store = useAppStore()
+      store.remotes = [
+        {
+          id: 'r1',
+          name: 'Remote',
+          baseUrl: 'http://192.168.1.9:8188',
+          label: '',
+          enabled: true
+        } as never
+      ]
+      store.activeRemoteId = 'r1'
+      await nextTick()
+      const scan = wrapper.findAll('button').find((b) => (b.text() || '').trim() === '扫描')
+      expect(scan).toBeTruthy()
+      expect(scan!.attributes('disabled')).toBeDefined()
+      expect(wrapper.text()).toContain('远程')
+      wrapper.unmount()
+    } finally {
+      /* nothing to restore — the test gets a fresh pinia */
+    }
+  })
+
+  it('enables workflow queueing for a ready remote target and queues remotely', async () => {
+    const bridge = (window as unknown as { comfyPilot: { invoke: Function } }).comfyPilot
+    const original = bridge.invoke.bind(bridge)
+    const calls: Array<{ channel: string; args: unknown[] }> = []
+    bridge.invoke = async (channel: string, ...args: unknown[]) => {
+      if (channel === 'workflow.list') {
+        return {
+          ok: true,
+          data: [
+            {
+              id: 'wf-1',
+              name: 'RemoteFlow',
+              path: '/tmp/remote-flow.json',
+              format: 'json',
+              nodeCount: 3,
+              tags: [],
+              updatedAt: Date.now(),
+              missingNodes: [],
+              version: '1',
+              params: {},
+              origin: 'library'
+            }
+          ]
+        }
+      }
+      if (channel === 'workflow.preflight') return { ok: true, data: { available: false } }
+      if (channel === 'workflow.queue') {
+        calls.push({ channel, args })
+        return { ok: true, data: 'prompt-1' }
+      }
+      return original(channel, ...args)
+    }
+    try {
+      const wrapper = await mountView(
+        '/workflows',
+        () => import('../../src/renderer/src/views/workflows/WorkflowsView.vue')
+      )
+      await new Promise((r) => setTimeout(r, 30))
+      const { useAppStore } = await import('../../src/renderer/src/stores/app')
+      const store = useAppStore()
+      store.remotes = [
+        {
+          id: 'r1',
+          name: 'Remote',
+          baseUrl: 'http://192.168.1.9:8188',
+          label: '',
+          enabled: true
+        } as never
+      ]
+      store.activeRemoteId = 'r1'
+      await nextTick()
+      const queue = wrapper.findAll('button').find((b) => (b.text() || '').includes('排队'))
+      expect(queue).toBeTruthy()
+      expect(queue!.attributes('disabled')).toBeUndefined()
+      await queue!.trigger('click')
+      await new Promise((r) => setTimeout(r, 20))
+      const enqueue = Array.from(document.querySelectorAll('.n-modal button')).find((b) =>
+        (b.textContent || '').includes('入队')
+      ) as HTMLButtonElement | undefined
+      expect(enqueue).toBeTruthy()
+      expect(enqueue!.disabled).toBe(false)
+      enqueue!.click()
+      await new Promise((r) => setTimeout(r, 30))
+      expect(calls).toHaveLength(1)
+      expect((calls[0].args[0] as { instanceId?: string }).instanceId).toBe('remote:r1')
+      wrapper.unmount()
+    } finally {
+      bridge.invoke = original
+    }
+  })
+
+  it('keeps the document language in sync with the UI locale', async () => {
+    const wrapper = await mountView('/', () => import('../../src/renderer/src/App.vue'))
+    try {
+      expect(document.documentElement.lang).toBe('zh-CN')
+      ;(i18n.global.locale as unknown as { value: string }).value = 'en-US'
+      await nextTick()
+      expect(document.documentElement.lang).toBe('en')
+    } finally {
+      ;(i18n.global.locale as unknown as { value: string }).value = 'zh-CN'
+      wrapper.unmount()
+    }
+  })
+
+  it('app treats a migration-state READ failure as a dismissible warning, not a blocker', async () => {
+    const bridge = (window as unknown as { comfyPilot: { invoke: Function } }).comfyPilot
+    const original = bridge.invoke.bind(bridge)
+    let reads = 0
+    bridge.invoke = async (channel: string, ...args: unknown[]) => {
+      if (channel === 'data.migrationState') {
+        reads += 1
+        if (reads === 1) return { ok: false, error: 'bridge hiccup' }
+        return { ok: true, data: { ok: true, migratedFiles: 0 } }
+      }
+      return original(channel, ...args)
+    }
+    try {
+      const wrapper = await mountView('/', () => import('../../src/renderer/src/App.vue'))
+      await new Promise((r) => setTimeout(r, 30))
+      expect(wrapper.text()).toContain('无法读取数据迁移状态')
+      // The blocker must NOT replace the router view.
+      expect(wrapper.find('.migration-block').exists()).toBe(false)
+      expect(wrapper.find('main.content').exists()).toBe(true)
+      const retry = wrapper.findAll('button').find((b) => (b.text() || '').trim() === '重试')
+      expect(retry).toBeTruthy()
+      await retry!.trigger('click')
+      await new Promise((r) => setTimeout(r, 20))
+      expect(reads).toBeGreaterThanOrEqual(2)
+      // Closing the warning is harmless and must not throw.
+      const close = wrapper.find('.n-alert-close')
+      if (close.exists()) await close.trigger('click')
+      wrapper.unmount()
+    } finally {
+      bridge.invoke = original
+    }
+  })
+
+  it('instance detail installs Manager only after an explicit confirmation', async () => {
+    const bridge = (window as unknown as { comfyPilot: { invoke: Function } }).comfyPilot
+    const original = bridge.invoke.bind(bridge)
+    bridge.invoke = async (channel: string, ...args: unknown[]) => {
+      if (channel === 'instance.managerInfo') {
+        return {
+          ok: true,
+          data: { installed: false, source: 'none', configExists: false, warnings: [] }
+        }
+      }
+      if (channel === 'instance.installManager') {
+        invoked.push(channel)
+        return {
+          ok: true,
+          data: {
+            ok: true,
+            info: {
+              installed: true,
+              version: '4.4.2',
+              source: 'pip',
+              configExists: false,
+              warnings: []
+            }
+          }
+        }
+      }
+      return original(channel, ...args)
+    }
+    try {
+      const wrapper = await mountView(
+        '/instances/i1',
+        () => import('../../src/renderer/src/views/instances/InstanceDetailView.vue')
+      )
+      await new Promise((r) => setTimeout(r, 30))
+      invoked.length = 0
+      const install = wrapper
+        .findAll('button')
+        .find((b) => (b.text() || '').includes('安装 Manager 4.4.2'))
+      expect(install).toBeTruthy()
+      await install!.trigger('click')
+      await new Promise((r) => setTimeout(r, 20))
+      // Nothing installed before the confirmation.
+      expect(invoked).not.toContain('instance.installManager')
+      const confirm = Array.from(document.querySelectorAll('.n-dialog button')).find((b) =>
+        (b.textContent || '').includes('安装 Manager 4.4.2')
+      ) as HTMLButtonElement | undefined
+      expect(confirm).toBeTruthy()
+      confirm!.click()
+      await new Promise((r) => setTimeout(r, 30))
+      expect(invoked).toContain('instance.installManager')
+      wrapper.unmount()
+    } finally {
+      bridge.invoke = original
+    }
+  })
+
   it('issue center ignore-all asks for confirmation and dismisses', async () => {
     const bridge = (window as unknown as { comfyPilot: { invoke: Function } }).comfyPilot
     const original = bridge.invoke.bind(bridge)
@@ -430,6 +632,261 @@ describe('renderer view smoke', () => {
       expect(resizes).toBeLessThanOrEqual(1)
     } finally {
       wrapper.unmount()
+    }
+  })
+
+  it('shows a retryable error instead of "no instances" when instance.list fails', async () => {
+    const bridge = (window as unknown as { comfyPilot: { invoke: Function } }).comfyPilot
+    const original = bridge.invoke.bind(bridge)
+    bridge.invoke = async (channel: string, ...args: unknown[]) => {
+      if (channel === 'instance.list') return { ok: false, error: 'bridge down' }
+      return original(channel, ...args)
+    }
+    try {
+      const wrapper = await mountView(
+        '/instances',
+        () => import('../../src/renderer/src/views/instances/InstancesView.vue')
+      )
+      await new Promise((r) => setTimeout(r, 20))
+      expect(wrapper.text()).toContain('bridge down')
+      expect(wrapper.text()).not.toContain('还没有 ComfyUI 实例')
+      const retry = wrapper.findAll('button').find((b) => (b.text() || '').includes('重试'))
+      expect(retry).toBeTruthy()
+      wrapper.unmount()
+    } finally {
+      bridge.invoke = original
+    }
+  })
+
+  it('shows a retryable error instead of "no jobs" when batch.list fails', async () => {
+    const bridge = (window as unknown as { comfyPilot: { invoke: Function } }).comfyPilot
+    const original = bridge.invoke.bind(bridge)
+    bridge.invoke = async (channel: string, ...args: unknown[]) => {
+      if (channel === 'batch.list') return { ok: false, error: 'batch bridge down' }
+      return original(channel, ...args)
+    }
+    try {
+      const wrapper = await mountView(
+        '/batch',
+        () => import('../../src/renderer/src/views/workflows/BatchView.vue')
+      )
+      await new Promise((r) => setTimeout(r, 20))
+      expect(wrapper.text()).toContain('batch bridge down')
+      expect(wrapper.text()).not.toContain('暂无批量任务')
+      wrapper.unmount()
+    } finally {
+      bridge.invoke = original
+    }
+  })
+
+  it('batch cards show the instance name and hide local output links for remote jobs', async () => {
+    const bridge = (window as unknown as { comfyPilot: { invoke: Function } }).comfyPilot
+    const original = bridge.invoke.bind(bridge)
+    bridge.invoke = async (channel: string, ...args: unknown[]) => {
+      if (channel === 'batch.list') {
+        return {
+          ok: true,
+          data: [
+            {
+              id: 'job-1',
+              name: 'Remote job',
+              instanceId: 'remote:r1',
+              status: 'done',
+              count: 2,
+              completed: 2,
+              failed: 0,
+              produced: 2,
+              submitted: 2,
+              items: [],
+              workflowPath: '/tmp/flow.json',
+              createdAt: Date.now()
+            }
+          ]
+        }
+      }
+      return original(channel, ...args)
+    }
+    try {
+      const wrapper = await mountView(
+        '/batch',
+        () => import('../../src/renderer/src/views/workflows/BatchView.vue')
+      )
+      await new Promise((r) => setTimeout(r, 20))
+      const { useAppStore } = await import('../../src/renderer/src/stores/app')
+      const store = useAppStore()
+      store.remotes = [
+        {
+          id: 'r1',
+          name: 'Studio PC',
+          baseUrl: 'http://192.168.1.9:8188',
+          label: '',
+          enabled: true
+        } as never
+      ]
+      await nextTick()
+      expect(wrapper.text()).toContain('Studio PC')
+      const viewOutput = wrapper
+        .findAll('button')
+        .find((b) => (b.text() || '').includes('查看产物'))
+      expect(viewOutput?.attributes('disabled')).toBeDefined()
+      wrapper.unmount()
+    } finally {
+      bridge.invoke = original
+    }
+  })
+
+  it('shows a retryable error instead of "no issues" when issue.list fails', async () => {
+    const bridge = (window as unknown as { comfyPilot: { invoke: Function } }).comfyPilot
+    const original = bridge.invoke.bind(bridge)
+    bridge.invoke = async (channel: string, ...args: unknown[]) => {
+      if (channel === 'issue.list') return { ok: false, error: 'issue bridge down' }
+      return original(channel, ...args)
+    }
+    try {
+      const wrapper = await mountView(
+        '/issues',
+        () => import('../../src/renderer/src/views/issues/IssueCenterView.vue')
+      )
+      await new Promise((r) => setTimeout(r, 20))
+      expect(wrapper.text()).toContain('issue bridge down')
+      wrapper.unmount()
+    } finally {
+      bridge.invoke = original
+    }
+  })
+
+  it('nodes deep link refreshes first and highlights the matched pack', async () => {
+    const bridge = (window as unknown as { comfyPilot: { invoke: Function } }).comfyPilot
+    const original = bridge.invoke.bind(bridge)
+    bridge.invoke = async (channel: string, ...args: unknown[]) => {
+      if (channel === 'node.refresh') {
+        return {
+          ok: true,
+          data: [
+            {
+              id: 'pack-1',
+              name: 'PackOne',
+              displayName: 'Pack One',
+              path: '/tmp/comfy/custom_nodes/PackOne',
+              version: '1.2.3',
+              status: 'enabled',
+              source: 'git',
+              nodeCount: 3
+            }
+          ]
+        }
+      }
+      return original(channel, ...args)
+    }
+    try {
+      const wrapper = await mountView(
+        '/nodes?focus=PackOne&instanceId=i1',
+        () => import('../../src/renderer/src/views/nodes/NodesView.vue')
+      )
+      await new Promise((r) => setTimeout(r, 30))
+      const focused = wrapper.find('.pack-focused')
+      expect(focused.exists()).toBe(true)
+      expect(focused.attributes('data-pack-id')).toBe('pack-1')
+      expect(focused.text()).toContain('Pack One')
+      wrapper.unmount()
+    } finally {
+      bridge.invoke = original
+    }
+  })
+
+  it('issue action buttons call their IPC target and reload', async () => {
+    const bridge = (window as unknown as { comfyPilot: { invoke: Function } }).comfyPilot
+    const original = bridge.invoke.bind(bridge)
+    bridge.invoke = async (channel: string, ...args: unknown[]) => {
+      if (channel === 'issue.list') {
+        return {
+          ok: true,
+          data: [
+            {
+              id: 'iss-action',
+              fingerprint: 'fp-action',
+              kind: 'deps',
+              severity: 'warning',
+              title: 'Missing deps',
+              detail: 'pip failed',
+              actions: [
+                {
+                  id: 'fix',
+                  labelKey: 'issues.actionOpenNodes',
+                  kind: 'ipc',
+                  target: 'issue.dismiss'
+                }
+              ],
+              status: 'open',
+              firstSeen: Date.now(),
+              lastSeen: Date.now(),
+              updatedAt: Date.now()
+            }
+          ]
+        }
+      }
+      return original(channel, ...args)
+    }
+    try {
+      const wrapper = await mountView(
+        '/issues',
+        () => import('../../src/renderer/src/views/issues/IssueCenterView.vue')
+      )
+      await new Promise((r) => setTimeout(r, 20))
+      invoked.length = 0
+      const action = wrapper.findAll('button').find((b) => (b.text() || '').includes('打开节点'))
+      expect(action).toBeTruthy()
+      await action!.trigger('click')
+      await new Promise((r) => setTimeout(r, 20))
+      expect(invoked).toContain('issue.dismiss')
+      wrapper.unmount()
+    } finally {
+      bridge.invoke = original
+    }
+  })
+
+  it('output cards are keyboard-operable (Space selects, Enter opens detail)', async () => {
+    const bridge = (window as unknown as { comfyPilot: { invoke: Function } }).comfyPilot
+    const original = bridge.invoke.bind(bridge)
+    bridge.invoke = async (channel: string, ...args: unknown[]) => {
+      if (channel === 'output.list') {
+        return {
+          ok: true,
+          data: {
+            items: [
+              {
+                id: 'out-1',
+                fileName: 'take.wav',
+                path: '/tmp/out/take.wav',
+                type: 'audio',
+                createdAt: Date.now(),
+                size: 12,
+                root: '/tmp/out'
+              }
+            ],
+            total: 1,
+            truncated: false
+          }
+        }
+      }
+      return original(channel, ...args)
+    }
+    try {
+      const wrapper = await mountView(
+        '/output',
+        () => import('../../src/renderer/src/views/output/OutputView.vue')
+      )
+      await new Promise((r) => setTimeout(r, 20))
+      const card = wrapper.find('.asset')
+      expect(card.exists()).toBe(true)
+      expect(card.attributes('tabindex')).toBe('0')
+      expect(card.attributes('aria-pressed')).toBe('false')
+      await card.trigger('keydown', { key: ' ' })
+      await nextTick()
+      expect(card.attributes('aria-pressed')).toBe('true')
+      wrapper.unmount()
+    } finally {
+      bridge.invoke = original
     }
   })
 

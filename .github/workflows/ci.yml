@@ -53,6 +53,9 @@ jobs:
       - name: Hardcoded Chinese gate
         run: node scripts/check-hardcoded-zh.cjs
 
+      - name: CSP gate (no arbitrary network/frame sources)
+        run: node scripts/check-csp.cjs
+
       - name: ESLint (no fix)
         run: npm run lint:check
 

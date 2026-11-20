@@ -47,6 +47,7 @@ import { formatBytes } from '@/utils/format'
 import { COLORS } from '@/styles/tokens'
 import ListSkeleton from '@/components/ListSkeleton.vue'
 import ListState from '@/components/ListState.vue'
+import { useActiveTarget } from '@/composables/useActiveTarget'
 import { viewersCloseAfterRemoval } from '@/utils/batchOps'
 import { isWebViewableImage, isRawImage } from '@shared/mediaTypes'
 import { resolveOutputDir } from '@shared/outputDir'
@@ -54,6 +55,8 @@ import type { OutputAsset, OutputAssetMatch, WorkflowRecord } from '@shared/type
 
 const { t } = useI18n()
 const store = useAppStore()
+const { target: activeTarget, localOnlyHint } = useActiveTarget()
+const localMutable = computed(() => activeTarget.value.canLocalMutate)
 const message = useMessage()
 const dialog = useDialog()
 const route = useRoute()
@@ -539,6 +542,17 @@ function lightboxNext(): void {
   lightboxAudioFailed.value = false
 }
 
+function onAssetKey(e: KeyboardEvent, asset: OutputAsset): void {
+  if (e.target !== e.currentTarget) return
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    openDetail(asset)
+  } else if (e.key === ' ') {
+    e.preventDefault()
+    toggleSelect(asset.id)
+  }
+}
+
 function onLightboxKey(e: KeyboardEvent): void {
   if (!lightbox.value) return
   if (e.key === 'ArrowLeft') lightboxPrev()
@@ -879,7 +893,14 @@ onUnmounted(() => {
           style="width: 220px"
         >
           <template #suffix>
-            <NButton size="tiny" secondary @click="pickRoot">{{ $t('output.browse') }}</NButton>
+            <NButton
+              size="tiny"
+              secondary
+              :disabled="!localMutable"
+              :title="localOnlyHint"
+              @click="pickRoot"
+              >{{ $t('output.browse') }}</NButton
+            >
           </template>
         </NInput>
         <NSelect v-model:value="type" :options="typeOptions" style="width: 110px" />
@@ -917,7 +938,13 @@ onUnmounted(() => {
             {{ $t('common.cancel') }}
           </NButton>
         </NTag>
-        <NButton type="primary" :loading="refreshing" @click="scanOutputs().then(() => refresh())">
+        <NButton
+          type="primary"
+          :loading="refreshing"
+          :disabled="!localMutable"
+          :title="localOnlyHint"
+          @click="scanOutputs().then(() => refresh())"
+        >
           <template #icon><NIcon :component="RefreshOutline" /></template>{{ $t('output.scan') }}
         </NButton>
       </NSpace>
@@ -953,7 +980,8 @@ onUnmounted(() => {
           size="small"
           type="error"
           secondary
-          :disabled="!selected.size"
+          :disabled="!selected.size || !localMutable"
+          :title="localOnlyHint"
           @click="confirmDeleteSelected"
         >
           {{ $t('output.deleteSelected', { n: selected.size }) }}
@@ -971,8 +999,13 @@ onUnmounted(() => {
                 class="card card-interactive asset"
                 :class="{ selected: selected.has(a.id) }"
                 :title="$t('output.cardHint')"
+                role="button"
+                tabindex="0"
+                :aria-label="a.fileName"
+                :aria-pressed="selected.has(a.id)"
                 @click="toggleSelect(a.id)"
                 @dblclick="openLightbox(a)"
+                @keydown="onAssetKey($event, a)"
               >
                 <div class="thumb">
                   <img
@@ -1040,7 +1073,14 @@ onUnmounted(() => {
                   <NButton size="tiny" secondary @click.stop="openDetail(a)">{{
                     $t('output.params')
                   }}</NButton>
-                  <NButton size="tiny" type="error" secondary @click.stop="confirmDeleteAsset(a)">
+                  <NButton
+                    size="tiny"
+                    type="error"
+                    secondary
+                    :disabled="!localMutable"
+                    :title="localOnlyHint"
+                    @click.stop="confirmDeleteAsset(a)"
+                  >
                     {{ $t('output.delete') }}
                   </NButton>
                 </NSpace>
@@ -1193,7 +1233,14 @@ onUnmounted(() => {
             <template #icon><NIcon :component="GitBranchOutline" /></template>
             {{ $t('output.restoreWorkflow') }}
           </NButton>
-          <NButton v-if="detail" type="error" secondary @click="confirmDeleteAsset(detail)">
+          <NButton
+            v-if="detail"
+            type="error"
+            secondary
+            :disabled="!localMutable"
+            :title="localOnlyHint"
+            @click="confirmDeleteAsset(detail)"
+          >
             {{ $t('output.delete') }}
           </NButton>
         </NSpace>

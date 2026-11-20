@@ -846,6 +846,24 @@ describe('launch arg validation gate', () => {
     expect(h.state.spawnCount).toBe(0)
   })
 
+  it('refuses a Python 3.12 interpreter with migration-required and never spawns (WP8)', async () => {
+    register(cfg({ id: 'py312', venvPath: '', pythonPath: 'C:/py312/python.exe' }))
+    h.state.fetchImpl = failFetch
+    h.state.execHandler = (_cmd, args) => {
+      if (args[0] === '--version') return { stdout: 'Python 3.12.10' }
+      return { stdout: '' }
+    }
+    await expect(svc.start('py312')).rejects.toMatchObject({
+      code: 'PYTHON_MIGRATION_REQUIRED'
+    })
+    expect(h.state.spawnCount).toBe(0)
+    const persisted = h.state.upsertCalls.filter((c) => c.id === 'py312').pop()
+    expect(persisted?.migrationState).toBe('required')
+    expect(String(persisted?.migrationError || '')).toMatch(/Unsupported Python 3\.12/)
+    const info = svc.list().find((i) => i.id === 'py312')
+    expect(info?.status).toBe('migration-required')
+  })
+
   it('normalizes launchProfile on save (strips defaults, keeps explicit false)', () => {
     const info = svc.save(
       cfg({
@@ -2767,6 +2785,41 @@ describe('lifecycle root-cause fixes (0.2.5 WP0)', () => {
     expect(patched.migrationState).toBe('required')
     expect(patched.migrationError).toBe('needs 3.13')
     expect(() => svc.patch('missing', { port: 9000 })).toThrow(/not found/i)
+  })
+
+  it('whole-record save preserves absent migration fields but honors explicit clears', () => {
+    register(
+      cfg({
+        id: 'legacy-save',
+        port: 8188,
+        pythonVersion: '3.12.9',
+        migrationState: 'required',
+        migrationError: 'needs 3.13'
+      })
+    )
+    const stripped = cfg({ id: 'legacy-save', port: 9000 }) as unknown as Record<string, unknown>
+    delete stripped.pythonVersion
+    delete stripped.migrationState
+    delete stripped.migrationError
+    // Simulates an older renderer that never knew these keys existed.
+    const saved = svc.save(stripped as never)
+    expect(saved.port).toBe(9000)
+    expect(saved.pythonVersion).toBe('3.12.9')
+    expect(saved.migrationState).toBe('required')
+    expect(saved.migrationError).toBe('needs 3.13')
+
+    // An explicit `undefined` is a deliberate clear (repair/migration success).
+    const cleared = svc.save(
+      cfg({
+        id: 'legacy-save',
+        port: 9000,
+        pythonVersion: '3.13.18',
+        migrationState: 'none',
+        migrationError: undefined
+      })
+    )
+    expect(cleared.migrationState).toBe('none')
+    expect(cleared.migrationError).toBeUndefined()
   })
 
   it('refuses to relocate a port that extraArgs explicitly override', async () => {

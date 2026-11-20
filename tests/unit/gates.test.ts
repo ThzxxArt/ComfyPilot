@@ -116,6 +116,46 @@ describe('coverage ratchet gate (0.2.5 WP8)', () => {
   })
 })
 
+describe('check-csp gate (0.2.5 WP7)', () => {
+  const csp = join(repo, 'scripts', 'check-csp.cjs')
+  const good =
+    "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'self'; script-src 'self'; object-src 'none'; frame-src 'none'; connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:*;\">"
+
+  it('accepts the shipped policy and the exact dev origins', () => {
+    const dir = root()
+    const file = join(dir, 'index.html')
+    writeFileSync(file, good)
+    expect(run(csp, dir, [file]).status).toBe(0)
+  })
+
+  it('rejects a wildcard / arbitrary remote connect source', () => {
+    for (const bad of [
+      good.replace("connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:*", 'connect-src *'),
+      good.replace(
+        "connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:*",
+        'connect-src https://evil.example'
+      ),
+      good.replace("frame-src 'none'", 'frame-src https:')
+    ]) {
+      const dir = root()
+      const file = join(dir, 'index.html')
+      writeFileSync(file, bad)
+      const r = run(csp, dir, [file])
+      expect(r.status).not.toBe(0)
+      expect(r.out).toMatch(/non-whitelisted|frame-src/)
+    }
+  })
+
+  it('fails when the meta tag is missing', () => {
+    const dir = root()
+    const file = join(dir, 'index.html')
+    writeFileSync(file, '<html><head></head></html>')
+    const r = run(csp, dir, [file])
+    expect(r.status).not.toBe(0)
+    expect(r.out).toMatch(/missing/i)
+  })
+})
+
 describe('check-asar gate (0.2.5 WP8)', () => {
   const validYml = `files:\n  - out/**\n  - '!out/preload/**'\n  - '!out/renderer/**'\nextraResources:\n  - from: out/preload\n    to: preload\n  - from: out/renderer\n    to: renderer\n`
   it('fails when the packaging config re-includes the duplicate runtime trees', () => {

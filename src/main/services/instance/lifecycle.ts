@@ -595,7 +595,7 @@ async function startInner(
       migrationError: `Unsupported Python ${pyMatch[1]}.${pyMatch[2]} — 0.2.0 requires Python 3.13`
     }
     upsertInstanceConfig(rt.config)
-    rt.status = 'error'
+    rt.status = legacy ? 'stopped' : 'error'
     rt.lastError = rt.config.migrationError
     ctx.pushLog(rt, 'error', rt.lastError || 'Unsupported Python version')
     ctx.emitStatus(rt)

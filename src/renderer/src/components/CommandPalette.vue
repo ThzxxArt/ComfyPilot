@@ -181,7 +181,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
   <!-- No local @keydown: the window listener already handles every key while
        open. Having both made Enter run the selected command twice. -->
   <NModal v-model:show="show" :mask-closable="true" display-directive="show">
-    <div class="palette" role="dialog" :aria-label="t('palette.title')">
+    <div class="palette" role="dialog" aria-modal="true" :aria-label="t('palette.title')">
       <NInput
         v-model:value="query"
         :placeholder="t('palette.placeholder')"
