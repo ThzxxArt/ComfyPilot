@@ -16,8 +16,40 @@ describe('runtime IPC contract (0.2.0)', () => {
   it('rejects wrong primitive/object shapes on high-risk channels', () => {
     expect(() => validateIpcArgs('settings.set', [{ locale: 'en-US' }])).not.toThrow()
     expect(() => validateIpcArgs('settings.set', ['not-an-object'])).toThrow(/IPC|Invalid/i)
-    expect(() => validateIpcArgs('instance.save', [{ id: 'i1' }])).not.toThrow()
+    expect(() =>
+      validateIpcArgs('instance.save', [
+        {
+          id: 'i1',
+          name: 'Alpha',
+          path: '/opt/ComfyUI',
+          port: 8188,
+          listen: '127.0.0.1',
+          extraArgs: [],
+          argTemplateId: 'default'
+        }
+      ])
+    ).not.toThrow()
+    expect(() => validateIpcArgs('instance.save', [{ id: 'i1' }])).toThrow(
+      /Invalid IPC arguments/i
+    )
+    expect(() =>
+      validateIpcArgs('instance.save', [
+        {
+          name: 'Alpha',
+          path: '/opt/ComfyUI',
+          port: 99999,
+          listen: '127.0.0.1',
+          extraArgs: []
+        }
+      ])
+    ).toThrow(/Invalid IPC arguments/i)
     expect(() => validateIpcArgs('instance.save', [])).toThrow(/Invalid IPC arguments/i)
+    expect(() =>
+      validateIpcArgs('model.download', [{ url: 'https://x', fileName: 'main.py' }])
+    ).not.toThrow() // extension policy is enforced by the service
+    expect(() => validateIpcArgs('model.download', [{ url: 'https://x', nope: 1 }])).toThrow(
+      /Invalid IPC arguments/i
+    )
     expect(() => validateIpcArgs('instance.migratePython', ['i1'])).not.toThrow()
     expect(() => validateIpcArgs('instance.migratePython', [42])).toThrow(/Invalid IPC arguments/i)
     expect(() => validateIpcArgs('node.installDeps', ['p1', 'i1', ['a>=1']])).not.toThrow()
@@ -45,7 +77,21 @@ describe('runtime IPC contract (0.2.0)', () => {
     })) as { ok: boolean; code?: string }
     expect(blocked.ok).toBe(false)
     expect(blocked.code).toBe('IPC_UNTRUSTED_FRAME')
-    // No senderFrame (unit test / direct call) is allowed.
+    // No senderFrame (unit test / direct call) is allowed only in test mode.
     expect(await handlers.get('settings.get')!({})).toBe('ok')
+
+    // 0.2.5 WP10: production is fail-closed when the frame is missing.
+    const saved = process.env.VITEST
+    const savedNodeEnv = process.env.NODE_ENV
+    delete process.env.VITEST
+    process.env.NODE_ENV = 'production'
+    try {
+      const missing = (await handlers.get('settings.get')!({})) as { ok: boolean; code?: string }
+      expect(missing.ok).toBe(false)
+      expect(missing.code).toBe('IPC_UNTRUSTED_FRAME')
+    } finally {
+      process.env.VITEST = saved
+      process.env.NODE_ENV = savedNodeEnv
+    }
   })
 })

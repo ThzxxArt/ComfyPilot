@@ -1,4 +1,5 @@
 import { existsSync, statSync } from 'fs'
+import { join } from 'path'
 import { clipboard, shell } from 'electron'
 import type {
   ComfyInstanceConfig,
@@ -19,6 +20,8 @@ import {
   resolveInsideAnyRoot,
   sanitizeId
 } from '../../services/security'
+import { pathCapabilities } from '../../services/pathCapability'
+
 import {
   approveReadPath,
   assertApprovedExecutable,
@@ -43,6 +46,111 @@ function discoveredComfyRoots(): string[] {
     'D:\\AI\\ComfyUI',
     ...(loadSettings().modelScanRoots || [])
   ].filter(Boolean) as string[]
+}
+
+/** IPv4/IPv6 literals only; wildcard/loopback/private-LAN ranges. */
+function isAllowedListenHost(raw: string): boolean {
+  const host = raw.trim().replace(/^\[|\]$/g, '').toLowerCase()
+  if (!host) return false
+  if (host === '0.0.0.0' || host === '::' || host === '*') return true
+  if (host === '::1') return true
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])]
+    if ([a, b, Number(v4[3]), Number(v4[4])].some((n) => n > 255)) return false
+    if (a === 127) return true
+    if (a === 10) return true
+    if (a === 192 && b === 168) return true
+    if (a === 172 && b >= 16 && b <= 31) return true
+    if (a === 100 && b >= 64 && b <= 127) return true // CGNAT/Tailscale
+    return false
+  }
+  // IPv6 literal heuristics: loopback, ULA (fc00::/7) and link-local.
+  if (!host.includes(':')) return false
+  if (host.startsWith('fc') || host.startsWith('fd')) return true
+  if (host.startsWith('fe8') || host.startsWith('fe9') || host.startsWith('fea') || host.startsWith('feb'))
+    return true
+  return false
+}
+
+const LAUNCH_PROFILE_DIR_KEYS = [
+  'baseDirectory',
+  'userDirectory',
+  'modelsDirectory',
+  'outputDirectory',
+  'inputDirectory',
+  'tempDirectory',
+  'previewsDirectory'
+] as const
+
+const PATH_VALUED_FLAGS = new Set([
+  '--extra-model-paths-config',
+  '--base-directory',
+  '--user-directory',
+  '--models-directory',
+  '--output-directory',
+  '--input-directory',
+  '--temp-directory',
+  '--previews-directory',
+  '--front-end-root',
+  '--database-url',
+  '--tls-keyfile',
+  '--tls-certfile',
+  '--whitelist-custom-nodes'
+])
+
+/**
+ * 0.2.5 WP10 / S3: launchProfile paths, listen and port are launch-time
+ * primitives. Every path must stay inside the instance root or a picked root;
+ * listen must be a literal loopback/wildcard/private address.
+ */
+function assertSafeLaunchConfig(config: ComfyInstanceConfig): void {
+  const port = Number(config.port)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('Instance port must be an integer between 1 and 65535')
+  }
+  const listen = String(config.listen || '127.0.0.1')
+  for (const addr of listen.split(',')) {
+    if (!isAllowedListenHost(addr)) {
+      throw new Error(`Instance listen address is not a local/LAN literal: ${addr.trim()}`)
+    }
+  }
+  const roots = [config.path, ...pathCapabilities.rootsFor('write')]
+  const profile = config.launchProfile || {}
+  for (const key of LAUNCH_PROFILE_DIR_KEYS) {
+    const value = profile[key]
+    if (!value) continue
+    if (typeof value !== 'string' || /[\0\r\n]/.test(value)) {
+      throw new Error(`launchProfile.${key} is not a valid path`)
+    }
+    if (value.split(/[\\/]+/).includes('..')) {
+      throw new Error(`launchProfile.${key} must not contain '..'`)
+    }
+    const abs = value.match(/^[a-zA-Z]:[\\/]|^\//) ? value : join(config.path, value)
+    if (!resolveInsideAnyRoot(abs, roots)) {
+      throw new Error(`launchProfile.${key} is outside the instance and picked roots`)
+    }
+  }
+  const extra = Array.isArray(config.extraArgs) ? config.extraArgs : []
+  if (extra.length > 500) throw new Error('extraArgs is unreasonably long')
+  for (let i = 0; i < extra.length; i++) {
+    const token = String(extra[i] ?? '')
+    if (/[\0\r\n]/.test(token)) throw new Error('extraArgs contains a control character')
+    const eq = token.indexOf('=')
+    const flag = eq > 2 ? token.slice(0, eq) : token
+    let value = eq > 2 ? token.slice(eq + 1) : undefined
+    if (!PATH_VALUED_FLAGS.has(flag)) continue
+    if (value === undefined) {
+      const next = extra[i + 1]
+      if (next && !String(next).startsWith('--')) value = String(next)
+    }
+    if (!value) continue
+    if (/[\\/]\.\.[\\/]|^\.\.$/.test(value)) throw new Error(`extraArgs ${flag} must not contain '..'`)
+    const abs = value.match(/^[a-zA-Z]:[\\/]|^\//) ? value : join(config.path, value)
+    if (!resolveInsideAnyRoot(abs, roots)) {
+      throw new Error(`extraArgs ${flag} points outside the instance and picked roots`)
+    }
+  }
 }
 
 /**
@@ -70,7 +178,21 @@ function assertApprovedInstancePath(path: string, id?: string): void {
 export function createInstanceHandlers(ctx: IpcContext) {
   return {
     list: wrap(() => instanceService.list()),
-    discover: wrap((root?: string) => instanceService.discover(root)),
+    discover: wrap((root?: string) => {
+      const found = instanceService.discover(root)
+      // A discovery result is a trusted proposal: issue a write capability so a
+      // subsequent instance.save can accept exactly these paths.
+      for (const c of found) {
+        try {
+          pathCapabilities.issue(c.path, 'write', 'discovery')
+          pathCapabilities.issue(c.path, 'read', 'discovery')
+          pathCapabilities.issue(c.path, 'exec', 'discovery')
+        } catch {
+          /* skip invalid */
+        }
+      }
+      return found
+    }),
     save: wrap((config: ComfyInstanceConfig) => {
       if (!config || typeof config !== 'object') throw new Error('Invalid instance config')
       if (!config.path || !existsSync(config.path)) throw new Error('Instance path does not exist')
@@ -78,6 +200,7 @@ export function createInstanceHandlers(ctx: IpcContext) {
       assertApprovedInstancePath(config.path, config.id || undefined)
       if (config.pythonPath) assertApprovedExecutable(config.pythonPath, 'pythonPath', config.path)
       assertApprovedVenvPath(config.venvPath, config.path)
+      assertSafeLaunchConfig(config)
       return instanceService.save({ ...config, id: config.id ? sanitizeId(config.id) : '' })
     }),
     migratePython: wrap(async (id: string) => {

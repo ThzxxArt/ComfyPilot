@@ -3,7 +3,7 @@ import { modelService } from '../../services/model'
 import { loadInstanceConfigs, loadSettings } from '../../services/db'
 import { resolveInsideAnyRoot, sanitizeId } from '../../services/security'
 import { resolveEffectiveInstance } from '@shared/instanceLayout'
-import { approvedReadRoots, broadcastNotification, isSafeReadPath, wrap } from '../context'
+import { approvedReadRootsList, broadcastNotification, isSafeReadPath, wrap } from '../context'
 import { safeInstanceId } from '../trust'
 
 /**
@@ -19,7 +19,7 @@ function assertAllowedScanRoots(roots: string[]): void {
     ...loadInstanceConfigs()
       .map((c) => (c.path ? resolveEffectiveInstance(c).dirs.models : ''))
       .filter(Boolean),
-    ...approvedReadRoots
+    ...approvedReadRootsList()
   ]
   for (const root of roots) {
     if (!resolveInsideAnyRoot(root, allowed)) {

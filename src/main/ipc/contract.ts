@@ -19,6 +19,91 @@ const b = z.boolean()
 const obj = z.record(z.string(), z.unknown())
 const strArray = z.array(s)
 const loose = z.array(z.unknown())
+const portSchema = z.number().int().min(1).max(65535)
+const launchProfileSchema = z
+  .object({
+    baseDirectory: s.optional(),
+    userDirectory: s.optional(),
+    modelsDirectory: s.optional(),
+    outputDirectory: s.optional(),
+    inputDirectory: s.optional(),
+    tempDirectory: s.optional(),
+    previewsDirectory: s.optional(),
+    cacheRam: z.number().optional(),
+    cudaDevice: s.optional(),
+    frontendVersion: s.optional()
+  })
+  .passthrough()
+const instanceSchema = z
+  .object({
+    id: s.optional(),
+    name: s,
+    path: s.min(1),
+    pythonPath: s.optional(),
+    venvPath: s.optional(),
+    port: portSchema,
+    listen: s.min(1),
+    extraArgs: strArray,
+    argTemplateId: s.optional(),
+    enabled: b.optional(),
+    notes: s.optional(),
+    autoStart: b.optional(),
+    frontendVersion: s.optional(),
+    pinned: b.optional(),
+    launchProfile: launchProfileSchema.optional(),
+    pythonVersion: s.optional(),
+    migrationState: z.enum(['none', 'required', 'migrating', 'failed']).optional(),
+    migrationError: s.optional(),
+    updateChannel: z.enum(['stable', 'nightly']).optional(),
+    comfyChannel: z.enum(['stable', 'nightly']).optional()
+  })
+  .passthrough()
+const settingsPatchSchema = z
+  .object({
+    locale: z.enum(['zh-CN', 'en-US']).optional(),
+    modelScanRoots: strArray.optional(),
+    securityLevel: z.enum(['strong', 'normal', 'normal-', 'weak']).optional(),
+    networkMode: z.enum(['public', 'private', 'offline', 'personal_cloud']).optional(),
+    outputScanDepth: z.number().int().min(2).max(10).optional(),
+    proxy: z.record(z.string(), z.unknown()).optional(),
+    healthCheckEnabled: b.optional(),
+    healthCheckIntervalMs: z.number().optional(),
+    healthCheckTimeoutMs: z.number().optional(),
+    healthStaleMs: z.number().optional(),
+    autoRecover: b.optional(),
+    autoRecoverCooldownMs: z.number().optional(),
+    autoRecoverMaxAttempts: z.number().optional()
+  })
+  .passthrough()
+const launchOptionsSchema = z
+  .object({
+    open: z.enum(['embed', 'browser', 'none']).optional(),
+    relocatePort: b.optional(),
+    adoptExternal: b.optional(),
+    safeMode: b.optional()
+  })
+  .passthrough()
+const modelDownloadSchema = z
+  .object({
+    url: s.min(1),
+    destDir: s.optional(),
+    fileName: s.optional(),
+    expectedSha256: z
+      .string()
+      .regex(/^[a-fA-F0-9]{64}$/)
+      .optional(),
+    overwrite: b.optional()
+  })
+  .strict()
+const backupRestoreSchema = z
+  .object({
+    sections: z
+      .array(
+        z.enum(['settings', 'instances', 'nodePacks', 'models', 'workflows', 'remotes', 'snapshots'])
+      )
+      .optional()
+  })
+  .passthrough()
 
 const schemas = new Map<string, z.ZodType>(
   (IPC_CHANNELS as readonly string[]).map((channel) => [channel, loose])
@@ -34,7 +119,7 @@ function set(channel: string, schema: z.ZodType): void {
 
 // ---- settings / credentials / data ----
 set('settings.get', z.tuple([]))
-set('settings.set', z.tuple([obj]))
+set('settings.set', z.tuple([settingsPatchSchema]))
 set('settings.setProxyPassword', z.tuple([s]))
 set('settings.clearProxyPassword', z.tuple([]))
 set('settings.exportConfig', z.tuple([]))
@@ -51,14 +136,14 @@ set('proxy.test', z.tuple([obj.optional()]))
 // ---- instances / env / installer ----
 set('instance.list', z.tuple([]))
 set('instance.discover', z.tuple([s.optional()]))
-set('instance.save', z.tuple([obj]))
+set('instance.save', z.tuple([instanceSchema]))
 set('instance.migratePython', z.tuple([s]))
 set('instance.remove', z.tuple([s]))
-set('instance.launch', z.tuple([s, obj.optional()]))
+set('instance.launch', z.tuple([s, launchOptionsSchema.optional()]))
 set('instance.launchArgCatalog', z.tuple([s.optional()]))
 set('instance.previewLaunch', z.tuple([s]))
 set('instance.stop', z.tuple([s]))
-set('instance.restart', z.tuple([s, obj.optional()]))
+set('instance.restart', z.tuple([s, launchOptionsSchema.optional()]))
 set('instance.forceKill', z.tuple([s]))
 set('instance.sweepStale', z.tuple([]))
 set('instance.startAll', z.tuple([]))
@@ -119,7 +204,7 @@ set('model.rename', z.tuple([s, s]))
 set('model.tag', z.tuple([s, strArray]))
 set('model.findDuplicates', z.tuple([]))
 set('model.downloads', z.tuple([]))
-set('model.download', z.tuple([obj]))
+set('model.download', z.tuple([modelDownloadSchema]))
 set('model.pauseDownload', z.tuple([s]))
 set('model.prioritizeDownload', z.tuple([s]))
 set('model.resumeDownload', z.tuple([s]))
@@ -220,7 +305,7 @@ set('doctor.fix', z.tuple([s, s]))
 set('backup.list', z.tuple([]))
 set('backup.create', z.tuple([obj]))
 set('backup.preview', z.tuple([s]))
-set('backup.restore', z.tuple([s, obj.optional()]))
+set('backup.restore', z.tuple([s, backupRestoreSchema.optional()]))
 set('backup.delete', z.tuple([s]))
 set('backup.openFolder', z.tuple([s]))
 
@@ -312,6 +397,7 @@ export function instrumentIpcContract(ipc: HandleLike): boolean {
       if (typeof handler !== 'function') return original(channel, handler)
       const guarded = async (event: unknown, ...args: unknown[]): Promise<unknown> => {
         try {
+          const isTest = process.env.NODE_ENV === 'test' || Boolean(process.env.VITEST)
           if (event && typeof event === 'object' && 'senderFrame' in event) {
             const frame = (event as { senderFrame?: { url?: string } | null }).senderFrame
             if (!frame || !isOwnRendererUrl(String(frame.url || ''))) {
@@ -319,6 +405,11 @@ export function instrumentIpcContract(ipc: HandleLike): boolean {
                 code: 'IPC_UNTRUSTED_FRAME'
               })
             }
+          } else if (!isTest) {
+            // 0.2.5 WP10: a missing sender frame is a hard failure in production.
+            throw Object.assign(new Error('Blocked IPC without a sender frame'), {
+              code: 'IPC_UNTRUSTED_FRAME'
+            })
           }
           validateIpcArgs(channel, args)
           return await handler(event, ...args)

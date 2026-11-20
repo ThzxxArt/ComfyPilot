@@ -348,6 +348,10 @@ function resetDirs(): void {
   mkdirSync(USER, { recursive: true })
   mkdirSync(LOGS, { recursive: true })
   mkdirSync(COMFY, { recursive: true })
+  // 0.2.5 WP10: launch requires a ComfyUI fingerprint before spawning.
+  writeFileSync(join(COMFY, 'main.py'), 'print(1)\n')
+  mkdirSync(join(COMFY, 'comfy'), { recursive: true })
+  writeFileSync(join(COMFY, 'comfy', 'cli_args.py'), "parser.add_argument('--listen')\n")
 }
 
 function cfg(over: Partial<ComfyInstanceConfig> = {}): ComfyInstanceConfig {

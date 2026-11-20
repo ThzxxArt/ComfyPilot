@@ -13,6 +13,7 @@ import { syncProxyFromSettings, testProxy } from '../../services/proxy'
 import { assertSafeSettingsPatch } from '../../services/security'
 import {
   assertApprovedExecutable,
+  assertModelScanRootsPatch,
   assertSafeEndpointSettings,
   settingsView,
   wrap
@@ -65,6 +66,7 @@ export function createSettingsHandlers() {
       // the key keeps the stored ciphertext; setting it to '' WIPED it.
       const { patch } = stripImportedSettingsSecrets(incoming)
       assertSafeSettingsPatch(patch)
+      assertModelScanRootsPatch(patch.modelScanRoots)
       const before = loadSettings() as unknown as Record<string, unknown>
       const next = saveSettings(patch as Partial<AppSettings>)
       // 0.1.18 (regression): an import persisted the proxy/locale/autostart but
@@ -132,6 +134,7 @@ export function createSettingsHandlers() {
         throw new Error('settings.set expects an object patch')
       }
       assertSafeSettingsPatch(patch as Record<string, unknown>)
+      assertModelScanRootsPatch((patch as Record<string, unknown>).modelScanRoots)
       if (patch.aria2Path) assertApprovedExecutable(String(patch.aria2Path), 'aria2Path')
       if (
         patch.securityLevel !== undefined &&

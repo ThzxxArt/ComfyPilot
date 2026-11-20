@@ -654,6 +654,24 @@ async function startInner(
     }
   }
 
+  // 0.2.5 WP10: a path is not a ComfyUI install just because it is called one.
+  // Require main.py plus at least one ComfyUI fingerprint before executing it.
+  const mainPy = join(rt.config.path, 'main.py')
+  const fingerprints = [
+    join(rt.config.path, 'comfy'),
+    join(rt.config.path, 'comfyui_version.py'),
+    join(rt.config.path, 'comfy_extras'),
+    join(rt.config.path, 'comfy', 'cli_args.py')
+  ]
+  if (!existsSync(mainPy) || !fingerprints.some((p) => existsSync(p))) {
+    rt.status = 'error'
+    rt.lastError = `Not a ComfyUI installation (main.py + comfy fingerprint required): ${rt.config.path}`
+    ctx.pushLog(rt, 'error', rt.lastError)
+    ctx.emitStatus(rt)
+    const e = new Error(rt.lastError) as Error & { code?: string }
+    e.code = 'INSTANCE_NOT_COMFYUI'
+    throw e
+  }
   // Last gate before the process exists: no spawn after stop/restart.
   assertStartCurrent()
   try {

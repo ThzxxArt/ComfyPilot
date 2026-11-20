@@ -14,7 +14,13 @@ import {
   resolveInsideAnyRoot,
   sanitizeId
 } from '../../services/security'
-import { approvedReadRoots, broadcast, collectRevealRoots, isSafeReadPath, wrap } from '../context'
+import {
+  approvedReadRootsList,
+  broadcast,
+  collectRevealRoots,
+  isSafeReadPath,
+  wrap
+} from '../context'
 import { safeInstanceId } from '../trust'
 
 export function createOutputHandlers() {
@@ -140,8 +146,12 @@ export function createOutputHandlers() {
       // 0.1.18 (WP4): on-demand thumbnail for one already-listed asset. The
       // path must stay inside the output/reveal allow-list — this must never
       // become a generic "rasterize any path" primitive.
-      const allowed = resolveInsideAnyRoot(path, await collectRevealRoots())
-      if (!allowed) throw new Error('Blocked thumbnail path outside allowed areas')
+      const roots = await collectRevealRoots()
+      const allowed = resolveInsideAnyRoot(path, roots)
+      // 0.2.5 WP10: an existing path must resolve inside a real (non-link) root.
+      if (!allowed || !realpathUnderAnyRoot(allowed, roots)) {
+        throw new Error('Blocked thumbnail path outside allowed areas')
+      }
       const { thumbnailDisplayUrl, thumbnailService } = await import('../../services/media')
       const generated = await thumbnailService.ensureOutputThumb(allowed)
       return { url: generated ? thumbnailDisplayUrl(generated) || undefined : undefined }
@@ -153,7 +163,7 @@ export function createOutputHandlers() {
       return matchAssetsByFileName(instanceId, fileName)
     }),
     open: wrap(async (path: string) => {
-      const roots = [...(await collectRevealRoots()), ...approvedReadRoots]
+      const roots = [...(await collectRevealRoots()), ...approvedReadRootsList()]
       const real = realpathUnderAnyRoot(path, roots)
       if (!real || !isSafeOpenPathUnderRoots(real, roots)) {
         throw new Error('Blocked opening file outside allowed areas')
@@ -164,7 +174,7 @@ export function createOutputHandlers() {
       // Same allow-list as shell.reveal — the outputs library must not become
       // a weaker second door into the filesystem (0.1.9). A symlink inside an
       // output root must resolve to a real target that is still inside a root.
-      const roots = [...(await collectRevealRoots()), ...approvedReadRoots]
+      const roots = [...(await collectRevealRoots()), ...approvedReadRootsList()]
       const real = realpathUnderAnyRoot(path, roots)
       if (!real) throw new Error('Blocked revealing path outside allowed areas')
       shell.showItemInFolder(real)
@@ -186,7 +196,7 @@ export function createOutputHandlers() {
     ),
     exportZip: wrap(async (paths: string[], destDir?: string) => {
       if (!Array.isArray(paths) || !paths.length) throw new Error('No files selected')
-      const sourceRoots = [...(await collectRevealRoots()), ...approvedReadRoots]
+      const sourceRoots = [...(await collectRevealRoots()), ...approvedReadRootsList()]
       for (const p of paths) {
         // 0.2.0: an archive source is a READ of a real file. It must resolve
         // under an app-owned/output root; the old `isSafeOpenPath` fallback

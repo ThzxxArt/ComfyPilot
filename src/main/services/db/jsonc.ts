@@ -8,6 +8,7 @@
  */
 import { basename, dirname, join } from 'path'
 import {
+  chmodSync,
   closeSync,
   existsSync,
   fsyncSync,
@@ -261,6 +262,14 @@ export function writeJsonc(name: string, value: unknown, header?: string): void 
     writeFileSync(tmp, stringifyJsonc(toV2(value), header), 'utf-8')
     fsyncFile(tmp)
     renameWithRetry(tmp, p)
+    // 0.2.5 WP10: files that can contain credentials are owner-only on POSIX.
+    if (process.platform !== 'win32' && (name === 'settings' || name === 'remote_instances')) {
+      try {
+        chmodSync(p, 0o600)
+      } catch {
+        /* best-effort — the file already exists with previous mode */
+      }
+    }
     fsyncDir(dirname(p))
   } catch (e) {
     try {

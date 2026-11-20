@@ -83,6 +83,38 @@ async function resolveUpdater(): Promise<AutoUpdaterLike | null> {
   }
 }
 
+const TRUSTED_UPDATE_HOSTS = new Set([
+  'github.com',
+  'objects.githubusercontent.com',
+  'release-assets.githubusercontent.com'
+])
+const TRUSTED_REPO_PATH = '/ThzxxArt/ComfyPilot/'
+
+/**
+ * 0.2.5 WP10: electron-updater's GitHub provider is configured in the signed
+ * app-update.yml, but a compromised feed response must not be accepted blindly.
+ * Every absolute file URL must be GitHub-hosted and under this repository; an
+ * unexpected publisher is surfaced as an error and never auto-installed.
+ */
+function isTrustedUpdateInfo(info: unknown): boolean {
+  const files = (info as { files?: Array<{ url?: unknown }> })?.files
+  if (!Array.isArray(files)) return true
+  for (const f of files) {
+    const raw = String(f?.url || '')
+    if (!raw) continue
+    if (!/^https?:\/\//i.test(raw)) continue
+    try {
+      const u = new URL(raw)
+      if (u.protocol !== 'https:') return false
+      if (!TRUSTED_UPDATE_HOSTS.has(u.hostname.toLowerCase())) return false
+      if (!u.pathname.startsWith(TRUSTED_REPO_PATH)) return false
+    } catch {
+      return false
+    }
+  }
+  return true
+}
+
 let wired = false
 
 /**
@@ -101,6 +133,15 @@ function wireEvents(au: AutoUpdaterLike): void {
     })
   })
   au.on?.('update-available', (info) => {
+    if (!isTrustedUpdateInfo(info)) {
+      finish({
+        status: 'error',
+        currentVersion: APP_VERSION,
+        error: 'Update publisher is not the trusted ComfyPilot repository',
+        checkedAt: Date.now()
+      })
+      return
+    }
     const version = String((info as { version?: unknown })?.version || '')
     // Direction matters: an older server offering must never read as
     // "available" (0.1.11 semantics kept for the event path too).
@@ -148,6 +189,15 @@ function wireEvents(au: AutoUpdaterLike): void {
     })
   })
   au.on?.('update-downloaded', (info) => {
+    if (!isTrustedUpdateInfo(info)) {
+      finish({
+        status: 'error',
+        currentVersion: APP_VERSION,
+        error: 'Downloaded update has an untrusted publisher',
+        checkedAt: Date.now()
+      })
+      return
+    }
     const version = String((info as { version?: unknown })?.version || '')
     const ready = version || lastStatus.availableVersion || ''
     finish({
@@ -197,9 +247,11 @@ export async function initAppUpdate(opts?: { enableAutoCheckUpdates?: boolean })
     /* older updaters may not expose the flag — default is true anyway */
   }
   try {
-    au.autoInstallOnAppQuit = true
+    // 0.2.5 WP10: never install in the background on quit. The user must
+    // press install after the downloaded update passed the publisher check.
+    au.autoInstallOnAppQuit = false
   } catch {
-    /* default is true anyway */
+    /* older updaters may not expose the flag */
   }
   if (opts?.enableAutoCheckUpdates === false) return
   const attempt = (n: number): void => {

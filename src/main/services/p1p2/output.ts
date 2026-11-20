@@ -19,7 +19,12 @@ import {
   recordPromptWorkflowLink
 } from '../workflow'
 import { lookupWorkflowByFingerprint } from '../workflowFingerprint'
-import { assertSafeRelativeFilename, sanitizeId, isPathInside } from '../security'
+import {
+  assertSafeRelativeFilename,
+  sanitizeId,
+  isPathInside,
+  realpathUnderAnyRoot
+} from '../security'
 import { classifyOutputType } from '@shared/mediaTypes'
 import { resolveOutputDir } from '@shared/outputDir'
 import { LruCache } from '../lru'
@@ -66,7 +71,7 @@ export class OutputService {
     this.refreshPrevMap()
     const assets: OutputAsset[] = []
     for (const r of roots) {
-      if (!r || !existsSync(r)) continue
+      if (!r || !existsSync(r) || isSymlink(r)) continue
       this.walk(r, assets, 0, maxDepth)
     }
     // Field-level merge so batch/walk concurrent writes never drop linkage.
@@ -275,7 +280,7 @@ export class OutputService {
       await tick()
     }
     for (const r of roots) {
-      if (!r || !existsSync(r)) continue
+      if (!r || !existsSync(r) || isSymlink(r)) continue
       await walkDir(r, 0)
       if (cancelled) break
     }
@@ -448,7 +453,10 @@ export class OutputService {
     const rec = listOutputAssetsAll().find((a) => a.id === id)
     if (!rec) return false
     if (deleteFile && rec.path && existsSync(rec.path)) {
-      unlinkSync(rec.path)
+      // 0.2.5 WP10: a DB row is not authorisation to unlink an arbitrary file.
+      const real = realpathUnderAnyRoot(rec.path, this.defaultScanRoots())
+      if (!real) throw new Error('Blocked deleting an output outside the output roots')
+      unlinkSync(real)
     }
     return deleteOutputAsset(id)
   }

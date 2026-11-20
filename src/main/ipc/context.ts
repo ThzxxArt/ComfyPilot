@@ -1,5 +1,5 @@
 import { BrowserWindow, WebContentsView, shell } from 'electron'
-import { basename, dirname, isAbsolute } from 'path'
+import { basename, dirname, isAbsolute, resolve } from 'path'
 import { homedir } from 'os'
 import type {
   AppSettings,
@@ -23,6 +23,7 @@ import { secretStorageBackend } from '../services/secretStorage'
 import { remoteService } from '../services/p1p2'
 import { resolveOutputDir } from '@shared/outputDir'
 import { resolveEffectiveInstance } from '@shared/instanceLayout'
+import { pathCapabilities } from '../services/pathCapability'
 import { isOwnRendererUrl } from '../services/rendererEntry'
 import { safeInstanceId } from './trust'
 
@@ -100,9 +101,17 @@ export function toPlainIpcData<T>(data: T): T {
  * to drive instance lifecycle or filesystem channels.
  */
 export function assertTrustedIpcSender(event: unknown): void {
-  // Unit tests register the handler and call it without a real event. Only
-  // enforce when the event actually carries Electron's senderFrame property.
-  if (!event || typeof event !== 'object' || !('senderFrame' in event)) return
+  const isTest = process.env.NODE_ENV === 'test' || Boolean(process.env.VITEST)
+  if (!event || typeof event !== 'object') {
+    if (!isTest) throw new Error('Blocked IPC without a sender frame')
+    return
+  }
+  if (!('senderFrame' in event)) {
+    // 0.2.5 WP10: production must fail closed. Direct service tests call the
+    // wrapped handler without an Electron event, which is the only exception.
+    if (!isTest) throw new Error('Blocked IPC without a sender frame')
+    return
+  }
   const frame = (event as { senderFrame?: { url?: string } | null }).senderFrame
   if (!frame || !isOwnRendererUrl(String(frame.url || ''))) {
     throw new Error('Blocked IPC from an untrusted frame')
@@ -164,25 +173,23 @@ function isAllowedEmbedUrl(raw: string): boolean {
   return isSafeEmbedUrl(raw) && isTrustedComfyUrl(raw)
 }
 
-// Paths the user explicitly chose via the OS picker (0.1.16). A picked file is
-// trusted as-is; a picked folder becomes a readable root for the session.
-// Anything else must resolve under an app-owned root — the old implementation
-// trusted ANY existing file with a data extension, i.e. the whole disk.
-export const approvedReadRoots = new Set<string>()
-/** 0.2.0: executable/interpreter paths explicitly chosen through the OS picker. */
-const approvedExecutablePaths = new Set<string>()
-/** 0.2.0: directories the user picked as write targets. */
-export const approvedWriteRoots = new Set<string>()
-
+/**
+ * Paths the user explicitly chose via the OS picker (0.2.5 WP10).
+ * A pick issues read+write+exec capabilities; there is no global set to add to
+ * by accident, and every grant expires.
+ */
 export function approveReadPath(p: string | null | undefined): void {
   if (!p) return
   try {
-    approvedReadRoots.add(normalizeForCompare(p))
-    approvedWriteRoots.add(normalizeForCompare(p))
-    approvedExecutablePaths.add(normalizeForCompare(p))
+    pathCapabilities.issueAll(p, 'picker')
   } catch {
-    /* ignore */
+    /* ignore invalid path */
   }
+}
+
+/** Read-only capability roots (picker + discovery), exposed to old consumers. */
+export function approvedReadRootsList(): string[] {
+  return pathCapabilities.rootsFor('read')
 }
 
 function isSystemPythonPath(p: string): boolean {
@@ -216,23 +223,12 @@ export function assertApprovedExecutable(p: string, label: string, instanceRoot?
   if (!p) return
   if (p.includes('\0')) throw new Error(`${label} contains an invalid character`)
   const normalized = normalizeForCompare(p)
-  if (approvedExecutablePaths.has(normalized)) return
+  // 1) Issued by the OS picker / installer / a validated runtime.
+  if (pathCapabilities.covers(p, 'exec')) return
+  // 2) A bare `python`/`py` resolved by the OS, or a well-known system Python.
   if (isSystemPythonPath(p)) return
-  if (instanceRoot) {
-    if (resolveInsideAnyRoot(p, [instanceRoot])) return
-    // AKI / 绘世 layout: `<root>/python/python.exe` sits BESIDE the
-    // `<root>/ComfyUI` directory. Rejecting the parent made the documented
-    // integration layout impossible to save unless the user re-picked the
-    // exact file. Only python-shaped basenames get this exception.
-    if (
-      /^python(3(\.\d+)?)?(\.exe)?$/i.test(basename(p)) &&
-      resolveInsideAnyRoot(p, [dirname(instanceRoot)])
-    ) {
-      return
-    }
-  }
   const lower = normalized.toLowerCase()
-  // Only an interpreter-shaped file inside a venv is implicitly trusted.
+  // 3) Only an interpreter-shaped file inside a venv is implicitly trusted.
   // A directory merely NAMED `venv` must not turn an arbitrary dropped binary
   // into an approved executable.
   if (
@@ -241,6 +237,19 @@ export function assertApprovedExecutable(p: string, label: string, instanceRoot?
     )
   ) {
     return
+  }
+  // 4) Embedded/portable ComfyUI layouts, but ONLY the known interpreter
+  // locations — never `<instance>/anything.exe` (0.2.5 WP10 / S1).
+  if (instanceRoot) {
+    const embedded =
+      /(?:^|\/)(?:python_embeded|python_embedded|python)\/(?:python\.exe|bin\/python(?:3(?:\.\d+)?)?)$/
+    const inInstance = resolveInsideAnyRoot(p, [instanceRoot])
+    if (inInstance && embedded.test(lower)) return
+    // AKI / 绘世: `<root>/python/python.exe` BESIDE `<root>/ComfyUI`.
+    const beside = resolveInsideAnyRoot(p, [dirname(instanceRoot)])
+    if (beside && /(?:^|\/)python\/(?:python\.exe|bin\/python(?:3(?:\.\d+)?)?)$/.test(lower)) {
+      return
+    }
   }
   throw new Error(`${label} must be chosen with the file picker`)
 }
@@ -253,8 +262,7 @@ export function assertApprovedExecutable(p: string, label: string, instanceRoot?
 export function assertApprovedVenvPath(venvPath: string, instanceRoot?: string): void {
   if (!venvPath) return
   if (venvPath.includes('\0')) throw new Error('venvPath contains an invalid character')
-  const normalized = normalizeForCompare(venvPath)
-  if (approvedWriteRoots.has(normalized)) return
+  if (pathCapabilities.covers(venvPath, 'write')) return
   if (isPathInsideInstance(venvPath)) return
   if (instanceRoot && resolveInsideAnyRoot(venvPath, [instanceRoot, dirname(instanceRoot)])) return
   throw new Error('venvPath must be inside the instance or chosen with the picker')
@@ -264,8 +272,8 @@ export function assertApprovedVenvPath(venvPath: string, instanceRoot?: string):
 export function assertApprovedVenvBase(basePath: string): void {
   if (!basePath || basePath.includes('\0')) throw new Error('Invalid venv base path')
   if (!isAbsolute(basePath)) throw new Error('venv base path must be absolute')
+  if (pathCapabilities.covers(basePath, 'write')) return
   const normalized = normalizeForCompare(basePath)
-  if (approvedWriteRoots.has(normalized)) return
   const home = normalizeForCompare(homedir()).toLowerCase()
   const data = normalizeForCompare(userDataDir()).toLowerCase()
   const lower = normalized.toLowerCase()
@@ -282,18 +290,15 @@ export function isPathInsideInstance(p: string): boolean {
   return loadInstanceConfigs().some((c) => c.path && resolveInsideAnyRoot(p, [c.path]))
 }
 
-/** Install roots are directories. Accept a picked folder, the app's default
- * runtime root, or a path under the user's home (the normal ComfyUI location). */
+/**
+ * Install roots are directories chosen through the picker (or the app-owned
+ * userData default). 0.2.5 WP10: a renderer can no longer nominate any path
+ * under the user's home — that was the entry point of the S1 RCE chain.
+ */
 export function assertApprovedInstallRoot(p: string): void {
   if (!p || p.includes('\0')) throw new Error('Invalid install root')
   if (!isAbsolute(p)) throw new Error('Install root must be absolute')
-  const normalized = normalizeForCompare(p)
-  if (approvedWriteRoots.has(normalized)) return
-  const home = normalizeForCompare(homedir()).toLowerCase()
-  const lower = normalized.toLowerCase()
-  if (lower === home || lower.startsWith(`${home}/`)) return
-  const data = normalizeForCompare(userDataDir()).toLowerCase()
-  if (lower === data || lower.startsWith(`${data}/`)) return
+  if (pathCapabilities.covers(p, 'write')) return
   throw new Error('Install root must be chosen with the directory picker')
 }
 
@@ -315,6 +320,36 @@ function allowedReadRoots(): string[] {
   }
   for (const r of loadSettings().modelScanRoots || []) roots.push(r)
   return roots
+}
+
+/**
+ * 0.2.5 WP10 / S2: model scan roots may only be ADDED by the OS picker.
+ * A renderer calling `settings.set({ modelScanRoots: ['/'] })` must be
+ * rejected even though `/` exists and is a directory.
+ */
+export function assertModelScanRootsPatch(roots: unknown): void {
+  if (roots === undefined) return
+  if (!Array.isArray(roots)) throw new Error('modelScanRoots must be an array')
+  const existing = new Set(
+    (loadSettings().modelScanRoots || []).map((r) => normalizeForCompare(r))
+  )
+  for (const raw of roots) {
+    if (typeof raw !== 'string' || !raw.trim()) {
+      throw new Error('modelScanRoots entries must be paths')
+    }
+    if (raw.includes('\0')) throw new Error('modelScanRoots contains an invalid path')
+    const normalized = normalizeForCompare(resolve(raw))
+    // A filesystem root is never a model scan root.
+    if (normalized === '/' || /^[a-z]:\/?$/i.test(normalized)) {
+      throw new Error(`Refusing to add a filesystem root to modelScanRoots: ${raw}`)
+    }
+    if (existing.has(normalized)) continue
+    if (!pathCapabilities.covers(raw, 'read')) {
+      throw new Error(
+        `modelScanRoots can only be added through the directory picker: ${raw}`
+      )
+    }
+  }
 }
 
 /** Settings fields that must be http(s) URLs when set (0.1.17 WP8). */
@@ -352,7 +387,7 @@ export function remoteSummary(remote: RemoteInstanceConfig): RemoteInstanceSumma
 
 export function isSafeReadPath(path: string): boolean {
   return isSafeDataReadPath(path, {
-    approvedRoots: [...approvedReadRoots],
+    approvedRoots: pathCapabilities.rootsFor('read'),
     allowedRoots: allowedReadRoots()
   })
 }
@@ -463,10 +498,26 @@ export async function collectRevealRoots(): Promise<string[]> {
   }
   for (const c of loadInstanceConfigs()) {
     if (!c.path) continue
-    roots.push(c.path, resolveOutputDir(c), resolveEffectiveInstance(c).dirs.workflows)
+    const effective = resolveEffectiveInstance(c)
+    roots.push(
+      c.path,
+      resolveOutputDir(c),
+      effective.dirs.workflows,
+      effective.dirs.customNodes,
+      effective.dirs.manager,
+      effective.dirs.models
+    )
   }
   for (const r of loadSettings().modelScanRoots || []) roots.push(r)
-  return roots
+  // 0.2.5 WP10: a symlinked root authorises its target implicitly; drop it.
+  const { lstatSync } = await import('fs')
+  return roots.filter((r) => {
+    try {
+      return !lstatSync(r).isSymbolicLink()
+    } catch {
+      return false
+    }
+  })
 }
 
 export function broadcast(channel: string, payload: unknown): void {

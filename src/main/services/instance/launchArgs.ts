@@ -140,7 +140,22 @@ export async function exportLaunchScript(
   const { writeFileSync, mkdirSync } = await import('fs')
   const { dirname, join } = await import('path')
 
-  let target: string | undefined = opts?.dir ? join(opts.dir, baseName + ext) : undefined
+  let target: string | undefined
+  if (opts?.dir) {
+    // 0.2.5 WP10: a lexical check cannot see a symlinked directory. Resolve
+    // the real path, refuse a symlink root, and only then join the filename.
+    const { lstatSync, realpathSync } = await import('fs')
+    try {
+      if (lstatSync(opts.dir).isSymbolicLink()) throw new Error('Export directory is a symlink')
+      const realDir = realpathSync(opts.dir)
+      target = join(realDir, baseName + ext)
+    } catch (err) {
+      if (err instanceof Error && err.message === 'Export directory is a symlink') throw err
+      // Missing directory: keep the requested path; the save-dialog fallback
+      // below still applies when no target could be produced.
+      target = join(opts.dir, baseName + ext)
+    }
+  }
   if (!target) {
     const win = await dialog.showSaveDialog({
       title: 'Export launch script',

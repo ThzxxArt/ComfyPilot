@@ -11,8 +11,24 @@ import { fileURLToPath } from 'url'
 import { safeResolveUnder } from './security'
 
 export function isOwnRendererUrl(url: string): boolean {
-  if (process.env.ELECTRON_RENDERER_URL && url.startsWith(process.env.ELECTRON_RENDERER_URL)) {
-    return true
+  const dev = process.env.ELECTRON_RENDERER_URL
+  if (dev) {
+    // 0.2.5 WP10 / S5: prefix matching let `http://localhost:5173.evil` and
+    // `http://localhost:5173@evil` inherit the preload bridge. Compare the
+    // exact origin+pathname, and never accept userinfo.
+    try {
+      const expected = new URL(dev)
+      const actual = new URL(url)
+      if (actual.username || actual.password) return false
+      if (actual.origin !== expected.origin) return false
+      const basePath = expected.pathname.replace(/\/+$/, '') || '/'
+      const actualPath = actual.pathname
+      if (basePath === '/') return true
+      if (actualPath === basePath) return true
+      return actualPath.startsWith(`${basePath}/`)
+    } catch {
+      return false
+    }
   }
   if (!url.startsWith('file:')) return false
   try {

@@ -50,7 +50,8 @@ import {
   assertSafeRelativeFilename,
   isSafeExternalUrl,
   credentialOriginForUrl,
-  proxyCredentialOrigin
+  proxyCredentialOrigin,
+  normalizeForCompare
 } from './security'
 import { encryptSecret } from './secretStorage'
 
@@ -194,6 +195,202 @@ function matchRoot(candidate: string, roots: string[]): string | null {
     if (resolveInsideAnyRoot(candidate, [root])) return root
   }
   return null
+}
+
+const INSTANCE_KEYS = new Set([
+  'id',
+  'name',
+  'path',
+  'pythonPath',
+  'venvPath',
+  'port',
+  'listen',
+  'extraArgs',
+  'argTemplateId',
+  'enabled',
+  'notes',
+  'autoStart',
+  'frontendVersion',
+  'pinned',
+  'launchProfile',
+  'pythonVersion',
+  'migrationState',
+  'migrationError',
+  'updateChannel',
+  'comfyChannel'
+])
+
+const PROFILE_DIRECTORY_KEYS = new Set([
+  'baseDirectory',
+  'userDirectory',
+  'modelsDirectory',
+  'outputDirectory',
+  'inputDirectory',
+  'tempDirectory',
+  'previewsDirectory'
+])
+
+const PROFILE_KEYS = new Set([
+  'vram',
+  'reserveVram',
+  'vramHeadroom',
+  'cache',
+  'cacheLru',
+  'previewMethod',
+  'previewSize',
+  'attention',
+  'disableXformers',
+  'attentionUpcast',
+  'unetPrecision',
+  'vaePrecision',
+  'textEncoderPrecision',
+  'asyncOffload',
+  'fastDisk',
+  'disablePinnedMemory',
+  'mmapTorchFiles',
+  'disableCudaGraphs',
+  'disableSmartMemory',
+  'corsHeader',
+  'maxUploadSize',
+  'multiUser',
+  'offline',
+  'disableAutoLaunch',
+  'verbose',
+  'baseDirectory',
+  'userDirectory',
+  'modelsDirectory',
+  'defaultDevice',
+  'tritonBackend',
+  'disableNvmlPressure',
+  'assets',
+  'assetHashing',
+  'outputDirectory',
+  'inputDirectory',
+  'tempDirectory',
+  'previewsDirectory',
+  'cacheRam',
+  'cudaDevice',
+  'disableDynamicVram',
+  'disableFastDisk',
+  'disableComfyCompiler',
+  'forceNonBlocking'
+])
+
+const PATH_ARG_FLAGS = new Set([
+  '--extra-model-paths-config',
+  '--base-directory',
+  '--user-directory',
+  '--models-directory',
+  '--output-directory',
+  '--input-directory',
+  '--temp-directory',
+  '--previews-directory',
+  '--front-end-root',
+  '--database-url',
+  '--tls-keyfile',
+  '--tls-certfile'
+])
+
+function pathIsUnderRoots(value: string, roots: string[], instancePath: string): boolean {
+  if (/[\0\r\n]/.test(value)) return false
+  if (value.split(/[\\/]+/).includes('..')) return false
+  const abs = /^[a-zA-Z]:[\\/]|^\//.test(value) ? value : join(instancePath, value)
+  return Boolean(resolveInsideAnyRoot(abs, [instancePath, ...roots]))
+}
+
+/**
+ * 0.2.5 WP10 / S4: a backup is untrusted input. Keep only known instance
+ * fields, reject executable paths, strip launch-profile injections and refuse
+ * extraArgs that point outside the instance/picked roots.
+ */
+function sanitizeRestoredInstance(
+  raw: Record<string, unknown>,
+  roots: string[],
+  warnings: string[]
+): Record<string, unknown> | null {
+  const label = String(raw.name || raw.id || '?')
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(raw)) if (INSTANCE_KEYS.has(key)) out[key] = value
+  const path = String(out.path || '')
+  const profile = out.launchProfile
+  if (profile && typeof profile === 'object' && !Array.isArray(profile)) {
+    const cleaned: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(profile as Record<string, unknown>)) {
+      if (!PROFILE_KEYS.has(key)) {
+        warnings.push(`instance ${label}: launchProfile.${key} is not a known field — ignored`)
+        continue
+      }
+      if (PROFILE_DIRECTORY_KEYS.has(key)) {
+        if (typeof value !== 'string' || !pathIsUnderRoots(value, roots, path)) {
+          warnings.push(`instance ${label}: launchProfile.${key} rejected — cleared`)
+          continue
+        }
+      }
+      if (typeof value === 'string' && /[\0\r\n]/.test(value)) {
+        warnings.push(`instance ${label}: launchProfile.${key} contains control characters — cleared`)
+        continue
+      }
+      cleaned[key] = value
+    }
+    out.launchProfile = cleaned
+  } else if (profile !== undefined) {
+    delete out.launchProfile
+  }
+  const pythonPath = String(out.pythonPath || '')
+  if (pythonPath) {
+    const lower = pythonPath.replace(/\\/g, '/').toLowerCase()
+    const pythonShaped = /python(3(?:\.\d+)?)?(?:\.exe)?$/.test(lower)
+    const venvShaped = /\/(?:\.?venv|venv-[^/]+)\/(?:bin\/python(?:3(?:\.\d+)?)?|scripts\/python(?:\.exe)?)$/.test(
+      lower
+    )
+    const embedded = /(?:^|\/)(?:python_embeded|python_embedded|python)\/(?:python\.exe|bin\/python(?:3(?:\.\d+)?)?)$/.test(
+      lower
+    )
+    if (!pythonShaped || (!venvShaped && !embedded)) {
+      out.pythonPath = ''
+      warnings.push(`instance ${label}: pythonPath rejected — cleared`)
+    }
+  }
+  const venvPath = String(out.venvPath || '')
+  if (venvPath) {
+    const beside = resolveInsideAnyRoot(venvPath, [path, dirname(path)])
+    if (!beside || !/venv/i.test(basename(venvPath))) {
+      out.venvPath = ''
+      warnings.push(`instance ${label}: venvPath rejected — cleared`)
+    }
+  }
+  const extra = out.extraArgs
+  if (Array.isArray(extra)) {
+    const cleaned: string[] = []
+    for (let i = 0; i < extra.length; i++) {
+      const token = String(extra[i] ?? '')
+      if (/[\0\r\n]/.test(token)) {
+        warnings.push(`instance ${label}: extraArgs control character dropped`)
+        continue
+      }
+      const eq = token.indexOf('=')
+      const flag = eq > 2 ? token.slice(0, eq) : token
+      if (PATH_ARG_FLAGS.has(flag)) {
+        let value = eq > 2 ? token.slice(eq + 1) : undefined
+        if (value === undefined) {
+          const next = extra[i + 1]
+          if (next && !String(next).startsWith('--')) value = String(next)
+        }
+        if (value && !pathIsUnderRoots(value, roots, path)) {
+          warnings.push(`instance ${label}: extraArgs ${flag} rejected`)
+          continue
+        }
+      }
+      cleaned.push(token)
+    }
+    out.extraArgs = cleaned
+  } else if (extra !== undefined) {
+    out.extraArgs = []
+  }
+  if (out.updateChannel !== undefined && !['stable', 'nightly'].includes(String(out.updateChannel))) {
+    delete out.updateChannel
+  }
+  return out
 }
 
 /** Keys a restored settings object would actually change. */
@@ -423,6 +620,8 @@ function applyRestoreSnapshot(snap: RestoreSnapshot): void {
 export class BackupService {
   /** Guards journal/pre-restore recursion during startup recovery. */
   private recovering = false
+  /** 0.2.5 WP10: one restore mutex. */
+  private restoring = false
 
   list(): BackupManifest[] {
     return listBackups()
@@ -546,6 +745,18 @@ export class BackupService {
   }
 
   restore(id: string, opts?: { sections?: BackupRestoreSection[] }): BackupRestoreResult {
+    // 0.2.5 WP10: one restore at a time. Two concurrent restores used to
+    // snapshot each other's half-applied state.
+    if (this.restoring) throw new Error('A backup restore is already in progress')
+    this.restoring = true
+    try {
+      return this.restoreInner(id, opts)
+    } finally {
+      this.restoring = false
+    }
+  }
+
+  private restoreInner(id: string, opts?: { sections?: BackupRestoreSection[] }): BackupRestoreResult {
     const plan = this.buildPlan(id)
     if (plan.parseErrors.length) {
       throw new Error(`Backup restore aborted, nothing applied — ${plan.parseErrors.join('; ')}`)
@@ -583,7 +794,10 @@ export class BackupService {
       if (sections.has('settings') && plan.settings) {
         const current = loadSettings()
         const currentProxy = current.proxy || ({} as AppSettings['proxy'])
-        const incomingProxy = plan.settings.proxy || currentProxy
+        const incomingProxy =
+          plan.settings.proxy && typeof plan.settings.proxy === 'object'
+            ? plan.settings.proxy
+            : currentProxy
         const nextSettings: AppSettings = { ...plan.settings }
         // 0.2.0: keep this machine's proxy password only when the restored
         // settings point at the SAME endpoint. Importing/restoring a profile
@@ -785,6 +999,24 @@ export class BackupService {
       } catch (e) {
         parseErrors.push(`settings.json: ${e instanceof Error ? e.message : String(e)}`)
       }
+      // 0.2.5 WP10 / S2: a backup cannot grant a filesystem-wide scan root.
+      const scanRoots = (settings as unknown as Record<string, unknown>).modelScanRoots
+      if (Array.isArray(scanRoots)) {
+        const kept = scanRoots.filter((r) => {
+          if (typeof r !== 'string' || !r.trim()) return false
+          const normalized = normalizeForCompare(r)
+          if (normalized === '/' || /^[a-z]:\/?$/i.test(normalized)) return false
+          try {
+            return statSync(r).isDirectory()
+          } catch {
+            return false
+          }
+        })
+        if (kept.length !== scanRoots.length) {
+          warnings.push('settings.json: modelScanRoots entries outside this machine were dropped')
+        }
+        ;(settings as unknown as Record<string, unknown>).modelScanRoots = kept
+      }
     }
 
     const listEntries: Array<[string, BackupRestoreSection]> = [
@@ -842,9 +1074,39 @@ export class BackupService {
           continue
         }
       }
-      keptInstances.push(inst)
+      const sanitized = sanitizeRestoredInstance(inst, roots, warnings)
+      if (sanitized) keptInstances.push(sanitized)
     }
     if (lists.instances) lists.instances = keptInstances
+    // Node-pack and snapshot paths are write/target paths too. Drop invalid
+    // records instead of letting a backup point the updater at an arbitrary dir.
+    if (lists.nodePacks) {
+      const kept = (lists.nodePacks as Array<Record<string, unknown>>).filter((p) => {
+        const packPath = String(p.path || '')
+        if (!packPath) return true
+        if (matchRoot(packPath, roots)) return true
+        warnings.push(`node pack ${String(p.name || p.id || '?')}: path outside roots — skipped`)
+        return false
+      })
+      lists.nodePacks = kept
+    }
+    if (lists.snapshots) {
+      const kept = (lists.snapshots as Array<Record<string, unknown>>).map((snap) => {
+        const packs = Array.isArray(snap.packs) ? (snap.packs as Array<Record<string, unknown>>) : []
+        return {
+          ...snap,
+          packs: packs.filter((p) => {
+            const packPath = String(p.path || '')
+            if (!packPath || matchRoot(packPath, roots)) return true
+            warnings.push(
+              `snapshot ${String(snap.name || snap.id || '?')}: pack path outside roots — skipped`
+            )
+            return false
+          })
+        }
+      })
+      lists.snapshots = kept
+    }
     // Remote records carry Bearer keys and internal URLs. Validate the URL and
     // never overwrite a key this machine cannot decrypt (keychain moved).
     if (lists.remotes) {

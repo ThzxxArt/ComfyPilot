@@ -378,6 +378,48 @@ describe('IPC domains', () => {
     expect((await call(x.launchArgCatalog)).ok).toBe(true)
   })
 
+  it('instances: rejects unpicked paths, injected launchProfile and non-LAN listen', async () => {
+    const { createInstanceHandlers } = await import('../../src/main/ipc/domains/instances')
+    const x = createInstanceHandlers(ctx)
+    const arbitrary = join(h.root, 'arbitrary')
+    mkdirSync(arbitrary, { recursive: true })
+    writeFileSync(join(arbitrary, 'main.py'), 'x')
+    mkdirSync(join(arbitrary, 'comfy'), { recursive: true })
+    const base = {
+      id: 'i1',
+      name: 'Test',
+      path: services.instance.path,
+      pythonPath: '',
+      venvPath: '',
+      port: 8188,
+      listen: '127.0.0.1',
+      extraArgs: [],
+      argTemplateId: 'default'
+    }
+    const unpicked = await call(x.save, { ...base, path: arbitrary } as never)
+    expect(unpicked.ok).toBe(false)
+    expect(unpicked.error).toMatch(/picker|discovery|known ComfyUI/i)
+
+    const injected = await call(x.save, {
+      ...base,
+      launchProfile: { outputDirectory: '/etc' }
+    } as never)
+    expect(injected.ok).toBe(false)
+    expect(injected.error).toMatch(/outside the instance/i)
+
+    const publicListen = await call(x.save, { ...base, listen: '8.8.8.8' } as never)
+    expect(publicListen.ok).toBe(false)
+    expect(publicListen.error).toMatch(/listen/i)
+
+    writeFileSync(join(services.instance.path, 'python.exe'), 'MZ')
+    const evilPython = await call(x.save, {
+      ...base,
+      pythonPath: join(services.instance.path, 'python.exe')
+    } as never)
+    expect(evilPython.ok).toBe(false)
+    expect(evilPython.error).toMatch(/picker/i)
+  })
+
   it('models: list/scan gate/reconcile/storage', async () => {
     const { createModelHandlers } = await import('../../src/main/ipc/domains/models')
     const x = createModelHandlers()

@@ -6,7 +6,7 @@ import {
   realpathUnderAnyRoot
 } from '../../services/security'
 import {
-  approvedReadRoots,
+  approvedReadRootsList,
   approveReadPath,
   closeEmbed,
   collectRevealRoots,
@@ -51,7 +51,7 @@ export function createShellHandlers(ctx: IpcContext) {
         throw new Error('Blocked opening executable/script file')
       }
       // Opening a file hands it to the OS. Restrict to app-owned/picked roots.
-      const roots = [...(await collectRevealRoots()), ...approvedReadRoots]
+      const roots = [...(await collectRevealRoots()), ...approvedReadRootsList()]
       const real = realpathUnderAnyRoot(path, roots)
       if (!real) throw new Error('Blocked opening path outside allowed areas')
       const result = await shell.openPath(real)

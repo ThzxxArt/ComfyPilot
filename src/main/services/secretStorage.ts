@@ -20,7 +20,15 @@ export function secretStorageBackend(): 'os-keychain' | 'plaintext' | 'unavailab
   try {
     if (!safeStorage) return 'unavailable'
     if (typeof safeStorage.isEncryptionAvailable !== 'function') return 'plaintext'
-    return safeStorage.isEncryptionAvailable() ? 'os-keychain' : 'plaintext'
+    if (!safeStorage.isEncryptionAvailable()) return 'plaintext'
+    // 0.2.5 WP10: on Linux, Electron reports encryption as "available" while
+    // using the deterministic `basic_text` backend. Calling that a keychain
+    // was a lie; treat it as plaintext and show the warning.
+    if (process.platform === 'linux' && typeof safeStorage.getSelectedStorageBackend === 'function') {
+      const backend = String(safeStorage.getSelectedStorageBackend() || '')
+      if (backend === 'basic_text' || backend === 'unknown') return 'plaintext'
+    }
+    return 'os-keychain'
   } catch {
     return 'unavailable'
   }

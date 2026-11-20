@@ -48,9 +48,11 @@ import {
   resolveInsideAnyRoot,
   assertSafeRelativeFilename,
   isSafeExternalUrl,
-  isPathInside
+  isPathInside,
+  realpathUnderAnyRoot
 } from './security'
 import { normalizeForCompare } from './security'
+import { pathCapabilities } from './pathCapability'
 import { LruCache } from './lru'
 
 const MODEL_EXT = new Set(['.safetensors', '.ckpt', '.pt', '.pth', '.bin', '.gguf', '.onnx'])
@@ -413,14 +415,23 @@ export class ModelService extends EventEmitter {
     const instanceModels = loadInstanceConfigsSafe()
       .map((c) => (c.path ? resolveEffectiveInstance(c).dirs.models : ''))
       .filter(Boolean) as string[]
-    return [join(homedir(), 'Downloads'), ...settings.modelScanRoots, ...instanceModels].filter(
-      Boolean
-    ) as string[]
+    return [
+      // App-owned default download folder — NOT all of ~/Downloads.
+      join(homedir(), 'Downloads', 'ComfyPilot'),
+      ...settings.modelScanRoots,
+      ...instanceModels,
+      ...pathCapabilities.rootsFor('write')
+    ].filter(Boolean) as string[]
   }
 
   private assertSafeDestDir(destDir: string): string {
-    const safe = resolveInsideAnyRoot(destDir, this.allowedDestRoots())
+    const roots = this.allowedDestRoots()
+    const safe = resolveInsideAnyRoot(destDir, roots)
     if (!safe) throw new Error(`Blocked destination outside allowed model roots: ${destDir}`)
+    // An existing directory may be a symlink that points outside every root.
+    if (existsSync(safe) && !realpathUnderAnyRoot(safe, roots)) {
+      throw new Error(`Blocked symlinked model destination: ${destDir}`)
+    }
     return safe
   }
 
@@ -702,7 +713,8 @@ export class ModelService extends EventEmitter {
     if (!rec) throw new Error('Model not found')
     const safeDest = this.assertSafeDestDir(destDir)
     mkdirSync(safeDest, { recursive: true })
-    const destPath = join(safeDest, rec.fileName)
+    // 0.2.5 WP10: never trust a DB `fileName` for a write target.
+    const destPath = join(safeDest, assertSafeRelativeFilename(rec.fileName))
     if (existsSync(destPath) && destPath !== rec.path) {
       throw new Error(`Target already exists: ${destPath}`)
     }
@@ -736,7 +748,7 @@ export class ModelService extends EventEmitter {
     if (!rec) throw new Error('Model not found')
     const safeDest = this.assertSafeDestDir(destDir)
     mkdirSync(safeDest, { recursive: true })
-    const destPath = join(safeDest, rec.fileName)
+    const destPath = join(safeDest, assertSafeRelativeFilename(rec.fileName))
     if (existsSync(destPath)) throw new Error(`Target already exists: ${destPath}`)
     symlinkSync(rec.path, destPath, 'file')
     const next: ModelRecord = {
@@ -825,6 +837,8 @@ export class ModelService extends EventEmitter {
     destDir?: string
     fileName?: string
     expectedSha256?: string
+    /** Explicit overwrite confirmation; without it an existing target is refused. */
+    overwrite?: boolean
   }): Promise<DownloadTask> {
     // Protocol allowlist — blocks file:// ftp:// magnet: etc (aria2 supports those)
     if (!isSafeExternalUrl(opts.url)) {
@@ -865,8 +879,22 @@ export class ModelService extends EventEmitter {
       }
     }
 
-    const rawName = opts.fileName || basename(new URL(url).pathname) || `download-${Date.now()}`
+    let rawName = opts.fileName || basename(new URL(url).pathname) || `download-${Date.now()}`
+    // Civitai's download endpoint has no filename in the path. The safe
+    // fallback is derived from the model-version id; WP9 upgrades this to
+    // Content-Disposition/API names when the response is available.
+    if (!extname(rawName) && /civitai\.com\/api\/download\/models\/\d+/i.test(url)) {
+      const versionId = url.match(/\/models\/(\d+)/)?.[1] || Date.now()
+      rawName = `civitai-model-${versionId}.safetensors`
+    }
     const fileName = assertSafeRelativeFilename(rawName)
+    // 0.2.5 WP10 / S1+S2: a model download may only create model files.
+    // Executables/scripts (`.py`, `.exe`, `.bat`, `.sh`, `.desktop`, `.bashrc`)
+    // and extensionless payloads are refused.
+    const modelExt = extname(fileName).toLowerCase()
+    if (!MODEL_EXT.has(modelExt)) {
+      throw new Error(`Blocked non-model download extension: ${modelExt || '(none)'}`)
+    }
     const destPath = join(destDir, fileName)
     const id = createHash('sha1')
       .update(url + destPath)

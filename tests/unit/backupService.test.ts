@@ -25,7 +25,8 @@ const h = vi.hoisted(() => {
     remotes: [] as Array<Record<string, unknown>>,
     failNextReplace: '',
     failReplaceTimes: 0,
-    failNextInsert: false
+    failNextInsert: false,
+    onSaveSettings: null as null | (() => void)
   }
   return { state }
 })
@@ -79,6 +80,7 @@ vi.mock('../../src/main/services/db', () => ({
   loadSettings: () => h.state.settings,
   saveSettings: (s: unknown) => {
     h.state.savedSettings = s
+    h.state.onSaveSettings?.()
     return s
   },
   loadInstanceConfigs: () => h.state.instances,
@@ -592,5 +594,70 @@ describe('restore() path containment (0.1.18 P0)', () => {
     seedBackup('b-bad-model', { modelPath: join(tmpdir(), 'elsewhere', 'm.safetensors') })
     const svc = await freshBackup()
     expect(() => svc.restore('b-bad-model')).toThrow(/model/)
+  })
+
+  it('sanitizes injected pythonPath / launchProfile / extraArgs from a backup', async () => {
+    const dir = seedBackup('b-inject', { instancePath: h.state.root })
+    writeFileSync(
+      join(dir, 'instances.json'),
+      JSON.stringify([
+        {
+          id: 'ev',
+          name: 'evil',
+          path: h.state.root,
+          pythonPath: join(tmpdir(), 'payload.exe'),
+          venvPath: '/etc',
+          launchProfile: {
+            outputDirectory: '/etc',
+            baseDirectory: 'ok',
+            unknownKey: 'x'
+          },
+          extraArgs: ['--output-directory=/etc', '--listen', '0.0.0.0']
+        }
+      ])
+    )
+    const svc = await freshBackup()
+    const result = svc.restore('b-inject')
+    expect(result.ok).toBe(true)
+    expect(result.warnings.join(' ')).toMatch(/pythonPath rejected|outputDirectory rejected|extraArgs/)
+    const rows = JSON.parse(readFileSync(join(h.state.root, 'instances.jsonc'), 'utf-8')) as Array<
+      Record<string, unknown>
+    >
+    expect(rows[0].pythonPath).toBe('')
+    expect(rows[0].venvPath).toBe('')
+    expect(rows[0].launchProfile).toEqual({ baseDirectory: 'ok' })
+    expect(rows[0].extraArgs).toEqual(['--listen', '0.0.0.0'])
+  })
+
+  it('strips proxy.password from a restored settings file', async () => {
+    const dir = join(h.state.root, 'backups', 'b-proxy')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      join(dir, 'settings.json'),
+      JSON.stringify({
+        locale: 'en-US',
+        proxy: { enabled: true, protocol: 'http', host: 'bad.example', port: 8080, password: 'pwn' }
+      })
+    )
+    const svc = await freshBackup()
+    const result = svc.restore('b-proxy')
+    expect(result.ok).toBe(true)
+    expect((h.state.savedSettings as any).proxy.password).toBe('')
+  })
+
+  it('rejects a concurrent restore (mutex)', async () => {
+    seedBackup('b-mutex', {})
+    const svc = await freshBackup()
+    let nestedError: Error | null = null
+    h.state.onSaveSettings = () => {
+      h.state.onSaveSettings = null
+      try {
+        svc.restore('b-mutex')
+      } catch (e) {
+        nestedError = e as Error
+      }
+    }
+    svc.restore('b-mutex')
+    expect(nestedError?.message).toMatch(/already in progress/i)
   })
 })
