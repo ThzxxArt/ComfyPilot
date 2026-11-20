@@ -540,8 +540,8 @@ describe('managerChannelList field fallbacks', () => {
       throw new Error('net down')
     })
     expect(await nodePackService.managerChannelList()).toEqual([])
-    // should have attempted only the first endpoint then broken out
-    expect(fetchMock.mock.calls.length).toBe(1)
+    // 0.2.5 WP4: offline never touches the network.
+    expect(fetchMock.mock.calls.length).toBe(0)
     h.state.settings.networkMode = 'public'
     fetchMock.mockImplementation(async () => new Response('[]', { status: 200 }))
   })

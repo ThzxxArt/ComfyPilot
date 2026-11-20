@@ -77,7 +77,7 @@ async function chooseChannel(
 ): Promise<TorchChannel> {
   try {
     const probe = await envService.probe({ pythonPath: oldPython, venvPath })
-    if (probe.rocmVersion) return 'rocm'
+    if (probe.rocmVersion) return process.platform === 'win32' ? 'rocm10.0' : 'rocm7.2'
     if (probe.mpsAvailable) return 'mps'
     if (probe.npuAvailable) return 'xpu'
     if (probe.cudaVersion) {

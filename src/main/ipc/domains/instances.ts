@@ -253,6 +253,27 @@ export function createInstanceHandlers(ctx: IpcContext) {
       const { exportRescueScript } = await import('../../control')
       return exportRescueScript(sanitizeId(id))
     }),
+    managerInfo: wrap(async (id: string) => {
+      const { managerInfoForId } = await import('../../services/manager')
+      return managerInfoForId(sanitizeId(id))
+    }),
+    setManagerSecurity: wrap(async (id: string, level: import('@shared/types').ManagerSecurityLevel) => {
+      const safeId = sanitizeId(id)
+      const { setManagerSecurityLevel } = await import('../../services/manager')
+      const cfg = loadInstanceConfigs().find((c) => c.id === safeId)
+      if (!cfg) throw new Error(`Instance not found: ${safeId}`)
+      return setManagerSecurityLevel(cfg, level)
+    }),
+    openManagerConfig: wrap(async (id: string) => {
+      const safeId = sanitizeId(id)
+      const { managerInfoForId } = await import('../../services/manager')
+      const info = await managerInfoForId(safeId)
+      if (!info.configPath || !existsSync(info.configPath)) {
+        throw new Error('Manager config.ini does not exist yet')
+      }
+      shell.showItemInFolder(info.configPath)
+      return { path: info.configPath }
+    }),
     remove: wrap((id: string) => instanceService.remove(sanitizeId(id))),
     launch: wrap(async (id: string, opts?: LaunchOptions) => {
       const safeId = sanitizeId(id)

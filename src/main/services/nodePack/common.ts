@@ -16,7 +16,6 @@ import { resolveInstancePythonPath, resolveRuntimesPythonSync } from '../instanc
 import { findInRuntimes } from '../bootstrap'
 import { resolveReadTarget } from '../target'
 import { loadInstanceConfigs } from '../db'
-import { normalizeForCompare } from '../security'
 
 export const execFileAsync = promisify(execFile)
 
@@ -341,8 +340,9 @@ export function detectCustomNodesRoot(instanceIdOrPath?: string): string {
 
 /** Effective custom_nodes for a bare path (no matching config) — argv unknown. */
 function effectiveCustomNodesForPath(instancePath: string): string {
+  const wanted = instancePath.replace(/\\/g, '/').toLowerCase()
   const config = loadInstanceConfigs().find(
-    (c) => normalizeForCompare(c.path) === normalizeForCompare(instancePath)
+    (c) => String(c.path || '').replace(/\\/g, '/').toLowerCase() === wanted
   )
   if (config) return resolveEffectiveInstance(config).dirs.customNodes
   return join(instancePath, 'custom_nodes')

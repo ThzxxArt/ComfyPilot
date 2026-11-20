@@ -32,9 +32,9 @@ function typeArgCat(node: ts.TypeNode | undefined): ArgCat {
       return typeArgCat((node as ts.OptionalTypeNode | ts.ParenthesizedTypeNode).type)
     case ts.SyntaxKind.TypeReference: {
       // RuntimeKind is the only string-valued alias used in an IPC tuple.
-      return (node as ts.TypeReferenceNode).typeName.getText() === 'RuntimeKind'
-        ? 'string'
-        : 'object'
+      const name = (node as ts.TypeReferenceNode).typeName.getText()
+      if (name === 'ManagerSecurityLevel') return 'union'
+      return name === 'RuntimeKind' ? 'string' : 'object'
     }
     default:
       return 'object'

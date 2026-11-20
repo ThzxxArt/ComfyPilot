@@ -1852,9 +1852,9 @@ describe('managerChannelList field fallbacks', () => {
     const full = out.find((p) => p.id === 'full')!
     expect(full.tags).toEqual([])
     expect(full.downloads).toBe(0)
-    // both name and title missing → empty-string fallback
+    // both name and title missing → the id is the readable fallback
     const bare = out.find((p) => p.id === 'bare')!
-    expect(bare.name).toBe('')
-    expect(bare.displayName).toBe('')
+    expect(bare.name).toBe('bare')
+    expect(bare.displayName).toBe('bare')
   })
 })

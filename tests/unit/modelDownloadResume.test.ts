@@ -14,6 +14,7 @@ import { tmpdir } from 'os'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 const h = vi.hoisted(() => ({
+  roots: [] as string[],
   downloads: [] as any[],
   fetchCalls: [] as Array<{ url: string; headers: Record<string, string> }>,
   handler: null as null | ((url: string, headers: Record<string, string>) => Response),
@@ -64,7 +65,7 @@ vi.mock('../../src/main/services/db', () => ({
     useAria2: false,
     hfEndpoint: '',
     civitaiEndpoint: '',
-    modelScanRoots: [],
+    modelScanRoots: h.roots,
     githubEndpoint: ''
   }),
   loadInstanceConfigs: () => [],
@@ -125,6 +126,7 @@ describe('ModelService resume integrity (0.1.18 P0-2)', () => {
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'cp-resume-'))
     dest = join(root, 'x.bin')
+    h.roots = [root]
     h.downloads = []
     h.fetchCalls = []
     h.handler = null
@@ -280,6 +282,113 @@ describe('ModelService resume integrity (0.1.18 P0-2)', () => {
     // Cleanup: cancel the hanging first task so the process can exit.
     svc.cancelDownload('t1')
     await running
-    expect(existsSync(dest)).toBe(true)
+    // 0.2.5 WP9: the adopted partial is cleaned up on cancel and never left
+    // behind as a final-looking model file.
+    expect(existsSync(dest)).toBe(false)
+    expect(existsSync(`${dest}.part`)).toBe(false)
+  })
+})
+
+describe('Civitai download naming (0.2.5 WP9)', () => {
+  let root = ''
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'cp-civitai-'))
+    h.roots = [root]
+    h.downloads = []
+    h.fetchCalls = []
+    h.handler = null
+  })
+
+  afterEach(() => rmSync(root, { recursive: true, force: true }))
+
+  it('parses RFC 6266 filename and filename*', async () => {
+    const { filenameFromContentDisposition } = await import('../../src/main/services/model')
+    expect(filenameFromContentDisposition('attachment; filename="model.safetensors"')).toBe(
+      'model.safetensors'
+    )
+    expect(
+      filenameFromContentDisposition("attachment; filename*=UTF-8''civitai%20model.safetensors")
+    ).toBe('civitai model.safetensors')
+    expect(filenameFromContentDisposition('inline')).toBeUndefined()
+  })
+
+  it('uses Content-Disposition, writes a safe extension, then renames .part', async () => {
+    h.handler = (url) => {
+      if (url === 'https://civitai.com/api/download/models/123') {
+        return streamResponse(Buffer.from('MODEL'), {
+          status: 200,
+          headers: {
+            'content-length': '5',
+            'content-disposition': 'attachment; filename="from-header.safetensors"'
+          }
+        })
+      }
+      if (url.includes('/api/v1/model-versions/123')) {
+        return new Response(
+          JSON.stringify({
+            name: 'v1',
+            baseModel: 'SDXL',
+            trainedWords: ['trigger'],
+            files: [{ name: 'from-api.safetensors', primary: true }],
+            model: { id: 9, name: 'M' },
+            images: [{ url: 'https://img/x.png' }]
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+      }
+      if (url.endsWith('.sha256')) return new Response('nope', { status: 404 })
+      if (url.includes('from-header.safetensors')) {
+        return streamResponse(Buffer.from('MODEL'), {
+          status: 200,
+          headers: { 'content-length': '5' }
+        })
+      }
+      return new Response('missing', { status: 404 })
+    }
+    const svc = await makeService()
+    const task = await svc.download({
+      url: 'https://civitai.com/api/download/models/123',
+      destDir: root
+    })
+    expect(task.fileName).toBe('from-header.safetensors')
+    const deadline = Date.now() + 4000
+    while (h.downloads[0]?.status !== 'done' && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20))
+    }
+    expect(h.downloads[0]?.status).toBe('done')
+    expect(existsSync(join(root, 'from-header.safetensors'))).toBe(true)
+    expect(existsSync(join(root, 'from-header.safetensors.part'))).toBe(false)
+  })
+
+  it('falls back to the API file name when HEAD has no Content-Disposition', async () => {
+    h.handler = (url) => {
+      if (url === 'https://civitai.com/api/download/models/456') {
+        return new Response(null, { status: 200 })
+      }
+      if (url.includes('/api/v1/model-versions/456')) {
+        return new Response(
+          JSON.stringify({
+            files: [{ name: 'api-name.safetensors', primary: true }],
+            trainedWords: ['x'],
+            model: { id: 1, name: 'M' }
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+      }
+      if (url.endsWith('.sha256')) return new Response('nope', { status: 404 })
+      return streamResponse(Buffer.from('MODEL'), {
+        status: 200,
+        headers: { 'content-length': '5' }
+      })
+    }
+    const svc = await makeService()
+    const task = await svc.download({
+      url: 'https://civitai.com/api/download/models/456',
+      destDir: root
+    })
+    expect(task.fileName).toBe('api-name.safetensors')
+    svc.cancelDownload(task.id)
+    await new Promise((r) => setTimeout(r, 50))
   })
 })

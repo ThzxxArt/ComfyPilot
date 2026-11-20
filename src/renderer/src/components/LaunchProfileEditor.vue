@@ -286,6 +286,9 @@ function errorText(e: { code: string; flag?: string }): string {
         >
           <NInputNumber v-model:value="profile.cacheLru" :min="1" :max="100000" clearable />
         </NFormItem>
+        <NFormItem :label="t('launchArgs.fCacheRam')" class="pe-field">
+          <NInputNumber v-model:value="profile.cacheRam" :min="0" :max="4096" clearable />
+        </NFormItem>
       </div>
     </section>
 
@@ -337,6 +340,18 @@ function errorText(e: { code: string; flag?: string }): string {
         <NFormItem :label="t('launchArgs.fNvmlPressure')" class="pe-field">
           <NSwitch v-model:value="profile.disableNvmlPressure" />
         </NFormItem>
+        <NFormItem :label="t('launchArgs.fDisableDynamicVram')" class="pe-field">
+          <NSwitch v-model:value="profile.disableDynamicVram" />
+        </NFormItem>
+        <NFormItem :label="t('launchArgs.fDisableFastDisk')" class="pe-field">
+          <NSwitch v-model:value="profile.disableFastDisk" />
+        </NFormItem>
+        <NFormItem :label="t('launchArgs.fDisableComfyCompiler')" class="pe-field">
+          <NSwitch v-model:value="profile.disableComfyCompiler" />
+        </NFormItem>
+        <NFormItem :label="t('launchArgs.fForceNonBlocking')" class="pe-field">
+          <NSwitch v-model:value="profile.forceNonBlocking" />
+        </NFormItem>
       </div>
     </section>
 
@@ -366,6 +381,9 @@ function errorText(e: { code: string; flag?: string }): string {
         </NFormItem>
         <NFormItem :label="t('launchArgs.fDefaultDevice')" class="pe-field">
           <NInputNumber v-model:value="profile.defaultDevice" :min="0" :max="31" clearable />
+        </NFormItem>
+        <NFormItem :label="t('launchArgs.fCudaDevice')" class="pe-field">
+          <NInput v-model:value="profile.cudaDevice" placeholder="all / 0,1" clearable />
         </NFormItem>
       </div>
       <div class="pe-row">

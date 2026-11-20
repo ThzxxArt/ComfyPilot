@@ -186,6 +186,8 @@ export interface AppSettings {
   autoRecover?: boolean
   autoRecoverCooldownMs?: number
   autoRecoverMaxAttempts?: number
+  /** 0.2.5 WP9: batch wait deadline (60s–24h), default 30 minutes. */
+  batchDeadlineMs?: number
 }
 
 // ---------- Notifications ----------

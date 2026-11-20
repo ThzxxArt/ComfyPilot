@@ -479,12 +479,19 @@ export class WorkflowService {
         if (opts?.includeMissing !== false) out.push(missingRec)
         continue
       }
-      // File exists but outside scan roots (user-imported external path) — keep visible.
-      const recovered = this.buildRecord(prev.path, prev.origin || 'external', {
-        ...prev
-      })
-      missingMerges.push(recovered)
-      out.push(recovered)
+      // File exists but outside scan roots (user-imported external path) — keep
+      // visible. It can vanish between existsSync and statSync (TOCTOU); one
+      // missing file must not fail the whole workflow page (0.2.5 WP9).
+      try {
+        const recovered = this.buildRecord(prev.path, prev.origin || 'external', {
+          ...prev
+        })
+        missingMerges.push(recovered)
+        out.push(recovered)
+      } catch {
+        missingMerges.push({ ...prev, missing: true })
+        if (opts?.includeMissing !== false) out.push({ ...prev, missing: true })
+      }
     }
     upsertWorkflows(missingMerges)
 

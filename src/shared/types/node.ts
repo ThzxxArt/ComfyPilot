@@ -64,6 +64,9 @@ export interface RegistryNodePack {
   score: number
   icon?: string
   status?: 'active' | 'flagged' | 'banned'
+  /** Manager channel v4 `files` / `install_type` (0.2.5 WP4). */
+  files?: string[]
+  installType?: string
 }
 
 export interface NodeSnapshot {

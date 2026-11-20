@@ -52,6 +52,12 @@ export class OutputService {
    * scan of the whole index (the old `listOutputAssetsAll().find(...)`).
    */
   private readonly prevMap = new LruCache<string, OutputAsset>(50_000)
+  /** 0.2.5 WP9: PNGs with no metadata are not re-read until mtime/size changes. */
+  private readonly pngNoMeta = new LruCache<string, true>(10_000)
+
+  private pngKey(full: string, st: Stats): string {
+    return `${full}:${Math.floor(st.mtimeMs)}:${st.size}`
+  }
 
   private refreshPrevMap(): void {
     for (const a of listOutputAssetsAll()) this.prevMap.set(a.path, a)
@@ -288,6 +294,18 @@ export class OutputService {
     // index, and the next scan fills the rest.
     mergeUpsertOutputAssets(assets)
     for (const a of assets) this.prevMap.set(a.path, a)
+    // 0.2.5 WP9: prune ghosts here too — scanAsync is the production path, so
+    // the old sync-only cleanup never ran.
+    if (!cancelled) {
+      try {
+        for (const a of listOutputAssetsAll()) {
+          if (!a.path || !roots.some((r) => r && isPathInside(a.path, r))) continue
+          if (!existsSync(a.path)) deleteOutputAsset(a.id)
+        }
+      } catch {
+        /* pruning is best-effort */
+      }
+    }
     onProgress?.({ scanned: assets.length, total: assets.length, done: true, cancelled })
     return { scanned: assets.length, cancelled }
   }
@@ -328,9 +346,10 @@ export class OutputService {
       // Still unlinked? A fingerprint match may exist — outputs produced by
       // direct ComfyUI-frontend runs never had a sidecar (0.1.11). Read the
       // PNG head once, backfill, and persist a sidecar for cheap rescans.
-      if (!workflowId && type === 'image' && ext === '.png') {
+      if (!workflowId && type === 'image' && ext === '.png' && !this.pngNoMeta.get(this.pngKey(full, st))) {
         try {
           const meta = readPngTextMetaFromFile(full)
+          if (!Object.keys(meta).length) this.pngNoMeta.set(this.pngKey(full, st), true)
           const raw = String(meta.prompt || meta.workflow || '')
           const graph = raw ? (JSON.parse(raw) as Record<string, unknown>) : null
           const hit = graph ? lookupWorkflowByFingerprint(graph)[0] : undefined
@@ -366,9 +385,10 @@ export class OutputService {
     let promptId: string | undefined
     /** Embedded graph (prompt or workflow form) for fingerprint matching. */
     let embeddedGraph: Record<string, unknown> | null = null
-    if (type === 'image' && ext === '.png') {
+    if (type === 'image' && ext === '.png' && !this.pngNoMeta.get(this.pngKey(full, st))) {
       try {
         const meta = readPngTextMetaFromFile(full)
+        if (!Object.keys(meta).length) this.pngNoMeta.set(this.pngKey(full, st), true)
         if (meta.prompt) {
           try {
             const prompt = JSON.parse(String(meta.prompt)) as Record<
@@ -402,7 +422,7 @@ export class OutputService {
           prompt: undefined
         }
       } catch {
-        /* ignore */
+        this.pngNoMeta.set(this.pngKey(full, st), true)
       }
     }
 

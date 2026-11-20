@@ -61,7 +61,9 @@ const EXEC_OPTS = {
 const TORCH_INDEX: Record<TorchChannel, string> = {
   cu130: 'https://download.pytorch.org/whl/cu130/',
   cu126: 'https://download.pytorch.org/whl/cu126/',
-  rocm: 'https://download.pytorch.org/whl/rocm6.2/',
+  rocm: 'https://download.pytorch.org/whl/rocm7.2/',
+  'rocm7.2': 'https://download.pytorch.org/whl/rocm7.2/',
+  'rocm10.0': 'https://download.pytorch.org/whl/rocm10.0/',
   xpu: 'https://download.pytorch.org/whl/xpu/',
   mps: 'https://download.pytorch.org/whl/cpu/',
   cpu: 'https://download.pytorch.org/whl/cpu/'
@@ -186,6 +188,10 @@ function normalizeTorchChannel(channel: TorchChannel | string): TorchChannel {
   // 0.2.0 removed cu124 (no cp313 torch >= 2.7). Old configs/plans map to
   // cu126 rather than silently falling back to CPU.
   if (channel === 'cu124') return 'cu126'
+  // 0.2.5 WP6: keep the legacy `rocm` alias, but a Windows AMD host should use
+  // the official ROCm 10.0 multi-arch wheels instead of falling back to CPU.
+  if (channel === 'rocm' && process.platform === 'win32') return 'rocm10.0'
+  if (channel === 'rocm' && process.platform === 'linux') return 'rocm7.2'
   return (channel in TORCH_INDEX ? channel : 'cpu') as TorchChannel
 }
 
@@ -222,6 +228,18 @@ export function expectedCudaForChannel(channel: TorchChannel): string | null {
     default:
       return null
   }
+}
+
+/** Channels that are not CPU builds and must prove their accelerator exists. */
+export function expectedAcceleratorForChannel(
+  channel: TorchChannel
+): 'cuda' | 'hip' | 'xpu' | 'mps' | 'cpu' {
+  const c = normalizeTorchChannel(channel)
+  if (c === 'cu126' || c === 'cu130') return 'cuda'
+  if (c === 'rocm' || c === 'rocm7.2' || c === 'rocm10.0') return 'hip'
+  if (c === 'xpu') return 'xpu'
+  if (c === 'mps') return 'mps'
+  return 'cpu'
 }
 
 export function listStarterModels(): StarterModel[] {
@@ -679,20 +697,24 @@ export class InstallerService extends EventEmitter {
         let notes = ''
         let notesKey: string | undefined
         if (vendor.includes('nvidia') || /geforce|rtx|gtx|quadro|tesla/i.test(model)) {
+          // 0.2.5 WP6: CUDA 13.0 (cu130) is the stable default for RTX 20+;
+          // older cards keep cu126 as the compatibility channel.
           recommendedTorch = 'cu126'
-          notes = 'NVIDIA — default cu126; RTX 20+ may use cu130'
+          notes = 'NVIDIA (pre-RTX 20) — compatibility channel cu126'
           notesKey = 'gpu.nvidiaDefault'
           if (/\b(20|30|40|50)\d{2}\b|rtx/i.test(model)) {
             recommendedTorch = 'cu130'
-            notes = 'NVIDIA RTX 20+ — recommended cu130'
+            notes = 'NVIDIA RTX 20+ — recommended cu130 (CUDA 13 stable)'
             notesKey = 'gpu.nvidiaRtx'
           }
         } else if (vendor.includes('amd') || /radeon/i.test(model)) {
-          recommendedTorch = process.platform === 'linux' ? 'rocm' : 'cpu'
+          // 0.2.5 WP6: official Windows ROCm 10.0 wheels exist; never silently
+          // install CPU torch on an AMD GPU box.
+          recommendedTorch = process.platform === 'linux' ? 'rocm7.2' : 'rocm10.0'
           notes =
             process.platform === 'linux'
-              ? 'AMD ROCm (Linux)'
-              : 'Windows AMD needs official ROCm PyTorch — falling back to CPU unless overridden'
+              ? 'AMD ROCm 7.2 (Linux)'
+              : 'AMD ROCm 10.0 (Windows)'
           notesKey = process.platform === 'linux' ? 'gpu.amdLinux' : 'gpu.amdWindows'
         } else if (vendor.includes('intel') || /arc|xe/i.test(model)) {
           recommendedTorch =
@@ -886,13 +908,22 @@ export class InstallerService extends EventEmitter {
       const m = out.match(/Python\s+(3)\.(\d+)/i)
       const major = m ? Number(m[1]) : 0
       const minor = m ? Number(m[2]) : -1
-      // 0.2.0 supports exactly CPython 3.13.x. 3.12 has no cu126/cu130
-      // cp313 wheel coverage and 3.14+ has no torch wheels yet.
+      // 0.2.5 keeps CPython 3.13.x as the validated default. 3.12 is the
+      // official fallback (one-way migration here); 3.14 has torch wheels but
+      // a real custom-node compatibility risk.
       const ok = major === 3 && minor === 13
+      const detailText =
+        ok || !m
+          ? out.trim() || python
+          : minor === 12
+            ? `${out.trim()} — 3.12 is the official fallback, but this app validates 3.13; migrate for a supported runtime`
+            : minor >= 14
+              ? `${out.trim()} — 3.14+ has torch wheels but custom-node compatibility risk; 3.13 is the validated default`
+              : `${out.trim()} — Python 3.13 is the validated runtime`
       checks.push({
         id: 'python',
         ok,
-        detail: out.trim() || python,
+        detail: detailText,
         detailKey: ok ? undefined : 'preflight.pythonOld',
         detailParams: { python },
         fixId: ok ? undefined : 'bootstrap-python',
@@ -1074,7 +1105,7 @@ export class InstallerService extends EventEmitter {
    */
   private async verifyTorchChannel(vpy: string, channel: TorchChannel): Promise<void> {
     const script =
-      'import json,torch;print(json.dumps({"cuda":torch.version.cuda,"hip":torch.version.hip,"torch":torch.__version__}))'
+      'import json,torch;print(json.dumps({"cuda":torch.version.cuda,"hip":getattr(torch.version,"hip",None),"xpu":bool(getattr(torch,"xpu",None) and torch.xpu.is_available()),"mps":bool(getattr(torch.backends,"mps",None) and torch.backends.mps.is_available()),"torch":torch.__version__}))'
     let out = ''
     try {
       out = await this.run(vpy, ['-c', script], { timeout: 60000 })
@@ -1084,7 +1115,13 @@ export class InstallerService extends EventEmitter {
       )
     }
     const line = out.trim().split('\n').filter(Boolean).pop() || '{}'
-    let info: { cuda?: string | null; hip?: string | null; torch?: string } = {}
+    let info: {
+      cuda?: string | null
+      hip?: string | null
+      xpu?: boolean
+      mps?: boolean
+      torch?: string
+    } = {}
     try {
       info = JSON.parse(line)
     } catch {
@@ -1101,14 +1138,28 @@ export class InstallerService extends EventEmitter {
         `torch ${info.torch || '?'} is below ComfyUI's minimum 2.7 — choose cu126/cu130`
       )
     }
+    const accelerator = expectedAcceleratorForChannel(channel)
     const want = expectedCudaForChannel(channel)
     const got = info.cuda ?? null
-    const matches = want === null ? got === null : String(got).startsWith(want)
+    let matches = true
+    let advice = ''
+    if (accelerator === 'cuda') {
+      matches = Boolean(got && want && String(got).startsWith(want))
+      advice = `Expected CUDA ${want} (channel ${channel}) but torch reports ${got ?? 'none'}. Check your driver version or switch the torch channel / mirror.`
+    } else if (accelerator === 'hip') {
+      matches = Boolean(info.hip)
+      advice = `Expected a ROCm build (channel ${channel}) but torch reports no HIP runtime.`
+    } else if (accelerator === 'xpu') {
+      matches = info.xpu === true
+      advice = 'Expected Intel XPU support but torch reports no usable XPU device.'
+    } else if (accelerator === 'mps') {
+      matches = info.mps === true
+      advice = 'Expected Apple MPS support but torch reports it unavailable.'
+    } else {
+      matches = got === null && !info.hip
+      advice = 'The requested channel is CPU-only but an accelerator build is installed.'
+    }
     if (!matches) {
-      const advice =
-        want === null
-          ? 'The requested channel is CPU-only but a CUDA build is installed.'
-          : `Expected CUDA ${want} (channel ${channel}) but torch reports ${got ?? 'none'}. Check your driver version or switch the torch channel / mirror.`
       throw new Error(`torch ${info.torch || '?'} channel mismatch: ${advice}`)
     }
     this.log(
@@ -1231,8 +1282,8 @@ export class InstallerService extends EventEmitter {
       this.assertNotCancelled()
       this.assertRunLive(token)
 
-      // 3. venv isolated — PIN to CPython 3.13.
-      // A system 3.14+ interpreter has no torch wheels yet; 3.13 is the current sweet spot.
+      // 3. venv isolated — PIN to CPython 3.13, the validated default.
+      // 3.14 has torch wheels but custom-node compatibility is not guaranteed.
       mkdirSync(installRoot, { recursive: true })
       const venvPath = join(installRoot, '.venv')
       this.setStep(

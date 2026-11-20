@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { createHash } from 'crypto'
 import type {
@@ -11,7 +11,7 @@ import type {
 } from '@shared/types'
 import { parseNodeLoadReport } from '@shared/nodeLoadReport'
 import { isUpdateAvailable } from '@shared/version'
-import { listNodePacks, loadSettings, upsertNodePack } from '../db'
+import { listNodePacks, loadSettings, upsertNodePack, userDataDir } from '../db'
 import { applyGithubMirror } from '../installer'
 import { instanceService } from '../instance'
 import { LruCache } from '../lru'
@@ -278,6 +278,11 @@ export function list(this: NodePackHost, instancePathOrId?: string): NodePackRec
     const issues = collectIssues(packed, meta)
     const id = createHash('sha1').update(dir).digest('hex').slice(0, 16)
     const prev = known.get(meta.name || baseName)
+    // 0.2.5 WP9: a persistent install-time pip failure must survive list()
+    // refreshes, instead of the pack looking healthy until the next boot.
+    for (const issue of prev?.issues || []) {
+      if (issue.code === 'pip-failed') issues.push(issue)
+    }
     const latest = prev?.latestVersion
     const effectiveVersion = prev?.pinnedVersion || meta.version || '0.0.0'
     const hasUpdate =
@@ -397,79 +402,173 @@ export async function refresh(
   return packs
 }
 
-/** Manager channel list (PLAN: Registry + Manager channel + 本地) */
+interface ManagerChannelCache {
+  updatedAt: number
+  etag?: string
+  etagUrl?: string
+  items: RegistryNodePack[]
+}
+
+function managerChannelCachePath(): string {
+  return join(userDataDir(), 'app-cache', 'manager-channel.json')
+}
+
+function readManagerChannelCache(): ManagerChannelCache | null {
+  try {
+    const raw = JSON.parse(readFileSync(managerChannelCachePath(), 'utf-8')) as ManagerChannelCache
+    return Array.isArray(raw.items) ? raw : null
+  } catch {
+    return null
+  }
+}
+
+/** Parse both real Manager schemas: `{custom_nodes:[...]}` and extension-node-map. */
+export function parseManagerChannelPayload(raw: unknown): RegistryNodePack[] {
+  const rows: Array<Record<string, unknown>> = []
+  if (Array.isArray(raw)) {
+    rows.push(...(raw as Array<Record<string, unknown>>))
+  } else if (raw && typeof raw === 'object') {
+    const custom = (raw as { custom_nodes?: unknown }).custom_nodes
+    if (Array.isArray(custom)) {
+      rows.push(...(custom as Array<Record<string, unknown>>))
+    } else {
+      // extension-node-map: { nodeClass: [ {name, ...}, ... ] }
+      for (const [nodeClass, entries] of Object.entries(raw as Record<string, unknown>)) {
+        if (!Array.isArray(entries)) continue
+        for (const e of entries) {
+          if (e && typeof e === 'object') {
+            rows.push({ ...(e as Record<string, unknown>), id: nodeClass })
+          }
+        }
+      }
+    }
+  }
+  const out: RegistryNodePack[] = []
+  const seen = new Set<string>()
+  for (const n of rows) {
+    if (!n || typeof n !== 'object') continue
+    const files = Array.isArray(n.files) ? (n.files as unknown[]).map(String).filter(Boolean) : []
+    const reference = String(n.reference || '')
+    const id = String(n.id || n.title || n.name || reference || files[0] || '')
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    const repository =
+      /^(https?:\/\/|git@|ssh:\/\/)/i.test(reference) || /\.git$/i.test(reference)
+        ? reference
+        : /^(https?:\/\/|git@|ssh:\/\/)/i.test(files[0] || '')
+          ? files[0]
+          : String(n.repository || '')
+    const tags = Array.isArray(n.tags) ? n.tags.map(String) : []
+    const installType = String(n.install_type || '')
+    if (installType) tags.push(installType)
+    out.push({
+      id,
+      name: String(n.name || n.title || id),
+      displayName: String(n.title || n.name || id),
+      description: String(n.description || ''),
+      author: String(n.author || ''),
+      latestVersion: String(n.version || ''),
+      repository,
+      tags,
+      downloads: Number(n.downloads || 0),
+      score: 0,
+      icon: typeof n.icon === 'string' ? n.icon : undefined,
+      files,
+      installType: installType || undefined,
+      status:
+        n.banned === true
+          ? 'banned'
+          : n.flagged === true
+            ? 'flagged'
+            : n.status === 'banned' || n.status === 'flagged'
+              ? (n.status as 'banned' | 'flagged')
+              : 'active'
+    })
+  }
+  return out
+}
+
+/** Manager channel list — v4 first, no early break, cached/ETag/offline. */
 export async function managerChannelList(this: NodePackHost): Promise<RegistryNodePack[]> {
   const settings = loadSettings()
-  // Multiple sources — ComfyUI-Manager's repo has been restructured several
-  // times; try known locations. All GitHub raw URLs go through the mirror.
+  const cache = readManagerChannelCache()
+  if (settings.networkMode === 'offline') return cache?.items ?? []
+
+  // 0.2.5 WP4: v4 first, then main, then the legacy ltdrdata repo. A
+  // non-empty legacy list used to shadow v4 forever because of `break`.
   const rawEndpoints = [
-    'https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main/custom-node-list.json',
     'https://raw.githubusercontent.com/Comfy-Org/ComfyUI-Manager/manager-v4/custom-node-list.json',
     'https://raw.githubusercontent.com/Comfy-Org/ComfyUI-Manager/main/custom-node-list.json',
-    // extension-node-map is the other commonly published list
+    'https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main/custom-node-list.json',
     'https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main/extension-node-map.json'
   ]
   const endpoints = rawEndpoints.map((u) => applyGithubMirror(u))
   const out: RegistryNodePack[] = []
   const seen = new Set<string>()
   let lastError: string | undefined
-  for (const url of endpoints) {
+  let nextEtag: string | undefined
+  for (const [index, url] of endpoints.entries()) {
     try {
-      // session.fetch honors the app proxy — bare fetch() times out behind it.
       const { session } = await import('electron')
+      const headers: Record<string, string> = { 'User-Agent': 'ComfyPilot/0.2' }
+      if (index === 0 && cache?.etag && cache.etagUrl === url) {
+        headers['If-None-Match'] = cache.etag
+      }
       const res = await session.defaultSession.fetch(url, {
         signal: AbortSignal.timeout(15000),
-        headers: { 'User-Agent': 'ComfyPilot/0.1' }
+        headers
       })
+      if (res.status === 304 && cache?.items.length) {
+        for (const item of cache.items) {
+          if (seen.has(item.id)) continue
+          seen.add(item.id)
+          out.push(item)
+        }
+        continue
+      }
       if (!res.ok) {
         lastError = `HTTP ${res.status} from ${url.slice(0, 60)}`
         continue
       }
-      const raw = (await res.json()) as Array<Record<string, unknown>> | Record<string, unknown>
-      // custom-node-list.json is an Array; extension-node-map.json is an
-      // object mapping node-class names → [ {name, ...}, ... ].
-      let data: Array<Record<string, unknown>>
-      if (Array.isArray(raw)) {
-        data = raw
-      } else if (raw && typeof raw === 'object') {
-        data = []
-        for (const [nodeClass, entries] of Object.entries(raw)) {
-          if (!Array.isArray(entries)) continue
-          for (const e of entries) {
-            if (e && typeof e === 'object') {
-              data.push({ ...e, id: (e as Record<string, unknown>).id || nodeClass, nodeClass })
-            }
-          }
-        }
-      } else {
-        continue
+      if (index === 0) nextEtag = res.headers.get('etag') || undefined
+      const parsed = parseManagerChannelPayload(await res.json())
+      for (const item of parsed) {
+        if (seen.has(item.id)) continue
+        seen.add(item.id)
+        out.push(item)
       }
-      // No hard truncation — take every entry the channel publishes.
-      for (const n of data) {
-        const id = String(n.id || n.title || n.name)
-        if (!id || seen.has(id)) continue
-        seen.add(id)
-        out.push({
-          id,
-          name: String(n.name || n.title || ''),
-          displayName: String(n.title || n.name || ''),
-          description: String(n.description || ''),
-          author: String(n.author || ''),
-          latestVersion: String(n.version || ''),
-          repository: String(n.repository || ''),
-          tags: Array.isArray(n.tags) ? n.tags.map(String) : [],
-          downloads: Number(n.downloads || 0),
-          score: 0,
-          status: 'active'
-        })
-      }
-      if (out.length) break
+      // No `break`: merge every source, v4 entries already won the id.
     } catch (e) {
       lastError = e instanceof Error ? e.message : String(e)
-      if (settings.networkMode === 'offline') break
     }
   }
-  if (!out.length && lastError) {
+  if (out.length) {
+    try {
+      mkdirSync(join(userDataDir(), 'app-cache'), { recursive: true })
+      writeFileSync(
+        managerChannelCachePath(),
+        JSON.stringify(
+          {
+            updatedAt: Date.now(),
+            etag: nextEtag,
+            etagUrl: nextEtag ? endpoints[0] : undefined,
+            items: out
+          },
+          null,
+          2
+        ),
+        'utf-8'
+      )
+    } catch {
+      /* cache is best-effort */
+    }
+    return out
+  }
+  if (cache?.items.length) {
+    this.opLog?.('Manager channel offline — using cached list', undefined)
+    return cache.items
+  }
+  if (lastError) {
     // Do NOT throw — callers (installInner fallback) expect a graceful empty list.
     this.opLog?.(`Manager channel unavailable: ${lastError}`, undefined)
   }

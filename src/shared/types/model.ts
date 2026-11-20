@@ -51,6 +51,8 @@ export interface ModelRecord {
   thumbnail?: string
   tags: string[]
   metadata: Record<string, unknown>
+  /** Convenience mirror of metadata.civitai.trainedWords (0.2.5 WP9). */
+  civitaiTrainedWords?: string[]
   baseModel?: string
   trainedWords: string[]
   duplicateOf?: string
@@ -92,6 +94,8 @@ export interface DownloadTask {
    * Default 0; bumping it moves a queued task ahead of later arrivals.
    */
   priority?: number
+  /** 0.2.5 WP9: Civitai metadata/trigger words captured at download time. */
+  metadata?: Record<string, unknown>
 }
 
 export interface StorageStats {

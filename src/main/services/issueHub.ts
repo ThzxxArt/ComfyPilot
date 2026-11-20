@@ -106,7 +106,11 @@ function makeIssue(input: {
   }
 }
 
-function mergeIssues(fresh: AppIssue[], resolvableKinds: Set<AppIssueKind>): AppIssue[] {
+function mergeIssues(
+  fresh: AppIssue[],
+  resolvableKinds: Set<AppIssueKind>,
+  scopeInstanceId?: string
+): AppIssue[] {
   const now = Date.now()
   const old = new Map(listIssues().map((i) => [i.fingerprint, i]))
   const seen = new Set<string>()
@@ -131,6 +135,12 @@ function mergeIssues(fresh: AppIssue[], resolvableKinds: Set<AppIssueKind>): App
   // user explicitly ignored them or the source could not run.
   for (const [fp, prev] of old) {
     if (seen.has(fp)) continue
+    // 0.2.5 WP9: a single-instance scan must not resolve another instance's
+    // issues just because that instance was not part of this scan.
+    if (scopeInstanceId && prev.instanceId && prev.instanceId !== scopeInstanceId) {
+      merged.push(prev)
+      continue
+    }
     if (!resolvableKinds.has(prev.kind)) {
       merged.push(prev)
       continue
@@ -410,7 +420,7 @@ export class IssueHubService {
         resolvable.delete('doctor')
       }
     }
-    mergeIssues(fresh, resolvable)
+    mergeIssues(fresh, resolvable, instanceId)
     return this.list()
   }
 

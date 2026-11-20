@@ -7,6 +7,7 @@ import {
   deleteBatchJob,
   listBatchJobs,
   listRemotes,
+  loadSettings,
   upsertBatchJob,
   mergeUpsertOutputAsset
 } from '../db'
@@ -14,6 +15,7 @@ import { resolveReadTarget } from '../target'
 import { ComfyApiClient } from '../comfyApi'
 import { readPngTextMetaFromFile, recordPromptWorkflowLink } from '../workflow'
 import { classifyOutputType } from '@shared/mediaTypes'
+import { hasParentHop, resolveInsideAnyRoot } from '../security'
 import { resolveOutputDir } from '@shared/outputDir'
 import { resolveEffectiveInstance } from '@shared/instanceLayout'
 import {
@@ -105,17 +107,17 @@ export class BatchService extends EventEmitter {
     const jobs = this.loadJobs()
     // 0.1.17 (WP5): self-heal — a persisted submitting/running job cannot be
     // live in this process, so it is `interrupted`, not "running forever".
-    let changed = false
     for (const j of jobs) {
       if ((j.status === 'submitting' || j.status === 'running') && !this.runningIds.has(j.id)) {
         j.status = 'interrupted'
         j.finishedAt = j.finishedAt || Date.now()
         j.errorSummary = j.errorSummary || 'Interrupted by app exit — resume or re-run'
         this.persist(j)
-        changed = true
+        // 0.2.5 WP9: always emit ONE job object — the old array payload was
+        // parsed as an object by the renderer and dropped.
+        this.emit('progress', { ...j })
       }
     }
-    if (changed) this.emit('progress', jobs)
     // Callers receive copies: mutating a returned job must go through
     // persist(), otherwise the in-memory truth and disk would diverge.
     return jobs.map((j) => ({ ...j }))
@@ -667,10 +669,18 @@ export class BatchService extends EventEmitter {
     inputDir?: string
   ): Promise<Set<string>> {
     const settled = new Set<string>()
-    // Scale the wait with the job: 30s base + 20s per prompt, capped at 30 min.
+    // 0.2.5 WP9: configurable deadline. Long GPU queues renew the deadline for
+    // as long as ComfyUI still reports the prompt in /queue.
+    let configured = 30 * 60 * 1000
+    try {
+      configured = Number(loadSettings().batchDeadlineMs) || configured
+    } catch {
+      /* defaults */
+    }
+    const baseDeadline = Math.min(24 * 60 * 60 * 1000, Math.max(60_000, configured))
     const first = this.list().find((j) => j.id === jobId)
     const totalPrompts = first ? first.items.reduce((s, it) => s + it.promptIds.length, 0) : 1
-    const deadline = Date.now() + Math.min(30 * 60 * 1000, 30_000 + totalPrompts * 20_000)
+    let deadline = Date.now() + Math.min(baseDeadline, 30_000 + totalPrompts * 20_000)
     let consecutiveEmpty = 0
 
     while (Date.now() < deadline) {
@@ -761,8 +771,22 @@ export class BatchService extends EventEmitter {
       this.emit('progress', live)
 
       if (settled.size >= allIds.length) break
-      // Nothing is ever coming back — stop burning the deadline.
-      if (consecutiveEmpty >= 12 && settled.size === 0) break
+      // 0.2.5 WP9: 30s of empty history is normal while a job waits in a busy
+      // GPU queue. Only declare prompts lost when /queue no longer knows them.
+      if (consecutiveEmpty >= 12 && settled.size === 0) {
+        const queue: { running: string[]; pending: string[] } = await client
+          .queueState()
+          .catch(() => ({ running: [] as string[], pending: [] as string[] }))
+        const stillQueued = pending.some(
+          (p) => queue.running.includes(p) || queue.pending.includes(p)
+        )
+        if (stillQueued) {
+          deadline = Math.min(Date.now() + 24 * 60 * 60 * 1000, Date.now() + baseDeadline)
+          consecutiveEmpty = 0
+        } else {
+          break
+        }
+      }
       await new Promise((r) => setTimeout(r, 2500))
     }
 
@@ -784,13 +808,17 @@ export class BatchService extends EventEmitter {
   ): string | null {
     if (!out?.filename) return null
     const sub = out.subfolder || ''
-    // 0.2.5 WP1/WP9: both roots come from the effective layout; the raw
-    // subfolder is validated in WP9 so `..`/absolute values cannot escape.
+    // 0.2.5 WP1/WP9: both roots come from the effective layout; absolute
+    // subfolders and `..` are rejected before any join.
+    if (/^[a-zA-Z]:[\\/]/.test(sub) || sub.startsWith('/') || sub.startsWith('\\')) return null
+    if (hasParentHop(sub)) return null
     const base =
       out.type === 'input'
         ? inputDir || join(instancePath, 'input')
         : outputDir || join(instancePath, 'output')
-    const abs = join(base, sub, basename(out.filename))
+    const candidate = join(base, sub, basename(out.filename))
+    const abs = resolveInsideAnyRoot(candidate, [base])
+    if (!abs) return null
     if (!existsSync(abs)) {
       // History referenced a file that is not on disk — log it so the gap is
       // visible, and do NOT count it as a produced image.

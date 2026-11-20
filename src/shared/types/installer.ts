@@ -39,7 +39,15 @@ export interface InstallStep {
   detailParams?: Record<string, string | number>
 }
 
-export type TorchChannel = 'cu130' | 'cu126' | 'rocm' | 'xpu' | 'mps' | 'cpu'
+export type TorchChannel =
+  | 'cu130'
+  | 'cu126'
+  | 'rocm'
+  | 'rocm7.2'
+  | 'rocm10.0'
+  | 'xpu'
+  | 'mps'
+  | 'cpu'
 
 export interface InstallPlan {
   installRoot: string

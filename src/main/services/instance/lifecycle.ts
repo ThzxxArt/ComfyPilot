@@ -633,6 +633,15 @@ async function startInner(
           : `Flag ${w.flag} requires a recent ComfyUI build`
     )
   }
+  // 0.2.5 WP6: the watchdog probes plain HTTP. Say so instead of showing a
+  // silent false "unresponsive" for a self-signed HTTPS instance.
+  if (args.includes('--tls-keyfile') || args.includes('--tls-certfile')) {
+    ctx.pushLog(
+      rt,
+      'warn',
+      'TLS launch flags detected — 0.2.5 health/monitor probes do not support self-signed HTTPS; expect health warnings'
+    )
+  }
   // Path-valued flags that point nowhere usually mean a typo'd path; warn.
   const pathFlags = new Set([
     '--extra-model-paths-config',

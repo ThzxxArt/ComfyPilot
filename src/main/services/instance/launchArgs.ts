@@ -55,6 +55,14 @@ export function buildArgs(config: ComfyInstanceConfig): string[] {
   // override in extraArgs still wins by being last.
   const profileArgs = renderLaunchProfile(config.launchProfile)
   args.push(...profileArgs)
+  // 0.2.5 WP6: `frontendVersion` was persisted but never rendered. It is NOT a
+  // LaunchProfile field; it maps to `--front-end-version`.
+  if (
+    config.frontendVersion &&
+    ![...templateArgs, ...profileArgs].some((a) => splitFlagArg(a).flag === '--front-end-version')
+  ) {
+    args.push('--front-end-version', config.frontendVersion)
+  }
   const extra = Array.isArray(config.extraArgs)
     ? config.extraArgs
     : parseArgv(String(config.extraArgs || '')).tokens

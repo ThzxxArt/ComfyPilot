@@ -107,8 +107,9 @@ export class DoctorService extends EventEmitter {
     const pyOut = await safeExec(python, ['--version'])
     const pyMatch = pyOut.match(/python\s+3\.(\d+)/i)
     const pyMinor = pyMatch ? Number(pyMatch[1]) : null
-    // 0.2.0 supports exactly 3.13.x. Anything else is a blocking failure —
-    // there is no 3.12 compatibility mode and 3.14+ has no torch wheels.
+    // 0.2.5 keeps Python 3.13 as the validated default. 3.12 is the official
+    // fallback but this app's migration is one-way; 3.14 works with PyTorch but
+    // has custom-node compatibility risk. Neither is a silent pass.
     const pySeverity: DoctorSeverity = pyMinor === 13 ? 'pass' : 'fail'
     checks.push({
       id: 'python',
@@ -120,9 +121,11 @@ export class DoctorService extends EventEmitter {
         pySeverity === 'pass'
           ? undefined
           : pyMinor === 12
-            ? 'Python 3.12 is no longer supported. Run “Migrate Python” on the instance detail page.'
-            : '0.2.0 requires Python 3.13.x. Install/migrate the instance environment.',
-      // A 3.12 venv is migratable; 3.14+/missing is not (no torch wheels).
+            ? 'Python 3.12 is the official fallback, but this instance is not validated. Run “Migrate Python” on the instance detail page.'
+            : pyMinor === 14
+              ? 'Python 3.14 has PyTorch wheels but many custom nodes are not compatible yet. 3.13 is the validated default; use the bundled 3.13 runtime.'
+              : 'Python 3.13 is the validated runtime. Install/migrate the instance environment.',
+      // A 3.12 venv is migratable; other versions need an explicit runtime change.
       fixable: pyMinor === 12 && Boolean(config?.venvPath),
       fixId: pyMinor === 12 && config?.venvPath ? 'migrate-python-313' : undefined
     })

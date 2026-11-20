@@ -51,6 +51,28 @@ export class ComfyApiClient {
     }
   }
 
+  /** Prompt ids still running/pending — used to avoid declaring a queued job lost. */
+  async queueState(): Promise<{ running: string[]; pending: string[] }> {
+    try {
+      const res = await proxyFetch(
+        this.url('/queue'),
+        this.authInit({ signal: AbortSignal.timeout(4000) })
+      )
+      if (!res.ok) return { running: [], pending: [] }
+      const body = (await res.json()) as {
+        queue_running?: unknown[]
+        queue_pending?: unknown[]
+      }
+      const ids = (rows: unknown[] | undefined): string[] =>
+        (Array.isArray(rows) ? rows : [])
+          .map((row) => (Array.isArray(row) ? String(row[1] ?? '') : ''))
+          .filter(Boolean)
+      return { running: ids(body.queue_running), pending: ids(body.queue_pending) }
+    } catch {
+      return { running: [], pending: [] }
+    }
+  }
+
   async queuePrompt(
     prompt: Record<string, unknown>,
     clientId: string,

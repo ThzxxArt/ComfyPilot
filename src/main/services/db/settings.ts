@@ -64,7 +64,8 @@ const KNOWN_SETTINGS_KEYS = new Set([
   'healthStaleMs',
   'autoRecover',
   'autoRecoverCooldownMs',
-  'autoRecoverMaxAttempts'
+  'autoRecoverMaxAttempts',
+  'batchDeadlineMs'
 ])
 
 export function saveSettings(patch: Partial<AppSettings>): AppSettings {

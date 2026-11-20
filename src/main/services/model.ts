@@ -57,6 +57,87 @@ import { LruCache } from './lru'
 
 const MODEL_EXT = new Set(['.safetensors', '.ckpt', '.pt', '.pth', '.bin', '.gguf', '.onnx'])
 
+/** RFC 6266 filename, including `filename*=UTF-8''…`. */
+export function filenameFromContentDisposition(header?: string | null): string | undefined {
+  const raw = String(header || '')
+  if (!raw) return undefined
+  const star = raw.match(/filename\*\s*=\s*([^;]+)/i)
+  if (star) {
+    let value = star[1].trim().replace(/^["']|["']$/g, '')
+    const parts = value.split("''")
+    if (parts.length === 2) {
+      try {
+        value = decodeURIComponent(parts[1])
+      } catch {
+        value = parts[1]
+      }
+    }
+    if (value) return basename(value)
+  }
+  const plain = raw.match(/filename\s*=\s*("([^"]*)"|([^;]+))/i)
+  const value = (plain?.[2] || plain?.[3] || '').trim()
+  return value ? basename(value) : undefined
+}
+
+interface CivitaiDownloadInfo {
+  fileName?: string
+  metadata?: Record<string, unknown>
+}
+
+/**
+ * Resolve a real filename for Civitai's extensionless download endpoint.
+ * Order: Content-Disposition → API files[].name → safe .safetensors fallback.
+ */
+async function resolveCivitaiDownloadInfo(
+  downloadUrl: string,
+  versionId: string
+): Promise<CivitaiDownloadInfo> {
+  const settings = loadSettings()
+  const base = settings.civitaiEndpoint || 'https://civitai.com'
+  let fileName: string | undefined
+  let metadata: Record<string, unknown> | undefined
+  try {
+    const { proxyFetch } = await import('./proxy')
+    const head = await proxyFetch(downloadUrl, {
+      method: 'HEAD',
+      timeoutMs: 8000,
+      redirect: 'follow'
+    } as never)
+    if (head.ok) fileName = filenameFromContentDisposition(head.headers.get('content-disposition'))
+  } catch {
+    /* HEAD may be blocked by gated models — the API is the next source */
+  }
+  try {
+    const { proxyFetch } = await import('./proxy')
+    const res = await proxyFetch(`${base}/api/v1/model-versions/${versionId}`, {
+      timeoutMs: 12000
+    })
+    if (res.ok) {
+      const body = (await res.json()) as Record<string, unknown>
+      const files = Array.isArray(body.files) ? (body.files as Array<Record<string, unknown>>) : []
+      const primary = files.find((f) => f.primary === true) || files[0]
+      const apiName = primary?.name ? basename(String(primary.name)) : undefined
+      if (!fileName && apiName) fileName = apiName
+      const model = (body.model || {}) as Record<string, unknown>
+      const images = Array.isArray(body.images) ? (body.images as Array<Record<string, unknown>>) : []
+      metadata = {
+        versionId,
+        modelId: model.id,
+        modelName: model.name,
+        versionName: body.name,
+        baseModel: body.baseModel,
+        trainedWords: Array.isArray(body.trainedWords) ? body.trainedWords : [],
+        previewUrl: images[0]?.url,
+        downloadUrl
+      }
+    }
+  } catch {
+    /* offline/private API — fall back to a safe extension */
+  }
+  if (!fileName) fileName = `civitai-model-${versionId}.safetensors`
+  return { fileName, metadata }
+}
+
 /**
  * Directory → category. Mirrors ComfyUI's `folder_paths.py` registered types;
  * the legacy `clip` / `unet` folders map onto their canonical successors so a
@@ -489,7 +570,28 @@ export class ModelService extends EventEmitter {
     }
   }
 
+  /** 0.2.5 WP9: single-flight + 2s debounce for expensive hash scans. */
+  private hashScans = new Map<string, Promise<ModelRecord[]>>()
+  private lastHashScan = new Map<string, { at: number; result: ModelRecord[] }>()
+
   async scan(opts?: { roots?: string[]; hash?: boolean }): Promise<ModelRecord[]> {
+    if (!opts?.hash) return this.scanCore(opts)
+    const key = [...(opts.roots || [])].sort().join('|')
+    const last = this.lastHashScan.get(key)
+    if (last && Date.now() - last.at < 2000) return last.result
+    const inflight = this.hashScans.get(key)
+    if (inflight) return inflight
+    const p = this.scanCore(opts)
+      .then((result) => {
+        this.lastHashScan.set(key, { at: Date.now(), result })
+        return result
+      })
+      .finally(() => this.hashScans.delete(key))
+    this.hashScans.set(key, p)
+    return p
+  }
+
+  private async scanCore(opts?: { roots?: string[]; hash?: boolean }): Promise<ModelRecord[]> {
     const settings = loadSettings()
     // When the caller passes explicit roots, honour ONLY those — do not silently
     // widen the scan to every instance's models/ dir (that defeats scoping).
@@ -822,7 +924,29 @@ export class ModelService extends EventEmitter {
     // Auto-index: a finished download should appear in the model library
     // without requiring a manual scan.
     if (ok && task.destPath && existsSync(task.destPath)) {
-      void this.scan({ hash: true }).catch(() => undefined)
+      // 0.2.5 WP9: hash ONLY the new file's root, not the whole library, and
+      // persist Civitai metadata/trigger words on the indexed row.
+      const root = dirname(task.destPath)
+      void this.scan({ hash: true, roots: [root] })
+        .then(() => {
+          const rec = listModels().find(
+            (m) => normalizeForCompare(m.path) === normalizeForCompare(task.destPath)
+          )
+          if (!rec || !task.metadata) return
+          const civitai = task.metadata.civitai as
+            | { trainedWords?: unknown; previewUrl?: unknown }
+            | undefined
+          const trainedWords = Array.isArray(civitai?.trainedWords)
+            ? (civitai!.trainedWords as unknown[]).map(String)
+            : rec.civitaiTrainedWords
+          upsertModel({
+            ...rec,
+            metadata: { ...rec.metadata, ...task.metadata },
+            civitaiTrainedWords: trainedWords,
+            source: 'civitai'
+          })
+        })
+        .catch(() => undefined)
     }
   }
 
@@ -880,12 +1004,16 @@ export class ModelService extends EventEmitter {
     }
 
     let rawName = opts.fileName || basename(new URL(url).pathname) || `download-${Date.now()}`
-    // Civitai's download endpoint has no filename in the path. The safe
-    // fallback is derived from the model-version id; WP9 upgrades this to
-    // Content-Disposition/API names when the response is available.
-    if (!extname(rawName) && /civitai\.com\/api\/download\/models\/\d+/i.test(url)) {
-      const versionId = url.match(/\/models\/(\d+)/)?.[1] || Date.now()
-      rawName = `civitai-model-${versionId}.safetensors`
+    let civitaiMetadata: Record<string, unknown> | undefined
+    // 0.2.5 WP9: Civitai's download endpoint has no filename in its path.
+    // Content-Disposition → API files[].name → safe extension fallback.
+    if (/civitai\.com\/api\/download\/models\/\d+/i.test(url)) {
+      const versionId = url.match(/\/api\/download\/models\/(\d+)/)?.[1]
+      if (versionId) {
+        const info = await resolveCivitaiDownloadInfo(url, versionId)
+        if (!opts.fileName && info.fileName) rawName = info.fileName
+        civitaiMetadata = info.metadata
+      }
     }
     const fileName = assertSafeRelativeFilename(rawName)
     // 0.2.5 WP10 / S1+S2: a model download may only create model files.
@@ -916,7 +1044,8 @@ export class ModelService extends EventEmitter {
       status: 'queued',
       startedAt: Date.now(),
       source: this.detectDownloadSource(url),
-      expectedSha256: opts.expectedSha256 ? String(opts.expectedSha256).toLowerCase() : undefined
+      expectedSha256: opts.expectedSha256 ? String(opts.expectedSha256).toLowerCase() : undefined,
+      metadata: civitaiMetadata ? { civitai: civitaiMetadata } : undefined
     }
     this.downloads.set(id, task)
     upsertDownloadTask(task)
@@ -937,22 +1066,22 @@ export class ModelService extends EventEmitter {
    * Returns false and marks the task failed when verification does not pass.
    * On mismatch the corrupt file is deleted so retries cannot resume over it.
    */
-  private async verifyDownload(task: DownloadTask): Promise<boolean> {
+  private async verifyDownload(task: DownloadTask, filePath = task.destPath): Promise<boolean> {
     const fail = (error: string): boolean => {
       task.status = 'error'
       task.error = error
       task.verified = 'failed'
       task.finishedAt = Date.now()
       try {
-        unlinkSync(task.destPath)
+        unlinkSync(filePath)
       } catch {
         /* ignore */
       }
       return false
     }
-    if (!existsSync(task.destPath)) return fail('Download file missing after transfer')
+    if (!existsSync(filePath)) return fail('Download file missing after transfer')
     if (task.expectedSha256) {
-      const actual = await sha256File(task.destPath)
+      const actual = await sha256File(filePath)
       task.actualSha256 = actual
       if (actual.toLowerCase() !== String(task.expectedSha256).toLowerCase()) {
         return fail('SHA256 mismatch — file corrupted or tampered')
@@ -972,15 +1101,20 @@ export class ModelService extends EventEmitter {
         // Strict: entire body must be `hash` or `hash  filename` (optional whitespace).
         const strict = text.match(/^([a-f0-9]{64})(?:\s+\S+)?$/i)
         if (strict) {
-          const actual = await sha256File(task.destPath)
+          const actual = await sha256File(filePath)
           task.actualSha256 = actual
           if (actual.toLowerCase() !== strict[1].toLowerCase()) {
-            // Sidecar hash does not match the downloaded bytes — verification FAILED.
-            // Keep the file (sidecar may be stale/untrusted) but never report success.
+            // Sidecar hash does not match the downloaded bytes — verification
+            // FAILED. The partial is deleted so a retry cannot append to it.
             task.verified = 'failed'
-            task.error = 'Companion .sha256 mismatch — file kept (untrusted sidecar)'
+            task.error = 'Companion .sha256 mismatch — partial removed'
             task.status = 'error'
             task.finishedAt = Date.now()
+            try {
+              unlinkSync(filePath)
+            } catch {
+              /* ignore */
+            }
             return false
           }
           task.verified = 'sha256'
@@ -996,6 +1130,9 @@ export class ModelService extends EventEmitter {
 
   /** Concurrency gate + bounded retry around runDownload. */
   private async scheduleDownload(task: DownloadTask, resume = false): Promise<void> {
+    const stopped = (): boolean => task.status === 'paused' || task.status === 'cancelled'
+    // A task paused/cancelled while queued must never start later.
+    if (stopped()) return
     // Disk pre-check: refuse when free space is clearly too small for the file.
     if (task.totalBytes > 0 || task.source !== 'direct') {
       try {
@@ -1015,6 +1152,11 @@ export class ModelService extends EventEmitter {
       }
     }
     await this.acquireSlot(Number(task.priority) || 0, task.id)
+    if (stopped()) {
+      // We may have been paused while waiting; hand the slot to the next task.
+      this.releaseSlot()
+      return
+    }
     try {
       // Root-cause reliability: transient network failures should not force a
       // manual re-download. 3 attempts, exponential backoff, resume-aware.
@@ -1023,12 +1165,10 @@ export class ModelService extends EventEmitter {
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
           await this.runDownload(task, resume || attempt > 1)
-          if (task.status === 'done' || task.status === 'cancelled') {
+          if (task.status === 'done' || stopped()) {
             this.notifyDownloadResult(task)
             return
           }
-          // paused is user-intent — do not retry
-          if (task.status === 'paused') return
           lastErr = new Error(task.error || 'download did not complete')
         } catch (err) {
           lastErr = err
@@ -1047,7 +1187,7 @@ export class ModelService extends EventEmitter {
             // scheduleDownload().catch handler owns the single toast.
             throw err
           }
-          if (task.status === 'cancelled' || task.status === 'paused') return
+          if (stopped()) return
         }
         if (attempt < maxAttempts) {
           const backoff = 1000 * 2 ** (attempt - 1)
@@ -1058,7 +1198,7 @@ export class ModelService extends EventEmitter {
           await new Promise((r) => setTimeout(r, backoff))
         }
       }
-      if (task.status !== 'done' && task.status !== 'cancelled' && task.status !== 'paused') {
+      if (task.status !== 'done' && !stopped()) {
         task.status = 'error'
         task.error = lastErr instanceof Error ? lastErr.message : String(lastErr)
         task.finishedAt = Date.now()
@@ -1093,6 +1233,19 @@ export class ModelService extends EventEmitter {
     if (!resume && existsSync(task.destPath)) {
       throw new Error(`Target already exists: ${task.fileName}`)
     }
+    // 0.2.5 WP9: write a `.part` sibling; only a verified transfer is renamed
+    // to the final model path. A cancel can never leave a corrupt "model".
+    const partPath = `${task.destPath}.part`
+    // 0.2.4 left interrupted downloads at the FINAL path. Adopt that file as
+    // the partial on an explicit resume instead of refusing or appending to a
+    // finished model silently.
+    if (resume && !existsSync(partPath) && existsSync(task.destPath)) {
+      try {
+        renameSync(task.destPath, partPath)
+      } catch {
+        /* if rename fails, the resume below starts from zero */
+      }
+    }
     const controller = new AbortController()
     this.abortControllers.set(task.id, controller)
     const isCancelled = (): boolean =>
@@ -1106,7 +1259,7 @@ export class ModelService extends EventEmitter {
           task.status = 'running'
           this.emit('download', { ...task })
           // aria2 -c continues partial downloads
-          const res = await aria2Service.download(task.url, task.destPath, {
+          const res = await aria2Service.download(task.url, partPath, {
             resume,
             signal: controller.signal
           })
@@ -1114,17 +1267,18 @@ export class ModelService extends EventEmitter {
           task.status = res.ok ? 'done' : 'error'
           task.error = res.ok ? undefined : res.log.slice(0, 300)
           task.finishedAt = Date.now()
-          if (res.ok && existsSync(task.destPath)) {
-            task.receivedBytes = statSync(task.destPath).size
+          if (res.ok && existsSync(partPath)) {
+            task.receivedBytes = statSync(partPath).size
             task.totalBytes = task.receivedBytes
             if (resume) task.resumedFrom = Math.max(0, task.receivedBytes)
             // aria2 path must go through the SAME integrity gate as native.
-            const verified = await this.verifyDownload(task)
+            const verified = await this.verifyDownload(task, partPath)
             if (!verified) {
               upsertDownloadTask(task)
               this.emit('download', { ...task })
               return
             }
+            renameSync(partPath, task.destPath)
             task.status = 'done'
           }
           upsertDownloadTask(task)
@@ -1150,8 +1304,8 @@ export class ModelService extends EventEmitter {
 
       const headers: Record<string, string> = {}
       let startByte = 0
-      if (resume && existsSync(task.destPath)) {
-        startByte = statSync(task.destPath).size
+      if (resume && existsSync(partPath)) {
+        startByte = statSync(partPath).size
         if (startByte > 0) {
           headers.Range = `bytes=${startByte}-`
           // 0.1.18 (WP1): ask the server to ignore the range when the file it
@@ -1175,12 +1329,12 @@ export class ModelService extends EventEmitter {
             signal: controller.signal
           })
       // 416 Range Not Satisfiable → file already fully downloaded — MUST verify.
-      if (resume && res.status === 416 && existsSync(task.destPath)) {
-        const ok = await this.verifyDownload(task)
+      if (resume && res.status === 416 && existsSync(partPath)) {
+        const ok = await this.verifyDownload(task, partPath)
         if (!ok) {
           // Corrupt leftover — wipe and fall through to a clean full download.
           try {
-            unlinkSync(task.destPath)
+            unlinkSync(partPath)
           } catch {
             /* ignore */
           }
@@ -1189,6 +1343,7 @@ export class ModelService extends EventEmitter {
           this.abortControllers.delete(task.id)
           return this.runDownload(task, false)
         }
+        renameSync(partPath, task.destPath)
         task.status = 'done'
         task.receivedBytes = statSync(task.destPath).size
         task.totalBytes = task.receivedBytes
@@ -1214,7 +1369,7 @@ export class ModelService extends EventEmitter {
         if (rangeStart !== startByte || changedSource) {
           // Cannot trust the partial bytes: drop them and take a clean 200.
           try {
-            unlinkSync(task.destPath)
+            unlinkSync(partPath)
           } catch {
             /* ignore */
           }
@@ -1246,7 +1401,7 @@ export class ModelService extends EventEmitter {
       task.resumedFrom = appendMode ? startByte : undefined
 
       const mode = appendMode ? 'a' : 'w'
-      const file = createWriteStream(task.destPath, { flags: mode as 'w' | 'a' })
+      const file = createWriteStream(partPath, { flags: mode as 'w' | 'a' })
       let streamClosed = false
       const closeStream = (): Promise<void> =>
         new Promise((resolve) => {
@@ -1302,17 +1457,15 @@ export class ModelService extends EventEmitter {
 
       if (isCancelled()) return
       // Integrity: Content-Length must match received bytes; optional SHA256.
-      const finalSize = existsSync(task.destPath)
-        ? statSync(task.destPath).size
-        : task.receivedBytes
+      const finalSize = existsSync(partPath) ? statSync(partPath).size : task.receivedBytes
       if (task.totalBytes > 0 && finalSize !== task.totalBytes) {
         task.status = 'error'
         task.error = `Download incomplete: ${finalSize} of ${task.totalBytes} bytes`
         task.verified = 'failed'
         task.finishedAt = Date.now()
-        // Remove the bad file so a retry cannot resume over corrupt bytes.
+        // Remove the bad partial so a retry cannot resume over corrupt bytes.
         try {
-          unlinkSync(task.destPath)
+          unlinkSync(partPath)
         } catch {
           /* ignore */
         }
@@ -1321,18 +1474,28 @@ export class ModelService extends EventEmitter {
         return
       }
       task.receivedBytes = finalSize
-      const verified = await this.verifyDownload(task)
+      const verified = await this.verifyDownload(task, partPath)
       if (!verified) {
         upsertDownloadTask(task)
         this.emit('download', { ...task })
         return
       }
+      // Only a verified transfer becomes a model file.
+      renameSync(partPath, task.destPath)
       task.status = 'done'
       task.finishedAt = Date.now()
       task.speedBps = 0
       upsertDownloadTask(task)
     } catch (err) {
       const current = this.downloads.get(task.id)?.status ?? task.status
+      if (current === 'cancelled') {
+        // 0.2.5 WP9: cancel removes the half-written `.part`.
+        try {
+          if (existsSync(partPath)) unlinkSync(partPath)
+        } catch {
+          /* ignore */
+        }
+      }
       if (current !== 'cancelled') {
         if (controller.signal.aborted) {
           task.status = 'paused'
@@ -1353,6 +1516,8 @@ export class ModelService extends EventEmitter {
     const task = this.downloads.get(id) || listDownloadTasks().find((t) => t.id === id)
     if (!task) throw new Error('Download not found')
     this.abortControllers.get(id)?.abort()
+    // 0.2.5 WP9: a paused task must not keep its place in the start queue.
+    this.pendingStarts = this.pendingStarts.filter((w) => w.taskId !== id)
     task.status = 'paused'
     this.downloads.set(id, task)
     upsertDownloadTask(task)

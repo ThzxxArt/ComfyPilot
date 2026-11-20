@@ -3382,7 +3382,7 @@ describe('git source inference', () => {
 // managerChannelList / registrySearch
 // =====================================================================
 describe('managerChannelList', () => {
-  it('returns entries from the first reachable endpoint and stops', async () => {
+  it('merges every reachable endpoint and keeps v4 entries first', async () => {
     const urls: string[] = []
     setFetch(async (url) => {
       urls.push(url)
@@ -3415,7 +3415,8 @@ describe('managerChannelList', () => {
     expect(out).toHaveLength(1)
     expect(out[0].id).toBe('a')
     expect(out[0].tags).toEqual(['t'])
-    expect(urls).toHaveLength(1)
+    // 0.2.5 WP4: no early break — v4 first, then main, then legacy.
+    expect(urls).toHaveLength(4)
   })
 
   it('falls through to the second endpoint when the first returns HTTP error', async () => {
@@ -3444,7 +3445,8 @@ describe('managerChannelList', () => {
       throw new Error('down')
     })
     expect(await nodePackService.managerChannelList()).toEqual([])
-    expect(calls).toBe(1)
+    // 0.2.5 WP4: offline is a hard no-network mode.
+    expect(calls).toBe(0)
     h.state.settings.networkMode = 'public'
   })
 })

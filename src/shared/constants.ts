@@ -39,6 +39,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoRecover: false,
   autoRecoverCooldownMs: 300_000,
   autoRecoverMaxAttempts: 3,
+  batchDeadlineMs: 30 * 60 * 1000,
   proxy: {
     enabled: false,
     protocol: 'http',
@@ -170,6 +171,8 @@ export const TORCH_DISK_GB: Record<TorchChannel, number> = {
   cu130: 12,
   cu126: 12,
   rocm: 14,
+  'rocm7.2': 14,
+  'rocm10.0': 14,
   xpu: 8,
   mps: 4,
   cpu: 3

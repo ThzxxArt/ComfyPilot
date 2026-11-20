@@ -28,7 +28,7 @@ describe('torchChannelFromProbe (0.2.1)', () => {
 
   it('maps ROCm, XPU and MPS builds', () => {
     expect(torchChannelFromProbe({ rocmVersion: '7.0', torchVersion: '2.14.1+rocm7.0' })).toBe(
-      'rocm'
+      process.platform === 'win32' ? 'rocm10.0' : 'rocm7.2'
     )
     expect(torchChannelFromProbe({ npuAvailable: true, torchVersion: '2.14.1+xpu' })).toBe('xpu')
     expect(torchChannelFromProbe({ mpsAvailable: true, torchVersion: '2.14.1' })).toBe('mps')

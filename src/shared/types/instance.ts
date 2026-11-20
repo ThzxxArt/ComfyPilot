@@ -83,6 +83,19 @@ export interface LaunchProfile {
   tempDirectory?: string
   /** --previews-directory: assets-system preview storage (ComfyUI 0.40+). */
   previewsDirectory?: string
+  // ---------- 0.2.5 WP6: current ComfyUI runtime flags ----------
+  /** --cache-ram (GB, zero to two values upstream; one value here). */
+  cacheRam?: number
+  /** --cuda-device: 'all' or comma-separated ids. */
+  cudaDevice?: string
+  /** --disable-dynamic-vram (0.39+ troubleshooting). */
+  disableDynamicVram?: boolean
+  /** --disable-fast-disk. */
+  disableFastDisk?: boolean
+  /** --disable-comfy-compiler. */
+  disableComfyCompiler?: boolean
+  /** --force-non-blocking. */
+  forceNonBlocking?: boolean
 }
 
 export interface ComfyInstanceConfig {

@@ -251,6 +251,41 @@ async function recoverCrash(lowerVram: boolean): Promise<void> {
 }
 
 const id = computed(() => String(route.params.id || ''))
+const managerInfo = ref<import('@shared/types').ManagerInfo | null>(null)
+const managerBusy = ref(false)
+
+async function loadManagerInfo(targetId = id.value): Promise<void> {
+  if (!targetId) return
+  try {
+    managerInfo.value = await ipc('instance.managerInfo', targetId)
+  } catch {
+    managerInfo.value = null
+  }
+}
+
+async function setManagerLevel(level: import('@shared/types').ManagerSecurityLevel): Promise<void> {
+  const target = instance.value
+  if (!target) return
+  managerBusy.value = true
+  try {
+    managerInfo.value = await ipc('instance.setManagerSecurity', target.id, level)
+    message.success(t('instance.managerSaved'))
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    managerBusy.value = false
+  }
+}
+
+async function openManagerConfig(): Promise<void> {
+  const target = instance.value
+  if (!target) return
+  try {
+    await ipc('instance.openManagerConfig', target.id)
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
 const instanceRunning = computed(() => instance.value?.status === 'running')
 /** Starting counts as "stop-able" for button semantics; opening the frontend still needs ready. */
 const canStop = computed(
@@ -681,6 +716,7 @@ async function refresh(): Promise<void> {
     // Ignore stale responses after the route switched to another instance.
     if (seq !== refreshSeq || forId !== id.value) return
     instance.value = store.instances.find((i) => i.id === forId) || null
+    void loadManagerInfo(forId)
     // Sync the profile draft only when the route switches to another instance,
     // so background refreshes can never clobber unsaved edits.
     if (profileSyncedFor !== forId) {
@@ -1404,6 +1440,63 @@ watch(
                 </NDescriptionsItem>
               </NDescriptions>
 
+              <div class="manager-card">
+                <div class="manager-head">
+                  <b>{{ $t('instance.managerTitle') }}</b>
+                  <NTag size="tiny" :type="managerInfo?.installed ? 'success' : 'default'">
+                    {{
+                      managerInfo?.installed
+                        ? `${managerInfo?.source} ${managerInfo?.version || ''}`
+                        : $t('instance.managerNotInstalled')
+                    }}
+                  </NTag>
+                  <NButton size="tiny" secondary @click="openManagerConfig()">
+                    {{ $t('instance.openManagerConfig') }}
+                  </NButton>
+                </div>
+                <NDescriptions v-if="managerInfo" bordered size="small" :column="2">
+                  <NDescriptionsItem :label="$t('instance.managerConfigPath')" :span="2">
+                    <span class="mono">{{ managerInfo.configPath || '—' }}</span>
+                    <span v-if="!managerInfo.configExists" class="hint">
+                      {{ $t('instance.managerConfigMissing') }}
+                    </span>
+                  </NDescriptionsItem>
+                  <NDescriptionsItem :label="$t('instance.managerSecurity')">
+                    <NSelect
+                      :value="managerInfo.securityLevel"
+                      :options="[
+                        { label: 'strong', value: 'strong' },
+                        { label: 'normal', value: 'normal' },
+                        { label: 'normal-', value: 'normal-' },
+                        { label: 'weak', value: 'weak' }
+                      ]"
+                      size="small"
+                      :loading="managerBusy"
+                      :disabled="!managerInfo.configExists"
+                      @update:value="setManagerLevel"
+                    />
+                    <div class="hint">{{ $t('instance.managerNextLaunch') }}</div>
+                  </NDescriptionsItem>
+                  <NDescriptionsItem :label="$t('instance.managerNetwork')">
+                    {{ managerInfo.networkMode || '—' }}
+                  </NDescriptionsItem>
+                  <NDescriptionsItem :label="$t('instance.managerSnapshots')" :span="2">
+                    <span class="mono">{{ managerInfo.snapshotsDir || '—' }}</span>
+                  </NDescriptionsItem>
+                  <NDescriptionsItem
+                    v-if="managerInfo.legacyBackup"
+                    :label="$t('instance.managerLegacy')"
+                    :span="2"
+                  >
+                    <span class="mono">{{ managerInfo.legacyBackup }}</span>
+                  </NDescriptionsItem>
+                </NDescriptions>
+                <ul v-if="managerInfo?.warnings?.length" class="manager-warnings">
+                  <li v-for="w in managerInfo.warnings" :key="w">{{ w }}</li>
+                </ul>
+                <div class="hint">{{ $t('instance.managerPolicyNote') }}</div>
+              </div>
+
               <div class="update-actions">
                 <NSpace>
                   <NButton secondary :loading="checkingUpdate" @click="doCheckUpdate">
@@ -2105,6 +2198,28 @@ watch(
 
 .desc {
   --n-td-color: transparent;
+}
+
+.manager-card {
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid rgba(128, 128, 128, 0.2);
+  border-radius: 8px;
+}
+.manager-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.manager-warnings {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: #f0a020;
+  font-size: 12px;
+}
+.safe-mode-banner {
+  margin-bottom: 12px;
 }
 
 .update-actions {

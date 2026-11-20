@@ -761,14 +761,25 @@ export class BackupService {
     if (plan.parseErrors.length) {
       throw new Error(`Backup restore aborted, nothing applied — ${plan.parseErrors.join('; ')}`)
     }
-    if (plan.invalidPaths.length) {
-      throw new Error(
-        `Backup restore aborted, nothing applied — paths outside this machine's known roots: ${plan.invalidPaths.join('; ')}`
-      )
-    }
     const sections = new Set<BackupRestoreSection>(
       (opts?.sections || ALL_SECTIONS).filter((s) => ALL_SECTIONS.includes(s))
     )
+    // 0.2.5 WP9: validate only the sections being restored. A missing model
+    // path on another machine must not block restoring settings/workflows.
+    const sectionOf = (message: string): BackupRestoreSection =>
+      message.startsWith('model ')
+        ? 'models'
+        : message.startsWith('instance ')
+          ? 'instances'
+          : message.startsWith('node pack') || message.startsWith('snapshot ')
+            ? 'nodePacks'
+            : 'settings'
+    const scopedInvalid = plan.invalidPaths.filter((p) => sections.has(sectionOf(p)))
+    if (scopedInvalid.length) {
+      throw new Error(
+        `Backup restore aborted, nothing applied — paths outside this machine's known roots: ${scopedInvalid.join('; ')}`
+      )
+    }
 
     // Settings first: it carries roots used by later operations.
     flushPendingWrites()
@@ -891,6 +902,13 @@ export class BackupService {
       try {
         applyRestoreSnapshot(snapshot)
         flushPendingWrites()
+        // A rollback is a restore too — OS proxy/login item/tray must agree
+        // with the settings that were just put back (0.2.5 WP9).
+        void import('./proxy').then((m) => m.syncProxyFromSettings()).catch(() => undefined)
+        void import('./desktop')
+          .then((m) => m.setLaunchOnBoot(Boolean(loadSettings().launchOnBoot)))
+          .catch(() => undefined)
+        void import('./tray').then((m) => m.refreshTray()).catch(() => undefined)
         clearJournal()
       } catch (rbErr) {
         const rbMsg = rbErr instanceof Error ? rbErr.message : String(rbErr)
@@ -1039,6 +1057,11 @@ export class BackupService {
     }
 
     const roots = restoreRoots()
+    // 0.2.5 WP9: the backup's own modelScanRoots are candidate roots when they
+    // still exist on this machine (cross-machine / moved-drive restores).
+    for (const r of (settings?.modelScanRoots as string[] | undefined) || []) {
+      if (typeof r === 'string' && r && existsSync(r)) roots.push(r)
+    }
     const invalidPaths: string[] = []
 
     // Instance paths decide where the app runs commands and writes files. An

@@ -38,7 +38,20 @@ export class MarketService {
       } catch {
         /* nodePack unavailable — directory keys still apply */
       }
-      return toPageResult(result, (n) => mapMarketItem(n, installed, opts?.category || 'tools'))
+      const page = toPageResult(result, (n) =>
+        mapMarketItem(n, installed, opts?.category || 'tools')
+      )
+      // 0.2.5 WP9: the category used to be only a label fallback. Filter the
+      // page honestly (and never claim pages that are not in this result).
+      const category = String(opts?.category || '').trim()
+      if (!category || category === 'all') return page
+      const items = page.items.filter((item) => item.category === category)
+      return {
+        ...page,
+        items,
+        total: items.length,
+        totalPages: items.length ? 1 : 0
+      }
     } catch (err) {
       if (settings.networkMode === 'offline') {
         return {

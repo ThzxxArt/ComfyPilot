@@ -577,7 +577,8 @@ export function assertSafeSettingsPatch(patch: Record<string, unknown>): void {
     ['healthCheckTimeoutMs', 250, 30_000],
     ['healthStaleMs', 60_000, 1_800_000],
     ['autoRecoverCooldownMs', 10_000, 3_600_000],
-    ['autoRecoverMaxAttempts', 1, 10]
+    ['autoRecoverMaxAttempts', 1, 10],
+    ['batchDeadlineMs', 60_000, 24 * 60 * 60 * 1000]
   ]
   for (const [key, min, max] of numericSettings) {
     const value = patch[key]

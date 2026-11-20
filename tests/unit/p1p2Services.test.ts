@@ -1251,9 +1251,11 @@ describe('p1p2 services', () => {
 
     it('batchRemove reports per-id outcomes honestly (0.1.15)', async () => {
       const { outputService } = await freshP1p2()
+      await seedInstance()
       const { listOutputAssetsAll } = await import('../../src/main/services/db')
-      const f1 = join(ROOT, 'batch-1.png')
-      const f2 = join(ROOT, 'batch-2.mp4')
+      // 0.2.5 WP10: deletion is only allowed under a real output root.
+      const f1 = join(ROOT, 'comfy', 'output', 'batch-1.png')
+      const f2 = join(ROOT, 'comfy', 'output', 'batch-2.mp4')
       writeFileSync(f1, 'one')
       writeFileSync(f2, 'two')
       outputService.indexFile(f1)

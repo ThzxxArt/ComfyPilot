@@ -72,7 +72,8 @@ const settingsPatchSchema = z
     healthStaleMs: z.number().optional(),
     autoRecover: b.optional(),
     autoRecoverCooldownMs: z.number().optional(),
-    autoRecoverMaxAttempts: z.number().optional()
+    autoRecoverMaxAttempts: z.number().optional(),
+    batchDeadlineMs: z.number().optional()
   })
   .passthrough()
 const launchOptionsSchema = z
@@ -143,6 +144,9 @@ set('instance.health', z.tuple([s]))
 set('instance.checkHealth', z.tuple([s]))
 set('instance.rescue', z.tuple([s, z.object({ safe: b.optional() }).strict().optional()]))
 set('instance.exportRescueScript', z.tuple([s]))
+set('instance.managerInfo', z.tuple([s]))
+set('instance.setManagerSecurity', z.tuple([s, z.enum(['strong', 'normal', 'normal-', 'weak'])]))
+set('instance.openManagerConfig', z.tuple([s]))
 set('instance.migratePython', z.tuple([s]))
 set('instance.remove', z.tuple([s]))
 set('instance.launch', z.tuple([s, launchOptionsSchema.optional()]))

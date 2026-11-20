@@ -198,19 +198,19 @@ describe('installer service internals', () => {
       expect(gpus[1].model).toBe('Unknown GPU')
     })
 
-    it('AMD linux → rocm, AMD windows → cpu', async () => {
+    it('AMD linux → rocm7.2, AMD windows → rocm10.0 (never CPU)', async () => {
       stubPlatform('linux')
       h.graphicsImpl = async () => ({ controllers: [{ vendor: 'AMD', model: 'Radeon RX 6800' }] })
       let { installerService } = await import('../../src/main/services/installer')
       let gpus = await installerService.detectGpu()
-      expect(gpus[0].recommendedTorch).toBe('rocm')
+      expect(gpus[0].recommendedTorch).toBe('rocm7.2')
 
       stubPlatform('win32')
       vi.resetModules()
       h.graphicsImpl = async () => ({ controllers: [{ vendor: 'AMD', model: 'Radeon RX 6800' }] })
       ;({ installerService } = await import('../../src/main/services/installer'))
       gpus = await installerService.detectGpu()
-      expect(gpus[0].recommendedTorch).toBe('cpu')
+      expect(gpus[0].recommendedTorch).toBe('rocm10.0')
     })
 
     it('Intel win/linux → xpu, other platform → cpu', async () => {

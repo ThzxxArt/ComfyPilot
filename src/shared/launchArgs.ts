@@ -92,6 +92,14 @@ export function renderLaunchProfile(profile?: LaunchProfile): string[] {
   if (p.asyncOffload === 'on') args.push('--async-offload')
   else if (p.asyncOffload === 'off') args.push('--disable-async-offload')
   if (p.fastDisk) args.push('--fast-disk')
+  if (p.disableFastDisk) args.push('--disable-fast-disk')
+  if (p.disableDynamicVram) args.push('--disable-dynamic-vram')
+  if (p.disableComfyCompiler) args.push('--disable-comfy-compiler')
+  if (p.forceNonBlocking) args.push('--force-non-blocking')
+  if (typeof p.cacheRam === 'number' && p.cacheRam >= 0) {
+    args.push('--cache-ram', String(p.cacheRam))
+  }
+  if (p.cudaDevice) args.push('--cuda-device', p.cudaDevice)
   if (p.disablePinnedMemory) args.push('--disable-pinned-memory')
   if (p.mmapTorchFiles) args.push('--mmap-torch-files')
   if (p.disableCudaGraphs) args.push('--disable-cuda-graphs')
@@ -198,7 +206,7 @@ export interface LaunchArgValidationError {
  * changes between releases); the warning text tells the user what to do.
  */
 export interface LaunchArgWarning {
-  code: 'unknown-flag' | 'recent-flag' | 'duplicate-listen'
+  code: 'unknown-flag' | 'recent-flag' | 'duplicate-listen' | 'deprecated-flag'
   flag: string
   level: 'info' | 'warning'
 }
@@ -213,7 +221,8 @@ export const LAUNCH_ARG_ERROR_KEYS: Record<string, string> = {
   'text-enc-conflict': 'launchArgs.errTextEncConflict',
   'fp-conflict': 'launchArgs.errFpConflict',
   'upcast-conflict': 'launchArgs.errUpcastConflict',
-  'cuda-malloc-conflict': 'launchArgs.errCudaMallocConflict'
+  'cuda-malloc-conflict': 'launchArgs.errCudaMallocConflict',
+  'manager-conflict': 'launchArgs.errManagerConflict'
 }
 
 /** i18n key for a warning code (single mapping shared by every consumer). */
@@ -223,6 +232,8 @@ export function launchArgWarningKey(code: string): string {
       return 'launchArgs.warnUnknownFlag'
     case 'duplicate-listen':
       return 'launchArgs.warnDuplicateListen'
+    case 'deprecated-flag':
+      return 'launchArgs.warnDeprecatedFlag'
     default:
       return 'launchArgs.warnRecentFlag'
   }
@@ -232,6 +243,8 @@ interface CatalogEntry {
   flag: string
   /** Only exists in recent ComfyUI builds. */
   recent?: boolean
+  /** Removed/obsolete upstream — accepted only as a loud warning. */
+  deprecated?: boolean
 }
 
 const CATALOG: CatalogEntry[] = [
@@ -273,7 +286,8 @@ const CATALOG: CatalogEntry[] = [
   { flag: '--bf16-text-enc' },
   { flag: '--fp16-intermediates' },
   { flag: '--force-channels-last' },
-  { flag: '--directml' },
+  { flag: '--directml', deprecated: true },
+  { flag: '--force-output-rerun', recent: true },
   { flag: '--oneapi-device-selector' },
   { flag: '--supports-fp8-compute' },
   { flag: '--preview-method' },
@@ -407,6 +421,10 @@ export function warnLaunchArgs(args: string[], opts?: WarnLaunchArgsOptions): La
       out.push({ code: 'unknown-flag', flag: a, level: 'warning' })
       continue
     }
+    if (entry.deprecated) {
+      out.push({ code: 'deprecated-flag', flag: a, level: 'warning' })
+      continue
+    }
     if (entry.recent) {
       // Confirmed-supported version: silence the advisory entirely.
       if (recentSupported === true) continue
@@ -454,6 +472,11 @@ export function validateLaunchArgs(args: string[]): LaunchArgValidationError[] {
   }
   if (has('--cuda-malloc') && has('--disable-cuda-malloc')) {
     errors.push({ code: 'cuda-malloc-conflict' })
+  }
+  // 0.2.5 WP6: these two Manager UI modes are mutually exclusive upstream and
+  // argparse exits immediately when both are passed.
+  if (has('--disable-manager-ui') && has('--enable-manager-legacy-ui')) {
+    errors.push({ code: 'manager-conflict' })
   }
 
   const numeric: Array<[string, number, number]> = [

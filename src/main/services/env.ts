@@ -443,7 +443,7 @@ export function torchChannelFromProbe(
     if (probe.cudaVersion.startsWith('12')) return 'cu126'
     return 'cpu'
   }
-  if (probe.rocmVersion) return 'rocm'
+  if (probe.rocmVersion) return process.platform === 'win32' ? 'rocm10.0' : 'rocm7.2'
   if (probe.npuAvailable) return 'xpu'
   if (probe.mpsAvailable) return 'mps'
   if (probe.torchVersion) return 'cpu'
