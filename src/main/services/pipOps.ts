@@ -140,8 +140,23 @@ export class PipOpsService extends EventEmitter {
 
   // ---------------------------------------------------------------- public ops
 
+  /** Network/install policy applies to explicit pip actions too, not only nodes. */
+  private assertInstallAllowed(): void {
+    const settings = loadSettings()
+    if (settings.networkMode === 'offline') {
+      throw codedError('OFFLINE', 'Offline mode blocks package installation')
+    }
+    if (settings.allowPipInstall === false) {
+      throw codedError(
+        'PIP_DISABLED',
+        'Package installation is disabled by the ComfyPilot install policy'
+      )
+    }
+  }
+
   /** Install one validated pip spec (name / name==x / name>=x,<y). */
   async installSpec(instanceId: string, spec: string): Promise<PipOpResult> {
+    this.assertInstallAllowed()
     const s = String(spec || '').trim()
     if (!isValidPipSpec(s)) {
       throw codedError(
@@ -172,6 +187,7 @@ export class PipOpsService extends EventEmitter {
 
   /** Install several validated specs in one op (dependency-audit repair). */
   async installSpecs(instanceId: string, specs: string[]): Promise<PipOpResult> {
+    this.assertInstallAllowed()
     const valid = (specs || []).map((s) => String(s || '').trim()).filter(Boolean)
     for (const spec of valid) {
       if (!isValidPipSpec(spec)) {
@@ -203,6 +219,7 @@ export class PipOpsService extends EventEmitter {
 
   /** Apply a curated recipe (ordered steps; wheels hash-verified). */
   async installRecipe(instanceId: string, recipeId: string): Promise<PipOpResult> {
+    this.assertInstallAllowed()
     const recipe = recipeById(recipeId)
     if (!recipe) throw codedError('RECIPE_NOT_FOUND', `Unknown recipe: ${recipeId}`)
     if (!recipeSupportsPlatform(recipe)) {
@@ -264,6 +281,7 @@ export class PipOpsService extends EventEmitter {
     reqFile: string,
     label?: string
   ): Promise<PipOpResult> {
+    this.assertInstallAllowed()
     const target = this.resolveInstanceId(instanceId)
     const settings = loadSettings()
     let lines: string[] = []

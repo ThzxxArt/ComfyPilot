@@ -681,6 +681,37 @@ export async function gitPullOrMerge(
   }
 }
 
+/**
+ * 0.2.5 WP9 / P1-58: a git pull failure used to `reset --hard` back to the
+ * pre-update rev, silently discarding tracked local edits. Refuse up front
+ * instead. Untracked caches are ignored (they are not destroyed by reset).
+ */
+export async function assertNodePackGitClean(gitBin: string, packPath: string): Promise<void> {
+  let stdout = ''
+  try {
+    const result = (await execFileAsync(
+      gitBin,
+      ['-C', packPath, 'status', '--porcelain', '--untracked-files=no'],
+      { timeout: 10000, env: comfyChildEnv(loadSettings()) }
+    )) as unknown
+    // Node's execFile promisify resolves `{stdout,stderr}`; lightweight test
+    // doubles may resolve the raw stdout string.
+    stdout =
+      typeof result === 'string' ? result : String((result as { stdout?: unknown })?.stdout ?? '')
+  } catch (e) {
+    throw codedError(
+      'NODE_GIT_STATUS_FAILED',
+      `Cannot verify local changes in ${basename(packPath)}: ${e instanceof Error ? e.message : String(e)}`
+    )
+  }
+  if (stdout.trim()) {
+    throw codedError(
+      'NODE_DIRTY',
+      `${basename(packPath)} has tracked local changes — commit or stash them before updating`
+    )
+  }
+}
+
 export async function updateInner(
   this: NodePackHost,
   idOrName: string,
@@ -707,6 +738,8 @@ export async function updateInner(
     pack.installSource === 'git' || Boolean(pack.path && existsSync(join(pack.path, '.git')))
   if (isGitPack && pack.path) {
     const gitBin = resolveGitBinary()
+    // Never risk the `reset --hard` safety net on a tree with tracked edits.
+    await assertNodePackGitClean(gitBin, pack.path)
     // Capture the pre-update rev so a failed pull can be hard-reset back to
     // a consistent tree (partial fetch/index state must not survive).
     let oldRev = ''

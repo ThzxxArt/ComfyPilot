@@ -345,6 +345,93 @@ describe('NodePackService.update guards', () => {
     await expect(nodePackService.update('PackA', undefined, 'inst-1')).rejects.toThrow(/locked/i)
   })
 
+  it('assertNodePackGitClean sees tracked modifications', async () => {
+    const cp = await import('child_process')
+    ;(cp.execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      (
+        _cmd: string,
+        args: string[],
+        maybeOpts: unknown,
+        maybeCb?: (e: null, o: string, e2: string) => void
+      ) => {
+        const cb = (typeof maybeOpts === 'function' ? maybeOpts : maybeCb) as (
+          e: null,
+          o: string,
+          e2: string
+        ) => void
+        cb(null, Array.isArray(args) && args.includes('status') ? ' M local.py' : 'ok', '')
+        return { pid: 1 }
+      }
+    )
+    const { assertNodePackGitClean } = await import('../../src/main/services/nodePack/update')
+    await expect(assertNodePackGitClean('/usr/bin/git', 'C:/pack')).rejects.toThrow(
+      /local changes/i
+    )
+  })
+
+  it('fails closed when git status itself cannot be checked', async () => {
+    const cp = await import('child_process')
+    ;(cp.execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      (
+        _cmd: string,
+        _args: string[],
+        maybeOpts: unknown,
+        maybeCb?: (e: Error, o: string, e2: string) => void
+      ) => {
+        const cb = (typeof maybeOpts === 'function' ? maybeOpts : maybeCb) as (
+          e: Error,
+          o: string,
+          e2: string
+        ) => void
+        cb(new Error('not a git repository'), '', '')
+        return { pid: 1 }
+      }
+    )
+    const { assertNodePackGitClean } = await import('../../src/main/services/nodePack/update')
+    await expect(assertNodePackGitClean('/usr/bin/git', 'C:/pack')).rejects.toMatchObject({
+      code: 'NODE_GIT_STATUS_FAILED'
+    })
+  })
+
+  it('refuses a git pack with tracked local changes before pulling', async () => {
+    seedPack({ name: 'PackA', withGit: true })
+    const { join } = require('path') as typeof import('path')
+    const packPath = join('C:/fake/ComfyUI', 'custom_nodes', 'PackA')
+    h.state.nodePacks = [
+      {
+        id: 'abcdef0123456789',
+        name: 'PackA',
+        locked: false,
+        installSource: 'git',
+        path: packPath,
+        version: '1.0.0',
+        issues: [],
+        tags: [],
+        nodeList: []
+      }
+    ]
+    const cp = await import('child_process')
+    ;(cp.execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      (
+        _cmd: string,
+        args: string[],
+        maybeOpts: unknown,
+        maybeCb?: (e: null, o: string, e2: string) => void
+      ) => {
+        const cb = (typeof maybeOpts === 'function' ? maybeOpts : maybeCb) as (
+          e: null,
+          o: string,
+          e2: string
+        ) => void
+        cb(null, Array.isArray(args) && args.includes('status') ? ' M local.py' : 'ok', '')
+        return { pid: 1 }
+      }
+    )
+    await expect(nodePackService.update('PackA', undefined, 'inst-1')).rejects.toThrow(
+      /local changes/i
+    )
+  })
+
   it('throws not-updatable for local packs without git', async () => {
     seedPack({ name: 'PackA' })
     const { join } = require('path') as typeof import('path')

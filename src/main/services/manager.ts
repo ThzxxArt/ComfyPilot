@@ -88,7 +88,10 @@ export function updateManagerConfigText(
   text: string,
   patch: { securityLevel?: ManagerSecurityLevel; networkMode?: ManagerNetworkMode }
 ): string {
-  const raw = String(text ?? '').replace(/^\uFEFF/, '')
+  const source = String(text ?? '')
+  // Keep a BOM some Windows editors add; parsing strips it, writing should not.
+  const bom = source.startsWith('\uFEFF') ? '\uFEFF' : ''
+  const raw = source.replace(/^\uFEFF/, '')
   const eol = raw.includes('\r\n') ? '\r\n' : '\n'
   const lines = raw.split(/\r?\n/)
   const updates = new Map<string, string>()
@@ -130,7 +133,7 @@ export function updateManagerConfigText(
       defaultEnd = lines.length
     }
   }
-  return lines.join(eol)
+  return bom + lines.join(eol)
 }
 
 interface PipCacheEntry {

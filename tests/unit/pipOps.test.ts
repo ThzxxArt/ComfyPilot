@@ -35,7 +35,7 @@ const h = vi.hoisted(() => ({
   fetchImpl: null as null | (() => any),
   reqCalls: [] as string[],
   uvInstalled: true,
-  settings: { pipIndex: '' },
+  settings: { pipIndex: '', networkMode: 'public', allowPipInstall: true },
   nodeOpStatus: null as null | string,
   nodeActive: false
 }))
@@ -90,7 +90,7 @@ vi.mock('../../src/main/services/bootstrap', () => ({
 
 vi.mock('../../src/main/services/db', () => ({
   loadInstanceConfigs: () => [CFG],
-  loadSettings: () => ({ pipIndex: h.settings.pipIndex })
+  loadSettings: () => ({ ...h.settings })
 }))
 
 vi.mock('../../src/main/services/instance', () => ({
@@ -114,6 +114,8 @@ describe('PipOpsService (0.1.12)', () => {
     h.reqCalls = []
     h.uvInstalled = true
     h.settings.pipIndex = ''
+    h.settings.networkMode = 'public'
+    h.settings.allowPipInstall = true
     h.nodeOpStatus = null
     h.nodeActive = false
   })
@@ -129,6 +131,18 @@ describe('PipOpsService (0.1.12)', () => {
     })
     await expect(svc.installSpec('i1', 'pkg; rm -rf /')).rejects.toMatchObject({
       code: 'INVALID_SPEC'
+    })
+    expect(h.execCalls).toHaveLength(0)
+  })
+
+  it('rejects offline/policy-disabled pip installs before any command runs', async () => {
+    const svc = await fresh()
+    h.settings.networkMode = 'offline'
+    await expect(svc.installSpec('i1', 'onnx')).rejects.toMatchObject({ code: 'OFFLINE' })
+    h.settings.networkMode = 'public'
+    h.settings.allowPipInstall = false
+    await expect(svc.installSpecs('i1', ['onnx'])).rejects.toMatchObject({
+      code: 'PIP_DISABLED'
     })
     expect(h.execCalls).toHaveLength(0)
   })

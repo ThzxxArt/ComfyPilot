@@ -269,8 +269,10 @@ vi.mock('child_process', () => {
     }
   })
   return {
-    execFile: vi.fn((_c: string, _a: string[], _o: unknown, cb?: unknown) => {
-      if (typeof cb === 'function') (cb as (e: null, o: string, s: string) => void)(null, 'ok', '')
+    execFile: vi.fn((_c: string, args: string[], _o: unknown, cb?: unknown) => {
+      const cleaned = Array.isArray(args) && args.includes('status')
+      if (typeof cb === 'function')
+        (cb as (e: null, o: string, s: string) => void)(null, cleaned ? '' : 'ok', '')
       return { pid: 1 }
     }),
     execFileSync: vi.fn(() => 'abc1234'),
@@ -1023,6 +1025,20 @@ describe('git pack update hits afterInstall fallbacks', () => {
     const events: Array<Record<string, unknown>> = []
     nodePackService.on('install-progress', (e: Record<string, unknown>) => events.push(e))
     nodePackService.on('op-progress', (e: Record<string, unknown>) => events.push({ __op: e }))
+    // A strongly-typed smoke test earlier leaves a permissive exec mock behind;
+    // this update needs a genuinely clean `git status` (empty output).
+    const cp = await import('child_process')
+    ;(cp.execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      (_c: string, args: string[], _o: unknown, cb?: unknown) => {
+        if (typeof cb === 'function')
+          (cb as (e: null, o: string, s: string) => void)(
+            null,
+            Array.isArray(args) && args.includes('status') ? '' : 'ok',
+            ''
+          )
+        return { pid: 1 }
+      }
+    )
     // No instanceId → afterInstall's `instanceId || 'default'` fallback fires.
     // The exec mock succeeds by default, so this update must run to completion —
     // swallowing a failure here would make the emit assertions meaningless.
@@ -1056,9 +1072,13 @@ describe('git pack update hits afterInstall fallbacks', () => {
     const cp = await import('child_process')
     const execMock = cp.execFile as unknown as ReturnType<typeof vi.fn>
     const spawnMock = cp.spawn as ReturnType<typeof vi.fn>
-    execMock.mockImplementation((_c: string, _a: string[], _o: unknown, cb?: unknown) => {
-      if (typeof cb === 'function')
-        (cb as (e: Error, o: string, s: string) => void)(new Error('pull failed'), '', '')
+    execMock.mockImplementation((_c: string, args: string[], _o: unknown, cb?: unknown) => {
+      if (typeof cb === 'function') {
+        // Clean tree: the pull (via spawn) is the operation that must fail.
+        if (Array.isArray(args) && args.includes('status'))
+          (cb as (e: null, o: string, s: string) => void)(null, '', '')
+        else (cb as (e: Error, o: string, s: string) => void)(new Error('pull failed'), '', '')
+      }
       return { pid: 1 }
     })
     // git pull is streamed through spawn (env.runStreaming) — make the stream

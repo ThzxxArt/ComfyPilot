@@ -143,6 +143,15 @@ describe('Manager config.ini parser (0.2.5 WP4)', () => {
     expect(next).toContain('\r\n')
   })
 
+  it('preserves a UTF-8 BOM and CRLF when writing', () => {
+    const text = '\uFEFF# keep\r\n[default]\r\nsecurity_level = strong\r\n'
+    const next = updateManagerConfigText(text, { securityLevel: 'weak' })
+    expect(next.startsWith('\uFEFF')).toBe(true)
+    expect(next).toContain('security_level = weak')
+    expect(next).toContain('\r\n')
+    expect(parseManagerConfig(next).securityLevel).toBe('weak')
+  })
+
   it('adds a missing key under [default] without disturbing other sections', () => {
     const text = '[default]\nsecurity_level = strong\n\n[other]\nnetwork_mode = offline\n'
     const next = updateManagerConfigText(text, { networkMode: 'private' })

@@ -1852,6 +1852,8 @@ describe('NodePackService.update', () => {
     ]
     const pulls: string[][] = []
     cpMock.__setExecHandler((cmd, args) => {
+      // A real clean `git status --porcelain` prints nothing.
+      if (args.includes('status')) return { stdout: '' }
       if (args.includes('pull')) {
         pulls.push([...args])
         h.writeFile(join(dir, 'pyproject.toml'), 'name = "GitUp"\nversion = "2.0.0"\n')
