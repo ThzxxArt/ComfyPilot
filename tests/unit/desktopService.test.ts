@@ -71,6 +71,8 @@ import {
   setLaunchOnBoot
 } from '../../src/main/services/desktop'
 
+const NATIVE_PLATFORM = process.platform
+
 function forcePlatform(value: NodeJS.Platform): () => void {
   const real = process.platform
   Object.defineProperty(process, 'platform', { value, configurable: true })
@@ -155,7 +157,9 @@ describe('desktop shortcuts (0.2.5 WP8)', () => {
     const body = readFileSync(file, 'utf-8')
     expect(body).toContain('Type=Application')
     expect(body).toContain(`Exec="${target}" "--rescue" "i1"`)
-    expect(statSync(file).mode & 0o777).toBe(0o755)
+    if (NATIVE_PLATFORM !== 'win32') {
+      expect(statSync(file).mode & 0o777).toBe(0o755)
+    }
     expect(removeDesktopShortcut('ComfyPilot')).toBe(true)
     expect(existsSync(file)).toBe(false)
     expect(removeDesktopShortcut('ComfyPilot')).toBe(false)
@@ -170,7 +174,9 @@ describe('desktop shortcuts (0.2.5 WP8)', () => {
       setLaunchOnBoot(true)
       const file = join(xdg, 'autostart', 'comfypilot.desktop')
       expect(existsSync(file)).toBe(true)
-      expect(statSync(file).mode & 0o777).toBe(0o755)
+      if (NATIVE_PLATFORM !== 'win32') {
+        expect(statSync(file).mode & 0o777).toBe(0o755)
+      }
       expect(readFileSync(file, 'utf-8')).toContain('X-GNOME-Autostart-enabled=true')
       expect(isLaunchOnBoot()).toBe(true)
       setLaunchOnBoot(false)

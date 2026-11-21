@@ -137,6 +137,8 @@ describe('monitor snapshot edge branches', () => {
 
   it('parses Windows GPU counters, caches them and tolerates failures', async () => {
     Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    const realNow = Date.now()
+    const now = vi.spyOn(Date, 'now').mockReturnValue(realNow + 10000)
     h.execOut = ['GPU0,100,200,10,20', 'bad line', 'GPU1,not,numbers,0,0', 'GPU2,1,2,3,4', ''].join(
       '\n'
     )
@@ -150,8 +152,7 @@ describe('monitor snapshot edge branches', () => {
     expect(h.execCalls.length).toBe(calls)
 
     // After the cache window a failure returns the cached adapters.
-    const now = vi.spyOn(Date, 'now')
-    now.mockReturnValue(now() + 5000)
+    now.mockReturnValue(realNow + 20000)
     h.execErr = new Error('ps failed')
     expect(await sampleWindowsGpuMemory()).toEqual(first)
     now.mockRestore()

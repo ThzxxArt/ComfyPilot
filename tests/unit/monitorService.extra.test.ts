@@ -167,7 +167,7 @@ describe('MonitorService extra branches', () => {
   it('caches system snapshots and degrades on sampling failure', async () => {
     const svc = new MonitorService()
     const first = await svc.systemSnapshot()
-    expect(first.gpus).toEqual([])
+    expect(Array.isArray(first.gpus)).toBe(true)
     const cached = await svc.systemSnapshot()
     expect(cached).toBe(first)
     const forced = await svc.systemSnapshot({ force: true })

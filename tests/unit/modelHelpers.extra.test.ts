@@ -81,7 +81,7 @@ describe('model helper branches', () => {
     ].join('\n')
     const yamlFile = join(root, 'extra_model_paths.yaml')
     writeFileSync(yamlFile, yaml)
-    const paths = parseExtraModelPaths(yamlFile)
+    const paths = parseExtraModelPaths(yamlFile).map((p) => p.replace(/\\/g, '/'))
     expect(paths).toContain('/models/checkpoints')
     expect(paths).toContain('/models/loras')
     expect(paths).toContain('/models/vae')
@@ -94,7 +94,7 @@ describe('model helper branches', () => {
     )
     expect(
       parseExtraModelPathsDetailed(yamlFile, true, { modelOnly: true }).some((r) =>
-        r.path.endsWith('/nodes')
+        r.path.replace(/\\/g, '/').endsWith('/nodes')
       )
     ).toBe(false)
     expect(parseExtraModelPathsDetailed(join(root, 'missing.yaml'))).toEqual([])
@@ -103,9 +103,11 @@ describe('model helper branches', () => {
     expect(parseExtraModelPaths(badFile)).toBeTruthy()
     const sectionBad = join(root, 'section.yaml')
     writeFileSync(sectionBad, 'x:\n  base_path: 1\n  checkpoints: ckpt\n')
-    expect(parseExtraModelPathsDetailed(sectionBad).some((r) => r.path.endsWith('/ckpt'))).toBe(
-      true
-    )
+    expect(
+      parseExtraModelPathsDetailed(sectionBad).some((r) =>
+        r.path.replace(/\\/g, '/').endsWith('/ckpt')
+      )
+    ).toBe(true)
     expect(parseExtraModelPathsDetailed()).toBeTruthy()
   })
 

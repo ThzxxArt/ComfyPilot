@@ -58,12 +58,12 @@ const h = vi.hoisted(() => {
   }> = []
 
   function fsKey(p: unknown): string {
-    return String(p)
+    return String(p).replace(/[\\/]/g, process.platform === 'win32' ? '\\' : '/')
   }
 
   function parentOf(p: string): string {
-    const d = dirname(p)
-    return d === p ? '' : d
+    const d = dirname(fsKey(p))
+    return d === p ? '' : fsKey(d)
   }
 
   function baseOf(p: string): string {
@@ -72,6 +72,7 @@ const h = vi.hoisted(() => {
   }
 
   function detachFromParent(p: string): void {
+    p = fsKey(p)
     const parent = parentOf(p)
     if (!parent) return
     const children = state.dirs.get(parent)
@@ -82,6 +83,7 @@ const h = vi.hoisted(() => {
   }
 
   function attachToParent(p: string): void {
+    p = fsKey(p)
     const parent = parentOf(p)
     if (!parent) return
     const base = baseOf(p)
@@ -92,6 +94,7 @@ const h = vi.hoisted(() => {
   }
 
   function rmPath(p: string): void {
+    p = fsKey(p)
     for (const frag of state.rmFail) {
       if (String(p).includes(frag)) throw new Error(`rm failed: ${p}`)
     }
@@ -108,6 +111,8 @@ const h = vi.hoisted(() => {
   }
 
   function copyPath(from: string, to: string): void {
+    from = fsKey(from)
+    to = fsKey(to)
     if (state.files.has(from)) {
       state.files.set(to, state.files.get(from)!)
       const st = state.statStamp.get(from)
@@ -125,6 +130,8 @@ const h = vi.hoisted(() => {
   }
 
   function renamePath(from: string, to: string): void {
+    from = fsKey(from)
+    to = fsKey(to)
     // renameFail entries are substrings matched against the SOURCE path
     for (const frag of state.renameFail) {
       if (from.includes(frag)) throw new Error(`rename failed: ${from} -> ${to}`)
@@ -134,6 +141,7 @@ const h = vi.hoisted(() => {
   }
 
   function mkdirPath(p: string): void {
+    p = fsKey(p)
     if (state.dirs.has(p)) return
     const parent = parentOf(p)
     if (parent && !state.dirs.has(parent)) mkdirPath(parent)
@@ -145,6 +153,7 @@ const h = vi.hoisted(() => {
 
   /** Write a file AND register it in the parent directory listing. */
   function writeFile(p: string, content: string): void {
+    p = fsKey(p)
     const parent = parentOf(p)
     if (parent && !state.dirs.has(parent)) mkdirPath(parent)
     state.files.set(p, content)

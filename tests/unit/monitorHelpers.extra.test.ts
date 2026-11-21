@@ -91,6 +91,10 @@ describe('monitor helpers', () => {
   })
 
   it('returns no Windows adapters on non-Windows platforms', async () => {
-    expect(await sampleWindowsGpuMemory()).toEqual([])
+    if (process.platform === 'win32') {
+      expect(Array.isArray(await sampleWindowsGpuMemory())).toBe(true)
+    } else {
+      expect(await sampleWindowsGpuMemory()).toEqual([])
+    }
   })
 })

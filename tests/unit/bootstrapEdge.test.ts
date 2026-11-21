@@ -205,7 +205,8 @@ describe('bootstrap edge branches', () => {
 
     rmSync(join(runtimesDir(), 'python-3.13.18'), { recursive: true, force: true })
     h.execImpl = (cmd, args) => {
-      if (cmd === 'which' && args[0] === 'python') return { stdout: '/usr/bin/python\n' }
+      if ((cmd === 'which' || cmd === 'where') && args[0] === 'python')
+        return { stdout: '/usr/bin/python\n' }
       if (args.includes('--version')) {
         if (cmd.includes('uv')) return { stdout: 'uv 0.13.6' }
         return { stdout: 'Python 3.13.2' }

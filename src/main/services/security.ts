@@ -137,7 +137,8 @@ export function safeJoin(root: string, ...parts: string[]): string {
   }
   const cleaned = parts.map((p) => normalizePathEverySegment(String(p)))
   const target = normalize(resolve(root, ...cleaned))
-  if (!isPathInside(target, root) && resolve(root) !== target) {
+  const resolvedRoot = normalize(resolve(root))
+  if (!isPathInside(target, resolvedRoot) && resolvedRoot !== target) {
     throw new Error(`Path escapes root: ${target}`)
   }
   return target

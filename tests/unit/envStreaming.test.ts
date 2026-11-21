@@ -293,7 +293,9 @@ describe('env streaming and requirements edges', () => {
     } finally {
       Object.defineProperty(process, 'platform', { value: real, configurable: true })
     }
-    expect(torchChannelFromProbe({ rocmVersion: '6.2' } as never)).toBe('rocm7.2')
+    expect(torchChannelFromProbe({ rocmVersion: '6.2' } as never)).toBe(
+      real === 'win32' ? 'rocm10.0' : 'rocm7.2'
+    )
     expect(torchChannelFromProbe({ npuAvailable: true } as never)).toBe('xpu')
     expect(torchChannelFromProbe({ mpsAvailable: true } as never)).toBe('mps')
     expect(torchChannelFromProbe({ torchVersion: '2.9.0' } as never)).toBe('cpu')

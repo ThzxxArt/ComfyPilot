@@ -780,7 +780,10 @@ describe('restore() path containment (0.1.18 P0)', () => {
   it('drops node-pack/snapshot paths and unsafe scan roots from a backup', async () => {
     const dir = join(h.state.root, 'backups', 'b-paths')
     mkdirSync(dir, { recursive: true })
-    writeFileSync(join(dir, 'settings.json'), JSON.stringify({ modelScanRoots: ['/', '/tmp'] }))
+    writeFileSync(
+      join(dir, 'settings.json'),
+      JSON.stringify({ modelScanRoots: ['/', h.state.root] })
+    )
     writeFileSync(
       join(dir, 'node-packs.json'),
       JSON.stringify([
@@ -806,7 +809,7 @@ describe('restore() path containment (0.1.18 P0)', () => {
     expect(result.ok).toBe(true)
     expect(result.warnings.join(' ')).toMatch(/modelScanRoots|outside roots/)
     const saved = h.state.savedSettings as Record<string, unknown>
-    expect(saved.modelScanRoots).toEqual(['/tmp'].filter((p) => existsSync(p)))
+    expect(saved.modelScanRoots).toEqual([h.state.root])
     const packs = JSON.parse(readFileSync(join(h.state.root, 'node_packs.jsonc'), 'utf-8'))
     expect(packs.map((p: { id: string }) => p.id)).toEqual(['ok'])
   })

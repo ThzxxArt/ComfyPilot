@@ -20,17 +20,19 @@ const h = vi.hoisted(() => {
 
 vi.mock('fs', () => {
   const { state } = h
+  const fsKey = (p: unknown): string =>
+    String(p).replace(/[\\/]/g, process.platform === 'win32' ? '\\' : '/')
   return {
     existsSync: (p: unknown) => {
-      const s = String(p)
+      const s = fsKey(p)
       return state.exists.has(s) || state.dirs.has(s) || state.files.has(s) || state.isDir.has(s)
     },
     readdirSync: (p: unknown) => {
-      const s = String(p)
+      const s = fsKey(p)
       return state.dirs.get(s) || []
     },
     statSync: (p: unknown) => {
-      const s = String(p)
+      const s = fsKey(p)
       return {
         isDirectory: () => state.isDir.has(s) || state.dirs.has(s),
         isFile: () => state.files.has(s),
@@ -39,7 +41,7 @@ vi.mock('fs', () => {
       }
     },
     readFileSync: (p: unknown) => {
-      const s = String(p)
+      const s = fsKey(p)
       return state.files.get(s) || ''
     },
     writeFileSync: vi.fn(),
