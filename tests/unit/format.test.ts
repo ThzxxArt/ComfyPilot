@@ -82,7 +82,7 @@ describe('format date/time edge branches', () => {
     expect(formatDateTime('not-a-date')).toBe('—')
     expect(formatTime(stamp, 'en-US')).toBe(stamp.toLocaleTimeString('en-US'))
     expect(formatTime(0, 'en-US')).toBe(new Date(0).toLocaleTimeString('en-US'))
-    expect(formatTime(null)).toBe('—')
+    expect(formatTime(null as never)).toBe('—')
     expect(formatTime('not-a-date')).toBe('—')
   })
 })
