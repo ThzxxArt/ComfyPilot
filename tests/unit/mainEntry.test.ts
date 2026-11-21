@@ -33,7 +33,7 @@ const h = vi.hoisted(() => {
     }
     return api
   }
-  return { appEvents, windows, mini }
+  return { appEvents, windows, mini, auth: null as any }
 })
 
 const svc = vi.hoisted(() => {
@@ -122,7 +122,9 @@ const svc = vi.hoisted(() => {
 
 vi.mock('electron', () => {
   class WebContents {
-    setWindowOpenHandler = vi.fn()
+    setWindowOpenHandler = vi.fn((cb: any) => {
+      ;(this as any).windowOpen = cb
+    })
     send = vi.fn()
     executeJavaScript = vi.fn(async () => ({}))
     isLoadingMainFrame = () => false
@@ -228,7 +230,7 @@ vi.mock('../../src/main/services/tray', () => ({
   showSystemNotification: vi.fn()
 }))
 vi.mock('../../src/main/services/proxy', () => ({
-  proxyAuthFor: () => null,
+  proxyAuthFor: () => h.auth as any,
   syncProxyFromSettings: vi.fn()
 }))
 vi.mock('../../src/main/services/desktop', () => ({ setLaunchOnBoot: vi.fn() }))
@@ -271,6 +273,94 @@ describe('main entry', () => {
       expect(h.windows.length).toBeGreaterThan(0)
     })
     expect(h.windows[0]).not.toBeNull()
+  })
+
+  it('handles window lifecycle, navigation and renderer failure events', async () => {
+    await vi.waitFor(() => expect(h.windows.length).toBeGreaterThan(0))
+    const win = h.windows[0] as any
+    const prevent = vi.fn()
+    win.emit('ready-to-show')
+    win.emit('hide')
+    win.emit('show')
+    win.emit('close', { preventDefault: prevent })
+    expect(prevent).toHaveBeenCalled()
+    win.webContents.emit('did-finish-load')
+    win.webContents.emit('did-fail-load', {}, -1, 'failed')
+    win.webContents.emit('render-process-gone', {}, { reason: 'crash', exitCode: 1 })
+    win.webContents.emit('preload-error', {}, '/preload.js', new Error('preload'))
+    win.webContents.emit('console-message', { level: 'warning', message: 'warn' })
+    win.webContents.emit('console-message', { level: 'error', message: 'error' })
+    win.webContents.emit('console-message', { level: 'info', message: 'info' })
+    win.webContents.emit('console-message', {})
+    win.webContents.emit('will-attach-webview', { preventDefault: prevent })
+    win.webContents.emit('will-navigate', { preventDefault: prevent }, 'https://example.com')
+    win.webContents.emit('will-navigate', { preventDefault: prevent }, 'http://localhost:5173')
+    const openHandler = win.webContents.windowOpen
+    expect(openHandler({ url: 'https://example.com' })).toEqual({ action: 'deny' })
+    expect(openHandler({ url: 'javascript:alert(1)' })).toEqual({ action: 'deny' })
+
+    const appCallbacks = (name: string) => h.appEvents.get(name) || []
+    for (const cb of appCallbacks('activate')) cb()
+    for (const cb of appCallbacks('child-process-gone')) cb({}, { type: 'GPU', reason: 'crashed' })
+    for (const cb of appCallbacks('window-all-closed')) cb()
+    for (const cb of appCallbacks('second-instance')) {
+      cb({}, ['ComfyPilot.exe', '--rescue', 'i1'])
+      cb({}, ['ComfyPilot.exe', '--quit'])
+      cb({}, ['ComfyPilot.exe', '--allow-multiple-instances'])
+      cb({}, ['ComfyPilot.exe', '--status'])
+      cb({}, ['ComfyPilot.exe', '--minimized'])
+    }
+    h.auth = { username: 'u', password: 'p' }
+    for (const cb of appCallbacks('login')) {
+      const ev = { preventDefault: vi.fn() }
+      const auth = vi.fn()
+      cb(ev, {}, {}, { isProxy: true, host: 'proxy', port: 8080 }, auth)
+      expect(ev.preventDefault).toHaveBeenCalled()
+      expect(auth).toHaveBeenCalledWith('u', 'p')
+    }
+    h.auth = null
+
+    svc.instanceService.emit('log', 'i1', { ts: 1, level: 'info', message: 'line' })
+    svc.instanceService.emit('exit', {
+      instanceId: 'i1',
+      report: { kind: 'crash', hint: 'hint' }
+    })
+    svc.monitorService.emit('ws', { type: 'progress', baseUrl: 'http://127.0.0.1:8188' })
+    svc.monitorService.emit('ws', {
+      type: 'execution_error',
+      baseUrl: 'http://127.0.0.1:8188',
+      data: {}
+    })
+    svc.monitorService.emit('ws', {
+      type: 'execution_error',
+      baseUrl: 'http://10.0.0.1:8188',
+      data: {}
+    })
+    svc.monitorService.emit('ws', { type: 'execution_error', baseUrl: 'not a url' })
+    svc.execDiagnosticsService.emit('failure', { errorType: 'E', message: 'm' })
+    svc.execDiagnosticsService.emit('notify', { errorType: 'E', message: 'm' })
+    svc.modelService.emit('progress', { scanned: 1 })
+    svc.modelService.emit('download', { id: 'd' })
+    svc.batchService.emit('progress', { id: 'b', status: 'running' })
+    svc.installerService.emit('progress', { percent: 1 })
+    svc.bootstrapService.emit('progress', { kind: 'uv' })
+    svc.nodePackService.emit('install-progress', { op: 'update' })
+    svc.nodePackService.emit('install-progress', { op: 'install' })
+    svc.nodePackService.emit('op-progress', { percent: 1 })
+    svc.nodePackService.emit('op-log', { line: 'x' })
+    svc.nodePackService.emit('update-batch', { phase: 'start' })
+    svc.nodePackService.emit('check-progress', { done: 1 })
+    svc.comfyUpdaterService.emit('progress', { percent: 1 })
+    svc.envService.emit('progress', { percent: 1 })
+    svc.pipOpsService.emit('progress', { percent: 1 })
+    svc.pipOpsService.emit('log', { line: 'x' })
+    svc.operationRegistry.emit('changed', { id: 'op' })
+    svc.registryIndex.emit('progress', { done: 1, total: 2 })
+    svc.registryIndex.emit('ready', { pages: 2, count: 5 })
+    svc.registryIndex.emit('ready', {})
+    svc.doctorService.emit('progress', { done: 1 })
+    await new Promise((r) => setTimeout(r, 30))
+    expect(h.windows.length).toBeGreaterThan(0)
   })
 
   it('flushes data and exits after before-quit cleanup', async () => {
