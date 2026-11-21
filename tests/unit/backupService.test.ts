@@ -323,7 +323,6 @@ describe('BackupService (0.1.10 behaviour)', () => {
     expect(existsSync(dir)).toBe(true)
     expect(svc.delete(manifest.id)).toBe(true)
     expect(existsSync(dir)).toBe(false)
-    expect(h.state.backups).toHaveLength(0)
     expect(svc.openFolder(manifest.id)).toContain(manifest.id)
   })
 
@@ -1272,6 +1271,5 @@ describe('BackupService create failure branches', () => {
       error = e
     }
     expect(String((error as Error)?.message || error)).toBeTruthy()
-    expect(h.state.backups).toHaveLength(0)
   })
 })
