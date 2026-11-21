@@ -302,6 +302,130 @@ describe('Civitai download naming (0.2.5 WP9)', () => {
 
   afterEach(() => rmSync(root, { recursive: true, force: true }))
 
+  it('refuses unsafe URLs, destinations, payload types and duplicate tasks', async () => {
+    const svc = await makeService()
+    await expect(svc.download({ url: 'file:///etc/passwd' })).rejects.toThrow(
+      /Blocked download URL/
+    )
+    await expect(
+      svc.download({ url: 'https://example.test/a.safetensors', destDir: '/etc' })
+    ).rejects.toThrow(/outside/)
+    await expect(
+      svc.download({ url: 'https://example.test/evil.py', destDir: root })
+    ).rejects.toThrow(/non-model/)
+    await expect(
+      svc.download({ url: 'https://example.test/noext', destDir: root })
+    ).rejects.toThrow(/non-model/)
+    const task = await svc.download({ url: 'https://example.test/a.safetensors', destDir: root })
+    expect(task.id).toBeTruthy()
+    await expect(
+      svc.download({ url: 'https://example.test/a.safetensors', destDir: root })
+    ).rejects.toThrow(/already in progress/)
+    expect(svc.cancelDownload(task.id)).toBe(true)
+    expect(svc.pauseDownload(task.id)).toBeTruthy()
+    expect(svc.prioritizeDownload(task.id)).toBeTruthy()
+    h.handler = () =>
+      streamResponse(Buffer.from('data'), {
+        status: 200,
+        headers: { 'content-length': '4', 'content-type': 'application/octet-stream' }
+      })
+    const resumed = await svc.resumeDownload(task.id)
+    expect(resumed).toBeTruthy()
+    expect(svc.cancelDownload('missing')).toBeTypeOf('boolean')
+  })
+
+  it('rewrites HF and Civitai URLs and resolves Civitai filenames', async () => {
+    const svc = await makeService()
+    h.handler = (url) => {
+      if (url.includes('api/v1/model-versions')) {
+        return new Response(
+          JSON.stringify({
+            name: 'v1',
+            baseModel: 'SDXL',
+            files: [{ name: 'primary.safetensors', primary: true }],
+            images: [{ url: 'http://img' }],
+            trainedWords: ['word'],
+            model: { id: 1, name: 'M' }
+          }),
+          { status: 200 }
+        )
+      }
+      if (url.endsWith('.sha256')) return new Response('', { status: 404 })
+      return new Response('', { status: 200, headers: { 'content-disposition': '' } })
+    }
+    const hf = await svc.download({
+      url: 'https://huggingface.co/org/repo/resolve/main/a.safetensors',
+      destDir: root
+    })
+    expect(hf.url).toContain('https://huggingface.co')
+    const civ = await svc.download({
+      url: 'https://civitai.com/models/123?modelVersionId=456',
+      destDir: root
+    })
+    expect(civ.url).toContain('/api/download/models/456')
+    const direct = await svc.download({
+      url: 'https://civitai.com/api/download/models/789',
+      destDir: root
+    })
+    expect(direct.fileName).toBe('primary.safetensors')
+    expect(direct.metadata?.civitai).toBeTruthy()
+    svc.cancelDownload(hf.id)
+    svc.cancelDownload(civ.id)
+    svc.cancelDownload(direct.id)
+    h.handler = () => {
+      if (urlIncludes('api/v1/model-versions')) return new Response('', { status: 500 })
+      if (urlEndsWith('.sha256')) return new Response('', { status: 500 })
+      return new Response('', { status: 500 })
+    }
+    function urlIncludes(x: string): boolean {
+      return x.includes('api/v1/model-versions')
+    }
+    function urlEndsWith(x: string): boolean {
+      return x.endsWith('.sha256')
+    }
+    h.handler = (u) => {
+      if (u.includes('api/v1/model-versions')) return new Response('', { status: 500 })
+      if (u.endsWith('.sha256')) return new Response('', { status: 500 })
+      return new Response('', { status: 500 })
+    }
+    const fallback = await svc.download({
+      url: 'https://civitai.com/api/download/models/999',
+      destDir: root
+    })
+    expect(fallback.fileName).toContain('civitai-model-999')
+  })
+
+  it('verifies downloads and removes corrupt partials', async () => {
+    const svc = await makeService()
+    const file = join(root, 'verify.safetensors')
+    const task: any = {
+      id: 'v1',
+      url: 'https://example.test/verify.safetensors',
+      destPath: file,
+      fileName: 'verify.safetensors',
+      totalBytes: 0,
+      receivedBytes: 0,
+      status: 'running',
+      startedAt: Date.now()
+    }
+    expect(await svc.verifyDownload(task)).toBe(false)
+    expect(task.verified).toBe('failed')
+    writeFileSync(file, 'abc')
+    task.expectedSha256 = 'deadbeef'
+    expect(await svc.verifyDownload(task)).toBe(false)
+    expect(existsSync(file)).toBe(false)
+    writeFileSync(file, 'abc')
+    task.expectedSha256 = undefined
+    h.handler = () => new Response('a'.repeat(64), { status: 200 })
+    expect(await svc.verifyDownload(task)).toBe(false)
+    writeFileSync(file, 'abc')
+    h.handler = () => new Response('not a hash', { status: 200 })
+    expect(await svc.verifyDownload(task)).toBe(true)
+    writeFileSync(file, 'abc')
+    h.handler = () => new Response('', { status: 500 })
+    expect(await svc.verifyDownload(task)).toBe(true)
+  })
+
   it('parses RFC 6266 filename and filename*', async () => {
     const { filenameFromContentDisposition } = await import('../../src/main/services/model')
     expect(filenameFromContentDisposition('attachment; filename="model.safetensors"')).toBe(
