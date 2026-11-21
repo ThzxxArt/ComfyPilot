@@ -743,7 +743,7 @@ describe('DoctorService edge branches', () => {
     h.state.instances = [{ id: 'inst-1', name: 'Empty', path: '', venvPath: '' }]
     let svc = await freshDoctor()
     let report = await svc.run('inst-1')
-    let byId = new Map(report.checks.map((c: any) => [c.id, c]))
+    let byId = new Map<string, any>(report.checks.map((c: any) => [c.id, c]))
     expect(byId.get('install-path')?.severity).toBe('warn')
     expect(byId.get('install-path')?.detail).toContain('No instance path')
 
@@ -752,7 +752,7 @@ describe('DoctorService edge branches', () => {
     h.state.instances = [{ id: 'inst-1', name: 'Broken', path: broken, venvPath: '' }]
     svc = await freshDoctor()
     report = await svc.run('inst-1')
-    byId = new Map(report.checks.map((c: any) => [c.id, c]))
+    byId = new Map<string, any>(report.checks.map((c: any) => [c.id, c]))
     expect(byId.get('install-path')?.severity).toBe('fail')
     expect(byId.get('install-path')?.detail).toContain('main.py missing')
   })
@@ -769,7 +769,7 @@ describe('DoctorService edge branches', () => {
     }
     let svc = await freshDoctor()
     let report = await svc.run('inst-1')
-    let byId = new Map(report.checks.map((c: any) => [c.id, c]))
+    let byId = new Map<string, any>(report.checks.map((c: any) => [c.id, c]))
     expect(byId.get('python')?.fixId).toBe('migrate-python-313')
     expect(byId.get('python')?.fixable).toBe(true)
     expect(byId.get('python')?.suggestion).toMatch(/official fallback/)
@@ -783,7 +783,7 @@ describe('DoctorService edge branches', () => {
     }
     svc = await freshDoctor()
     report = await svc.run('inst-1')
-    byId = new Map(report.checks.map((c: any) => [c.id, c]))
+    byId = new Map<string, any>(report.checks.map((c: any) => [c.id, c]))
     expect(byId.get('python')?.fixId).toBeUndefined()
     expect(byId.get('python')?.suggestion).toMatch(/3\.14/)
   })
@@ -797,7 +797,7 @@ describe('DoctorService edge branches', () => {
       }
       const svc = await freshDoctor()
       const report = await svc.run('inst-1')
-      return new Map(report.checks.map((c: any) => [c.id, c]))
+      return new Map<string, any>(report.checks.map((c: any) => [c.id, c]))
     }
     let byId = await runTorch('Traceback: boom')
     expect(byId.get('torch')?.severity).toBe('fail')
@@ -829,7 +829,7 @@ describe('DoctorService edge branches', () => {
     h.state.portBusy = true
     const svc = await freshDoctor()
     const report = await svc.run('inst-1')
-    const byId = new Map(report.checks.map((c: any) => [c.id, c]))
+    const byId = new Map<string, any>(report.checks.map((c: any) => [c.id, c]))
     expect(byId.get('registry')?.severity).toBe('info')
     expect(byId.get('registry')?.detail).toMatch(/Offline mode/)
     expect(byId.get('port')?.severity).toBeDefined()
