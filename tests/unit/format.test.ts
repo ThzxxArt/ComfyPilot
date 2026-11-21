@@ -61,3 +61,28 @@ describe('format helpers', () => {
     expect(formatDate('not-a-date')).toBe('—')
   })
 })
+
+describe('format date/time edge branches', () => {
+  it('renders day-scale uptimes and non-finite speeds', async () => {
+    const { formatUptime, formatSpeed } = await import('../../src/renderer/src/utils/format')
+    expect(formatUptime(2 * 24 * 3_600_000 + 5 * 3_600_000)).toBe('2d 5h')
+    expect(formatUptime(-1)).toBe('0s')
+    expect(formatUptime(Number.NaN)).toBe('0s')
+    expect(formatSpeed(Number.NaN)).toBe('—')
+    expect(formatSpeed(-1)).toBe('—')
+  })
+
+  it('formats date-time and time values with invalid inputs', async () => {
+    const { formatDateTime, formatTime } = await import('../../src/renderer/src/utils/format')
+    const stamp = new Date('2026-10-13T21:29:16Z')
+    expect(formatDateTime(stamp, 'en-US')).toBe(stamp.toLocaleString('en-US'))
+    expect(formatDateTime('2026-10-13T21:29:16Z', 'en-US')).toBe(stamp.toLocaleString('en-US'))
+    expect(formatDateTime(0, 'en-US')).toBe(new Date(0).toLocaleString('en-US'))
+    expect(formatDateTime('', 'en-US')).toBe('—')
+    expect(formatDateTime('not-a-date')).toBe('—')
+    expect(formatTime(stamp, 'en-US')).toBe(stamp.toLocaleTimeString('en-US'))
+    expect(formatTime(0, 'en-US')).toBe(new Date(0).toLocaleTimeString('en-US'))
+    expect(formatTime(null)).toBe('—')
+    expect(formatTime('not-a-date')).toBe('—')
+  })
+})

@@ -224,6 +224,11 @@ describe('ComfyApiClient edge branches', () => {
     expect(h.calls[0].url).toContain('limit=500')
     expect(h.calls[0].url).toContain('status=done')
 
+    h.calls = []
+    await c.jobsList(0)
+    expect(h.calls[0].url).toContain('limit=1')
+    expect(h.calls[0].url).not.toContain('status=')
+
     h.handler = () => res({ jobs: 'nope' })
     expect(await c.jobsList()).toBeNull()
     h.handler = () => res('', { ok: false })

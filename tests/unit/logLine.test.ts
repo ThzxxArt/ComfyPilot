@@ -37,3 +37,14 @@ describe('shared/logLine (0.1.16)', () => {
     expect(isNoiseLogLine('warn', '[WARNING] On windows we are forcing single GPU')).toBe(false)
   })
 })
+
+describe('logLine token edge branches', () => {
+  it('handles trace/warn/fatal aliases and unknown tokens', () => {
+    expect(classifyLogLine('stdout', '[TRACE] deep detail')).toBe('debug')
+    expect(classifyLogLine('stdout', '[WARN] careful')).toBe('warn')
+    expect(classifyLogLine('stdout', '[FATAL] dead')).toBe('error')
+    expect(classifyLogLine('stdout', '[UNKNOWN] plain chatter')).toBe('info')
+    expect(classifyLogLine('stderr', '[UNKNOWN] plain chatter')).toBe('warn')
+    expect(classifyLogLine('stdout', '')).toBe('info')
+  })
+})
