@@ -729,3 +729,88 @@ describe('InstallView deep coverage', () => {
     }
   }, 120_000)
 })
+
+describe('InstallView fallback and race branches', () => {
+  async function mountInstall() {
+    const { wrapper, state } = await mountView(
+      '/install',
+      () => import('../../src/renderer/src/views/install/InstallView.vue')
+    )
+    state.store.instances = [
+      {
+        id: 'i1',
+        name: 'ComfyUI',
+        path: '/home/user/ComfyUI',
+        port: 8188,
+        status: 'stopped',
+        enabled: true
+      }
+    ]
+    state.store.activeInstanceId = 'i1'
+    await nextTick()
+    return { wrapper, state }
+  }
+
+  it('falls back for unknown channels, statuses and empty preflight data', async () => {
+    const { wrapper, state } = await mountInstall()
+    try {
+      state.preflight = { ok: true, checks: [] }
+      state.plan = { ...state.plan, torchChannel: 'bogus' }
+      expect(state.diskNeedGb).toBe(7)
+      state.preflight = { ok: true, checks: [], diskNeedGb: 1.234, diskFreeGb: 0 }
+      expect(state.diskNeedGb).toBe(1.234)
+      expect(state.diskFreeGb).toBe(0)
+      state.suggestFreeGb = 8
+      state.preflight = { ok: true, checks: [] }
+      expect(state.diskFreeGb).toBe(8)
+      expect(state.stepStatusLabel('bogus' as never)).toBe('bogus')
+      for (const status of ['pending', 'running', 'done', 'failed', 'skipped', 'cancelled']) {
+        expect(state.stepStatusTag(status)).toBeTruthy()
+      }
+      expect(state.runtimeKindLabel('uv')).toBeTruthy()
+      expect(state.runtimeKindLabel('bogus' as never)).toBe('bogus')
+      for (const origin of ['system', 'runtimes', 'missing', 'bogus']) {
+        expect(state.runtimeOriginLabel(origin)).toBeTruthy()
+      }
+    } finally {
+      wrapper.unmount()
+    }
+  }, 60_000)
+
+  it('discards stale preflight responses and reports a busy reset', async () => {
+    const { wrapper, state } = await mountInstall()
+    try {
+      let releaseFirst: (() => void) | null = null
+      state.preflight = null
+      const result = { ok: true, checks: [], diskNeedGb: 1, diskFreeGb: 2 }
+      ;(window as any).comfyPilot.invoke = async (channel: string) => {
+        if (channel === 'installer.preflight') {
+          if (!releaseFirst) {
+            await new Promise<void>((r) => {
+              releaseFirst = r
+            })
+            return { ok: true, data: result }
+          }
+          return { ok: true, data: result }
+        }
+        if (channel === 'settings.get') return { ok: true, data: {} }
+        if (channel === 'installer.reset') {
+          return { ok: false, error: 'Installer already running' }
+        }
+        return { ok: true, data: null }
+      }
+      const first = state.runPreflight()
+      await Promise.resolve()
+      const second = state.runPreflight()
+      await second
+      releaseFirst?.()
+      await first
+      state.installing = true
+      await state.resetInstall()
+      state.installing = false
+      expect(state.preflightReady).toBe(true)
+    } finally {
+      wrapper.unmount()
+    }
+  }, 60_000)
+})
