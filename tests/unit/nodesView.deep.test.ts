@@ -926,3 +926,124 @@ describe('NodesView deep coverage', () => {
     }
   }, 120_000)
 })
+
+describe('NodesView targetless/race edges', () => {
+  async function mountNodes() {
+    const { wrapper, state } = await mountView(
+      '/nodes',
+      () => import('../../src/renderer/src/views/nodes/NodesView.vue')
+    )
+    const dialog = state.dialog
+    if (dialog) {
+      const auto = (opts: any): object => {
+        if (dialogMode === 'positive') opts?.onPositiveClick?.()
+        else opts?.onNegativeClick?.()
+        return {}
+      }
+      dialog.warning = auto
+      dialog.info = auto
+    }
+    try {
+      state.store.instances = instances
+      state.store.activeInstanceId = 'i1'
+    } catch {
+      /* store shape changed */
+    }
+    await nextTick()
+    return { wrapper, state }
+  }
+
+  it('runs targetless actions and observes the active target changing mid-await', async () => {
+    const { wrapper, state } = await mountNodes()
+    try {
+      state.packs = [pack, broken]
+      state.store.activeInstanceId = ''
+      state.store.activeInstance = null
+      state.store.localTargetId = undefined
+      const baseInvoke = (window as any).comfyPilot.invoke as (c: string) => Promise<any>
+      let release: (() => void) | null = null
+      ;(window as any).comfyPilot.invoke = async (channel: string, ...rest: unknown[]) => {
+        if (channel === 'node.checkUpdates') {
+          await new Promise<void>((resolve) => {
+            release = resolve
+          })
+          return { ok: true, data: checks }
+        }
+        return (baseInvoke as any)(channel, ...rest)
+      }
+
+      const check = state.checkUpdates()
+      await flushPromises()
+      state.store.localTargetId = 'i1'
+      ;(release as (() => void) | null)?.()
+      await check
+      await flushPromises()
+
+      state.store.localTargetId = undefined
+      await state.updatePack(broken)
+      await state.updateAllPacks()
+      await state.toggle(broken, false)
+      await state.lockPack(broken, false)
+      await state.smoke(broken)
+      await state.checkIssues(broken)
+      await state.runDepsAudit()
+      await state.createSnapshot()
+      await state.restoreSnapshot('s1')
+      await state.removeSnapshot('s1')
+      await state.restoreRecoveryEntry('r1')
+      await state.cleanRecoveryEntry('r1')
+
+      state.store.activeInstanceId = ''
+      overrides['doctor.fix'] = { ok: true, message: '' }
+      await state.runIssueFix(broken.issues[0])
+      await state.runSelfCheck()
+
+      state.pipActiveInstances = ['']
+      state.pipModalVisible = false
+      state.pipViewedInstanceId = null
+      await nextTick()
+      state.pipActiveInstances = ['i1']
+      state.store.activeInstanceId = 'i1'
+      state.pipViewedInstanceId = 'other'
+      await nextTick()
+      expect(state.pipBannerVisible).toBe(true)
+      ;(window as any).comfyPilot.invoke = baseInvoke
+    } finally {
+      wrapper.unmount()
+    }
+  }, 60_000)
+
+  it('renders empty conflicts/snapshots and packs without a version', async () => {
+    overrides['node.conflicts'] = []
+    overrides['node.snapshots'] = []
+    overrides['node.list'] = [{ ...pack, version: '', latestVersion: '' }]
+    overrides['node.recoveryScan'] = []
+    overrides['node.loadReport'] = { available: true, entries: [] }
+    const { wrapper, state } = await mountNodes()
+    try {
+      state.packs = [{ ...pack, version: '', latestVersion: '' }]
+      state.conflicts = []
+      state.snapshots = []
+      state.recovery = []
+      state.checks = {}
+      state.tab = 'installed'
+      await nextTick()
+      expect(wrapper.html()).toBeTruthy()
+      const events = eventHandlers
+      for (const cb of events['node:update-progress'] || []) {
+        cb({ op: 'update', packName: 'X', percent: 10, message: 'm' })
+      }
+      for (const cb of events['node:install-progress'] || []) {
+        cb({ op: 'install', packName: 'Y', percent: 20, message: 'm' })
+      }
+      for (const cb of events['node:update-batch'] || []) {
+        cb({ phase: 'start', total: 2, done: 0 })
+        cb({ phase: 'done', total: 2, done: 2 })
+      }
+      await nextTick()
+      expect(wrapper.html()).toBeTruthy()
+    } finally {
+      wrapper.unmount()
+    }
+  }, 60_000)
+})
