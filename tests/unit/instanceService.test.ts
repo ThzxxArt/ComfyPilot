@@ -1858,6 +1858,28 @@ describe('stop()', () => {
     }
   })
 
+  it('graceful stop resolves as soon as the child exits after SIGTERM', async () => {
+    const restore = forcePlatform('linux')
+    try {
+      vi.useFakeTimers()
+      h.state.settings.stopMode = 'graceful'
+      register(cfg({ id: 'stop-grace-exit' }))
+      h.state.fetchImpl = okStats
+      const startP = svc.start('stop-grace-exit')
+      await vi.advanceTimersByTimeAsync(250)
+      await startP
+      const child = childOf(svc, 'stop-grace-exit')
+      const stopP = svc.stop('stop-grace-exit')
+      await vi.advanceTimersByTimeAsync(20)
+      const info = await stopP
+      expect(child.killSignals).toContain('SIGTERM')
+      expect(child.killSignals).not.toContain('SIGKILL')
+      expect(info.exited).toBe(true)
+    } finally {
+      restore()
+    }
+  })
+
   it('fast mode (default) kills the tree immediately — no 3 s grace', async () => {
     vi.useFakeTimers()
     h.state.settings.stopMode = 'fast'
