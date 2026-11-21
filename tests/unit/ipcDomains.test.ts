@@ -45,6 +45,7 @@ const services = vi.hoisted(() => {
       list: () => [instance],
       discover: () => [],
       save: () => instance,
+      patch: () => instance,
       launch: async () => instance,
       previewLaunch: () => ({ command: 'python main.py' }),
       stop: async () => ({ ...instance, exited: true }),
@@ -431,6 +432,101 @@ describe('IPC domains', () => {
     } as never)
     expect(evilPython.ok).toBe(false)
     expect(evilPython.error).toMatch(/picker/i)
+  })
+
+  it('instances: exhaustively validates save/patch/port arguments', async () => {
+    const { createInstanceHandlers } = await import('../../src/main/ipc/domains/instances')
+    const x = createInstanceHandlers(ctx)
+    const base = {
+      id: 'i1',
+      name: 'Test',
+      path: services.instance.path,
+      pythonPath: '',
+      venvPath: '',
+      port: 8188,
+      listen: '127.0.0.1',
+      extraArgs: [],
+      argTemplateId: 'default'
+    }
+    const bad = async (patch: Record<string, unknown>) => {
+      const r = await call(x.save, { ...base, ...patch } as never)
+      expect(r.ok, JSON.stringify(patch)).toBe(false)
+      return r
+    }
+    await call(x.save, null as never)
+    await call(x.save, {} as never)
+    await call(x.save, { ...base, path: join(h.root, 'missing') } as never)
+    await call(x.save, { ...base, path: join(h.root, 'file.txt') } as never)
+    expect((await call(x.save, base as never)).ok).toBe(true)
+    for (const port of [0, 65536, 1.5, 'abc', -1]) {
+      await bad({ port })
+    }
+    await bad({ listen: '8.8.8.8' })
+    for (const value of [
+      1,
+      'a' + String.fromCharCode(0) + 'b',
+      'a' + String.fromCharCode(13) + 'b',
+      'a' + String.fromCharCode(10) + 'b'
+    ]) {
+      await bad({ launchProfile: { outputDirectory: value } })
+    }
+    await bad({ launchProfile: { outputDirectory: '../outside' } })
+    await bad({ launchProfile: { outputDirectory: join(h.root, 'outside') } })
+    expect(
+      (
+        await call(x.save, {
+          ...base,
+          launchProfile: { outputDirectory: join(services.instance.path, 'out') }
+        } as never)
+      ).ok
+    ).toBe(true)
+    await bad({ extraArgs: Array.from({ length: 501 }, () => '--x') })
+    await bad({ extraArgs: ['a\0b'] })
+    expect((await call(x.save, { ...base, extraArgs: ['--listen', '0.0.0.0'] } as never)).ok).toBe(
+      true
+    )
+    await bad({ extraArgs: ['--listen', '8.8.8.8'] })
+    await bad({ extraArgs: ['--listen=8.8.8.8'] })
+    await bad({ extraArgs: ['--output-directory=../x'] })
+    await bad({ extraArgs: ['--output-directory', join(h.root, 'outside')] })
+    expect(
+      (await call(x.save, { ...base, extraArgs: ['--output-directory', 'relative-out'] } as never))
+        .ok
+    ).toBe(true)
+    expect((await call(x.save, { ...base, extraArgs: ['--output-directory'] } as never)).ok).toBe(
+      true
+    )
+    expect((await call(x.save, { ...base, extraArgs: ['--foo=bar'] } as never)).ok).toBe(true)
+    await bad({ pythonPath: 'a\0b' })
+    await bad({ pythonPath: '../python' })
+    await bad({ pythonPath: join(h.root, 'outside', 'python') })
+    await bad({ venvPath: 'a\0b' })
+    await bad({ venvPath: '../venv' })
+    await bad({ venvPath: join(h.root, '..', 'outside-venv') })
+    expect(
+      (await call(x.save, { ...base, venvPath: join(services.instance.path, '.venv') } as never)).ok
+    ).toBe(true)
+
+    expect((await call(x.patch, 'missing', { notes: 'x' } as never)).ok).toBe(false)
+    expect((await call(x.patch, 'i1', null as never)).ok).toBe(false)
+    expect((await call(x.patch, 'i1', [] as never)).ok).toBe(false)
+    expect((await call(x.patch, 'i1', { extraArgs: ['--listen', '8.8.8.8'] } as never)).ok).toBe(
+      false
+    )
+    expect((await call(x.setPort, 'missing', 8189)).ok).toBe(false)
+    expect((await call(x.setPort, 'i1', 0)).ok).toBe(false)
+    expect((await call(x.setPort, 'i1', 8189)).ok).toBe(true)
+    expect((await call(x.setUpdateChannel, 'i1', 'bad' as never)).ok).toBe(false)
+    expect((await call(x.setUpdateChannel, 'i1', 'nightly')).ok).toBe(true)
+    expect((await call(x.migratePython, 'missing')).ok).toBe(false)
+    services.instance.status = 'running'
+    await call(x.migratePython, 'i1')
+    services.instance.status = 'stopped'
+    await call(x.migratePython, 'i1')
+    expect((await call(x.installManager, 'missing')).ok).toBe(false)
+    expect((await call(x.setManagerSecurity, 'missing', 'normal' as never)).ok).toBe(false)
+    expect((await call(x.openManagerConfig, 'missing')).ok).toBe(false)
+    expect((await call(x.discover, join(h.root, 'bad\0path'))).ok).toBe(true)
   })
 
   it('instances: secondary lifecycle/update/env handlers are reachable', async () => {
