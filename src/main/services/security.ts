@@ -157,7 +157,7 @@ export function safeResolveUnder(appRoot: string, relative: string): string | nu
     const normalized = normalizePathEverySegment(decoded)
     if (!normalized) return null
     const target = resolve(appRoot, normalized)
-    return isPathInside(target, appRoot) ? target : null
+    return isPathInside(target, normalize(resolve(appRoot))) ? target : null
   } catch {
     return null
   }
