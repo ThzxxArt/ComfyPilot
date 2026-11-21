@@ -192,3 +192,104 @@ describe('RegistryIndexService (0.1.10 behaviour)', () => {
     expect(h.state.fetchCalls).toEqual([])
   })
 })
+
+describe('RegistryIndexService edge branches', () => {
+  beforeEach(() => {
+    h.state.root = mkdtempSync(join(tmpdir(), 'cp-regindex-edge-'))
+    h.state.failPages.clear()
+    h.state.fetchCalls = []
+    h.state.networkMode = 'public'
+    h.state.gate = null
+    h.state.releaseGate = null
+    vi.resetModules()
+  })
+
+  afterAll(() => {
+    rmSync(h.state.root, { recursive: true, force: true })
+  })
+
+  it('rejects corrupt and short on-disk indexes, and defaults missing metadata', async () => {
+    writeFileSync(join(h.state.root, 'registry-index.json'), '{bad json')
+    let { registryIndex } = await import('../../src/main/services/registryIndex')
+    expect((await registryIndex.ensure({ allowBuild: false })).ready).toBe(false)
+
+    vi.resetModules()
+    writeFileSync(
+      join(h.state.root, 'registry-index.json'),
+      JSON.stringify({ items: Array.from({ length: 10 }, (_, i) => ({ id: `p${i}` })) })
+    )
+    ;({ registryIndex } = await import('../../src/main/services/registryIndex'))
+    expect((await registryIndex.ensure({ allowBuild: false })).ready).toBe(false)
+
+    vi.resetModules()
+    const items = Array.from({ length: 50 }, (_, i) => ({
+      id: `p${i}`,
+      name: `Pack${i}`,
+      publisher: { name: 'Pub', id: 'pub' },
+      latest_version: { version: '1.0.0' }
+    }))
+    writeFileSync(join(h.state.root, 'registry-index.json'), JSON.stringify({ items }))
+    ;({ registryIndex } = await import('../../src/main/services/registryIndex'))
+    const status = await registryIndex.ensure({ allowBuild: false })
+    expect(status.ready).toBe(true)
+    expect(status.updatedAt).toBe(0)
+    expect(status.pages).toBe(0)
+    expect(status.skippedPages).toBe(0)
+    expect(registryIndex.searchPacks('Pack1')[0]).toMatchObject({ name: 'Pack1' })
+    expect(registryIndex.searchPacks('')[0]).toBeTruthy()
+    expect(registryIndex.searchMarket('Pack1', new Set(['Pack1']))[0]).toMatchObject({
+      installed: true
+    })
+    expect(registryIndex.findByRepository('')).toBeNull()
+    expect(registryIndex.findByRepository('https://github.com/none/none')).toBeNull()
+  })
+
+  it('reports idle status, cancelBuild false and needsIndex without a crawl', async () => {
+    const { registryIndex } = await import('../../src/main/services/registryIndex')
+    expect(registryIndex.cancelBuild()).toBe(false)
+    expect(registryIndex.status()).toMatchObject({ ready: false, done: 0, totalPages: 0 })
+    const page = await registryIndex.search({
+      allowBuild: false,
+      query: 'x',
+      page: 0,
+      limit: 0
+    })
+    expect(page.needsIndex).toBe(true)
+    expect(page.page).toBe(1)
+    expect(page.pageSize).toBe(50)
+  })
+
+  it('rebuilds when forced or stale and handles page-size/total fallbacks', async () => {
+    const { registryIndex } = await import('../../src/main/services/registryIndex')
+    await registryIndex.ensure()
+    h.state.fetchCalls = []
+    await registryIndex.ensure()
+    expect(h.state.fetchCalls).toEqual([])
+    await registryIndex.ensure({ force: true })
+    expect(h.state.fetchCalls.length).toBeGreaterThan(0)
+    expect(registryIndex.wasCancelledByUser()).toBe(false)
+  })
+
+  it('dedupes missing keys and returns fresh results when no previous index exists', async () => {
+    const registry = await import('../../src/main/services/registry')
+    const original = registry.fetchRegistryPage
+    ;(registry as any).fetchRegistryPage = async () => ({
+      nodes: [
+        { id: '', name: '' },
+        { id: 'dup', name: 'Dup' },
+        { id: 'dup', name: 'Dup2' }
+      ],
+      total: 1,
+      totalPages: 1,
+      limit: undefined
+    })
+    try {
+      const { registryIndex } = await import('../../src/main/services/registryIndex')
+      const status = await registryIndex.ensure()
+      expect(status.count).toBe(1)
+      expect(status.pages).toBe(1)
+    } finally {
+      ;(registry as any).fetchRegistryPage = original
+    }
+  })
+})
