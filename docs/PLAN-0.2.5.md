@@ -444,7 +444,7 @@ ComfyPilot 的差异化应该收敛为一句话：
 - **下载闭环**：`model.download` 只允许模型扩展名；`destDir` 只允许明确模型根/picker；`flags:'wx'` 或显式覆盖确认；`model.move/symlink` 清洗 `rec.fileName` + realpath containment。
 - **备份闭环**：备份 schemaVersion + 字段白名单；删除 `proxy.password`；node-pack/model/snapshot path 校验；restore mutex；workflow 写入 realpath/临时文件；恢复后重新同步代理/登录项/托盘。
 - **IPC 硬化**：senderFrame fail-closed；dev URL 精确 origin；高风险对象 zod schema；事件 payload schema。
-- **更新完整性**：ComfyUI stable tag + sha256/签名 manifest；应用更新发布者校验；去掉默认 `autoInstallOnAppQuit`；`journal.backupPath` 限定 `.cp-backups`；staging `mkdtemp`。
+- **更新完整性**：ComfyUI stable tag + SHA-256 TOFU 连续性 pin（GitHub 不为自动生成的源码 zip 发布校验和）；应用更新发布者校验；去掉默认 `autoInstallOnAppQuit`；`journal.backupPath` 限定 `.cp-backups`；staging `mkdtemp`。
 
 ### 3.2 P1（0.2.5 应修）
 
@@ -1764,13 +1764,25 @@ snapshots = managerDir/snapshots
 - 选定实例持久化（`activeInstance`），重启不再静默落到第一个实例。
 - 新增 CSP gate（白名单外 connect/frame 源失败）、`aria-modal`、`document.lang`、Output 卡片键盘操作与单一 discrete API 实例。
 
-验证记录（本机 WSL，2026-11-21）：
+发布前第三轮回归又发现并修复：
 
-- `npm test`：161 文件 / 2111 用例通过。
-- `npm run test:coverage`：全局 lines 70.40%、branches 57.50%、functions 53.96%、statements 68.01%；181 文件 ratchet 通过。
-- `npm run test:behavior`：97.4%（目标 ≥90%）。
+- **Windows 数据安全**：JSONC 解析剥离 UTF-8 BOM，不再把 Notepad/PowerShell 写出的合法文件改名 `.bad-*`；`toV2` 的 envelope 版本不再被旧对象自带的 `schemaVersion: 1` 覆盖。
+- **升级路径**：安装器遇到既有 3.12/3.14/损坏 venv 时先归档为 `*.pre-recreate-*`，再创建 3.13 venv，不再死在第 3 步或覆盖旧环境。
+- **备份 S4 链**：恢复时 `pythonPath` 必须位于实例内/实例旁的合法解释器形状，或明确的系统 Python；任意 `.../python/python.exe` 不再放行。`listen` 与 `extraArgs --listen` 必须是本地/LAN 字面地址，并清掉被拒绝的独立 value token。workflow 恢复只允许 `.json/.jsonc`，恶意备份不能先写 `.exe` 再让 `pythonPath` 指向它。
+- **批跑真相**：deadline 改为绝对上限（默认 30 分钟），每 12 次轮询查 `/queue`；history 非空不再阻止续期，`/queue` 探测失败按“未知”处理而不是判丢。
+- **健康真相**：adopted 外部实例没有 PID，但仍以真实 HTTP 响应判 `healthy`，不再显示灰色 `stopped`。
+- **节点数据安全**：git 节点在 `pull` 前拒绝 tracked 本地修改，避免失败后的 `reset --hard` 丢用户补丁。
+- **安装策略闭环**：`pipOps` 的显式安装/spec/recipe/requirements 统一遵守 `networkMode=offline` 与 `allowPipInstall`，不再绕过节点安装门禁。
+- **更新完整性**：stable tag archive 首次成功后记录 SHA-256 TOFU pin；同一 tag 的后续下载必须一致，拒绝镜像替换。nightly 跟随 master，明确不 pin。
+- **输出 containment**：batch history 输出在 lexical containment 之后再 realpath 校验，符号链接子目录不能把索引引到输出根外。
+
+验证记录（本机 WSL，2026-11-21，第三轮回归后）：
+
+- `npm test`：161 文件 / 2130 用例通过。
+- `npm run test:coverage`：全局 lines 70.83%、branches 58.06%、functions 54.60%、statements 68.47%；181 文件 ratchet 通过。
+- `npm run test:behavior`：97.3%（目标 ≥90%）。
 - `npm run lint:check` / `format:check` / `typecheck` / `typecheck:test` 通过。
 - `npm run build`、`npm run test:e2e` 通过。
-- `npx electron-builder --win --dir` 后 `release/win-unpacked/ComfyPilot.exe --e2e-smoke` 通过，
+- `npx electron-builder --win --dir` 后 `release/win-unpacked/ComfyPilot.exe --e2e-smoke` 通过（renderer/preload/IPC），
   `check-asar` 对真实 `app.asar` 通过。
 - Windows 10/11 实机 10 场景：**未验证**（需在真实 Windows 桌面执行 §8.2，不能以 WSL 代替）。

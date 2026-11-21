@@ -31,8 +31,10 @@ Controls added in 0.2.5:
   zod object schemas for high-risk channels.
 - **Secrets**: OS keychain when available; Linux `basic_text` is reported as plaintext, and
   settings/remote files are written `0600` on POSIX.
-- **Updates**: ComfyUI archive downloads require HTTPS and a SHA256 pin/continuity check; app
-  updates require a trusted GitHub publisher and no longer auto-install on quit.
+- **Updates**: ComfyUI archive downloads require HTTPS. Stable tag archives are SHA-256
+  continuity-pinned after the first verified download (a changed archive for the same tag is refused);
+  nightly/master archives follow a mutable branch and are not content-pinned. App updates require a
+  trusted GitHub publisher and no longer auto-install on quit.
 
 ## Reporting a vulnerability
 

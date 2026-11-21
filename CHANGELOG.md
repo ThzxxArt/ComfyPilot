@@ -44,6 +44,8 @@
 
 - Installer run isolation, abortable/checksum-pinned ComfyUI zip, venv archive-before-recreate,
   truthful Python version reporting, env lock coverage, spawn-after-stop orphans, owned adoption.
+- Reinstalling over an existing 3.12/3.14/broken venv archives it first instead of failing at the
+  version check or overwriting the old environment.
 - Port-conflict save no longer drops `pythonVersion` / `migrationState` / `migrationError`
   (`instance.patch` / `instance.setPort`), and a whole-record save preserves fields the caller
   did not know about.
@@ -54,3 +56,19 @@
 - Node version rollback creates a `pre-restore-*` snapshot before changing any pack.
 - Hard-coded `config.port` and `<instance>/models|custom_nodes|user` assumptions across asset paths.
 - IPC sender-frame fail-closed, dev URL exact origin, high-risk zod object schemas.
+- Interpreter/venv approval rejects parent-directory hops instead of matching a
+  venv-looking suffix after `..`.
+- JSONC now tolerates a UTF-8 BOM (Windows editors) instead of renaming valid data `.bad-*`, and the
+  v2 envelope version is authoritative even when a legacy object carries `schemaVersion`.
+- Backup restore contains `pythonPath` to interpreter-shaped paths inside the restored instance (or
+  a system Python), and rejects hostname `listen` / free-text `--listen` overrides.
+- Backup workflow restore only writes `.json`/`.jsonc` documents; an executable dropped via
+  `workflow-files` can no longer be referenced by a restored `pythonPath`.
+- Batch deadlines follow `/queue`: unrelated history entries no longer cause a 50-second false
+  timeout, and a transient queue-probe failure is "unknown", not proof of loss.
+- Adopted external instances report `healthy` from the live server instead of a grey `stopped`.
+- Node updates refuse a git pack with tracked local changes before any `pull`/`reset --hard`.
+- Explicit pip actions (`installSpec` / specs / recipes / requirements) now honor `networkMode=offline`
+  and `allowPipInstall`, closing the bypass around the node-pack gate.
+- Stable-tag ComfyUI archives are SHA-256 continuity-pinned after the first verified update; a
+  changed archive for the same tag is refused. Nightly stays on the mutable master archive.
