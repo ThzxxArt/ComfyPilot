@@ -3,7 +3,24 @@
  * Windows always goes through `taskkill /T /F`; POSIX keeps the graceful
  * SIGTERM → SIGKILL escalation when a grace period is requested.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
+
+const h = vi.hoisted(() => ({
+  execCalls: [] as Array<{ cmd: string; args: string[] }>
+}))
+
+vi.mock('child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('child_process')>()
+  return {
+    ...actual,
+    execFile: (cmd: string, args: string[], _opts: unknown, cb?: () => void) => {
+      h.execCalls.push({ cmd, args })
+      queueMicrotask(() => cb?.())
+      return { pid: 1 }
+    }
+  }
+})
+
 import { killProcessTree } from '../../src/main/services/processTree'
 
 function fakeChild(pid = 42) {
@@ -71,14 +88,69 @@ describe('killProcessTree', () => {
     await expect(killProcessTree(child as never)).resolves.toBeUndefined()
   })
 
-  it('uses taskkill on Windows and still signals the child handle', async () => {
-    if (process.platform !== 'win32') return
-    const child = fakeChild(999_999_999)
-    await expect(
-      killProcessTree(child as never, { waitMs: 0, timeoutMs: 2000 })
-    ).resolves.toBeUndefined()
-    expect(child.kills).toEqual(['SIGKILL'])
+  it('uses default wait windows and exits early for an already-dead child', async () => {
+    const real = process.platform
+    try {
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+      const dead = fakeChild(4243)
+      dead.exitCode = 0
+      await killProcessTree(dead as never)
+      expect(dead.kills).toEqual([])
+
+      Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+      const posixDead = fakeChild(4244)
+      posixDead.exitCode = 0
+      await killProcessTree(posixDead as never)
+      expect(posixDead.kills).toEqual(['SIGKILL'])
+    } finally {
+      Object.defineProperty(process, 'platform', { value: real, configurable: true })
+    }
   })
+
+  it('uses the darwin descendant shortcut', async () => {
+    const real = process.platform
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
+    try {
+      const child = fakeChild()
+      await killProcessTree(child as never, { waitMs: 0 })
+      expect(child.kills).toEqual(['SIGKILL'])
+    } finally {
+      Object.defineProperty(process, 'platform', { value: real, configurable: true })
+    }
+  })
+
+  it('does not signal a child that already exited during a graceful kill', async () => {
+    const real = process.platform
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+    try {
+      const child = fakeChild()
+      child.exitCode = 0
+      await killProcessTree(child as never, { graceMs: 10, waitMs: 0 })
+      expect(child.kills).toEqual([])
+    } finally {
+      Object.defineProperty(process, 'platform', { value: real, configurable: true })
+    }
+  })
+  it('uses taskkill on Windows and still signals the child handle', async () => {
+    const real = process.platform
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    h.execCalls = []
+    try {
+      const child = fakeChild(4242)
+      await expect(killTreeWithWindows(child as never)).resolves.toBeUndefined()
+      expect(h.execCalls[0]).toMatchObject({
+        cmd: 'taskkill',
+        args: ['/PID', '4242', '/T', '/F']
+      })
+      expect(child.kills).toEqual(['SIGKILL'])
+    } finally {
+      Object.defineProperty(process, 'platform', { value: real, configurable: true })
+    }
+  })
+
+  async function killTreeWithWindows(child: never): Promise<void> {
+    await killProcessTree(child, { waitMs: 0, timeoutMs: 2000 })
+  }
 
   it('does not resolve before the child has actually exited (0.1.18 review)', async () => {
     const real = process.platform
