@@ -166,7 +166,7 @@ const services = vi.hoisted(() => {
     outputService: {
       scanAsync: async () => ({ scanned: 0, cancelled: false }),
       cancelScan: () => undefined,
-      list: () => ({ items: [], total: 0, truncated: false }),
+      list: () => ({ items: [] as any[], total: 0, truncated: false }),
       ensureOutputThumb: async () => null,
       favorite: () => true,
       remove: () => true,
@@ -432,6 +432,125 @@ describe('IPC domains', () => {
     } as never)
     expect(evilPython.ok).toBe(false)
     expect(evilPython.error).toMatch(/picker/i)
+  })
+
+  it('workflows: rejects unsafe paths/ids and validates export destinations', async () => {
+    const { createWorkflowHandlers } = await import('../../src/main/ipc/domains/workflows')
+    const x = createWorkflowHandlers(ctx)
+    const safe = join(h.root, 'comfy', 'wf.json')
+    writeFileSync(safe, '{}')
+    expect((await call(x.import, safe, 'i1')).ok).toBe(true)
+    expect((await call(x.import, '/etc/passwd', 'i1')).ok).toBe(false)
+    expect((await call(x.importMany, [] as never)).ok).toBe(true)
+    expect((await call(x.importMany, ['/etc/passwd'] as never)).ok).toBe(false)
+    expect((await call(x.importMany, [safe] as never, 'i1')).ok).toBe(true)
+    expect((await call(x.exportZip, 'w1', join(h.root, 'missing'))).ok).toBe(false)
+    expect((await call(x.exportZip, 'w1', '/etc')).ok).toBe(false)
+    expect((await call(x.exportZip, 'w1', join(h.root, 'workflows'))).ok).toBe(true)
+    expect((await call(x.exportZip, 'w1')).ok).toBe(true)
+    expect((await call(x.copyToInstance, 'w1', '')).ok).toBe(false)
+    expect((await call(x.copyToInstance, 'w1', 'i1')).ok).toBe(true)
+    expect((await call(x.queue, { workflowPath: '/etc/passwd', instanceId: 'i1' })).ok).toBe(false)
+    expect((await call(x.queue, { workflowPath: safe, instanceId: '' })).ok).toBe(false)
+    services.remoteService.test = async () => ({ online: false, error: 'down' })
+    expect((await call(x.queue, { workflowPath: safe, instanceId: 'remote:r1' })).ok).toBe(false)
+    services.remoteService.test = async () => ({ online: true })
+    expect((await call(x.queue, { workflowPath: safe, instanceId: 'remote:r1' })).ok).toBe(true)
+    expect((await call(x.queue, { workflowPath: safe, instanceId: 'i1' })).ok).toBe(false)
+    expect((await call(x.parsePngMeta, '/etc/passwd')).ok).toBe(false)
+    expect((await call(x.parsePngMeta, safe)).ok).toBe(true)
+    expect((await call(x.compare, 'w1', 'w2')).ok).toBe(true)
+    expect((await call(x.preflight, '/etc/passwd', 'i1')).ok).toBe(false)
+    expect((await call(x.preflight, safe, '')).ok).toBe(false)
+    expect((await call(x.preflight, safe, 'remote:r1')).ok).toBe(true)
+    expect((await call(x.preflight, safe, 'i1')).ok).toBe(true)
+    expect((await call(x.checkModels, '/etc/passwd', 'i1')).ok).toBe(false)
+    expect((await call(x.checkModels, safe, 'i1')).ok).toBe(true)
+    expect((await call(x.importDefault, { instanceId: '' })).ok).toBe(false)
+    expect((await call(x.importDefault, { instanceId: 'remote:r1' })).ok).toBe(false)
+    expect((await call(x.importDefault, { instanceId: 'i1' })).ok).toBe(false)
+    expect((await call(x.reveal, 'w1')).ok).toBe(true)
+    expect((await call(x.libraryInfo, 'i1')).ok).toBe(true)
+    expect((await call(x.tag, 'w1', ['x'])).ok).toBe(true)
+    expect((await call(x.favorite, 'w1', true)).ok).toBe(true)
+    expect((await call(x.rename, 'w1', 'N')).ok).toBe(true)
+    expect((await call(x.remove, 'w1', { deleteSource: true })).ok).toBe(true)
+  })
+
+  it('outputs: rejects unsafe roots/paths and maps thumbnails', async () => {
+    const { createOutputHandlers } = await import('../../src/main/ipc/domains/output')
+    const x = createOutputHandlers()
+    const safe = join(h.root, 'comfy', 'output')
+    mkdirSync(safe, { recursive: true })
+    const safeFile = join(h.root, 'comfy', 'out.json')
+    writeFileSync(safeFile, '{}')
+    expect((await call(x.scan, { root: '/etc' } as never)).ok).toBe(false)
+    expect((await call(x.scan, { root: safe } as never)).ok).toBe(true)
+    expect((await call(x.scan, {} as never)).ok).toBe(true)
+    const originalScan = services.outputService.scanAsync
+    services.outputService.scanAsync = async () => {
+      throw new Error('scan failed')
+    }
+    expect((await call(x.scan, { root: safe } as never)).ok).toBe(false)
+    services.outputService.scanAsync = originalScan
+    expect((await call(x.scanCancel)).ok).toBe(true)
+    expect((await call(x.list, { root: '/etc' } as never)).ok).toBe(false)
+    expect((await call(x.list, { root: safe, limit: 999 } as never)).ok).toBe(true)
+    expect((await call(x.list, { limit: 0 } as never)).ok).toBe(true)
+    expect((await call(x.thumb, '/etc/passwd')).ok).toBe(false)
+    expect((await call(x.assetsMatch, 'i1', 'a.png')).ok).toBe(true)
+    expect((await call(x.open, '/etc/passwd')).ok).toBe(false)
+    expect((await call(x.reveal, '/etc/passwd')).ok).toBe(false)
+    expect((await call(x.favorite, 'o1', true)).ok).toBe(true)
+    expect((await call(x.remove, 'o1', true)).ok).toBe(true)
+    expect((await call(x.batchDelete, [] as never, true)).ok).toBe(false)
+    expect((await call(x.batchDelete, ['o1'] as never, true)).ok).toBe(true)
+    expect((await call(x.importToWorkflow, '/etc/passwd')).ok).toBe(false)
+    expect((await call(x.importToWorkflow, safeFile)).ok).toBe(true)
+    expect((await call(x.exportZip, [] as never)).ok).toBe(false)
+    expect((await call(x.exportZip, ['/etc/passwd'] as never)).ok).toBe(false)
+    expect((await call(x.exportZip, [safeFile] as never, '/etc')).ok).toBe(false)
+    expect((await call(x.exportZip, [safeFile] as never, join(h.root, 'missing'))).ok).toBe(false)
+    expect((await call(x.exportZip, [safeFile] as never, join(h.root, 'workflows'))).ok).toBe(true)
+    expect((await call(x.exportZip, [safeFile] as never)).ok).toBe(true)
+
+    const originalList = services.outputService.list
+    services.outputService.list = () => ({
+      items: [
+        {
+          id: 'o1',
+          path: join(h.root, 'comfy', 'file.png'),
+          fileName: 'file.png',
+          type: 'image',
+          thumbnail: 'comfy-pilot-media:output/x.png',
+          size: 1,
+          createdAt: 1
+        },
+        {
+          id: 'o2',
+          path: join(h.root, 'comfy', 'file.png'),
+          fileName: 'file.png',
+          type: 'video',
+          thumbnail: '/tmp/missing.png',
+          size: 1,
+          createdAt: 1
+        },
+        {
+          id: 'o3',
+          path: '/tmp/missing',
+          fileName: 'x',
+          type: 'image',
+          thumbnail: '/tmp/missing.png',
+          size: 1,
+          createdAt: 1
+        }
+      ],
+      total: 3,
+      truncated: false
+    })
+    const listed = await call(x.list, {} as never)
+    expect(listed.ok).toBe(true)
+    services.outputService.list = originalList
   })
 
   it('instances: exhaustively validates save/patch/port arguments', async () => {
