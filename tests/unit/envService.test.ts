@@ -249,6 +249,134 @@ describe('EnvService (0.1.10 behaviour)', () => {
 })
 
 describe('outputIndicatesFailure (0.1.13)', () => {
+  it('rejects unsafe venv names and missing interpreters', async () => {
+    const { envService } = await import('../../src/main/services/env')
+    for (const name of ['', '..', '../evil', 'a/b', 'a\\b', ' bad ']) {
+      await expect(
+        envService.createVenv({
+          basePath: h.state.root,
+          name,
+          pythonPath: 'python',
+          useUv: false
+        }),
+        name
+      ).rejects.toThrow()
+    }
+    h.state.handler = () => new Error('venv failed')
+    await expect(
+      envService.createVenv({
+        basePath: h.state.root,
+        name: 'v',
+        pythonPath: 'python',
+        useUv: false
+      })
+    ).rejects.toThrow(/no interpreter/)
+    h.state.handler = () => ({ stdout: '' })
+    await expect(
+      envService.createVenv({
+        basePath: h.state.root,
+        name: 'v2',
+        pythonPath: 'python',
+        useUv: false
+      })
+    ).rejects.toThrow(/no interpreter/)
+    h.state.handler = (_cmd, args) => {
+      if (args.includes('venv')) {
+        const dir = args[args.indexOf('venv') + 1]
+        mkdirSync(join(dir, 'bin'), { recursive: true })
+        writeFileSync(join(dir, 'bin', 'python'), 'x')
+      }
+      if (args.includes('--index-url')) return { stdout: 'Successfully installed torch' }
+      if (args[0] === '--version') return { stdout: 'Python 3.13.0' }
+      if (args[0] === '-c') return { stdout: '{"torch":"2.9.0","cuda":"13.0"}' }
+      if (args.includes('list')) return { stdout: '[{"name":"x","version":"1"}]' }
+      return { stdout: '' }
+    }
+    const probe = await envService.createVenv({
+      basePath: h.state.root,
+      name: 'v-torch',
+      pythonPath: 'python',
+      useUv: false,
+      torchIndex: 'https://download.pytorch.org/whl/cu130/'
+    })
+    expect(probe.torchVersion).toBe('2.9.0')
+    expect(h.state.calls.some((c) => c.args.includes('--index-url'))).toBe(true)
+  })
+
+  it('probes interpreters with every failure shape', async () => {
+    const { envService } = await import('../../src/main/services/env')
+    h.state.handler = () => new Error('no python')
+    const missing = await envService.probe({ pythonPath: 'python' })
+    expect(missing.ok).toBe(false)
+    expect(missing.errors.length).toBeGreaterThan(0)
+    h.state.handler = (_cmd, args) => {
+      if (args[0] === '--version') return { stdout: 'Python 3.13.0' }
+      if (args[0] === '-c') return { stdout: 'not json' }
+      if (args.includes('--version')) return { stdout: 'pip 25.0 from x' }
+      return { stdout: '' }
+    }
+    const badTorch = await envService.probe({ pythonPath: 'python' })
+    expect(badTorch.errors.join(' ')).toContain('torch probe failed')
+    expect(badTorch.pip?.present).toBe(true)
+    h.state.handler = (_cmd, args) => {
+      if (args[0] === '--version') return { stdout: 'Python 3.13.0' }
+      if (args[0] === '-c')
+        return { stdout: '{"torch":"2.9.0","cuda":"13","rocm":"7","mps":true,"npu":true}' }
+      if (args.includes('--version')) return { stdout: 'pip 25.0' }
+      if (args.includes('list')) return { stdout: 'not json' }
+      return { stdout: '' }
+    }
+    const full = await envService.probe({ pythonPath: 'python' })
+    expect(full).toMatchObject({ torchVersion: '2.9.0', cudaVersion: '13', mpsAvailable: true })
+    expect(full.packages.length).toBeGreaterThan(0)
+  })
+
+  it('lists interpreters and reports torch install failures truthfully', async () => {
+    const { envService } = await import('../../src/main/services/env')
+    h.state.portablePython = join(h.state.root, 'portable-python')
+    mkdirSync(h.state.root, { recursive: true })
+    writeFileSync(h.state.portablePython, '')
+    h.state.handler = (cmd, args) => {
+      if (args[0] === '--version')
+        return { stdout: cmd.includes('portable') ? 'Python 3.13.1' : 'Python 3.13.0' }
+      return { stdout: '' }
+    }
+    const list = await envService.listPythons()
+    expect(list.length).toBeGreaterThan(0)
+    h.state.handler = (_cmd, args) => {
+      if (args.includes('install')) return { stdout: 'ERROR: no wheel' }
+      return { stdout: '' }
+    }
+    await expect(
+      envService.installTorch({
+        pythonPath: 'python',
+        index: 'https://download.pytorch.org/whl/cu130/'
+      })
+    ).rejects.toThrow(/pip install torch failed/)
+    h.state.handler = (_cmd, args) => {
+      if (args.includes('install')) return { stdout: 'Successfully installed torch' }
+      if (args[0] === '-c') return { stdout: '2.9.0 None' }
+      return { stdout: '' }
+    }
+    await expect(
+      envService.installTorch({
+        pythonPath: 'python',
+        index: 'https://download.pytorch.org/whl/cu130/'
+      })
+    ).rejects.toThrow(/CUDA build/)
+    h.state.handler = (_cmd, args) => {
+      if (args.includes('install')) return { stdout: 'Successfully installed torch' }
+      if (args[0] === '-c') return { stdout: '2.9.0+cu130 13.0' }
+      return { stdout: '' }
+    }
+    await expect(
+      envService.installTorch({
+        pythonPath: 'python',
+        index: 'https://download.pytorch.org/whl/cu130/'
+      })
+    ).resolves.toBe(true)
+  })
+
   it('classifies uv/pip output without false alarms', async () => {
     const { outputIndicatesFailure } = await import('../../src/main/services/env')
     // uv success shapes — the old check rejected these as failures.
