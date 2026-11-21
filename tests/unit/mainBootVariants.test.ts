@@ -412,5 +412,6 @@ describe('main entry startup variants', () => {
     const { app } = await import('electron')
     await importIndex()
     expect(app.quit).toHaveBeenCalled()
+    expect(app.exit).not.toHaveBeenCalled()
   })
 })
