@@ -169,3 +169,78 @@ describe('repairEnv truth (0.2.5 WP0)', () => {
     }
   })
 })
+
+describe('repairEnv edge branches', () => {
+  beforeEach(() => {
+    ;(envService as unknown as { repairAbort: AbortController | null }).repairAbort = null
+  })
+
+  it('rejects unknown instances and non-ComfyUI directories', async () => {
+    await expect(envService.repairEnv({ instanceId: 'nope' })).rejects.toThrow(/not found/i)
+    const saved = h.instances
+    h.instances = [{ ...saved[0], id: 'empty', path: join(h.root, 'no-main') }]
+    try {
+      await expect(envService.repairEnv({ instanceId: 'empty' })).rejects.toThrow(
+        /Not a ComfyUI install/
+      )
+    } finally {
+      h.instances = saved
+    }
+  })
+
+  it('refuses Python 3.14 venvs with PYTHON_UNSUPPORTED and marks migration failed', async () => {
+    h.handler = (cmd, args) => {
+      if (args[0] === '--version') return { stdout: 'Python 3.14.0' }
+      return { stdout: '' }
+    }
+    await expect(envService.repairEnv({ instanceId: 'i1' })).rejects.toMatchObject({
+      code: 'PYTHON_UNSUPPORTED'
+    })
+    const saved = h.upserts.at(-1)
+    expect(saved?.migrationState).toBe('failed')
+    expect(String(saved?.migrationError)).toMatch(/Unsupported Python 3.14/)
+  })
+
+  it('reports a failed archive when the previous venv cannot be renamed', async () => {
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(123456)
+    mkdirSync(`${venv}.pre-recreate-123456`, { recursive: true })
+    writeFileSync(join(`${venv}.pre-recreate-123456`, 'occupied'), 'x')
+    try {
+      await expect(envService.repairEnv({ instanceId: 'i1', recreateVenv: true })).rejects.toThrow(
+        /Could not archive/
+      )
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('creates the sibling venv when none exists but refuses a non-3.13 result', async () => {
+    rmSync(venv, { recursive: true, force: true })
+    h.instances = [{ ...h.instances[0], venvPath: '' }]
+    h.handler = (cmd, args) => {
+      if (args.includes('venv')) {
+        const p = args[args.indexOf('venv') + 1]
+        mkdirSync(join(p, 'bin'), { recursive: true })
+        writeFileSync(join(p, 'bin', 'python'), 'new')
+        return { stdout: '' }
+      }
+      if (args[0] === '--version') return { stdout: 'Python 3.12.9' }
+      return { stdout: '' }
+    }
+    await expect(envService.repairEnv({ instanceId: 'i1' })).rejects.toThrow(/PYTHON_UNSUPPORTED/)
+  })
+
+  it('rejects when no Python runtime can be downloaded', async () => {
+    rmSync(venv, { recursive: true, force: true })
+    h.instances = [{ ...h.instances[0], venvPath: '' }]
+    const bootstrap = await import('../../src/main/services/bootstrap')
+    vi.spyOn(bootstrap.bootstrapService, 'ensure').mockResolvedValueOnce({
+      pythonPath: 'python',
+      pythonOrigin: 'missing',
+      components: []
+    } as never)
+    await expect(envService.repairEnv({ instanceId: 'i1' })).rejects.toThrow(
+      /no Python 3.13 runtime/
+    )
+  })
+})
