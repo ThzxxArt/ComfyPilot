@@ -2411,6 +2411,180 @@ describe('snapshots', () => {
     expect(h.state.files.has(join(hiddenDir, '.disabled'))).toBe(false)
   })
 
+  it('filters snapshots by instance but keeps legacy records everywhere', () => {
+    h.state.snapshots = [
+      { id: 'legacy', name: 'legacy', createdAt: 1, packs: [], notes: '' },
+      { id: 'mine', name: 'mine', createdAt: 2, packs: [], notes: '', instanceId: 'inst-1' },
+      { id: 'other', name: 'other', createdAt: 3, packs: [], notes: '', instanceId: 'inst-2' }
+    ]
+    expect(nodePackService.snapshots('inst-1').map((s: any) => s.id)).toEqual(['legacy', 'mine'])
+    expect(nodePackService.snapshots()).toHaveLength(3)
+  })
+
+  it('prunes old auto-pre snapshots but keeps manually named ones', async () => {
+    for (let i = 0; i < 12; i++) {
+      const snap = {
+        id: `auto-${i}`,
+        name: 'auto-pre-x',
+        createdAt: i,
+        packs: [],
+        notes: '',
+        instanceId: 'inst-1'
+      }
+      h.state.snapshots.push(snap)
+      h.state.snapshotById.set(snap.id, snap)
+    }
+    h.state.snapshots.push({
+      id: 'manual-keep',
+      name: 'manual',
+      createdAt: 0,
+      packs: [],
+      notes: ''
+    })
+    const db = await import('../../src/main/services/db')
+    ;(db.deleteSnapshot as any).mockImplementation((id: string) => {
+      h.state.snapshots = h.state.snapshots.filter((s) => s.id !== id)
+      return true
+    })
+    nodePackService.pruneAutoSnapshots('inst-1')
+    expect(h.state.snapshots.filter((s) => s.name.startsWith('auto-pre-'))).toHaveLength(10)
+    expect(h.state.snapshots.some((s) => s.id === 'manual-keep')).toBe(true)
+  })
+
+  it('restoreSnapshot respects instance ownership and sibling disabled forms', () => {
+    const foreign = {
+      id: 'foreign',
+      name: 'foreign',
+      createdAt: 1,
+      packs: [],
+      notes: '',
+      instanceId: 'other'
+    }
+    h.state.snapshotById.set('foreign', foreign)
+    expect(nodePackService.restoreSnapshot('foreign', 'inst-1')).toBe(false)
+
+    // A pack whose .disabled sibling already exists gets a marker instead.
+    const base = join(ROOT, 'Sibling')
+    h.mkdirPath(base)
+    h.writeFile(join(base, 'pyproject.toml'), 'name = "Sibling"\n')
+    h.mkdirPath(`${base}.disabled`)
+    const snap = {
+      id: 'sibling-snap',
+      name: 'sib',
+      createdAt: 1,
+      packs: [{ name: 'Sibling', version: '1', path: base, source: 'local@disabled' }],
+      notes: ''
+    }
+    h.state.snapshotById.set(snap.id, snap)
+    expect(nodePackService.restoreSnapshot(snap.id)).toBe(true)
+    expect(h.state.files.has(join(base, '.disabled'))).toBe(true)
+
+    // An enabled pack parked inside .disabled/ is moved back out.
+    const hidden = join(ROOT, '.disabled')
+    const inside = join(hidden, 'Inside')
+    h.mkdirPath(inside)
+    h.writeFile(join(inside, 'pyproject.toml'), 'name = "Inside"\n')
+    const snap2 = {
+      id: 'inside-snap',
+      name: 'inside',
+      createdAt: 1,
+      packs: [{ name: 'Inside', version: '1', path: inside, source: 'local' }],
+      notes: ''
+    }
+    h.state.snapshotById.set(snap2.id, snap2)
+    expect(nodePackService.restoreSnapshot(snap2.id)).toBe(true)
+    expect(h.state.dirs.has(join(ROOT, 'Inside'))).toBe(true)
+
+    // An enabled pack with a .disabled SUFFIX is renamed back.
+    const suffixed = join(ROOT, 'Suffix.disabled')
+    h.mkdirPath(suffixed)
+    h.writeFile(join(suffixed, 'pyproject.toml'), 'name = "Suffix"\n')
+    const snap3 = {
+      id: 'suffix-snap',
+      name: 'suffix',
+      createdAt: 1,
+      packs: [{ name: 'Suffix', version: '1', path: suffixed, source: 'local' }],
+      notes: ''
+    }
+    h.state.snapshotById.set(snap3.id, snap3)
+    expect(nodePackService.restoreSnapshot(snap3.id)).toBe(true)
+    expect(h.state.dirs.has(join(ROOT, 'Suffix'))).toBe(true)
+  })
+
+  it('deleteSnapshot refuses a foreign instance snapshot', () => {
+    const snap = {
+      id: 'del-foreign',
+      name: 'x',
+      createdAt: 1,
+      packs: [],
+      notes: '',
+      instanceId: 'other'
+    }
+    h.state.snapshotById.set(snap.id, snap)
+    expect(nodePackService.deleteSnapshot(snap.id, 'inst-1')).toBe(false)
+  })
+
+  it('restoreNodeVersions reports missing paths, dirty git, registry and local packs', async () => {
+    await expect(nodePackService.restoreNodeVersions('missing-snap')).rejects.toThrow(
+      /Snapshot not found/
+    )
+    const gitDir = seedPack({ name: 'RevertGit', withGit: true })
+    const dirtyDir = seedPack({ name: 'DirtyGit', withGit: true })
+    const registryDir = seedPack({ name: 'RegBack' })
+    const localDir = seedPack({ name: 'LocalOnly' })
+    const snap = {
+      id: 'versions-snap',
+      name: 'versions',
+      createdAt: 1,
+      notes: '',
+      instanceId: 'inst-1',
+      packs: [
+        { name: 'Gone', version: '1', path: join(ROOT, 'Gone'), source: 'git', gitRev: 'abc' },
+        { name: 'NoRev', version: '1', path: gitDir, source: 'git' },
+        { name: 'RevertGit', version: '1', path: gitDir, source: 'git', gitRev: 'abc' },
+        { name: 'DirtyGit', version: '1', path: dirtyDir, source: 'git', gitRev: 'abc' },
+        { name: 'RegNoVer', version: '', path: registryDir, source: 'registry' },
+        { name: 'RegBack', version: '1.0.0', path: registryDir, source: 'registry' },
+        { name: 'LocalOnly', version: '1', path: localDir, source: 'local' }
+      ]
+    }
+    h.state.snapshotById.set(snap.id, snap)
+    cpMock.__setExecHandler((cmd, args) => {
+      if (args.includes('status')) return { stdout: args[1].includes('Dirty') ? ' M x\n' : '' }
+      return { stdout: '' }
+    })
+    const update = vi
+      .spyOn(nodePackService as any, 'update')
+      .mockRejectedValueOnce(new Error('registry gone'))
+    try {
+      const out = await nodePackService.restoreNodeVersions(snap.id, 'inst-1')
+      expect(out.failed.some((f: any) => f.name === 'Gone')).toBe(true)
+      expect(out.skipped.some((s: any) => s.name === 'NoRev')).toBe(true)
+      expect(out.skipped.some((s: any) => s.name === 'DirtyGit')).toBe(true)
+      expect(out.restored).toContain('RevertGit')
+      expect(out.skipped.some((s: any) => s.name === 'RegNoVer')).toBe(true)
+      expect(out.failed.some((f: any) => f.name === 'RegBack')).toBe(true)
+      expect(out.warnings.some((w: string) => w.includes('local pack'))).toBe(true)
+      expect(out.ok).toBe(false)
+    } finally {
+      update.mockRestore()
+    }
+  })
+
+  it('restoreNodeVersions warns when the pre-restore snapshot fails', async () => {
+    const snap = { id: 'warn-snap', name: 'w', createdAt: 1, packs: [], notes: '' }
+    h.state.snapshotById.set(snap.id, snap)
+    const create = vi.spyOn(nodePackService as any, 'createSnapshot').mockImplementation(() => {
+      throw new Error('disk full')
+    })
+    try {
+      const out = await nodePackService.restoreNodeVersions(snap.id)
+      expect(out.warnings.join(' ')).toContain('pre-restore snapshot failed')
+    } finally {
+      create.mockRestore()
+    }
+  })
+
   it('deleteSnapshot removes the sidecar file and DB row', () => {
     seedPack({ name: 'SnapDel' })
     const snap = nodePackService.createSnapshot('to-delete')

@@ -3,7 +3,7 @@
  * child_process, zip and desktop/instance hooks. No real git/pip/uv runs.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
-import { mkdirSync, writeFileSync, existsSync, rmSync, readFileSync } from 'fs'
+import { mkdirSync, writeFileSync, existsSync, rmSync, readFileSync, readdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import type { InstallPlan, InstallProgress } from '../../src/shared/types'
@@ -839,5 +839,72 @@ describe('installer runPlan (integration)', () => {
     svc.cancel()
     const p = await waitStatus(svc, (s) => s.status === 'cancelled' || s.status === 'failed', 8000)
     expect(p.status).toBe('cancelled')
+  })
+})
+
+describe('installer runPlan additional branches', () => {
+  beforeEach(() => {
+    h.reset()
+  })
+
+  it('defaults the git repo/branch and desktop shortcut name', async () => {
+    rmSync(join(ROOT, 'defaults-run'), { recursive: true, force: true })
+    const captured: unknown[] = []
+    h.desktopImpl = async (opts) => {
+      captured.push(opts)
+      return 'C:/Desktop/ok.lnk'
+    }
+    const svc = await freshService()
+    await svc.start(
+      plan({
+        installRoot: join(ROOT, 'defaults-run'),
+        comfySource: 'git',
+        comfyRepo: undefined,
+        comfyBranch: undefined,
+        instanceName: '',
+        createDesktopShortcut: true,
+        useUv: true
+      })
+    )
+    const p = await waitStatus(svc, (s) => s.status === 'done' || s.status === 'failed')
+    expect(p.status).toBe('done')
+    expect(captured[0]).toMatchObject({ name: 'ComfyPilot' })
+    expect(h.execCalls.some((c) => c.args[0] === 'clone')).toBe(true)
+  })
+
+  it('archives a non-3.13 venv before building the managed one', async () => {
+    const root = join(ROOT, 'archive-venv')
+    rmSync(root, { recursive: true, force: true })
+    const venv = join(root, '.venv')
+    mkdirSync(join(venv, 'Scripts'), { recursive: true })
+    writeFileSync(join(venv, 'Scripts', 'python.exe'), 'old')
+    let created = false
+    h.execImpl = (cmd, args, cb) => {
+      if (args[0] === '--version') {
+        if (!created && String(cmd).includes('.venv') && !String(cmd).includes('pre-recreate')) {
+          return queueMicrotask(() => cb(null, 'Python 3.12.10', ''))
+        }
+        return queueMicrotask(() => cb(null, 'Python 3.13.2', ''))
+      }
+      if ((args[0] === '-m' && args[1] === 'venv') || args[0] === 'venv') {
+        const venvPath = args[0] === 'venv' ? args[1] : args[2]
+        mkdirSync(join(venvPath, 'Scripts'), { recursive: true })
+        writeFileSync(join(venvPath, 'Scripts', 'python.exe'), '')
+        created = true
+        return queueMicrotask(() => cb(null, '', ''))
+      }
+      if (args[0] === '-c' && String(args[1] || '').includes('torch.version.cuda')) {
+        return queueMicrotask(() =>
+          cb(null, '{"cuda": null, "hip": null, "torch": "2.9.0+cpu"}', '')
+        )
+      }
+      queueMicrotask(() => cb(null, 'ok', ''))
+    }
+    const svc = await freshService()
+    await svc.start(plan({ installRoot: root, useUv: false, pythonPath: 'python' }))
+    const p = await waitStatus(svc, (s) => s.status === 'done' || s.status === 'failed')
+    expect(p.status).toBe('done')
+    const archived = readdirSync(root).filter((n) => n.includes('.venv.pre-recreate-'))
+    expect(archived.length).toBe(1)
   })
 })
