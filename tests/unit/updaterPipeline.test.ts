@@ -1,8 +1,10 @@
 /**
  * High-intensity unit tests for ComfyUpdaterService: check (git/zip/unknown),
- * start concurrency, the full runUpdate pipeline (preflight �?stop �?backup �? * fetch �?requirements �?torch �?verify �?done/rollback), cancel/killTree,
+ * start concurrency, the full runUpdate pipeline (preflight → stop → backup →
+ * fetch → requirements → torch → verify → done/rollback), cancel/killTree,
  * copyCoreTree/overlayTree, stampInstallMeta, venvPython and pipArgs.
  */
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { pathKey } from '../helpers/pathKey'
 import { join, dirname } from 'path'
@@ -56,7 +58,20 @@ const h = vi.hoisted(() => {
     /** One-shot injected copy failures (matched on from OR to path). */
     failCopyOnce: new Set<string>(),
     /** Injected rmSync failures when the path contains any of these substrings. */
-    failRmPrefix: [] as string[]
+    failRmPrefix: [] as string[],
+    /** Injected readdir/stat/write failures (matched on the fs key). */
+    failReaddir: [] as string[],
+    failStat: [] as string[],
+    failWritePrefix: [] as string[],
+    /** Node-pack fixtures for the post-update compatibility check. */
+    nodePacks: [] as Array<{ name: string }>,
+    nodeIssues: new Map<string, Array<{ severity: string }>>(),
+    nodeIssuesErr: new Set<string>(),
+    restoreResult: null as Record<string, unknown> | null,
+    restoreErr: null as Error | null,
+    createSnapshotErr: null as Error | null,
+    /** Node-pack constructor fixtures for the post-update compatibility check. */
+    nodePackCheckCalls: [] as string[]
   }
 
   function fsKey(p: unknown): string {
@@ -148,9 +163,15 @@ vi.mock('fs', () => {
       const s = fsKey(p)
       return state.exists.has(s) || state.dirs.has(s) || state.files.has(s) || state.isDir.has(s)
     },
-    readdirSync: (p: unknown) => [...(state.dirs.get(fsKey(p)) || [])],
+    readdirSync: (p: unknown) => {
+      const s = fsKey(p)
+      if (state.failReaddir.some((x) => s.includes(x))) throw new Error('EACCES (injected readdir)')
+      return [...(state.dirs.get(s) || [])]
+    },
+    rmdirSync: (p: unknown) => rmPath(fsKey(p)),
     statSync: (p: unknown) => {
       const s = fsKey(p)
+      if (state.failStat.some((x) => s.includes(x))) throw new Error('EACCES (injected stat)')
       return {
         isDirectory: () => state.isDir.has(s) || state.dirs.has(s),
         isFile: () => state.files.has(s),
@@ -161,6 +182,8 @@ vi.mock('fs', () => {
     readFileSync: (p: unknown) => state.files.get(fsKey(p)) ?? '',
     writeFileSync: (p: unknown, data: unknown) => {
       const s = fsKey(p)
+      if (state.failWritePrefix.some((x) => s.includes(x)))
+        throw new Error('EROFS (injected write)')
       state.files.set(s, String(data))
       state.exists.add(s)
       attach(s)
@@ -346,15 +369,33 @@ vi.mock('../../src/main/services/installer', () => ({
 vi.mock('../../src/main/services/nodePack', () => ({
   resolveGitBinary: vi.fn(() => 'git'),
   nodePackService: {
-    createSnapshot: vi.fn(() => ({ id: 'snap-pre-update' })),
-    restoreNodeVersions: vi.fn(async () => ({
-      ok: true,
-      restored: [],
-      skipped: [],
-      failed: [],
-      warnings: []
-    }))
+    createSnapshot: vi.fn(() => {
+      if (h.state.createSnapshotErr) throw h.state.createSnapshotErr
+      return { id: 'snap-pre-update' }
+    }),
+    restoreNodeVersions: vi.fn(async () => {
+      if (h.state.restoreErr) throw h.state.restoreErr
+      return (
+        h.state.restoreResult || {
+          ok: true,
+          restored: [],
+          skipped: [],
+          failed: [],
+          warnings: []
+        }
+      )
+    }),
+    list: vi.fn(() => h.state.nodePacks),
+    checkIssues: vi.fn(async (name: string) => {
+      h.state.nodePackCheckCalls.push(name)
+      if (h.state.nodeIssuesErr.has(name)) throw new Error('issues boom')
+      return h.state.nodeIssues.get(name) || []
+    })
   }
+}))
+
+vi.mock('../../src/main/ipc/handlers', () => ({
+  broadcastNotification: vi.fn()
 }))
 
 vi.mock('../../src/main/services/bootstrap', () => ({
@@ -424,12 +465,43 @@ import {
 } from '../../src/main/services/updater'
 import type { UpdateProgress, ComfyUpdateOptions } from '../../src/shared/types'
 import { bootstrapService } from '../../src/main/services/bootstrap'
+import { nodePackService, resolveGitBinary } from '../../src/main/services/nodePack'
+import { instanceService } from '../../src/main/services/instance'
+import { broadcastNotification } from '../../src/main/ipc/handlers'
 
 const svc = comfyUpdaterService as unknown as {
-  copyCoreTree: (src: string, dest: string) => Promise<number>
-  overlayTree: (src: string, dest: string) => Promise<number>
+  copyCoreTree: (
+    src: string,
+    dest: string,
+    onProgress?: (done: number, total: number) => void
+  ) => Promise<number>
   fetchAndOverlayZip: (comfyDir: string, stableTag?: string) => Promise<void>
-  performRollback: (comfyDir: string, backupPath: string, kind: 'git' | 'files') => Promise<boolean>
+  performRollback: (
+    comfyDir: string,
+    backupPath: string,
+    kind: 'git' | 'files'
+  ) => Promise<boolean>
+  overlayTree: (
+    src: string,
+    dest: string,
+    topLevel?: boolean,
+    shouldStop?: () => boolean,
+    onProgress?: (done: number, total: number) => void
+  ) => Promise<number>
+  streamBodyToFile: (
+    res: { body?: unknown; arrayBuffer?: () => Promise<ArrayBuffer> },
+    dest: string,
+    onChunk?: (chunk: Buffer) => void
+  ) => Promise<number>
+  readArchiveManifest: (comfyDir: string) => string[]
+  writeArchiveManifest: (comfyDir: string, files: string[]) => void
+  listArchiveFiles: (root: string) => string[]
+  pruneRemovedArchiveFiles: (comfyDir: string, previous: string[], next: string[]) => number
+  postUpdateNodeCheck: (instanceId: string) => Promise<void>
+  journalBackupMatchesHead: (journal: Record<string, unknown>) => boolean
+  clearUnverifiedArchivePin: (comfyDir: string) => void
+  setWork: (id: string, done: number, total: number, label?: string) => void
+  clearWork: (id: string) => void
   venvPython: (venvPath: string) => string
   pipArgs: (base: string[]) => string[]
   killTree: (child: {
@@ -437,7 +509,14 @@ const svc = comfyUpdaterService as unknown as {
     exitCode: number | null
     kill: (s: string) => void
   }) => Promise<void>
-  setStep: (id: string, status: string, detail?: string) => void
+  setStep: (
+    id: string,
+    status: string,
+    detail?: string,
+    logLine?: string,
+    detailKey?: string,
+    detailParams?: Record<string, string | number>
+  ) => void
   log: (id: string, line: string) => void
   emitProgress: (message?: string) => void
   setBytes: (bytes?: unknown) => void
@@ -488,6 +567,16 @@ function resetState(): void {
   h.state.uvInstalled = false
   h.state.failCopyOnce.clear()
   h.state.failRmPrefix = []
+  h.state.failReaddir = []
+  h.state.failStat = []
+  h.state.failWritePrefix = []
+  h.state.nodePacks = []
+  h.state.nodeIssues = new Map()
+  h.state.nodeIssuesErr = new Set()
+  h.state.restoreResult = null
+  h.state.restoreErr = null
+  h.state.createSnapshotErr = null
+  h.state.nodePackCheckCalls = []
   // Default: a minimal valid archive that just re-writes main.py
   h.state.sessionFetch = async () => ({
     ok: true,
@@ -2669,5 +2758,574 @@ describe('update journal lifecycle (review fix)', () => {
     h.state.execSyncOut = 'new-sha\n'
     expect(comfyUpdaterService.readJournal('inst-1')?.backupPath).toBe(backup)
     expect(fhas('C:/fake/.cp-update-journal.json')).toBe(true)
+  })
+})
+
+// =====================================================================
+// Edge branches: progress helpers, archive pins/manifests, journal edges,
+// post-update node checks and direct tree helpers.
+// =====================================================================
+const admin = comfyUpdaterService as unknown as Record<string, any> & {
+  progress: any
+  running: boolean
+  cancelledEpoch: number
+  pendingArchivePin: { tag: string; sha: string; existed: boolean } | null
+  performRollback: (comfyDir: string, backupPath: string, kind: 'git' | 'files') => Promise<boolean>
+}
+
+describe('updater edge branches', () => {
+  it('updates the progress snapshot, trims long logs and tolerates unknown steps', () => {
+    const step = { id: 'fetch', title: 'Fetch', status: 'running', detail: '', log: [] as string[] }
+    const backupStep = { id: 'backup', title: 'Backup', status: 'pending', detail: '', log: [] }
+    admin.progress = {
+      status: 'running',
+      percent: 0,
+      message: '',
+      steps: [step, backupStep]
+    }
+    svc.setWork('fetch', 3, 10, 'copying')
+    expect(step.detail).toBe('copying')
+    expect((step as any).workDone).toBe(3)
+    expect((step as any).workTotal).toBe(10)
+    svc.clearWork('fetch')
+    expect((step as any).workDone).toBeUndefined()
+    svc.setWork('missing', 1, 2)
+    svc.clearWork('missing')
+
+    for (let i = 0; i < 405; i++) svc.setStep('fetch', 'running', 'detail', `line-${i}`)
+    expect(step.log.length).toBe(400)
+    expect(step.log[0]).toBe('line-5')
+    svc.setStep('fetch', 'done', undefined, undefined, 'update.msgFetchGitDone', { sha: 'a' })
+    expect((step as any).detailKey).toBe('update.msgFetchGitDone')
+    expect((step as any).detailParams).toEqual({ sha: 'a' })
+    svc.setStep('missing', 'done')
+    svc.setStep('fetch', 'done', null as unknown as string)
+
+    for (let i = 0; i < 401; i++) svc.log('fetch', `l-${i}`)
+    expect(step.log.length).toBe(400)
+    svc.log('missing', 'ignored')
+
+    svc.emitProgress()
+    svc.emitProgress('hello')
+    svc.setBytes({ receivedBytes: 1, totalBytes: 2, speedBps: 0, label: 'archive' })
+    svc.setBytes(undefined)
+
+    admin.progress = null
+    svc.emitProgress()
+    svc.setBytes()
+    svc.setWork('fetch', 0, 1)
+    svc.clearWork('fetch')
+    svc.setStep('fetch', 'done')
+    svc.log('fetch', 'ignored')
+  })
+
+  it('cancels a running snapshot even when no step is active', () => {
+    admin.progress = {
+      status: 'running',
+      percent: 5,
+      message: '',
+      steps: [{ id: 'preflight', title: 'Preflight', status: 'done', detail: '', log: [] }]
+    }
+    expect(comfyUpdaterService.cancel()).toBe(true)
+    expect(admin.progress.status).toBe('cancelled')
+    admin.progress = null
+    admin.cancelledEpoch = -1
+    expect(comfyUpdaterService.cancel()).toBe(false)
+  })
+
+  it('clears only a TOFU pin that was newly written and still matches', () => {
+    const pinsFile = 'C:/fake/.comfypilot-archive-pins.json'
+    admin.pendingArchivePin = null
+    svc.clearUnverifiedArchivePin(COMFY)
+
+    h.writeFile(pinsFile, JSON.stringify({ v1: 'abcd1234', v2: 7, v3: 'nothex' }))
+    admin.pendingArchivePin = { tag: 'v1', sha: 'abcd1234', existed: false }
+    svc.clearUnverifiedArchivePin(COMFY)
+    expect(fget(pinsFile) || '').not.toContain('abcd1234')
+
+    // Already pinned before this run: never removed by a failed verification.
+    admin.pendingArchivePin = { tag: 'v1', sha: 'abcd1234', existed: true }
+    h.writeFile(pinsFile, JSON.stringify({ v1: 'abcd1234' }))
+    svc.clearUnverifiedArchivePin(COMFY)
+    expect(fget(pinsFile)).toContain('abcd1234')
+
+    // Pin list is malformed / the tag no longer matches: best-effort no-op.
+    h.writeFile(pinsFile, JSON.stringify(['nope']))
+    admin.pendingArchivePin = { tag: 'v1', sha: 'abcd1234', existed: false }
+    svc.clearUnverifiedArchivePin(COMFY)
+    h.writeFile(pinsFile, JSON.stringify({ other: 'deadbeef' }))
+    admin.pendingArchivePin = { tag: 'v1', sha: 'abcd1234', existed: false }
+    svc.clearUnverifiedArchivePin(COMFY)
+    expect(fget(pinsFile)).toContain('deadbeef')
+  })
+
+  it('survives unwritable archive pin and manifest files', async () => {
+    seedZipInstall({ withVenv: true, withReq: false })
+    h.writeFile('C:/fake/.comfypilot-archive-pins.json', JSON.stringify(['not-an-object']))
+    h.state.failWritePrefix.push('.comfypilot-archive-pins', '.comfypilot-archive.json')
+    h.state.sessionFetch = async () =>
+      ({
+        ok: true,
+        status: 200,
+        headers: { get: () => '' },
+        arrayBuffer: async () => new TextEncoder().encode('zip').buffer
+      }) as never
+    await expect(svc.fetchAndOverlayZip(COMFY, 'v9.9.9')).resolves.toBeUndefined()
+    expect(fhas(join(COMFY, 'main.py'))).toBe(true)
+  })
+
+  it('filters unsafe manifest entries and prunes only listed core files', () => {
+    h.mkdirPath(COMFY)
+    h.writeFile(
+      join(COMFY, '.comfypilot-archive.json'),
+      JSON.stringify([
+        'a.py',
+        '/abs.py',
+        'x/../y.py',
+        'models/m.bin',
+        'missing.py',
+        'empty/x.py',
+        'boom.py'
+      ])
+    )
+    h.writeFile(join(COMFY, 'a.py'), '')
+    h.mkdirPath(join(COMFY, 'models'))
+    h.writeFile(join(COMFY, 'models', 'm.bin'), 'user-model')
+    h.mkdirPath(join(COMFY, 'empty'))
+    h.writeFile(join(COMFY, 'empty', 'x.py'), '')
+    h.writeFile(join(COMFY, 'boom.py'), '')
+    h.state.failRmPrefix.push('boom.py')
+
+    const previous = svc.readArchiveManifest(COMFY)
+    expect(previous).toEqual(['a.py', 'models/m.bin', 'missing.py', 'empty/x.py', 'boom.py'])
+    h.writeFile(join(COMFY, '.comfypilot-archive.json'), JSON.stringify({ not: 'an array' }))
+    expect(svc.readArchiveManifest(COMFY)).toEqual([])
+    expect(svc.readArchiveManifest(join(COMFY, 'nope'))).toEqual([])
+
+    const removed = svc.pruneRemovedArchiveFiles(COMFY, previous, ['a.py'])
+    expect(removed).toBe(1)
+    expect(fhas(join(COMFY, 'a.py'))).toBe(true)
+    expect(fhas(join(COMFY, 'models', 'm.bin'))).toBe(true)
+    expect(fhas(join(COMFY, 'empty', 'x.py'))).toBe(false)
+    expect(dhas(join(COMFY, 'empty'))).toBe(false)
+    expect(fhas(join(COMFY, 'boom.py'))).toBe(true)
+
+    expect(svc.pruneRemovedArchiveFiles(COMFY, ['../evil.py'], [])).toBe(0)
+    expect(svc.pruneRemovedArchiveFiles(COMFY, [], [])).toBe(0)
+  })
+
+  it('lists staged archive files without preserved dirs or .git', () => {
+    const src = 'C:/fake/staged'
+    h.mkdirPath(src)
+    h.mkdirPath(join(src, '.git'))
+    h.writeFile(join(src, '.git', 'HEAD'), 'ref')
+    h.mkdirPath(join(src, 'models'))
+    h.writeFile(join(src, 'models', 'm.bin'), '')
+    h.writeFile(join(src, 'main.py'), '')
+    h.mkdirPath(join(src, 'comfy'))
+    h.writeFile(join(src, 'comfy', 'models.py'), '')
+    expect(svc.listArchiveFiles(src)).toEqual(['comfy/models.py', 'main.py'])
+  })
+
+  it('reads a malformed files-backup inventory and reports cleanup failures', async () => {
+    const backup = 'C:/fake/.cp-backups/malformed'
+    h.mkdirPath(backup)
+    h.writeFile(join(backup, 'manifest.json'), JSON.stringify({ kind: 'files' }))
+    h.writeFile(join(backup, 'inventory.json'), '{not json')
+    h.writeFile(join(backup, 'main.py'), 'old-main')
+    h.mkdirPath(COMFY)
+    h.writeFile(join(COMFY, 'main.py'), 'new-main')
+    h.writeFile(join(COMFY, 'added.py'), 'new-file')
+
+    expect(await svc.performRollback(COMFY, backup, 'files')).toBe(true)
+    expect(fget(join(COMFY, 'main.py'))).toBe('old-main')
+    expect(fhas(join(COMFY, 'added.py'))).toBe(false)
+
+    h.writeFile(join(COMFY, 'added2.py'), 'new-file')
+    h.writeFile(join(backup, 'inventory.json'), JSON.stringify(['main.py']))
+    h.state.failRmPrefix.push('added2.py')
+    await expect(svc.performRollback(COMFY, backup, 'files')).rejects.toThrow(
+      /rollback cleanup added2.py/
+    )
+  })
+
+  it('broadcasts post-update node compatibility issues and ignores per-pack errors', async () => {
+    h.state.nodePacks = [{ name: 'a' }, { name: 'b' }]
+    h.state.nodeIssues.set('a', [
+      { severity: 'error' },
+      { severity: 'warning' },
+      { severity: 'info' }
+    ])
+    h.state.nodeIssuesErr.add('b')
+    await svc.postUpdateNodeCheck('inst-1')
+    expect(broadcastNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'warning', titleKey: 'notify.postUpdateNodeCheck' })
+    )
+
+    h.state.nodePacks = [{ name: 'c' }]
+    h.state.nodeIssues.clear()
+    h.state.nodeIssuesErr.clear()
+    h.state.nodeIssues.set('c', [{ severity: 'warning' }])
+    await svc.postUpdateNodeCheck('inst-1')
+    expect(broadcastNotification).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: 'info' })
+    )
+
+    ;(broadcastNotification as unknown as ReturnType<typeof vi.fn>).mockClear()
+    h.state.nodePacks = []
+    await svc.postUpdateNodeCheck('inst-1')
+    expect(broadcastNotification).not.toHaveBeenCalled()
+  })
+
+  it('rejects foreign, incomplete and path-mismatched journals', () => {
+    expect(comfyUpdaterService.readJournal('unknown-instance')).toBeNull()
+    const file = 'C:/fake/.cp-update-journal.json'
+    h.writeFile(file, JSON.stringify({ instanceId: 'inst-1', comfyDir: COMFY }))
+    expect(comfyUpdaterService.readJournal('inst-1')).toBeNull()
+    h.writeFile(
+      file,
+      JSON.stringify({ instanceId: 'other', backupPath: 'C:/fake/b', comfyDir: COMFY })
+    )
+    expect(comfyUpdaterService.readJournal('inst-1')).toBeNull()
+    h.writeFile(
+      file,
+      JSON.stringify({ instanceId: 'inst-1', backupPath: 'C:/fake/b', comfyDir: 'C:/fake/Other' })
+    )
+    expect(comfyUpdaterService.readJournal('inst-1')).toBeNull()
+  })
+
+  it('detects when a git journal backup cannot prove the current HEAD', () => {
+    const journal = (backupKind: string, backupPath: string): Record<string, unknown> => ({
+      instanceId: 'inst-1',
+      comfyDir: COMFY,
+      backupPath,
+      backupKind
+    })
+    expect(svc.journalBackupMatchesHead(journal('files', 'C:/fake/none'))).toBe(false)
+    expect(svc.journalBackupMatchesHead(journal('git', 'C:/fake/none'))).toBe(false)
+
+    const backup = 'C:/fake/.cp-backups/head-check'
+    h.mkdirPath(backup)
+    h.writeFile(join(backup, 'manifest.json'), '{}')
+    expect(svc.journalBackupMatchesHead(journal('git', backup))).toBe(false)
+
+    h.writeFile(join(backup, 'manifest.json'), JSON.stringify({ sha: 'abc1234' }))
+    h.state.execSyncErr = new Error('git unavailable')
+    expect(svc.journalBackupMatchesHead(journal('git', backup))).toBe(false)
+  })
+
+  it('refuses journal rollback while running and keeps the journal when incomplete', async () => {
+    admin.running = true
+    try {
+      await expect(comfyUpdaterService.rollbackFromJournal('inst-1')).rejects.toThrow(
+        /wait for it to finish/
+      )
+    } finally {
+      admin.running = false
+    }
+    await expect(comfyUpdaterService.rollbackFromJournal('inst-1')).rejects.toThrow(
+      /No unfinished update/
+    )
+
+    const backup = 'C:/fake/.cp-backups/incomplete'
+    h.mkdirPath(backup)
+    h.writeFile(join(backup, 'manifest.json'), JSON.stringify({ kind: 'files' }))
+    h.writeFile(
+      'C:/fake/.cp-update-journal.json',
+      JSON.stringify({
+        instanceId: 'inst-1',
+        comfyDir: COMFY,
+        backupPath: backup,
+        backupKind: 'files',
+        startedAt: 1
+      })
+    )
+    const original = admin.performRollback
+    admin.performRollback = async () => false
+    try {
+      await expect(comfyUpdaterService.rollbackFromJournal('inst-1')).resolves.toBe(false)
+      expect(comfyUpdaterService.readJournal('inst-1')).not.toBeNull()
+    } finally {
+      admin.performRollback = original
+    }
+  })
+
+  it('streams response bodies and handles empty chunks and missing readers', async () => {
+    const dest = 'C:/fake/stream.bin'
+    const chunks: Array<{ done: boolean; value?: Uint8Array }> = [
+      { done: false, value: undefined },
+      { done: false, value: new Uint8Array([1, 2]) },
+      { done: false, value: new Uint8Array([3]) },
+      { done: true }
+    ]
+    const res = {
+      body: {
+        getReader: () => ({ read: async () => chunks.shift() || { done: true } })
+      }
+    }
+    admin.cancelledEpoch = -1
+    expect(await svc.streamBodyToFile(res, dest)).toBe(3)
+    expect(fhas(dest)).toBe(true)
+
+    const empty = { body: null, arrayBuffer: async () => new ArrayBuffer(0) }
+    expect(await svc.streamBodyToFile(empty, dest)).toBe(0)
+  })
+
+  it('fails a zip overlay when the staging root has no main.py', async () => {
+    seedZipInstall({ withVenv: true, withReq: false })
+    h.state.unzipImpl = (_zip, dest) => {
+      h.mkdirPath(join(dest, 'one'))
+      h.mkdirPath(join(dest, 'two'))
+    }
+    await expect(svc.fetchAndOverlayZip(COMFY)).rejects.toThrow(/missing main.py/i)
+  })
+
+  it('copies a large core tree with progress and reports unreadable entries', async () => {
+    const src = 'C:/fake/big-src'
+    const dest = 'C:/fake/big-dest'
+    h.mkdirPath(src)
+    h.mkdirPath(join(src, 'sub'))
+    h.writeFile(join(src, 'sub', 'a.py'), 'a')
+    for (let i = 0; i < 60; i++) h.writeFile(join(src, `f${i}.py`), String(i))
+    const progress: Array<[number, number]> = []
+    const copied = await svc.copyCoreTree(src, dest, (done, total) => progress.push([done, total]))
+    expect(copied).toBe(61)
+    expect(fhas(join(dest, 'sub', 'a.py'))).toBe(true)
+    expect(fhas(join(dest, 'f59.py'))).toBe(true)
+    expect(progress.some(([done]) => done >= 25)).toBe(true)
+
+    h.writeFile(join(src, 'bad.py'), 'bad')
+    h.state.failStat.push('bad.py')
+    await expect(svc.copyCoreTree(src, dest)).rejects.toThrow(/Backup failed at bad.py/)
+
+    h.state.failStat = []
+    h.mkdirPath(join(src, 'unreadable'))
+    h.state.failReaddir.push('unreadable')
+    await expect(svc.copyCoreTree(src, dest)).rejects.toThrow(/Backup failed at unreadable/)
+  })
+
+  it('overlays large trees, skips preserved top-level dirs and honours cancel', async () => {
+    const src = 'C:/fake/ov-src'
+    const dest = 'C:/fake/ov-dest'
+    h.mkdirPath(src)
+    h.mkdirPath(join(src, 'models'))
+    h.writeFile(join(src, 'models', 'm.bin'), 'user')
+    h.mkdirPath(join(src, 'comfy'))
+    h.mkdirPath(join(src, 'comfy', 'models'))
+    h.writeFile(join(src, 'comfy', 'models', 'code.py'), 'code')
+    for (let i = 0; i < 60; i++) h.writeFile(join(src, `f${i}.py`), String(i))
+    const totals: number[] = []
+    const copied = await svc.overlayTree(
+      src,
+      dest,
+      true,
+      () => false,
+      (_done, total) => totals.push(total)
+    )
+    expect(copied).toBe(61)
+    expect(fhas(join(dest, 'models', 'm.bin'))).toBe(false)
+    expect(fhas(join(dest, 'comfy', 'models', 'code.py'))).toBe(true)
+    expect(totals.length).toBeGreaterThan(0)
+
+    await expect(svc.overlayTree(src, dest, true, () => true)).rejects.toThrow(/cancelled/i)
+
+    h.state.failCopyOnce.add(key(join(src, 'f1.py')))
+    await expect(svc.overlayTree(src, dest, true, () => false)).rejects.toThrow(
+      /Overlay failed at f1.py/
+    )
+  })
+
+  it('falls back to the current version when upstream git refs are unavailable', async () => {
+    seedGitInstall({ withVenv: true, withReq: false })
+    routeExec([
+      { match: 'rev-list', result: () => ({ stdout: '2\n' }) },
+      { match: 'rev-parse --short', result: () => ({ error: new Error('no upstream') }) },
+      { match: 'describe', result: () => ({ error: new Error('no describe') }) }
+    ])
+    const info = await comfyUpdaterService.check('inst-1')
+    expect(info.updatable).toBe(true)
+    expect(info.latestCommit).toBeUndefined()
+    expect(info.latest).toBeTruthy()
+    expect(info.error).toBeUndefined()
+  })
+
+  it('stringifies non-Error git and zip check failures', async () => {
+    seedGitInstall({ withVenv: true, withReq: false })
+    const gitBin = resolveGitBinary as unknown as ReturnType<typeof vi.fn>
+    const original = gitBin.getMockImplementation()
+    gitBin.mockImplementation(() => {
+      throw 'gitboom'
+    })
+    try {
+      const gitInfo = await comfyUpdaterService.check('inst-1')
+      expect(gitInfo.error).toBe('gitboom')
+    } finally {
+      if (original) gitBin.mockImplementation(original)
+    }
+
+    h.rmPath(join(COMFY, '.git'))
+    h.state.sessionFetch = () => {
+      throw 'zipboom'
+    }
+    const zipInfo = await comfyUpdaterService.check('inst-1')
+    expect(zipInfo.error).toBe('zipboom')
+  })
+
+  it('does not offer a stable update when the local version is newer', async () => {
+    seedZipInstall({ withVenv: true, withReq: false })
+    h.state.instances[0].updateChannel = 'stable'
+    h.writeFile(join(COMFY, 'pyproject.toml'), '[project]\nversion = "0.50.0"\n')
+    h.state.sessionFetch = async () =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () => ({ tag_name: 'v0.46.0', prerelease: false })
+      }) as never
+    const info = await comfyUpdaterService.check('inst-1')
+    expect(info.updatable).toBe(false)
+  })
+
+  it('refuses to update when an external process holds the instance port', async () => {
+    seedZipInstall({ withVenv: true, withReq: false })
+    h.state.checkPortQueue = [false]
+    const p = await runUpdate({ updateDeps: false })
+    expect(p.status).toBe('failed')
+    expect(p.error).toMatch(/already running on this instance port/)
+  })
+
+  it('stringifies a non-Error stop failure', async () => {
+    seedGitInstall({ withVenv: true, withReq: false })
+    h.state.instanceList = [{ id: 'inst-1', status: 'running' }]
+    h.state.instanceStopErr = 'stopboom' as never
+    const p = await runUpdate({ updateDeps: false })
+    expect(p.status).toBe('failed')
+    expect(p.error).toMatch(/Cannot update while the instance is running: stopboom/)
+  })
+
+  it('refuses a stable checkout when tracked files are dirty', async () => {
+    h.state.instances[0].updateChannel = 'stable'
+    seedGitInstall({ withVenv: true, withReq: false })
+    h.state.sessionFetch = async () =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () => ({ tag_name: 'v0.46.0', prerelease: false })
+      }) as never
+    h.state.execHandler = (cmd, args) => {
+      const line = `${cmd} ${args.join(' ')}`
+      if (line.includes('status')) return { stdout: ' M main.py\n' }
+      if (line.includes('rev-parse')) return { stdout: 'abc1234\n' }
+      return { stdout: 'ok\n' }
+    }
+    const p = await runUpdate({ updateDeps: false })
+    expect(p.status).toBe('failed')
+    expect(p.error).toMatch(/local changes/)
+  })
+
+  it('installs requirements without torch via uv and a custom mirror', async () => {
+    seedZipInstall({ withVenv: true })
+    h.writeFile(join(COMFY, 'requirements.txt'), 'numpy\n')
+    h.state.settings.pipIndex = 'https://mirror.example/simple'
+    h.state.uvInstalled = true
+    const p = await runUpdate()
+    expect(p.status).toBe('done')
+    const req = p.steps.find((s) => s.id === 'requirements')
+    expect(req?.status).toBe('done')
+    expect(req?.log.join('\n')).not.toContain('Skipping torch')
+  })
+
+  it('falls back to python -m pip when the uv lookup throws for torch', async () => {
+    seedZipInstall({ withVenv: true, withReq: false })
+    const ensure = bootstrapService.ensure as unknown as ReturnType<typeof vi.fn>
+    ensure.mockImplementation(async () => {
+      throw new Error('uv lookup failed')
+    })
+    const p = await runUpdate({ torchChannel: 'cu126' })
+    expect(p.status).toBe('done')
+    expect(p.steps.find((s) => s.id === 'torch')?.status).toBe('done')
+  })
+
+  it('stringifies a non-Error startup self-check failure and rolls back', async () => {
+    seedZipInstall({ withVenv: true, withReq: false })
+    h.state.selfcheckErr = 'selfboom' as never
+    const p = await runUpdate({ updateDeps: false })
+    expect(p.status).toBe('failed')
+    expect(p.error).toBe('selfboom')
+    expect(p.steps.find((s) => s.id === 'rollback')?.status).toBe('done')
+  })
+
+  it('logs relaunch results and tolerates a non-Error relaunch failure', async () => {
+    seedZipInstall({ withVenv: true, withReq: false })
+    const launch = instanceService.launch as unknown as ReturnType<typeof vi.fn>
+    launch.mockResolvedValueOnce({})
+    const first = await runUpdate({ updateDeps: false, open: 'browser' })
+    expect(first.status).toBe('done')
+    expect(first.steps.find((s) => s.id === 'done')?.log.join('\n')).toContain('relaunched at')
+
+    launch.mockRejectedValueOnce('launchboom')
+    const second = await runUpdate({ updateDeps: false, open: 'browser' })
+    expect(second.status).toBe('done')
+    expect(second.steps.find((s) => s.id === 'done')?.log.join('\n')).toContain(
+      'relaunch failed: launchboom'
+    )
+  })
+
+  it('reports an incomplete rollback when performRollback returns false', async () => {
+    seedZipInstall({ withVenv: true, withReq: false })
+    h.state.selfcheckResult = { ok: false, exitCode: 1, output: 'crash' }
+    const original = admin.performRollback
+    admin.performRollback = async () => false
+    try {
+      const p = await runUpdate({ updateDeps: false })
+      expect(p.status).toBe('failed')
+      const rollback = p.steps.find((s) => s.id === 'rollback')
+      expect(rollback?.status).toBe('failed')
+      expect(rollback?.detail).toMatch(/incomplete/i)
+    } finally {
+      admin.performRollback = original
+    }
+  })
+
+  it('logs node snapshot and node rollback details after a failed verify', async () => {
+    seedZipInstall({ withVenv: true, withReq: false })
+    h.state.selfcheckResult = { ok: false, exitCode: 1, output: 'crash' }
+    h.state.restoreResult = {
+      ok: true,
+      restored: [{ name: 'a' }],
+      skipped: [{ name: 'b' }],
+      failed: [{ name: 'c', error: 'boom' }],
+      warnings: ['careful']
+    }
+    const p = await runUpdate({ updateDeps: false })
+    expect(p.status).toBe('failed')
+    const log = p.steps.find((s) => s.id === 'rollback')?.log.join('\n') || ''
+    expect(log).toContain('node warning: careful')
+    expect(log).toContain('node rollback failed: c: boom')
+
+    h.state.restoreErr = new Error('restore exploded')
+    const second = await runUpdate({ updateDeps: false })
+    expect(second.status).toBe('failed')
+    expect(second.steps.find((s) => s.id === 'rollback')?.log.join('\n')).toContain(
+      'node version rollback failed'
+    )
+    expect(nodePackService.createSnapshot).toHaveBeenCalled()
+  })
+
+  it('continues when the pre-update node snapshot cannot be created', async () => {
+    seedZipInstall({ withVenv: true, withReq: false })
+    h.state.createSnapshotErr = new Error('snapshot boom')
+    const p = await runUpdate({ updateDeps: false })
+    expect(p.status).toBe('done')
+    expect(p.steps.find((s) => s.id === 'preflight')?.log.join('\n')).toContain(
+      'node snapshot failed'
+    )
+  })
+
+  it('uses the default exec timeout when no options are provided', async () => {
+    admin.cancelledEpoch = -1
+    h.state.execHandler = () => ({ error: new Error('run failed'), stderr: 'stderr-message' })
+    await expect(svc.run('git', ['status'])).rejects.toThrow('stderr-message')
+    h.state.execHandler = () => ({ error: new Error('run failed'), stdout: 'stdout-message' })
+    await expect(svc.run('git', ['status'])).rejects.toThrow('stdout-message')
   })
 })
