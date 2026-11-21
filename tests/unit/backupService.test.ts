@@ -1122,7 +1122,7 @@ describe('BackupService create/restore internals', () => {
     h.state.settings = {
       locale: 'zh-CN',
       modelScanRoots: [dir, '']
-    }
+    } as any
     h.state.workflows = [
       { id: 'w1', path: jsonWf },
       { id: 'w2', path: txtWf },
@@ -1173,7 +1173,7 @@ describe('BackupService create/restore internals', () => {
     h.state.settings = {
       locale: 'zh-CN',
       proxy: { enabled: false, host: 'old.example', port: 8080 }
-    }
+    } as any
     const dir = join(h.state.root, 'backups', 'b-wf-nopath')
     mkdirSync(dir, { recursive: true })
     writeFileSync(
