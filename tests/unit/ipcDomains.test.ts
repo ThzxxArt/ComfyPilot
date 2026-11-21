@@ -65,6 +65,7 @@ const services = vi.hoisted(() => {
       invalidateVersionCache: () => undefined,
       getCapabilities: async () => null,
       runStartupSelfCheck: async () => ({ ok: true, exitCode: 0, output: '' }),
+      exportLaunchScript: (_id: string, opts?: unknown) => ({ path: '/tmp/launch', opts }),
       analyzeStartupIssues: () => ({ instanceId: 'i1', hasIssues: false, issues: [] })
     },
     modelService: {
@@ -432,6 +433,94 @@ describe('IPC domains', () => {
     } as never)
     expect(evilPython.ok).toBe(false)
     expect(evilPython.error).toMatch(/picker/i)
+  })
+
+  it('instances: covers pip, env, installer and update handler guards', async () => {
+    const { createInstanceHandlers } = await import('../../src/main/ipc/domains/instances')
+    const x = createInstanceHandlers(ctx)
+    services.comfyUpdaterService.waitUntilSettled = (async () => null) as any
+    expect((await call(x.updateComfy, 'i1')).ok).toBe(true)
+    services.comfyUpdaterService.waitUntilSettled = (async () => ({ status: 'done' })) as any
+    services.comfyUpdaterService.rollbackFromJournal = async () => false
+    expect((await call(x.rollbackUpdate, 'i1')).ok).toBe(true)
+    services.comfyUpdaterService.rollbackFromJournal = async () => true
+    expect((await call(x.repairEnv, 'i1', { torchChannel: 'cpu' })).ok).toBe(true)
+    expect((await call(x.repairEnv, 'missing')).ok).toBe(true)
+    expect((await call(x.pipInstall, 'i1', 'numpy')).ok).toBe(true)
+    expect((await call(x.pipInstall, 'remote:r1', 'numpy')).ok).toBe(false)
+    expect((await call(x.pipInstall, 'missing', '')).ok).toBe(true)
+    expect((await call(x.applyRecipe, 'i1', 'r')).ok).toBe(true)
+    expect((await call(x.applyRecipe, 'missing', '')).ok).toBe(true)
+    expect(await call(x.pipCancel, 'i1')).toMatchObject({ ok: true, data: true })
+    expect(await call(x.pipCancel, 'missing')).toMatchObject({ ok: true, data: true })
+    expect(await call(x.pipStatus, 'i1')).toMatchObject({ ok: true })
+    expect(await call(x.pipStatus, 'missing')).toMatchObject({ ok: true, data: null })
+    expect(await call(x.pipStatus, 'remote:r1')).toMatchObject({ ok: true, data: null })
+    expect((await call(x.execFailures, 'missing')).ok).toBe(true)
+    expect((await call(x.clearExecFailures, 'missing')).ok).toBe(true)
+    expect((await call(x.startupIssues, 'missing')).ok).toBe(true)
+    expect((await call(x.startupIssues, undefined as never)).ok).toBe(false)
+    expect((await call(x.startupIssues, 'i1')).ok).toBe(true)
+    expect((await call(x.probe, { pythonPath: '' } as never)).ok).toBe(true)
+    expect((await call(x.probe, { pythonPath: '/etc/python' } as never)).ok).toBe(false)
+    expect((await call(x.createVenv, {} as never)).ok).toBe(false)
+    expect(
+      (await call(x.createVenv, { pythonPath: '/etc/python', basePath: h.root } as never)).ok
+    ).toBe(false)
+    expect((await call(x.createVenv, { pythonPath: 'python', basePath: '/etc' } as never)).ok).toBe(
+      false
+    )
+    expect(
+      (
+        await call(x.createVenv, {
+          pythonPath: 'python',
+          basePath: h.root,
+          torchIndex: 'ftp://bad'
+        } as never)
+      ).ok
+    ).toBe(false)
+    expect(
+      (
+        await call(x.createVenv, {
+          pythonPath: 'python',
+          basePath: h.root,
+          torchIndex: 'https://download.pytorch.org/whl/cpu/'
+        } as never)
+      ).ok
+    ).toBe(true)
+    expect((await call(x.installTorch, {} as never)).ok).toBe(false)
+    expect(
+      (await call(x.installTorch, { pythonPath: '/etc/python', index: 'https://x' } as never)).ok
+    ).toBe(false)
+    expect(
+      (await call(x.installTorch, { pythonPath: 'python', index: 'ftp://x' } as never)).ok
+    ).toBe(false)
+    expect(
+      (await call(x.installTorch, { pythonPath: 'python', index: 'https://x' } as never)).ok
+    ).toBe(true)
+    expect((await call(x.preflight, { installRoot: '/etc' } as never)).ok).toBe(false)
+    const suggested = await call(x.suggestInstallRoot)
+    expect(suggested.ok).toBe(true)
+    expect(
+      (await call(x.preflight, { installRoot: '/tmp/i', pythonPath: '/etc/python' } as never)).ok
+    ).toBe(false)
+    expect((await call(x.preflight, { installRoot: '/tmp/i' } as never)).ok).toBe(true)
+    expect((await call(x.start, null as never)).ok).toBe(false)
+    expect((await call(x.start, { installRoot: '/etc' } as never)).ok).toBe(false)
+    expect(
+      (await call(x.start, { installRoot: '/tmp/i', pythonPath: '/etc/python' } as never)).ok
+    ).toBe(false)
+    expect((await call(x.start, { installRoot: '/tmp/i' } as never)).ok).toBe(true)
+    expect(
+      (await call(x.exportLaunchScript, 'i1', { dir: join(h.root, 'workflows') } as never)).ok
+    ).toBe(true)
+    expect((await call(x.exportLaunchScript, 'i1', { dir: '/etc' } as never)).ok).toBe(true)
+    expect((await call(x.exportLaunchScript, 'i1', {} as never)).ok).toBe(true)
+    expect((await call(x.recommendMirrors)).ok).toBe(true)
+    expect((await call(x.bootstrapDeleteLegacy)).ok).toBe(true)
+    expect((await call(x.reset)).ok).toBe(true)
+    expect((await call(x.starterModels)).ok).toBe(true)
+    services.installerService.suggestInstallRoot = async () => ({ path: '/tmp/i', freeGb: 1 })
   })
 
   it('workflows: rejects unsafe paths/ids and validates export destinations', async () => {
