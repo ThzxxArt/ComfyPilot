@@ -1850,7 +1850,7 @@ describe('stop()', () => {
     // 0.1.18 (WP3): default is a real tree kill, not a 3 s wait that a console
     // Python process would ignore anyway.
     expect(child.killSignals).toContain('SIGKILL')
-    await vi.advanceTimersByTimeAsync(3500)
+    await vi.advanceTimersByTimeAsync(1800)
     const info = await stopP
     expect(info.exited).toBe(false)
   })
