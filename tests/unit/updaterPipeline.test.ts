@@ -245,12 +245,14 @@ vi.mock('crypto', () => ({
   randomUUID: () => `uuid-${Math.random().toString(16).slice(2, 10)}`,
   createHash: () => {
     let acc = ''
-    return {
+    const api = {
       update: (s: string) => {
         acc += String(s)
-        return { digest: () => acc.slice(0, 16).padEnd(16, '0') }
-      }
+        return api
+      },
+      digest: () => Buffer.from(acc, 'utf8').toString('hex').padEnd(16, '0').slice(0, 16)
     }
+    return api
   }
 }))
 
@@ -426,7 +428,7 @@ import { bootstrapService } from '../../src/main/services/bootstrap'
 const svc = comfyUpdaterService as unknown as {
   copyCoreTree: (src: string, dest: string) => Promise<number>
   overlayTree: (src: string, dest: string) => Promise<number>
-  fetchAndOverlayZip: (comfyDir: string) => Promise<void>
+  fetchAndOverlayZip: (comfyDir: string, stableTag?: string) => Promise<void>
   performRollback: (comfyDir: string, backupPath: string, kind: 'git' | 'files') => Promise<boolean>
   venvPython: (venvPath: string) => string
   pipArgs: (base: string[]) => string[]
@@ -1836,6 +1838,29 @@ describe('fetchAndOverlayZip', () => {
     }
     await svc.fetchAndOverlayZip(COMFY)
     expect(fget(join(COMFY, 'main.py'))).toBe('top')
+  })
+
+  it('pins a stable tag archive and rejects substituted bytes for the same tag', async () => {
+    h.mkdirPath(COMFY)
+    let body = 'a'
+    h.state.sessionFetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => String(body.length) },
+      arrayBuffer: async () => new TextEncoder().encode(body).buffer
+    })
+    h.state.unzipImpl = (_zip, dest) => {
+      h.writeFile(join(dest, 'main.py'), 'ok')
+    }
+    await svc.fetchAndOverlayZip(COMFY, 'v0.46.0')
+    // Identical bytes for the same immutable tag are allowed.
+    await svc.fetchAndOverlayZip(COMFY, 'v0.46.0')
+    body = 'b'
+    await expect(svc.fetchAndOverlayZip(COMFY, 'v0.46.0')).rejects.toThrow(
+      /changed since its first/i
+    )
+    // A different tag is a different archive — no false positive.
+    await svc.fetchAndOverlayZip(COMFY, 'v0.46.1')
   })
 
   it('rejects an unsafe archive URL', async () => {

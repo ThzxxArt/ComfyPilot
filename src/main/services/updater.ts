@@ -34,7 +34,7 @@ import {
 } from 'fs'
 import { join, resolve, dirname, sep } from 'path'
 import { execFile, execFileSync, type ChildProcess } from 'child_process'
-import { randomUUID } from 'crypto'
+import { randomUUID, createHash } from 'crypto'
 import type {
   ComfyUpdateInfo,
   ComfyUpdateOptions,
@@ -254,6 +254,35 @@ function optsChannel(config: ComfyInstanceConfig): 'stable' | 'nightly' {
   return config.updateChannel === 'stable' ? 'stable' : 'nightly'
 }
 
+/**
+ * 0.2.5 WP5: a stable tag is immutable, so its archive bytes must not change
+ * between downloads. GitHub does not publish a checksum for auto-generated
+ * source archives, so the first verified download is a TOFU pin and later
+ * downloads of the same tag must match it. Nightly (`master`) changes by
+ * design and is intentionally not pinned.
+ */
+function archivePinsFile(comfyDir: string): string {
+  return join(dirname(comfyDir), '.comfypilot-archive-pins.json')
+}
+
+function readArchivePins(comfyDir: string): Record<string, string> {
+  try {
+    const parsed = JSON.parse(readFileSync(archivePinsFile(comfyDir), 'utf-8')) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const out: Record<string, string> = {}
+    for (const [tag, sha] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof sha === 'string' && /^[a-f0-9]{8,128}$/i.test(sha)) out[tag] = sha
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+function writeArchivePins(comfyDir: string, pins: Record<string, string>): void {
+  writeFileSync(archivePinsFile(comfyDir), JSON.stringify(pins, null, 2), 'utf-8')
+}
+
 export class ComfyUpdaterService extends EventEmitter {
   private progress: UpdateProgress | null = null
   /**
@@ -270,9 +299,27 @@ export class ComfyUpdaterService extends EventEmitter {
   private runRejects = new Set<(err: Error) => void>()
   /** Resolves when the in-flight runUpdate settles (done/failed/cancelled). */
   private currentRun: Promise<void> | null = null
+  /** Stable-archive SHA recorded during fetch; removed if the update fails. */
+  private pendingArchivePin: { tag: string; sha: string; existed: boolean } | null = null
 
   private get isCancelled(): boolean {
     return this.cancelledEpoch === this.runEpoch
+  }
+
+  /** Drop the TOFU pin written for a stable archive that failed verification. */
+  private clearUnverifiedArchivePin(comfyDir: string): void {
+    const pending = this.pendingArchivePin
+    this.pendingArchivePin = null
+    if (!pending || pending.existed) return
+    try {
+      const pins = readArchivePins(comfyDir)
+      if (pins[pending.tag] === pending.sha) {
+        delete pins[pending.tag]
+        writeArchivePins(comfyDir, pins)
+      }
+    } catch {
+      /* best-effort */
+    }
   }
 
   getStatus(): UpdateProgress | null {
@@ -859,6 +906,7 @@ export class ComfyUpdaterService extends EventEmitter {
   private async runUpdate(config: ComfyInstanceConfig, opts: ComfyUpdateOptions): Promise<void> {
     const comfyDir = resolve(normalizePathEverySegment(config.path))
     const channel = opts.channel || optsChannel(config)
+    this.pendingArchivePin = null
     let stableTag: string | undefined
     let backupPath: string | undefined
     let backupKind: 'git' | 'files' | null = null
@@ -1345,6 +1393,8 @@ export class ComfyUpdaterService extends EventEmitter {
         }
         this.log('verify', 'startup self-check passed')
         this.setStep('verify', 'done', 'Startup self-check passed', undefined, 'update.msgVerifyOk')
+        // The pin is now proven by a real launch; keep it for future tags.
+        this.pendingArchivePin = null
       } catch (e) {
         if (!existsSync(join(comfyDir, 'main.py'))) throw e
         // A missing self-check runner is not proof of success either.
@@ -1417,6 +1467,8 @@ export class ComfyUpdaterService extends EventEmitter {
       // custom_nodes. Surface a summary notification (non-blocking).
       void this.postUpdateNodeCheck(config.id).catch(() => undefined)
     } catch (err) {
+      // A stable archive whose update failed did not earn a continuity pin.
+      this.clearUnverifiedArchivePin(comfyDir)
       const message = err instanceof Error ? err.message : String(err)
       // 0.1.18 (WP2): machine-readable cause for the renderer (localized hint).
       const errorCode = (err as { code?: string })?.code
@@ -1623,10 +1675,15 @@ export class ComfyUpdaterService extends EventEmitter {
    * lands in one Buffer. Falls back to buffering when the fetch
    * implementation exposes no readable body.
    */
-  private async streamBodyToFile(res: Response, dest: string): Promise<number> {
+  private async streamBodyToFile(
+    res: Response,
+    dest: string,
+    onChunk?: (chunk: Buffer) => void
+  ): Promise<number> {
     const reader = res.body?.getReader()
     if (!reader) {
       const buf = Buffer.from(await res.arrayBuffer())
+      onChunk?.(buf)
       writeFileSync(dest, buf)
       return buf.byteLength
     }
@@ -1645,6 +1702,7 @@ export class ComfyUpdaterService extends EventEmitter {
         this.assertNotCancelled()
         if (value) {
           const chunk = Buffer.from(value)
+          onChunk?.(chunk)
           await new Promise<void>((resolve, reject) => {
             file.write(chunk, (err) => (err ? reject(err) : resolve()))
           })
@@ -1700,6 +1758,7 @@ export class ComfyUpdaterService extends EventEmitter {
     const tmpZip = join(dirname(comfyDir), `._comfyui_update_${Date.now()}.zip`)
     const ac = new AbortController()
     this.fetches.add(ac)
+    const hash = createHash('sha256')
     let res: Response
     let received = 0
     try {
@@ -1713,7 +1772,7 @@ export class ComfyUpdaterService extends EventEmitter {
       // 0.1.17 (review fix): the controller used to leave `fetches` right after
       // the headers arrived, so cancel() could no longer abort the body — a
       // 500 MB download kept running to completion after the user cancelled.
-      received = await this.streamBodyToFile(res, tmpZip)
+      received = await this.streamBodyToFile(res, tmpZip, (chunk) => hash.update(chunk))
       this.setBytes({
         receivedBytes: received,
         totalBytes: total || received,
@@ -1724,6 +1783,25 @@ export class ComfyUpdaterService extends EventEmitter {
       this.fetches.delete(ac)
     }
     this.assertNotCancelled()
+    const archiveSha = hash.digest('hex')
+    if (stableTag) {
+      // Tags are immutable: a different archive for the same tag means the
+      // mirror/network substituted content. First download is TOFU.
+      const pinned = readArchivePins(comfyDir)[stableTag]
+      if (pinned && pinned.toLowerCase() !== String(archiveSha).toLowerCase()) {
+        try {
+          rmSync(tmpZip, { force: true })
+        } catch {
+          /* ignore */
+        }
+        throw new Error(
+          `Stable ComfyUI archive for ${stableTag} changed since its first verified download — refusing a possible mirror substitution`
+        )
+      }
+      this.pendingArchivePin = { tag: stableTag, sha: archiveSha, existed: Boolean(pinned) }
+    } else {
+      this.log('fetch', 'Nightly archive follows master — no immutable-tag hash pin')
+    }
 
     // Extract to a staging dir first, then overlay.
     const staging = join(dirname(comfyDir), `._comfyui_staging_${Date.now()}`)
@@ -1760,6 +1838,19 @@ export class ComfyUpdaterService extends EventEmitter {
       )
       const pruned = this.pruneRemovedArchiveFiles(comfyDir, previousFiles, nextFiles)
       this.writeArchiveManifest(comfyDir, nextFiles)
+      if (stableTag && this.pendingArchivePin && !this.pendingArchivePin.existed) {
+        try {
+          const pins = readArchivePins(comfyDir)
+          pins[stableTag] = archiveSha
+          writeArchivePins(comfyDir, pins)
+          this.log('fetch', `TOFU-pinned ${stableTag} archive sha256 ${archiveSha.slice(0, 12)}…`)
+        } catch (e) {
+          this.log(
+            'fetch',
+            `Could not record the archive hash pin (update still verified): ${e instanceof Error ? e.message : String(e)}`
+          )
+        }
+      }
       this.clearWork('fetch')
       this.log(
         'fetch',
