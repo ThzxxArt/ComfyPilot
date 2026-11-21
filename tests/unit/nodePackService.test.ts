@@ -2446,8 +2446,10 @@ describe('snapshots', () => {
       h.state.snapshots = h.state.snapshots.filter((s) => s.id !== id)
       return true
     })
-    nodePackService.pruneAutoSnapshots('inst-1')
-    expect(h.state.snapshots.filter((s) => s.name.startsWith('auto-pre-'))).toHaveLength(10)
+    ;(nodePackService as any).pruneAutoSnapshots('inst-1')
+    expect(
+      h.state.snapshots.filter((s: any) => String(s.name).startsWith('auto-pre-'))
+    ).toHaveLength(10)
     expect(h.state.snapshots.some((s) => s.id === 'manual-keep')).toBe(true)
   })
 
