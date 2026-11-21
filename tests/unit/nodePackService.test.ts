@@ -4591,7 +4591,9 @@ describe('effective custom_nodes root (0.2.5 WP1)', () => {
     expect(nodePackService.list(ROOT).some((p) => p.name === 'BasePack')).toBe(true)
     const { detectCustomNodesRoot, resolveGitBinaryAsync } =
       await import('../../src/main/services/nodePack/common')
-    expect(detectCustomNodesRoot('/unregistered/path')).toBe('/unregistered/path/custom_nodes')
+    expect(detectCustomNodesRoot('/unregistered/path')).toBe(
+      join('/unregistered/path', 'custom_nodes')
+    )
     expect(typeof (await resolveGitBinaryAsync())).toBe('string')
   })
 })

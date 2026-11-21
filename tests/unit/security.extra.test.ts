@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
-import { join } from 'path'
+import { join, resolve } from 'path'
 import { tmpdir } from 'os'
 import { afterAll, describe, expect, it } from 'vitest'
 import {
@@ -71,15 +71,15 @@ describe('security extra branches', () => {
   })
 
   it('joins and resolves paths safely', () => {
-    expect(safeJoin('/root', 'a', 'b')).toBe('/root/a/b')
+    expect(safeJoin('/root', 'a', 'b')).toBe(resolve('/root', 'a', 'b'))
     expect(() => safeJoin('/root', '..')).toThrow()
-    expect(safeResolveUnder('/root', 'a')).toBe('/root/a')
+    expect(safeResolveUnder('/root', 'a')).toBe(resolve('/root', 'a'))
     expect(safeResolveUnder('/root', '../a')).toBeNull()
-    expect(safeResolveUnder('/root', 1 as never)).toBe('/root/1')
-    expect(resolveInsideAnyRoot('/a/b', ['/a'])).toBe('/a/b')
+    expect(safeResolveUnder('/root', 1 as never)).toBe(resolve('/root', '1'))
+    expect(resolveInsideAnyRoot('/a/b', ['/a'])).toBe(resolve('/a/b'))
     expect(resolveInsideAnyRoot('/b', ['/a'])).toBeNull()
     expect(resolveInsideAnyRoot('/a/../b', ['/b'])).toBeNull()
-    expect(safeJoinFile('/root', 'a/b')).toBe('/root/b')
+    expect(safeJoinFile('/root', 'a/b')).toBe(resolve('/root', 'b'))
     expect(() => safeJoinFile('/root', '..')).toThrow()
     expect(isAbsoluteOrRelativePath('/x')).toBe(true)
     expect(isAbsoluteOrRelativePath('x/y')).toBe(true)

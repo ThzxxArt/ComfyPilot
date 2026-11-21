@@ -5,6 +5,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { EventEmitter } from 'events'
+import { join } from 'path'
 
 const h = vi.hoisted(() => {
   const state = {
@@ -544,10 +545,10 @@ describe('node version rollback v1 (0.2.5 WP5)', () => {
     const db = await import('../../src/main/services/db')
     const cp = await import('child_process')
     const snapSpy = vi.spyOn(nodePackService, 'createSnapshot')
-    h.state.dirs.set('C:/packs/GitPack', ['.git'])
-    h.state.exists.add('C:/packs/GitPack')
-    h.state.dirs.set('C:/packs/LocalPack', [])
-    h.state.exists.add('C:/packs/LocalPack')
+    h.state.dirs.set(join('C:/packs', 'GitPack'), ['.git'])
+    h.state.exists.add(join('C:/packs', 'GitPack'))
+    h.state.dirs.set(join('C:/packs', 'LocalPack'), [])
+    h.state.exists.add(join('C:/packs', 'LocalPack'))
     ;(db.getSnapshot as ReturnType<typeof vi.fn>).mockReturnValue({
       id: 'snap-1',
       name: 'pre-update',
@@ -558,11 +559,16 @@ describe('node version rollback v1 (0.2.5 WP5)', () => {
         {
           name: 'GitPack',
           version: '1.0.0',
-          path: 'C:/packs/GitPack',
+          path: join('C:/packs', 'GitPack'),
           source: 'git',
           gitRev: 'abc1234'
         },
-        { name: 'LocalPack', version: '0.0.0', path: 'C:/packs/LocalPack', source: 'local' }
+        {
+          name: 'LocalPack',
+          version: '0.0.0',
+          path: join('C:/packs', 'LocalPack'),
+          source: 'local'
+        }
       ]
     })
     ;(cp.execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
@@ -594,18 +600,18 @@ describe('node version rollback v1 (0.2.5 WP5)', () => {
 
   it('skips a git pack without a revision and a registry pack without a version', async () => {
     const db = await import('../../src/main/services/db')
-    h.state.dirs.set('C:/packs/NoRev', ['.git'])
-    h.state.exists.add('C:/packs/NoRev')
-    h.state.exists.add('C:/packs/NoVersion')
-    h.state.dirs.set('C:/packs/NoVersion', [])
+    h.state.dirs.set(join('C:/packs', 'NoRev'), ['.git'])
+    h.state.exists.add(join('C:/packs', 'NoRev'))
+    h.state.exists.add(join('C:/packs', 'NoVersion'))
+    h.state.dirs.set(join('C:/packs', 'NoVersion'), [])
     ;(db.getSnapshot as ReturnType<typeof vi.fn>).mockReturnValue({
       id: 'snap-4',
       name: 'pre-update',
       createdAt: 1,
       notes: '',
       packs: [
-        { name: 'NoRev', version: '1', path: 'C:/packs/NoRev', source: 'git' },
-        { name: 'NoVersion', version: '', path: 'C:/packs/NoVersion', source: 'registry' }
+        { name: 'NoRev', version: '1', path: join('C:/packs', 'NoRev'), source: 'git' },
+        { name: 'NoVersion', version: '', path: join('C:/packs', 'NoVersion'), source: 'registry' }
       ]
     })
     const out = await nodePackService.restoreNodeVersions('snap-4', 'inst-1')
@@ -627,10 +633,10 @@ describe('node version rollback v1 (0.2.5 WP5)', () => {
       notes: '',
       packs: [
         { name: 'Gone', version: '1', path: 'C:/packs/Gone', source: 'git', gitRev: 'abc' },
-        { name: 'Reg', version: '1.0.0', path: 'C:/packs/Reg', source: 'registry' }
+        { name: 'Reg', version: '1.0.0', path: join('C:/packs', 'Reg'), source: 'registry' }
       ]
     })
-    h.state.exists.add('C:/packs/Reg')
+    h.state.exists.add(join('C:/packs', 'Reg'))
     const out = await nodePackService.restoreNodeVersions('snap-3', 'inst-1')
     expect(out.ok).toBe(false)
     expect(out.failed.map((f) => f.name)).toEqual(expect.arrayContaining(['Gone', 'Reg']))
@@ -639,8 +645,8 @@ describe('node version rollback v1 (0.2.5 WP5)', () => {
   it('reports a git checkout failure instead of pretending it restored', async () => {
     const db = await import('../../src/main/services/db')
     const cp = await import('child_process')
-    h.state.dirs.set('C:/packs/BadCheckout', ['.git'])
-    h.state.exists.add('C:/packs/BadCheckout')
+    h.state.dirs.set(join('C:/packs', 'BadCheckout'), ['.git'])
+    h.state.exists.add(join('C:/packs', 'BadCheckout'))
     ;(db.getSnapshot as ReturnType<typeof vi.fn>).mockReturnValue({
       id: 'snap-5',
       name: 'pre-update',
@@ -650,7 +656,7 @@ describe('node version rollback v1 (0.2.5 WP5)', () => {
         {
           name: 'BadCheckout',
           version: '1',
-          path: 'C:/packs/BadCheckout',
+          path: join('C:/packs', 'BadCheckout'),
           source: 'git',
           gitRev: 'abc'
         }
@@ -681,14 +687,22 @@ describe('node version rollback v1 (0.2.5 WP5)', () => {
   it('skips a dirty git pack instead of destroying local edits', async () => {
     const db = await import('../../src/main/services/db')
     const cp = await import('child_process')
-    h.state.dirs.set('C:/packs/Dirty', ['.git'])
-    h.state.exists.add('C:/packs/Dirty')
+    h.state.dirs.set(join('C:/packs', 'Dirty'), ['.git'])
+    h.state.exists.add(join('C:/packs', 'Dirty'))
     ;(db.getSnapshot as ReturnType<typeof vi.fn>).mockReturnValue({
       id: 'snap-2',
       name: 'pre-update',
       createdAt: 1,
       notes: '',
-      packs: [{ name: 'Dirty', version: '1', path: 'C:/packs/Dirty', source: 'git', gitRev: 'abc' }]
+      packs: [
+        {
+          name: 'Dirty',
+          version: '1',
+          path: join('C:/packs', 'Dirty'),
+          source: 'git',
+          gitRev: 'abc'
+        }
+      ]
     })
     ;(cp.execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
       (
