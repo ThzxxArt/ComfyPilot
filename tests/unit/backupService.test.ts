@@ -861,3 +861,247 @@ describe('restore() path containment (0.1.18 P0)', () => {
     expect((nestedError as Error | null)?.message).toMatch(/already in progress/i)
   })
 })
+
+// =====================================================================
+// Untrusted backup parsing: malformed files, sanitization variants,
+// locked remotes and interrupted-restore recovery edges.
+// =====================================================================
+describe('BackupService untrusted-input edge branches', () => {
+  function backupDirFor(id: string): string {
+    const dir = join(h.state.root, 'backups', id)
+    mkdirSync(dir, { recursive: true })
+    return dir
+  }
+
+  it('reports malformed settings/list files and refuses restore', async () => {
+    const dir = backupDirFor('b-parse')
+    writeFileSync(join(dir, 'settings.json'), '[1,2,3]')
+    writeFileSync(join(dir, 'instances.json'), '{"nope":1}')
+    writeFileSync(join(dir, 'node-packs.json'), 'nope')
+    writeFileSync(join(dir, 'model-manifest.json'), 'nope')
+    writeFileSync(join(dir, 'workflows.json'), 'nope')
+    writeFileSync(join(dir, 'remote-instances.json'), 'nope')
+    writeFileSync(join(dir, 'node-snapshots.json'), 'nope')
+    writeFileSync(join(dir, 'manifest.json'), '{bad')
+    const svc = await freshBackup()
+    const preview = svc.preview('b-parse')
+    expect(preview.canRestore).toBe(false)
+    expect(preview.warnings.join('\n')).toContain('settings.json: expected object')
+    expect(preview.warnings.join('\n')).toContain('instances.json: expected array')
+    expect(() => svc.restore('b-parse')).toThrow(/aborted, nothing applied/)
+
+    const brokenDir = backupDirFor('b-json-broken')
+    writeFileSync(join(brokenDir, 'settings.json'), '{not json')
+    const broken = svc.preview('b-json-broken')
+    expect(broken.warnings.join('\n')).toContain('settings.json:')
+    expect(() => svc.preview('missing-backup')).toThrow(/Backup not found/)
+  })
+
+  it('strips local security state and rejects unsafe endpoints/scan roots', async () => {
+    const dir = backupDirFor('b-settings')
+    const existing = join(h.state.root, 'scan-ok')
+    mkdirSync(existing, { recursive: true })
+    writeFileSync(
+      join(dir, 'settings.json'),
+      JSON.stringify({
+        locale: 'en-US',
+        allowUnverifiedRuntime: true,
+        securityLevel: 'weak',
+        allowGitUrlInstall: true,
+        allowPipInstall: true,
+        githubEndpoint: 'ftp://mirror.example/',
+        hfEndpoint: 'https://user:pass@mirror.example/',
+        civitaiEndpoint: 'not a url',
+        pipIndex: 'ftp://pypi.example',
+        torchIndexMirror: 'not a url',
+        modelScanRoots: ['', '/', 'C:/', join(h.state.root, 'gone'), existing]
+      })
+    )
+    const svc = await freshBackup()
+    const preview = svc.preview('b-settings')
+    const warnings = preview.warnings.join('\n')
+    expect(warnings).toMatch(/allowUnverifiedRuntime is local security state/)
+    expect(warnings).toMatch(/securityLevel is local security state/)
+    expect(warnings).toMatch(/modelScanRoots entries outside this machine were dropped/)
+    expect(preview.canRestore).toBe(false)
+  })
+
+  it('sanitizes instance paths, ports, listens, profiles, interpreters and extra args', async () => {
+    const dir = backupDirFor('b-instances')
+    const root = join(h.state.root, 'inst-root')
+    mkdirSync(join(root, 'python'), { recursive: true })
+    writeFileSync(join(root, 'python', 'python.exe'), '')
+    writeFileSync(join(root, 'safe.json'), '{}')
+    writeFileSync(
+      join(dir, 'instances.json'),
+      JSON.stringify([
+        { id: 'nopath', name: 'No path' },
+        { id: 'outside', name: 'Outside', path: join(tmpdir(), 'other-machine') },
+        { id: 'badport', name: 'Bad port', path: root, port: 70000 },
+        { id: 'badlisten', name: 'Bad listen', path: root, listen: '8.8.8.8' },
+        {
+          id: 'profile',
+          name: 'Profile',
+          path: root,
+          listen: '127.0.0.1',
+          port: 8188,
+          launchProfile: {
+            outputDirectory: '/etc',
+            baseDirectory: 'ok',
+            unknownKey: 'x',
+            extraModelPathsConfig: 'bad\0path'
+          },
+          pythonPath: join(root, 'python', 'python.exe'),
+          venvPath: join(root, 'myvenv'),
+          updateChannel: 'beta',
+          extraArgs: [
+            '--listen',
+            '8.8.8.8',
+            '--listen',
+            '127.0.0.1',
+            '--output-directory=/etc',
+            '--output-directory',
+            '/etc',
+            '--base-directory=safe',
+            'bad\0arg'
+          ]
+        },
+        {
+          id: 'system-python',
+          path: root,
+          pythonPath: '/usr/bin/python3',
+          venvPath: '/etc/venv',
+          launchProfile: 'not-an-object',
+          extraArgs: 'not-an-array'
+        },
+        { id: 'bare-python', path: root, pythonPath: 'python' }
+      ])
+    )
+    const svc = await freshBackup()
+    const preview = svc.preview('b-instances')
+    const warnings = preview.warnings.join('\n')
+    expect(preview.invalidPaths.join(' ')).toContain('other-machine')
+    expect(warnings).toMatch(/no path, skipped/)
+    expect(warnings).toMatch(/invalid port/)
+    expect(warnings).toMatch(/invalid listen host/)
+    expect(warnings).toMatch(/launchProfile.unknownKey/)
+    expect(warnings).toMatch(/extraArgs control character dropped/)
+    expect(warnings).toMatch(/extraArgs --listen rejected/)
+    expect(warnings).toMatch(/extraArgs --output-directory rejected/)
+    expect(preview.canRestore).toBe(false)
+  })
+
+  it('drops unsafe node packs, snapshots, remotes and models', async () => {
+    const dir = backupDirFor('b-lists')
+    const root = join(h.state.root, 'trusted')
+    mkdirSync(root, { recursive: true })
+    h.state.remotes = [{ id: 'locked', baseUrl: 'https://locked.example', apiKeyLocked: true }]
+    writeFileSync(
+      join(dir, 'node-packs.json'),
+      JSON.stringify([
+        { id: 'ok-nopath', name: 'ok' },
+        { id: 'ok', name: 'ok', path: root },
+        { id: 'bad', name: 'bad', path: '/etc/passwd' }
+      ])
+    )
+    writeFileSync(
+      join(dir, 'node-snapshots.json'),
+      JSON.stringify([
+        { id: 's1', name: 'snap', packs: 'not-array' },
+        {
+          id: 's2',
+          name: 'snap2',
+          packs: [{ path: root }, { path: '/etc/passwd' }]
+        }
+      ])
+    )
+    writeFileSync(
+      join(dir, 'remote-instances.json'),
+      JSON.stringify([
+        { id: '', baseUrl: 'https://x' },
+        { id: 'bad-url', baseUrl: 'not a url' },
+        { id: 'ftp', baseUrl: 'ftp://x' },
+        { id: 'locked', baseUrl: 'https://locked.example' },
+        { id: 'ok', baseUrl: 'https://ok.example' }
+      ])
+    )
+    writeFileSync(
+      join(dir, 'model-manifest.json'),
+      JSON.stringify([{ id: 'empty' }, { id: 'outside', name: 'evil', path: '/etc/passwd' }])
+    )
+    const svc = await freshBackup()
+    const preview = svc.preview('b-lists')
+    const warnings = preview.warnings.join('\n')
+    expect(warnings).toMatch(/node pack bad: path outside roots/)
+    expect(warnings).toMatch(/snapshot snap2: pack path outside roots/)
+    expect(warnings).toMatch(/remote \?: invalid base URL/)
+    expect(warnings).toMatch(/remote bad-url: invalid base URL/)
+    expect(warnings).toMatch(/remote ftp: invalid base URL/)
+    expect(warnings).toMatch(/remote locked: API key is locked/)
+    expect(preview.invalidPaths.join(' ')).toContain('model evil')
+    expect(preview.canRestore).toBe(false)
+  })
+
+  it('remaps workflows without ids/duplicate ids/unsafe names and flags missing files', async () => {
+    const dir = backupDirFor('b-wf')
+    mkdirSync(join(dir, 'workflow-files', 'emptydir'), { recursive: true })
+    writeFileSync(
+      join(dir, 'workflows.json'),
+      JSON.stringify([
+        { name: 'no-id', path: '/tmp/a.json' },
+        { id: 'dup', path: '/tmp/b.json' },
+        { id: 'dup', path: '/tmp/c.json' },
+        { id: 'nopath' },
+        { id: 'unsafe', path: '/tmp/evil.exe' },
+        { id: 'empty', path: '/tmp/empty.json' }
+      ])
+    )
+    const svc = await freshBackup()
+    const preview = svc.preview('b-wf')
+    expect(preview.workflowFiles).toHaveLength(3)
+    expect(preview.workflowFiles.every((f) => f.remapped)).toBe(true)
+    expect(preview.workflowFiles.find((f) => f.id === 'unsafe')?.target.endsWith('.json')).toBe(
+      true
+    )
+    expect(preview.workflowFiles.find((f) => f.id === 'empty')?.missing).toBe(true)
+    expect(preview.counts.workflowFiles).toBe(0)
+  })
+
+  it('recovers corrupt journals and reports restore failures', async () => {
+    const journal = join(h.state.root, 'restore-journal.json')
+    writeFileSync(journal, JSON.stringify({ preRestoreId: 123 }))
+    let svc = await freshBackup()
+    expect(svc.recoverInterruptedRestore()).toEqual({ recovered: false })
+
+    writeFileSync(
+      journal,
+      JSON.stringify({ backupId: 'x', preRestoreId: 'pre', startedAt: 1, status: 'in-progress' })
+    )
+    mkdirSync(join(h.state.root, 'backups', 'pre'), { recursive: true })
+    writeFileSync(join(h.state.root, 'backups', 'pre', 'instances.json'), 'not-json')
+    svc = await freshBackup()
+    const failed = svc.recoverInterruptedRestore()
+    expect(failed.recovered).toBe(false)
+    expect(failed.error).toBeTruthy()
+
+    svc = await freshBackup()
+    svc.restore = () => {
+      throw 'string failure'
+    }
+    writeFileSync(
+      journal,
+      JSON.stringify({ backupId: 'x', preRestoreId: 'pre', startedAt: 1, status: 'in-progress' })
+    )
+    const thrown = svc.recoverInterruptedRestore()
+    expect(thrown).toMatchObject({ recovered: false, error: 'string failure' })
+  })
+
+  it('sanitizes backup ids for delete/openFolder and tolerates missing dirs', async () => {
+    const svc = await freshBackup()
+    expect(svc.delete('..')).toBe(false)
+    expect(svc.delete('missing')).toBe(false)
+    const folder = svc.openFolder('..')
+    expect(folder).toContain('backups')
+    expect(folder).not.toContain('..')
+  })
+})
