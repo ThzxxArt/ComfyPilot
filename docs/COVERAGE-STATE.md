@@ -16,6 +16,11 @@
   - `95f1ead` IPC pip/env/installer/update guards
   - `instanceLayout.extra.test.ts` layout edge branches
   - `d38f825` model walk/metadata/slot branches
+  - `d38f825` model walk/metadata/slot branches
+  - `security.extra.test.ts` path/URL/settings branches
+  - `fb01fca` model download refusal/verification branches
+  - `95f1ead` IPC pip/env/installer/update guards
+  - `instanceLayout.extra.test.ts` path/effective launch branches
   - plus earlier C1/C2 page deep tests and IPC/main/ops/registry/issueHub tests.
 
 ## Hard completion criteria
@@ -67,6 +72,7 @@ Work strictly largest-gap-first. Do not scatter.
 
 ## Notes
 
+- Last full run was before the post-run commits above; re-measure only after another substantial batch, not after every file.
 - Full coverage command: `npm run test:coverage > /tmp/fullcov.log 2>&1`
 - Ratchet is enforced in `scripts/coverage-ratchet.cjs`.
 - Windows/integration/installer checks are external blockers for release, not for coverage work.
