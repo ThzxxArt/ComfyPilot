@@ -52,8 +52,24 @@ const broken = {
 const conflict = { nodeName: 'KSampler', packs: ['ComfyUI-Manager', 'BrokenPack'] }
 const snapshot = { id: 's1', name: 'snap', createdAt: now, packs: [{ name: 'ComfyUI-Manager' }] }
 const recovery = [
-  { name: 'ComfyUI-Manager.bak-1', kind: 'backup', sizeBytes: 1024, liveExists: false },
-  { name: 'tmp-dir', kind: 'temp', sizeBytes: 0, liveExists: true }
+  {
+    name: 'ComfyUI-Manager.bak-1',
+    kind: 'backup',
+    sizeBytes: 1024,
+    liveExists: false,
+    mtimeMs: now,
+    path: '/tmp/comfy/custom_nodes/ComfyUI-Manager.bak-1',
+    packName: 'ComfyUI-Manager'
+  },
+  {
+    name: 'tmp-dir',
+    kind: 'temp',
+    sizeBytes: 0,
+    liveExists: true,
+    mtimeMs: now,
+    path: '/tmp/comfy/custom_nodes/tmp-dir',
+    packName: 'tmp-dir'
+  }
 ]
 const checks = [
   {
@@ -153,6 +169,8 @@ const market = {
 }
 
 let failChannels = new Set<string>()
+let failStrings = new Set<string>()
+let throwCodes = new Map<string, string>()
 let overrides: Record<string, unknown> = {}
 let dialogMode: 'positive' | 'negative' = 'positive'
 let eventHandlers: Record<string, Array<(...a: unknown[]) => void>> = {}
@@ -233,11 +251,17 @@ function dataFor(channel: string): unknown {
 beforeAll(() => stubBrowser())
 beforeEach(() => {
   failChannels = new Set()
+  failStrings = new Set()
+  throwCodes = new Map()
   overrides = {}
   dialogMode = 'positive'
   eventHandlers = {}
   installBridge(dataFor)
   ;(window as any).comfyPilot.invoke = async (channel: string) => {
+    if (throwCodes.has(channel)) {
+      throw Object.assign(new Error('coded'), { code: throwCodes.get(channel) })
+    }
+    if (failStrings.has(channel)) throw channel
     if (failChannels.has(channel)) throw new Error(`${channel} boom`)
     return { ok: true, data: dataFor(channel) }
   }
@@ -264,6 +288,13 @@ describe('NodesView deep coverage', () => {
       dialog.warning = auto
       dialog.info = auto
     }
+    try {
+      state.store.instances = instances
+      state.store.activeInstanceId = 'i1'
+    } catch {
+      /* store shape changed */
+    }
+    await nextTick()
     return { wrapper, state }
   }
 
@@ -508,6 +539,387 @@ describe('NodesView deep coverage', () => {
       state.markPackUpdated(broken)
       state.updatePack(broken)
       await nextTick()
+      expect(wrapper.html()).toBeTruthy()
+    } finally {
+      wrapper.unmount()
+    }
+  }, 120_000)
+
+  it('covers operation outcomes and deep links', async () => {
+    const { wrapper, state } = await mountNodes()
+    try {
+      state.packs = [pack, broken]
+      state.checks = Object.fromEntries(checks.map((c) => [c.id, c]))
+      state.loadReport = loadReport
+      overrides['doctor.fix'] = { ok: true, message: 'fixed' }
+      overrides['node.smokeTest'] = [
+        { severity: 'error', message: 'bad' },
+        { severity: 'warning', message: 'warn' }
+      ]
+      overrides['node.updateAll'] = [
+        { name: 'ComfyUI-Manager', ok: true, skipped: false },
+        { name: 'BrokenPack', ok: false, skipped: false, error: 'boom' },
+        { name: 'FailedPack', ok: false, skipped: true, checkStatus: 'check-failed' },
+        { name: 'CancelledPack', ok: false, skipped: true, error: 'cancelled' }
+      ]
+      overrides['node.checkUpdates'] = [
+        { ...checks[0], checkStatus: 'up-to-date' },
+        { ...checks[2], checkStatus: 'check-failed' },
+        { id: 'n4', name: 'Unsupported', checkStatus: 'unsupported' },
+        { id: 'n5', name: 'Locked', checkStatus: 'locked' },
+        { id: 'n6', name: 'Disabled', checkStatus: 'skipped-disabled' }
+      ]
+      overrides['node.recoveryCleanAll'] = { removed: 1, failed: ['x'] }
+      overrides['node.uninstallDeps'] = ['dep']
+      overrides['node.install'] = {
+        ...pack,
+        issues: [{ pipFailed: true, message: 'deps skipped' }]
+      }
+      await state.runIssueFix(broken.issues[0])
+      await state.smoke(broken)
+      await state.updateAllPacks()
+      await state.checkUpdates()
+      await state.cleanAllRecovery()
+      state.installUrl = 'https://example.invalid/pack'
+      state.installBranch = ''
+      await state.installGit()
+      await state.uninstall(broken)
+      dialogMode = 'negative'
+      await state.uninstall(broken)
+      dialogMode = 'positive'
+
+      state.store.activeInstanceId = 'i1'
+      await state.router.push('/nodes?focus=BrokenPack&instanceId=i1&source=deps&showRecovery=1')
+      await state.applyFocus()
+      await state.router.push('/nodes?focus=nope.trash-1')
+      await state.applyFocus()
+      await state.router.push('/nodes?focus=ComfyUI-Manager')
+      await state.applyFocus()
+      await state.router.push('/nodes')
+      await state.applyFocus()
+
+      failChannels = new Set(['node.refresh'])
+      expect(await state.refresh()).toBe(false)
+      failChannels = new Set(['node.recoveryScan'])
+      await state.loadRecovery()
+      failChannels = new Set(['node.recoveryCleanAll'])
+      await state.cleanAllRecovery()
+      failChannels = new Set(['node.checkUpdates'])
+      await state.checkUpdates()
+      failChannels = new Set(['node.smokeTest'])
+      await state.smoke(broken)
+      failChannels = new Set(['node.checkIssues'])
+      await state.checkIssues(broken)
+      failChannels = new Set(['doctor.fix'])
+      await state.runIssueFix(broken.issues[0])
+      failChannels = new Set(['node.depsAudit'])
+      await state.runDepsAudit()
+      failChannels = new Set(['node.installDeps'])
+      await state.fixPackDeps(audit.packs[0])
+      failChannels = new Set(['node.createSnapshot'])
+      await state.createSnapshot()
+      failChannels = new Set(['node.restoreSnapshot'])
+      await state.restoreSnapshot('s1')
+      failChannels = new Set(['node.deleteSnapshot'])
+      await state.removeSnapshot('s1')
+      failChannels = new Set(['node.uninstall'])
+      await state.uninstall(broken)
+      failChannels = new Set(['node.uninstallDeps'])
+      await state.uninstall(broken)
+      failChannels = new Set()
+      expect(wrapper.html()).toBeTruthy()
+    } finally {
+      wrapper.unmount()
+    }
+  }, 120_000)
+
+  it('covers targetless, coded and payload branch edges', async () => {
+    const { wrapper, state } = await mountNodes()
+    try {
+      state.packs = [pack, broken]
+      state.checks = Object.fromEntries(checks.map((c) => [c.id, c]))
+      state.loadReport = loadReport
+
+      // No local target.
+      state.store.activeInstanceId = null
+      state.store.instances = instances
+      await state.loadRecovery()
+      await state.restoreRecoveryEntry('x')
+      await state.cleanRecoveryEntry('x')
+      await state.cleanAllRecovery()
+      await state.checkUpdates()
+      await state.updateAllPacks()
+      await state.fixPackDeps(audit.packs[0])
+      state.store.activeInstanceId = 'i1'
+      await nextTick()
+
+      // String errors / coded errors exercise both catch arms.
+      failStrings = new Set(['node.recoveryRestore', 'node.recoveryClean', 'node.recoveryCleanAll'])
+      await state.restoreRecoveryEntry('x')
+      await state.cleanRecoveryEntry('x')
+      await state.cleanAllRecovery()
+      failStrings = new Set()
+
+      throwCodes = new Map([
+        ['node.update', 'OP_BUSY'],
+        ['node.updateAll', 'OP_BUSY'],
+        ['node.install', 'OP_BUSY'],
+        ['node.uninstall', 'OP_BUSY'],
+        ['node.installDeps', 'OP_BUSY']
+      ])
+      await state.updatePack(broken)
+      await state.updateAllPacks()
+      state.installUrl = 'https://x'
+      await state.installGit()
+      await state.uninstall(broken)
+      await state.fixPackDeps(audit.packs[0])
+      throwCodes = new Map([['node.installDeps', 'REMOTE_NOT_SUPPORTED']])
+      await state.fixPackDeps(audit.packs[0])
+      throwCodes = new Map()
+
+      // Update success but refresh failed.
+      overrides['node.update'] = pack
+      failChannels = new Set(['node.refresh'])
+      await state.updatePack(broken)
+      failChannels = new Set()
+
+      // updateAll outcome variants.
+      for (const results of [
+        [{ name: 'A', ok: true, skipped: false }],
+        [{ name: 'B', ok: false, skipped: false, error: 'e' }],
+        [{ name: 'C', ok: false, skipped: true, checkStatus: 'check-failed' }],
+        [{ name: 'D', ok: false, skipped: true, error: 'cancelled' }]
+      ]) {
+        overrides['node.updateAll'] = results
+        await state.updateAllPacks()
+      }
+
+      // Check summary variants.
+      for (const list of [
+        [],
+        [{ id: 'a', name: 'A', checkStatus: 'up-to-date' }],
+        [{ id: 'b', name: 'B', checkStatus: 'check-failed', reason: 'x' }],
+        [{ id: 'c', name: 'C', checkStatus: 'updatable', updatable: true, latestVersion: '2' }]
+      ]) {
+        overrides['node.checkUpdates'] = list
+        await state.checkUpdates()
+      }
+
+      // Payload variants.
+      overrides['doctor.fix'] = { ok: false, message: 'no' }
+      await state.runIssueFix(broken.issues[0])
+      overrides['doctor.fix'] = { ok: true, message: 'yes' }
+      await state.runIssueFix(broken.issues[0])
+      await state.runIssueFix({ ...broken.issues[0], fixable: false })
+      overrides['node.smokeTest'] = []
+      await state.smoke(broken)
+      overrides['node.smokeTest'] = [{ severity: 'warning', message: 'w' }]
+      await state.smoke(broken)
+      overrides['node.smokeTest'] = [{ severity: 'error', message: 'e' }]
+      await state.smoke(broken)
+      overrides['node.checkIssues'] = []
+      await state.checkIssues(broken)
+      overrides['node.install'] = {
+        ...pack,
+        issues: [{ pipFailed: true, message: 'deps skipped' }]
+      }
+      state.installUrl = 'https://x'
+      await state.installGit()
+      state.installUrl = ''
+      await state.installGit()
+
+      overrides['node.installDeps'] = { ok: true, warning: 'warn', requested: [], installed: [] }
+      await state.fixPackDeps(audit.packs[0])
+      overrides['node.installDeps'] = { ok: false, cancelled: true }
+      await state.fixPackDeps(audit.packs[0])
+      overrides['node.installDeps'] = { ok: false, error: 'e' }
+      await state.fixPackDeps(audit.packs[0])
+      await state.fixPackDeps({ ...audit.packs[0], missing: [], mismatched: [] })
+
+      overrides['node.recoveryCleanAll'] = { removed: 2, failed: [] }
+      await state.cleanAllRecovery()
+      overrides['node.createSnapshot'] = { name: 'snap' }
+      await state.createSnapshot()
+      overrides['node.restoreSnapshot'] = true
+      await state.restoreSnapshot('s1')
+      overrides['node.deleteSnapshot'] = true
+      await state.removeSnapshot('s1')
+      overrides['node.uninstallDeps'] = []
+      await state.uninstall(broken)
+      overrides['node.uninstallDeps'] = ['dep']
+      await state.uninstall(broken)
+
+      // applyFocus variants.
+      state.store.activeInstanceId = 'i1'
+      await state.router.push('/nodes?instanceId=i1&showRecovery=1')
+      await state.applyFocus()
+      await state.router.push('/nodes?source=recovery')
+      await state.applyFocus()
+      await state.router.push('/nodes?source=deps')
+      await state.applyFocus()
+      await state.router.push('/nodes?focus=BrokenPack')
+      await state.applyFocus()
+      await state.router.push('/nodes?focus=missing.trash-1')
+      await state.applyFocus()
+      await state.router.push('/nodes')
+      await state.applyFocus()
+      expect(wrapper.html()).toBeTruthy()
+    } finally {
+      wrapper.unmount()
+    }
+  }, 120_000)
+
+  it('covers remaining single-arm branches', async () => {
+    const { wrapper, state } = await mountNodes()
+    try {
+      state.packs = [pack, broken]
+      state.store.activeInstanceId = 'i1'
+      state.store.instances = instances
+      state.pipActiveInstances = ['i1']
+      state.pipModalVisible = false
+      state.openPipProgress()
+      state.updating = true
+      await nextTick()
+      state.updating = false
+      await nextTick()
+      expect(state.packLoad({ ...pack, status: 'disabled' })).toBe('unknown')
+      state.loadReport = null
+      expect(state.loadSummary).toBeNull()
+      state.loadReport = {
+        available: false,
+        entries: [],
+        policyRefused: [{ folder: 'X', reason: 'policy' }]
+      }
+      expect(state.loadSummary?.refused).toBe(1)
+      state.loadReport = loadReport
+
+      state.store.activeInstance = null
+      await state.runSelfCheck()
+      state.store.activeInstance = instances[0]
+      overrides['instance.runStartupSelfCheck'] = { ok: false, exitCode: 1 }
+      await state.runSelfCheck()
+
+      state.filteredPacks = [pack, { ...pack, tags: undefined }]
+      state.installedQuery = 'x'
+      expect(state.filteredPacks.length).toBe(0)
+      state.installedQuery = ''
+
+      state.checks = {}
+      expect(
+        state.canUpdatePack({ ...pack, locked: false, installSource: 'registry', registryId: 'r' })
+      ).toBe(true)
+      expect(
+        state.canUpdatePack({ ...pack, locked: false, installSource: 'manager', repository: 'x' })
+      ).toBe(false)
+      expect(
+        state.canUpdatePack({
+          ...pack,
+          locked: false,
+          installSource: 'manager',
+          repository: 'github.com/x'
+        })
+      ).toBe(true)
+
+      failStrings = new Set(['node.refresh'])
+      expect(await state.refresh()).toBe(false)
+      failStrings = new Set()
+
+      state.store.localTargetId = null
+      await state.checkUpdates()
+      await state.updateAllPacks()
+      state.store.localTargetId = 'i1'
+      state.checks = { n2: { ...checks[1], updatable: true, latestVersion: '9' } }
+      await state.checkUpdates()
+      state.checks = { n2: { ...checks[1], checkStatus: 'check-failed' } }
+      await state.checkUpdates()
+
+      state.lockingOne = 'x'
+      await state.lockPack(broken, true)
+      state.lockingOne = null
+      await state.lockPack(broken, true)
+      await state.toggle(broken, true)
+      overrides['node.smokeTest'] = []
+      await state.smoke(broken)
+      overrides['node.smokeTest'] = [{ severity: 'info', message: 'i' }]
+      await state.smoke(broken)
+      expect(state.issueSeverityType('error')).toBe('error')
+      expect(state.issueSeverityType('warning')).toBe('warning')
+      expect(state.issueSeverityType('info')).toBe('info')
+      expect(state.issueSeverityLabel('error')).toBeTruthy()
+      expect(state.issueSeverityLabel('warning')).toBeTruthy()
+      expect(state.issueSeverityLabel('info')).toBeTruthy()
+
+      overrides['doctor.fix'] = { ok: true, message: 'ok' }
+      await state.runIssueFix(broken.issues[0])
+      overrides['doctor.fix'] = { ok: false, message: 'no' }
+      await state.runIssueFix(broken.issues[0])
+      await state.runIssueFix({ ...broken.issues[0], fixable: false })
+
+      state.showIssues = true
+      state.issuesList = broken.issues
+      state.showDepsAudit = true
+      state.depsAudit = audit
+      state.showRecovery = true
+      state.recovery = recovery
+      state.showInstall = true
+      state.showOpModal = true
+      await nextTick()
+      for (const sel of ['button', '.n-checkbox', '.n-switch']) {
+        for (const el of Array.from(document.querySelectorAll(sel))) {
+          ;(el as HTMLElement).click()
+          await flushPromises()
+        }
+      }
+      expect(wrapper.html()).toBeTruthy()
+    } finally {
+      wrapper.unmount()
+    }
+  }, 120_000)
+
+  it('covers pip banner, recovery labels and remaining handlers', async () => {
+    const { wrapper, state } = await mountNodes()
+    try {
+      state.packs = [pack, broken]
+      state.store.activeInstanceId = 'i1'
+      state.store.instances = instances
+      state.pipActiveInstances = ['i1']
+      state.pipModalVisible = false
+      state.pipViewedInstanceId = 'other'
+      await nextTick()
+      expect(state.pipBannerVisible).toBe(true)
+      state.openPipProgress()
+      state.reopenOpModal()
+      for (const kind of ['backup', 'temp', 'duplicate', 'trash']) {
+        expect(state.recoveryKindLabel(kind)).toBeTruthy()
+      }
+      state.showIssues = true
+      state.issuesList = [
+        { ...broken.issues[0], severity: 'error' },
+        { ...broken.issues[0], id: 'i2', severity: 'warning' },
+        { ...broken.issues[0], id: 'i3', severity: 'info' }
+      ]
+      state.showDepsAudit = true
+      state.depsAudit = audit
+      state.showRecovery = true
+      state.recovery = recovery
+      state.showInstall = true
+      state.showOpModal = true
+      state.tab = 'market'
+      await nextTick()
+      await nextTick()
+      for (const sel of [
+        'button',
+        '.n-button',
+        '.n-checkbox',
+        '.n-switch',
+        '.n-tabs-tab',
+        '.n-base-selection'
+      ]) {
+        for (const el of Array.from(document.querySelectorAll(sel))) {
+          ;(el as HTMLElement).click()
+          await flushPromises()
+        }
+      }
       expect(wrapper.html()).toBeTruthy()
     } finally {
       wrapper.unmount()
