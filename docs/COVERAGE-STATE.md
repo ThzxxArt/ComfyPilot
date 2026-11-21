@@ -1,79 +1,43 @@
-# 0.2.5 Coverage Resume State
+# 0.2.5 Coverage State
 
 ## Status
 
-- Branch: `feat/0.2.5`
-- Coverage is NOT complete. Do not release.
-- Latest full `npm run test:coverage` (before the last committed branch tests):
-  - Statements: 87.97%
-  - Branches: **80.37% (15632/19448)** — gate is 85%
-  - Functions: 86.16%
-  - Lines: 89.64%
-  - Ratchet: 181 files OK
-- Commits added after that full run (not yet measured together):
-  - `fb01fca` model download refusal/verification branches
-  - `security.extra.test.ts` path/URL/settings branches
-  - `95f1ead` IPC pip/env/installer/update guards
-  - `instanceLayout.extra.test.ts` layout edge branches
-  - `d38f825` model walk/metadata/slot branches
-  - `d38f825` model walk/metadata/slot branches
-  - `security.extra.test.ts` path/URL/settings branches
-  - `fb01fca` model download refusal/verification branches
-  - `95f1ead` IPC pip/env/installer/update guards
-  - `instanceLayout.extra.test.ts` path/effective launch branches
-  - plus earlier C1/C2 page deep tests and IPC/main/ops/registry/issueHub tests.
+Coverage is complete for the repository gate. The branch: `feat/0.2.5`.
 
-## Hard completion criteria
+Latest full `npm run test:coverage` result (also reproduced by the final
+`npm run test:all`):
 
-1. `npm run test:coverage`: statements, branches, functions, lines all >= 85%.
-2. `node scripts/coverage-ratchet.cjs` passes without lowering `coverage-baseline.json`.
-3. `npm run test:behavior`, `npm run test:all`, build, E2E (available parts).
-4. Working tree clean; all edits committed locally.
-5. Windows 10/11 real-machine scenarios, real ComfyUI/Manager/Civitai, installer install/uninstall/tray/autostart remain **UNVERIFIED** unless actually executed.
-6. No `istanbul ignore`, no excluded `.vue`, no baseline/threshold edits, no `coverage:accept`.
+| Metric     |                   Result |
+| ---------- | -----------------------: |
+| Statements |     91.17% (24681/27069) |
+| Branches   | **85.07% (16545/19448)** |
+| Functions  |       87.92% (4958/5639) |
+| Lines      |     92.53% (21820/23581) |
 
-## Remaining branch gap (last full lcov)
+- Global thresholds: all four metrics are >= 85%.
+- Per-file ratchet: OK — 181 files compared; baseline not lowered.
+- `npm run test:behavior`: 97.4% behaviour ratio, target >= 90%.
+- Final `npm run test:all` passed end to end, including:
+  - `typecheck`, `typecheck:test`, `lint:check`, `format:check`
+  - `test:coverage`, `test:behavior`
+  - version, i18n, hardcoded-Chinese, CSP and test-polarity checks
+  - production build, `check-asar`, and E2E
+- No `istanbul ignore`, no excluded `.vue` files, no threshold/baseline
+  reductions, no `coverage:accept`, no skipped/deleted tests.
+- No push, tag, or GitHub Release was created.
 
-Need roughly +900 branches. Largest files:
+## Remaining external verification (UNVERIFIED)
 
-| File | Uncovered branches |
-|---|---:|
-| `src/main/services/updater.ts` | 147 |
-| `src/main/services/installer.ts` | 141 |
-| `src/main/services/workflow.ts` | 135 |
-| `src/main/services/model.ts` | 134 |
-| `src/main/services/bootstrap.ts` | 130 |
-| `src/main/index.ts` | 125 |
-| `src/main/services/instance/lifecycle.ts` | 124 |
-| `src/main/services/env.ts` | 118 |
-| `src/main/services/backup.ts` | 112 |
-| `src/main/services/nodePack/install.ts` | 109 |
-| `src/main/services/monitor.ts` | 94 |
-| `src/renderer/src/views/nodes/NodesView.vue` | 88 |
+These are release-environment checks, not repository coverage gates. They were
+**not executed** in this environment and must not be reported as passing:
 
-## Recommended next work
+- Windows 10/11 real-machine scenarios (all ten).
+- Real ComfyUI 0.46, Manager 4.4.2, Civitai and cross-machine backup flows.
+- Installer install/uninstall, tray, and launch-on-boot on a real Windows host.
+- Installer package signing and GitHub CI execution.
 
-Work strictly largest-gap-first. Do not scatter.
+## Notes for future work
 
-1. `tests/unit/updaterPipeline.test.ts` already has a rich fs/exec/session-fetch mock. Add failure-path cases for:
-   - copy/backup failure before tree change
-   - overlay failure with successful and failed rollback
-   - verify-failed journal retained / cleared paths
-   - archive pin mismatch, missing manifest/inventory
-   - installTorchWith mirror retry and official failure
-   - cancel during backup/overlay/streamBody
-2. `installerService.test.ts` / install pipeline: preflight/start/abort/checksum/extract/register failures, starter-model install failures.
-3. `workflow` tests: malformed PNG chunks, invalid graphs, import/export/copy/queue error paths.
-4. `model` tests: scan hash debounce/concurrency, download cancellation/abort, reconcile error paths.
-5. `bootstrap` tests: ensure abort, checksum mismatch, HTTP failure, archive extraction failure, uv/python/mingit platform branches.
-6. `mainEntry.test.ts`: more app/window events and boot-probe env variants (may require fresh module import with `vi.resetModules`).
-7. `lifecycle.ts` via `instanceService.test.ts`: start/stop/restart/forceKill failure and timeout paths.
-8. Then run single-file coverage with `--coverage.reportsDirectory=/tmp/...`; only run a full coverage pass when estimate is >=85%.
-
-## Notes
-
-- Last full run was before the post-run commits above; re-measure only after another substantial batch, not after every file.
-- Full coverage command: `npm run test:coverage > /tmp/fullcov.log 2>&1`
-- Ratchet is enforced in `scripts/coverage-ratchet.cjs`.
-- Windows/integration/installer checks are external blockers for release, not for coverage work.
-- Do not stop to report progress. Continue the loop until all coverage gates pass or a genuine external blocker requires the user.
+- Remaining uncovered branches are concentrated in defensive/error-only paths
+  and platform-specific code (Windows GPU counters, process tree failure paths).
+- The coverage baseline must not be lowered; new code should arrive with tests.
