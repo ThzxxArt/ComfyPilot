@@ -803,7 +803,7 @@ describe('InstallView fallback and race branches', () => {
       await Promise.resolve()
       const second = state.runPreflight()
       await second
-      releaseFirst?.()
+      ;(releaseFirst as (() => void) | null)?.()
       await first
       state.installing = true
       await state.resetInstall()

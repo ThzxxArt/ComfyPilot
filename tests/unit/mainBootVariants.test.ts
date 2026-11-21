@@ -22,7 +22,7 @@ const h = vi.hoisted(() => {
     packaged: true,
     lock: true,
     mediaPath: null as string | null,
-    executeResult: { mounted: true, bridgeOk: true, ipcOk: true, version: 'en-US' },
+    executeResult: { mounted: true, bridgeOk: true, ipcOk: true, version: 'en-US' } as any,
     startError: null as Error | null
   }
   const mini = () => {
