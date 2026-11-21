@@ -279,9 +279,13 @@ const Host = defineComponent({
     return () =>
       h(NConfigProvider, null, {
         default: () =>
-          h(NMessageProvider, null, {
-            default: () => h(NDialogProvider, null, { default: () => slots.default?.() })
-          })
+          h(
+            NMessageProvider,
+            { duration: 0 },
+            {
+              default: () => h(NDialogProvider, null, { default: () => slots.default?.() })
+            }
+          )
       })
   }
 })
