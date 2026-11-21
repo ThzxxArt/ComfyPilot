@@ -411,6 +411,19 @@ describe('IPC domains', () => {
     expect(publicListen.ok).toBe(false)
     expect(publicListen.error).toMatch(/listen/i)
 
+    // A free-text override is just as authoritative as config.listen.
+    const injectedListen = await call(x.save, {
+      ...base,
+      extraArgs: ['--listen', 'metadata.google.internal']
+    } as never)
+    expect(injectedListen.ok).toBe(false)
+    expect(injectedListen.error).toMatch(/listen/i)
+    const wildcard = await call(x.save, {
+      ...base,
+      extraArgs: ['--listen', '0.0.0.0,::']
+    } as never)
+    expect(wildcard.ok).toBe(true)
+
     writeFileSync(join(services.instance.path, 'python.exe'), 'MZ')
     const evilPython = await call(x.save, {
       ...base,
@@ -418,6 +431,41 @@ describe('IPC domains', () => {
     } as never)
     expect(evilPython.ok).toBe(false)
     expect(evilPython.error).toMatch(/picker/i)
+  })
+
+  it('instances: secondary lifecycle/update/env handlers are reachable', async () => {
+    const { createInstanceHandlers } = await import('../../src/main/ipc/domains/instances')
+    const x = createInstanceHandlers(ctx)
+    const calls: Array<[keyof typeof x, unknown[]]> = [
+      ['updateJournal', ['i1']],
+      ['rollbackUpdate', ['i1']],
+      ['checkComfyUpdate', ['i1']],
+      ['updateStatus', []],
+      ['cancelUpdate', []],
+      ['repairStatus', []],
+      ['repairCancel', []],
+      ['capabilities', ['i1']],
+      ['runStartupSelfCheck', ['i1']],
+      ['execFailures', ['i1']],
+      ['clearExecFailures', ['i1']],
+      ['probe', [{ pythonPath: '' }]],
+      ['listPythons', []],
+      ['installTorch', [{ pythonPath: 'python', index: 'https://download.pytorch.org/whl/cu130' }]],
+      ['detectGpu', []],
+      ['status', []],
+      ['cancel', []],
+      ['starterModels', []],
+      ['bootstrapStatus', []],
+      ['bootstrapEnsure', [{ kinds: ['uv'] }]],
+      ['bootstrapDownload', ['uv']],
+      ['bootstrapDeleteLegacy', []],
+      ['setPort', ['i1', 8189]],
+      ['patch', ['i1', { notes: 'x' }]]
+    ]
+    for (const [name, args] of calls) {
+      const result = await call(x[name] as never, ...args)
+      expect(result, String(name)).toHaveProperty('ok')
+    }
   })
 
   it('models: list/scan gate/reconcile/storage', async () => {

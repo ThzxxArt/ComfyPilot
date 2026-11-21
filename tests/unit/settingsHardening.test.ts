@@ -3,7 +3,11 @@
  * later interpolated into a URL (proxy.protocol) or executed (aria2Path).
  */
 import { describe, it, expect } from 'vitest'
-import { assertSafeSettingsPatch } from '../../src/main/services/security'
+import {
+  assertSafeSettingsPatch,
+  isAllowedListenHost,
+  isAllowedListenList
+} from '../../src/main/services/security'
 
 describe('assertSafeSettingsPatch — proxy', () => {
   it('accepts the supported protocols', () => {
@@ -33,6 +37,55 @@ describe('assertSafeSettingsPatch — proxy', () => {
     expect(() =>
       assertSafeSettingsPatch({ proxy: { enabled: true, host: 'a;b', port: 7890 } })
     ).toThrow(/illegal characters/)
+  })
+})
+
+describe('isAllowedListenHost / list', () => {
+  it('accepts literal loopback/wildcard/private-LAN addresses', () => {
+    for (const host of [
+      '0.0.0.0',
+      '::',
+      '*',
+      '::1',
+      '[::1]',
+      '127.0.0.1',
+      '10.1.2.3',
+      '192.168.1.5',
+      '172.16.0.1',
+      '172.31.255.1',
+      '100.64.0.1',
+      'fc00::1',
+      'fd12::1',
+      'fe80::1',
+      'fe9f::1',
+      'fea0::1',
+      'febf::1'
+    ]) {
+      expect(isAllowedListenHost(host), host).toBe(true)
+    }
+  })
+
+  it('rejects hostnames, public IPs and malformed literals', () => {
+    for (const host of [
+      '',
+      'localhost',
+      'metadata.google.internal',
+      '8.8.8.8',
+      '172.32.0.1',
+      '100.128.0.1',
+      '999.1.1.1',
+      '2001:db8::1',
+      '::ffff:127.0.0.1'
+    ]) {
+      expect(isAllowedListenHost(host), host).toBe(false)
+    }
+  })
+
+  it('validates every address in a multi-address listen list', () => {
+    expect(isAllowedListenList('127.0.0.1,0.0.0.0')).toBe(true)
+    expect(isAllowedListenList('127.0.0.1, metadata.google.internal')).toBe(false)
+    expect(isAllowedListenList('')).toBe(false)
+    expect(isAllowedListenList(' , ')).toBe(false)
   })
 })
 

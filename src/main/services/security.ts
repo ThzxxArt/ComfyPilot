@@ -232,6 +232,56 @@ export function isLocalhostUrl(raw: string): boolean {
   }
 }
 
+/**
+ * A `--listen` value must be a literal local/LAN address. A hostname is not a
+ * bind address, and letting one through turns the health/monitor probes into
+ * an SSRF primitive (`--listen metadata.google.internal`).
+ *
+ * 0.2.5 WP10 / S3: shared by instance.save and backup.restore so a crafted
+ * backup cannot bypass the renderer-facing validator.
+ */
+export function isAllowedListenHost(raw: string): boolean {
+  const host = String(raw || '')
+    .trim()
+    .replace(/^\[|\]$/g, '')
+    .toLowerCase()
+  if (!host) return false
+  if (host === '0.0.0.0' || host === '::' || host === '*') return true
+  if (host === '::1') return true
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (v4) {
+    const parts = [Number(v4[1]), Number(v4[2]), Number(v4[3]), Number(v4[4])]
+    if (parts.some((n) => n > 255)) return false
+    const [a, b] = parts
+    if (a === 127) return true
+    if (a === 10) return true
+    if (a === 192 && b === 168) return true
+    if (a === 172 && b >= 16 && b <= 31) return true
+    if (a === 100 && b >= 64 && b <= 127) return true // CGNAT/Tailscale
+    return false
+  }
+  // IPv6 literal heuristics: loopback, ULA (fc00::/7) and link-local.
+  if (!host.includes(':')) return false
+  if (host.startsWith('fc') || host.startsWith('fd')) return true
+  if (
+    host.startsWith('fe8') ||
+    host.startsWith('fe9') ||
+    host.startsWith('fea') ||
+    host.startsWith('feb')
+  )
+    return true
+  return false
+}
+
+/** Comma-separated multi-address listen (ComfyUI 0.46 supports it). */
+export function isAllowedListenList(listen: string): boolean {
+  const parts = String(listen || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+  return parts.length > 0 && parts.every(isAllowedListenHost)
+}
+
 const BLOCKED_OPEN_EXTENSIONS = new Set([
   '.exe',
   '.bat',

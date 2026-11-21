@@ -49,6 +49,7 @@ import {
   assertSafeSettingsPatch,
   assertSafeRelativeFilename,
   isSafeExternalUrl,
+  isAllowedListenList,
   credentialOriginForUrl,
   proxyCredentialOrigin,
   normalizeForCompare
@@ -166,12 +167,17 @@ function workflowTargetFor(
   roots: string[],
   libraryRoot: string
 ): { target: string; remapped: boolean } {
+  const isWorkflowName = (p: string): boolean => /\.jsonc?$/i.test(p)
   for (const root of roots) {
     const rel = relative(root, rawPath)
     if (!rel || rel.startsWith('..') || isAbsolute(rel)) continue
     const segments = safeSegments(rel)
     if (!segments) continue
     const target = join(root, ...segments)
+    // A backup is untrusted input. Only workflow documents may be written into
+    // a workflow directory — an `.exe`/`.py` here could later be pointed at by
+    // a restored `pythonPath` (S4 RCE chain).
+    if (!isWorkflowName(target)) continue
     if (!resolveInsideAnyRoot(target, [root])) continue
     return { target, remapped: false }
   }
@@ -181,10 +187,11 @@ function workflowTargetFor(
   } catch {
     name = `${sanitizeId(wfId)}.json`
   }
+  if (!isWorkflowName(name)) name = `${sanitizeId(wfId)}.json`
   let target = join(libraryRoot, name)
   if (existsSync(target)) {
-    const ext = name.toLowerCase().endsWith('.json') ? '.json' : ''
-    const stem = ext ? name.slice(0, -ext.length) : name
+    const ext = (name.match(/\.jsonc?$/i) || ['.json'])[0]
+    const stem = name.slice(0, -ext.length)
     target = join(libraryRoot, `${stem}-${sanitizeId(wfId).slice(0, 8)}${ext}`)
   }
   return { target, remapped: true }
@@ -341,16 +348,27 @@ function sanitizeRestoredInstance(
   const pythonPath = String(out.pythonPath || '')
   if (pythonPath) {
     const lower = pythonPath.replace(/\\/g, '/').toLowerCase()
-    const pythonShaped = /python(3(?:\.\d+)?)?(?:\.exe)?$/.test(lower)
-    const venvShaped =
-      /\/(?:\.?venv|venv-[^/]+)\/(?:bin\/python(?:3(?:\.\d+)?)?|scripts\/python(?:\.exe)?)$/.test(
+    const bare = !lower.includes('/')
+    const inInstance = Boolean(resolveInsideAnyRoot(pythonPath, [path]))
+    const beside = Boolean(resolveInsideAnyRoot(pythonPath, [dirname(path)]))
+    // Interpreter-shaped locations only: <root>/python*/python.exe or
+    // <root>/.venv/bin/python. An arbitrary executable inside the instance
+    // (e.g. custom_nodes/evil/python.exe) is not trusted.
+    const interpreterShape =
+      /(?:^|\/)(?:python|python_embeded|python_embedded)\/(?:python\.exe|bin\/python(?:3(?:\.\d+)?)?)$|(?:^|\/)\.?venv[^/]*\/(?:bin\/python(?:3(?:\.\d+)?)?|scripts\/python(?:\.exe)?)$/
+    const pythonName = /(?:^|\/)python(?:3(?:\.\d+)?)?(?:\.exe)?$/.test(lower)
+    // A system interpreter is fine; a path merely SHAPED like one (e.g.
+    // /tmp/evil/python/python.exe) is not. The previous regex accepted any
+    // `.../python/python.exe`, which let a crafted backup execute an arbitrary
+    // dropped binary on the next launch (S4).
+    const systemPython =
+      /\/windows\/system32\/|\/program files\/|\/program files \(x86\)\/|\/usr\/bin\/|\/usr\/local\/bin\/|\/opt\/|\/appdata\/local\/programs\/python\/|\/miniconda|\/anaconda/.test(
         lower
       )
-    const embedded =
-      /(?:^|\/)(?:python_embeded|python_embedded|python)\/(?:python\.exe|bin\/python(?:3(?:\.\d+)?)?)$/.test(
-        lower
-      )
-    if (!pythonShaped || (!venvShaped && !embedded)) {
+    if (
+      !bare &&
+      (!pythonName || (!((inInstance || beside) && interpreterShape.test(lower)) && !systemPython))
+    ) {
       out.pythonPath = ''
       warnings.push(`instance ${label}: pythonPath rejected — cleared`)
     }
@@ -374,14 +392,30 @@ function sanitizeRestoredInstance(
       }
       const eq = token.indexOf('=')
       const flag = eq > 2 ? token.slice(0, eq) : token
-      if (PATH_ARG_FLAGS.has(flag)) {
-        let value = eq > 2 ? token.slice(eq + 1) : undefined
-        if (value === undefined) {
-          const next = extra[i + 1]
-          if (next && !String(next).startsWith('--')) value = String(next)
+      const inline = eq > 2 ? token.slice(eq + 1) : undefined
+      // 0.2.5 WP10 / S3: free-text --listen overrides the stored address.
+      // A backup must not be able to aim probes at an arbitrary hostname.
+      if (flag === '--listen') {
+        const next = inline === undefined ? extra[i + 1] : undefined
+        const separate = next !== undefined && !String(next).startsWith('--')
+        const value = inline ?? (separate ? String(next) : '')
+        if (value && !isAllowedListenList(value)) {
+          warnings.push(`instance ${label}: extraArgs --listen rejected`)
+          if (separate) i += 1
+          continue
         }
+        cleaned.push(token)
+        continue
+      }
+      if (PATH_ARG_FLAGS.has(flag)) {
+        const next = inline === undefined ? extra[i + 1] : undefined
+        const separate = next !== undefined && !String(next).startsWith('--')
+        const value = inline ?? (separate ? String(next) : undefined)
         if (value && !pathIsUnderRoots(value, roots, path)) {
           warnings.push(`instance ${label}: extraArgs ${flag} rejected`)
+          // Drop the separate value token too; leaving it behind turns it into
+          // a stray positional argument that ComfyUI would reject.
+          if (separate) i += 1
           continue
         }
       }
@@ -480,6 +514,12 @@ function restoreWorkflowFiles(files: PlanFile[]): { restored: number; failed: nu
   for (const file of files) {
     if (!file.source || file.missing) continue
     const dest = file.target
+    // Defence in depth: even if a plan was tampered with, never write a
+    // non-workflow document into the library/instance workflow dirs.
+    if (!/\.jsonc?$/i.test(dest)) {
+      failed += 1
+      continue
+    }
     const staging = `${dest}.restore-tmp-${process.pid}`
     try {
       mkdirSync(dirname(dest), { recursive: true })
@@ -1100,7 +1140,7 @@ export class BackupService {
       }
       if (inst.listen !== undefined) {
         const listen = String(inst.listen || '')
-        if (!listen || /[;@\s\\/]/.test(listen)) {
+        if (!listen || !isAllowedListenList(listen)) {
           warnings.push(
             `instance ${String(inst.name || inst.id || '?')}: invalid listen host, skipped`
           )

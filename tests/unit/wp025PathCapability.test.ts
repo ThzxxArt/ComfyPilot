@@ -121,6 +121,10 @@ describe('PathCapability (0.2.5 WP10)', () => {
     mkdirSync(join(venv, 'bin'), { recursive: true })
     writeFileSync(join(venv, 'bin', 'python'), 'elf')
     expect(() => assertApprovedExecutable(join(venv, 'bin', 'python'), 'pythonPath')).not.toThrow()
+    // A venv-shaped path with a parent hop is not a venv.
+    expect(() =>
+      assertApprovedExecutable(`${root}/approved/../evil/.venv/bin/python`, 'pythonPath')
+    ).toThrow(/parent-directory/i)
   })
 
   it('rejects install roots under home unless picked', () => {

@@ -536,6 +536,37 @@ describe('restore() path containment (0.1.18 P0)', () => {
     expect(remotes.map((r: { id: string }) => r.id)).toEqual(['r-ok'])
   })
 
+  it('never writes an executable from workflow-files into an instance workflow dir', async () => {
+    const instRoot = join(h.state.root, 'ComfyUI')
+    const wfDir = join(instRoot, 'user', 'default', 'workflows')
+    mkdirSync(wfDir, { recursive: true })
+    h.state.instances = [{ id: 'i1', name: 'I', path: instRoot }]
+    const dir = join(h.state.root, 'backups', 'b-exe')
+    mkdirSync(join(dir, 'workflow-files', 'wf1'), { recursive: true })
+    writeFileSync(join(dir, 'settings.json'), '{}')
+    writeFileSync(
+      join(dir, 'instances.json'),
+      JSON.stringify([{ id: 'i1', name: 'I', path: instRoot }])
+    )
+    writeFileSync(
+      join(dir, 'workflows.json'),
+      JSON.stringify([
+        { id: 'wf1', name: 'evil', path: join(wfDir, 'python_embeded', 'python.exe') }
+      ])
+    )
+    writeFileSync(join(dir, 'workflow-files', 'wf1', 'python.exe'), 'MZ')
+    const svc = await freshBackup()
+    const result = svc.restore('b-exe')
+    expect(result.ok).toBe(true)
+    // Not written under the instance; remapped to a workflow-named library file.
+    expect(existsSync(join(wfDir, 'python_embeded', 'python.exe'))).toBe(false)
+    expect(existsSync(join(h.state.root, 'workflows', 'wf1.json'))).toBe(true)
+    const wfs = JSON.parse(readFileSync(join(h.state.root, 'workflows.jsonc'), 'utf-8')) as Array<
+      Record<string, unknown>
+    >
+    expect(String(wfs[0].path)).toMatch(/\.json$/i)
+  })
+
   it('never writes a workflow file to the absolute path stored in the backup', async () => {
     // Outside every trusted root (userDataDir / library / instances / model roots).
     const evilTarget = join(tmpdir(), `cp-evil-${process.pid}-${Date.now()}`, 'evil.json')
@@ -630,6 +661,105 @@ describe('restore() path containment (0.1.18 P0)', () => {
     expect(rows[0].venvPath).toBe('')
     expect(rows[0].launchProfile).toEqual({ baseDirectory: 'ok' })
     expect(rows[0].extraArgs).toEqual(['--listen', '0.0.0.0'])
+  })
+
+  it('rejects a python-shaped binary outside the instance and keeps a real embedded interpreter', async () => {
+    const inst = join(h.state.root, 'ComfyUI')
+    mkdirSync(inst, { recursive: true })
+    const evilPython = join(tmpdir(), `cp-evil-python-${process.pid}`, 'python', 'python.exe')
+    const goodPython = join(inst, 'python_embeded', 'python.exe')
+    const dir = seedBackup('b-python-shape', { instancePath: inst })
+    writeFileSync(
+      join(dir, 'instances.json'),
+      JSON.stringify([
+        {
+          id: 'evil',
+          name: 'evil',
+          path: inst,
+          pythonPath: evilPython,
+          venvPath: join(tmpdir(), `cp-evil-venv-${process.pid}`)
+        },
+        {
+          id: 'good',
+          name: 'good',
+          path: inst,
+          pythonPath: goodPython,
+          venvPath: join(inst, '.venv')
+        },
+        {
+          id: 'system-shape',
+          name: 'system-shape',
+          path: inst,
+          pythonPath: 'C:\\Program Files\\Evil\\payload.exe'
+        }
+      ])
+    )
+    const svc = await freshBackup()
+    const result = svc.restore('b-python-shape')
+    expect(result.ok).toBe(true)
+    expect(result.warnings.join(' ')).toMatch(/pythonPath rejected/)
+    const rows = JSON.parse(readFileSync(join(h.state.root, 'instances.jsonc'), 'utf-8')) as Array<
+      Record<string, unknown>
+    >
+    const evil = rows.find((r) => r.id === 'evil')!
+    const good = rows.find((r) => r.id === 'good')!
+    const systemShape = rows.find((r) => r.id === 'system-shape')!
+    expect(evil.pythonPath).toBe('')
+    expect(evil.venvPath).toBe('')
+    expect(systemShape.pythonPath).toBe('')
+    expect(good.pythonPath).toBe(goodPython)
+    expect(good.venvPath).toBe(join(inst, '.venv'))
+  })
+
+  it('drops --listen overrides and stray path values from restored extraArgs', async () => {
+    const dir = seedBackup('b-listen', { instancePath: h.state.root })
+    writeFileSync(
+      join(dir, 'instances.json'),
+      JSON.stringify([
+        {
+          id: 'ev',
+          name: 'evil',
+          path: h.state.root,
+          listen: '127.0.0.1',
+          extraArgs: [
+            '--listen',
+            'metadata.google.internal',
+            '--listen=8.8.8.8',
+            '--output-directory',
+            '/etc',
+            '--port',
+            '8188'
+          ]
+        }
+      ])
+    )
+    const svc = await freshBackup()
+    const result = svc.restore('b-listen')
+    expect(result.ok).toBe(true)
+    expect(result.warnings.join(' ')).toMatch(/--listen rejected|--output-directory rejected/)
+    const rows = JSON.parse(readFileSync(join(h.state.root, 'instances.jsonc'), 'utf-8')) as Array<
+      Record<string, unknown>
+    >
+    // No rejected flag, and no orphaned value left behind as a positional arg.
+    expect(rows[0].extraArgs).toEqual(['--port', '8188'])
+  })
+
+  it('skips a restored instance whose listen is a hostname, not a bind address', async () => {
+    const dir = seedBackup('b-listen-host', { instancePath: h.state.root })
+    writeFileSync(
+      join(dir, 'instances.json'),
+      JSON.stringify([
+        { id: 'ev', name: 'evil', path: h.state.root, listen: 'metadata.google.internal' }
+      ])
+    )
+    const svc = await freshBackup()
+    const result = svc.restore('b-listen-host')
+    expect(result.ok).toBe(true)
+    expect(result.warnings.join(' ')).toMatch(/invalid listen host/i)
+    const rows = JSON.parse(readFileSync(join(h.state.root, 'instances.jsonc'), 'utf-8')) as Array<
+      Record<string, unknown>
+    >
+    expect(rows).toEqual([])
   })
 
   it('strips proxy.password from a restored settings file', async () => {

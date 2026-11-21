@@ -11,6 +11,7 @@ import type {
 import { IPC_EVENTS } from '@shared/types'
 import {
   assertSafeEndpointSetting,
+  hasParentHop,
   isLocalhostUrl,
   isSafeDataReadPath,
   isSafeEmbedUrl,
@@ -222,6 +223,9 @@ function isSystemPythonPath(p: string): boolean {
 export function assertApprovedExecutable(p: string, label: string, instanceRoot?: string): void {
   if (!p) return
   if (p.includes('\0')) throw new Error(`${label} contains an invalid character`)
+  // A path that merely LOOKS like `<root>/venv/bin/python` must not sneak out
+  // of a root through `..`.
+  if (hasParentHop(p)) throw new Error(`${label} must not contain parent-directory hops`)
   const normalized = normalizeForCompare(p)
   // 1) Issued by the OS picker / installer / a validated runtime.
   if (pathCapabilities.covers(p, 'exec')) return
@@ -262,6 +266,7 @@ export function assertApprovedExecutable(p: string, label: string, instanceRoot?
 export function assertApprovedVenvPath(venvPath: string, instanceRoot?: string): void {
   if (!venvPath) return
   if (venvPath.includes('\0')) throw new Error('venvPath contains an invalid character')
+  if (hasParentHop(venvPath)) throw new Error('venvPath must not contain parent-directory hops')
   if (pathCapabilities.covers(venvPath, 'write')) return
   if (isPathInsideInstance(venvPath)) return
   if (instanceRoot && resolveInsideAnyRoot(venvPath, [instanceRoot, dirname(instanceRoot)])) return
@@ -272,6 +277,8 @@ export function assertApprovedVenvPath(venvPath: string, instanceRoot?: string):
 export function assertApprovedVenvBase(basePath: string): void {
   if (!basePath || basePath.includes('\0')) throw new Error('Invalid venv base path')
   if (!isAbsolute(basePath)) throw new Error('venv base path must be absolute')
+  if (hasParentHop(basePath))
+    throw new Error('venv base path must not contain parent-directory hops')
   if (pathCapabilities.covers(basePath, 'write')) return
   const normalized = normalizeForCompare(basePath)
   const home = normalizeForCompare(homedir()).toLowerCase()

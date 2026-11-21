@@ -15,11 +15,13 @@ import { instanceService } from '../../services/instance'
 import { installerService, listStarterModels } from '../../services/installer'
 import {
   assertSafeEndpointSetting,
+  isAllowedListenList,
   isSafeExternalUrl,
   normalizeForCompare,
   resolveInsideAnyRoot,
   sanitizeId
 } from '../../services/security'
+import { splitFlagToken } from '@shared/instanceLayout'
 import { pathCapabilities } from '../../services/pathCapability'
 
 import {
@@ -46,39 +48,6 @@ function discoveredComfyRoots(): string[] {
     'D:\\AI\\ComfyUI',
     ...(loadSettings().modelScanRoots || [])
   ].filter(Boolean) as string[]
-}
-
-/** IPv4/IPv6 literals only; wildcard/loopback/private-LAN ranges. */
-function isAllowedListenHost(raw: string): boolean {
-  const host = raw
-    .trim()
-    .replace(/^\[|\]$/g, '')
-    .toLowerCase()
-  if (!host) return false
-  if (host === '0.0.0.0' || host === '::' || host === '*') return true
-  if (host === '::1') return true
-  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
-  if (v4) {
-    const [a, b] = [Number(v4[1]), Number(v4[2])]
-    if ([a, b, Number(v4[3]), Number(v4[4])].some((n) => n > 255)) return false
-    if (a === 127) return true
-    if (a === 10) return true
-    if (a === 192 && b === 168) return true
-    if (a === 172 && b >= 16 && b <= 31) return true
-    if (a === 100 && b >= 64 && b <= 127) return true // CGNAT/Tailscale
-    return false
-  }
-  // IPv6 literal heuristics: loopback, ULA (fc00::/7) and link-local.
-  if (!host.includes(':')) return false
-  if (host.startsWith('fc') || host.startsWith('fd')) return true
-  if (
-    host.startsWith('fe8') ||
-    host.startsWith('fe9') ||
-    host.startsWith('fea') ||
-    host.startsWith('feb')
-  )
-    return true
-  return false
 }
 
 const LAUNCH_PROFILE_DIR_KEYS = [
@@ -118,10 +87,8 @@ function assertSafeLaunchConfig(config: ComfyInstanceConfig): void {
     throw new Error('Instance port must be an integer between 1 and 65535')
   }
   const listen = String(config.listen || '127.0.0.1')
-  for (const addr of listen.split(',')) {
-    if (!isAllowedListenHost(addr)) {
-      throw new Error(`Instance listen address is not a local/LAN literal: ${addr.trim()}`)
-    }
+  if (!isAllowedListenList(listen)) {
+    throw new Error(`Instance listen address is not a local/LAN literal: ${listen}`)
   }
   const roots = [config.path, ...pathCapabilities.rootsFor('write')]
   const profile = config.launchProfile || {}
@@ -144,6 +111,21 @@ function assertSafeLaunchConfig(config: ComfyInstanceConfig): void {
   for (let i = 0; i < extra.length; i++) {
     const token = String(extra[i] ?? '')
     if (/[\0\r\n]/.test(token)) throw new Error('extraArgs contains a control character')
+    const parsed = splitFlagToken(token)
+    // 0.2.5 WP10 / S3: a free-text `--listen` overrides config.listen at
+    // runtime. Validating only the stored field let a renderer point health,
+    // monitor and batch probes at an arbitrary hostname (SSRF).
+    if (parsed.flag === '--listen') {
+      let value = parsed.value
+      if (value === undefined) {
+        const next = extra[i + 1]
+        if (next && !String(next).startsWith('--')) value = String(next)
+      }
+      if (value !== undefined && !isAllowedListenList(value)) {
+        throw new Error(`extraArgs --listen is not a local/LAN literal: ${value}`)
+      }
+      continue
+    }
     const eq = token.indexOf('=')
     const flag = eq > 2 ? token.slice(0, eq) : token
     let value = eq > 2 ? token.slice(eq + 1) : undefined
