@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * 0.2.5 WP0: repairEnv must never claim Python 3.13 for a non-3.13 venv, and
  * recreateVenv must archive the old venv before creating a new one.

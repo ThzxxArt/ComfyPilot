@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * useComfyUpdate state behaviour (0.1.11): terminal `cancelled` releases the
  * shared progress slot, empty-instance selection resets banners (no ghost

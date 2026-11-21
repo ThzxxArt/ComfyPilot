@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * p1p2.ts coverage: BatchService.start/cancel/awaitOutputs, OutputService
  * walk/list/favorite/exportZip/importToWorkflow, RemoteService.test,
@@ -2333,12 +2334,6 @@ describe('p1p2 batch/output edge branches', () => {
     await seedInstance()
     const p = join(ROOT, 'wf', 'edges.json')
     writeFileSync(p, uiGraph())
-    const job = batchService.create({
-      name: 'edges',
-      instanceId: 'inst-1',
-      items: [{ workflowPath: p, count: 1 }]
-    })
-    const { upsertBatchJob, flushPendingWrites } = await import('../../src/main/services/db')
     expect(() => batchService.startAsync('missing')).toThrow(/not found/)
     await expect(batchService.start('missing')).rejects.toThrow(/not found/)
     await expect(batchService.resume('missing')).rejects.toThrow(/not found/)

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * High-intensity unit tests for InstanceService:
  * pure escaping helpers, config persistence, launch preview/script export,

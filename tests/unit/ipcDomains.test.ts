@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * 0.2.3: IPC domain handlers under a mocked service layer.
  *

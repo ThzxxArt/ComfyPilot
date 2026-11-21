@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * High-intensity unit tests for NodePackService: meta discovery, issue
  * collection, listing/filtering, install (registry/git/manager), afterInstall
