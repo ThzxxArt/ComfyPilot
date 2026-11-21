@@ -71,6 +71,15 @@ describe('killProcessTree', () => {
     await expect(killProcessTree(child as never)).resolves.toBeUndefined()
   })
 
+  it('uses taskkill on Windows and still signals the child handle', async () => {
+    if (process.platform !== 'win32') return
+    const child = fakeChild(999_999_999)
+    await expect(
+      killProcessTree(child as never, { waitMs: 0, timeoutMs: 2000 })
+    ).resolves.toBeUndefined()
+    expect(child.kills).toEqual(['SIGKILL'])
+  })
+
   it('does not resolve before the child has actually exited (0.1.18 review)', async () => {
     const real = process.platform
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
