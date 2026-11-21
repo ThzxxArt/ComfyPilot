@@ -399,26 +399,33 @@ describe('p1p2 services', () => {
     expect(resolve({ filename: 'a.png', subfolder: '../..' }, ROOT, outRoot)).toBeNull()
     expect(resolve({ filename: 'a.png', subfolder: '/etc' }, ROOT, outRoot)).toBeNull()
     expect(resolve({ filename: 'a.png', subfolder: 'C:\\Windows' }, ROOT, outRoot)).toBeNull()
+    // A symlinked child directory must not turn history into an outside read.
+    const outside = join(ROOT, 'outside-output')
+    mkdirSync(outside, { recursive: true })
+    writeFileSync(join(outside, 'evil.png'), 'x')
+    rmSync(join(outRoot, 'linked'), { recursive: true, force: true })
+    symlinkSync(outside, join(outRoot, 'linked'), 'dir')
+    expect(resolve({ filename: 'evil.png', subfolder: 'linked' }, ROOT, outRoot)).toBeNull()
   })
 
-  it('treats a prompt as queued from /queue, and a queue error as not queued', async () => {
+  it('treats a prompt as queued from /queue, and a queue probe error as unknown', async () => {
     const { batchService } = await freshP1p2()
-    const still = (
+    const probe = (
       batchService as unknown as {
-        isPromptStillQueued: (c: unknown, pending: string[]) => Promise<boolean>
+        probeQueue: (c: unknown, pending: string[]) => Promise<boolean | null>
       }
-    ).isPromptStillQueued.bind(batchService)
+    ).probeQueue.bind(batchService)
     expect(
-      await still({ queueState: async () => ({ running: ['p1'], pending: [] }) }, ['p1'])
+      await probe({ queueState: async () => ({ running: ['p1'], pending: [] }) }, ['p1'])
     ).toBe(true)
     expect(
-      await still({ queueState: async () => ({ running: [], pending: ['p1'] }) }, ['p1'])
+      await probe({ queueState: async () => ({ running: [], pending: ['p1'] }) }, ['p1'])
     ).toBe(true)
-    expect(await still({ queueState: async () => ({ running: [], pending: [] }) }, ['p1'])).toBe(
+    expect(await probe({ queueState: async () => ({ running: [], pending: [] }) }, ['p1'])).toBe(
       false
     )
     expect(
-      await still(
+      await probe(
         {
           queueState: async () => {
             throw new Error('queue down')
@@ -426,7 +433,66 @@ describe('p1p2 services', () => {
         },
         ['p1']
       )
-    ).toBe(false)
+    ).toBeNull()
+  })
+
+  it('does not time out a small job when /history has unrelated entries but /queue still owns it', async () => {
+    vi.useFakeTimers()
+    try {
+      const { batchService } = await freshP1p2()
+      const p = join(ROOT, 'wf', 'queued-long.json')
+      writeFileSync(p, uiGraph())
+      const job = batchService.create({
+        name: 'queued-long',
+        instanceId: 'inst-1',
+        items: [{ workflowPath: p, count: 1 }]
+      })
+      const cached = batchService.list().find((j) => j.id === job.id)!
+      cached.items[0].promptIds.push('p-still-queued')
+      ;(batchService as unknown as { persist: (j: typeof cached) => void }).persist(cached)
+      ;(batchService as unknown as { runningIds: Set<string> }).runningIds.add(job.id)
+      const client = {
+        // Non-empty history for OTHER prompts: the old 30s "empty history"
+        // trigger never fired, and the 50s initial deadline killed this job.
+        history: vi.fn(async () => [{ promptId: 'other', status: 'success', outputs: [] }]),
+        historyItem: vi.fn(async () => null),
+        queueState: vi.fn(async () => ({ running: ['p-still-queued'], pending: [] }))
+      }
+      let finished = false
+      const run = (
+        batchService as unknown as {
+          awaitOutputs: (
+            id: string,
+            c: unknown,
+            instancePath: string,
+            outputDir: string,
+            inputDir?: string
+          ) => Promise<Set<string>>
+        }
+      )
+        .awaitOutputs(job.id, client, '', '')
+        .then((settled) => {
+          finished = true
+          return settled
+        })
+      // Past the old Math.min(baseDeadline, 30s + 1*20s) = 50s deadline.
+      await vi.advanceTimersByTimeAsync(71_000)
+      expect(finished).toBe(false)
+      expect(client.queueState).toHaveBeenCalled()
+      // A failed queue probe is UNKNOWN, not proof of loss.
+      client.queueState.mockRejectedValue(new Error('queue down'))
+      await vi.advanceTimersByTimeAsync(31_000)
+      expect(finished).toBe(false)
+      // Once the queue no longer knows the prompt, stop polling and report it.
+      client.queueState.mockResolvedValue({ running: [], pending: [] })
+      await vi.advanceTimersByTimeAsync(31_000)
+      const settled = await run
+      expect(finished).toBe(true)
+      expect(settled.size).toBe(0)
+      expect(client.history.mock.calls.length).toBeGreaterThan(24)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   describe('BatchService.start', () => {

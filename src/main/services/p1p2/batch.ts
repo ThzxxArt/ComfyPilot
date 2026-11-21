@@ -15,7 +15,7 @@ import { resolveReadTarget } from '../target'
 import { ComfyApiClient } from '../comfyApi'
 import { readPngTextMetaFromFile, recordPromptWorkflowLink } from '../workflow'
 import { classifyOutputType } from '@shared/mediaTypes'
-import { hasParentHop, resolveInsideAnyRoot } from '../security'
+import { hasParentHop, realpathUnderAnyRoot, resolveInsideAnyRoot } from '../security'
 import { resolveOutputDir } from '@shared/outputDir'
 import { resolveEffectiveInstance } from '@shared/instanceLayout'
 import {
@@ -678,10 +678,12 @@ export class BatchService extends EventEmitter {
       /* defaults */
     }
     const baseDeadline = Math.min(24 * 60 * 60 * 1000, Math.max(60_000, configured))
-    const first = this.list().find((j) => j.id === jobId)
-    const totalPrompts = first ? first.items.reduce((s, it) => s + it.promptIds.length, 0) : 1
-    let deadline = Date.now() + Math.min(baseDeadline, 30_000 + totalPrompts * 20_000)
-    let consecutiveEmpty = 0
+    // 0.2.5 WP9: the deadline is ABSOLUTE (default 30 min), not a short
+    // 30s+N*20s window. A single prompt can legitimately sit in a busy GPU
+    // queue for minutes; the per-poll /queue check below distinguishes
+    // "still queued" from "lost" long before this bound.
+    let deadline = Date.now() + baseDeadline
+    let pollCount = 0
 
     while (Date.now() < deadline) {
       const live = this.list().find((j) => j.id === jobId)
@@ -699,7 +701,6 @@ export class BatchService extends EventEmitter {
         history = []
       }
       const byId = new Map(history.map((h) => [h.promptId, h]))
-      consecutiveEmpty = history.length === 0 ? consecutiveEmpty + 1 : 0
 
       // 0.1.17 (WP5): point lookups run 8-at-a-time — the old serial loop made
       // a 60-prompt job take 60 round-trips per poll.
@@ -771,15 +772,22 @@ export class BatchService extends EventEmitter {
       this.emit('progress', live)
 
       if (settled.size >= allIds.length) break
-      // 0.2.5 WP9: 30s of empty history is normal while a job waits in a busy
-      // GPU queue. Only declare prompts lost when /queue no longer knows them.
-      if (consecutiveEmpty >= 12 && settled.size === 0) {
-        if (await this.isPromptStillQueued(client, pending)) {
-          deadline = Math.min(Date.now() + 24 * 60 * 60 * 1000, Date.now() + baseDeadline)
-          consecutiveEmpty = 0
-        } else {
+      pollCount += 1
+      const pendingNow = allIds.filter((p) => !settled.has(p))
+      if (!pendingNow.length) break
+      // 0.2.5 WP9: every 12 polls (~30s) ask /queue. Empty history is normal
+      // while a job waits behind other users; a non-empty history window does
+      // NOT prove our prompt is gone. Only "queue no longer knows it" is loss.
+      if (pollCount % 12 === 0) {
+        const queued = await this.probeQueue(client, pendingNow)
+        if (queued === true) {
+          // Still owned by ComfyUI — renew the absolute deadline.
+          deadline = Date.now() + baseDeadline
+        } else if (queued === false) {
           break
         }
+        // null = the probe itself failed. Absence of evidence is not evidence
+        // of loss; keep polling until the absolute deadline.
       }
       await new Promise((r) => setTimeout(r, 2500))
     }
@@ -796,15 +804,15 @@ export class BatchService extends EventEmitter {
 
   /**
    * 0.2.5 WP9: an empty /history window is not proof a prompt is lost while
-   * ComfyUI still reports it in /queue. A queue probe failure fails closed
-   * (treated as "not queued") so a broken endpoint cannot loop forever.
+   * ComfyUI still reports it in /queue. Returns `null` when the probe itself
+   * failed (unknown — not the same as "absent").
    */
-  private async isPromptStillQueued(client: ComfyApiClient, pending: string[]): Promise<boolean> {
-    let queue: { running: string[]; pending: string[] } = { running: [], pending: [] }
+  private async probeQueue(client: ComfyApiClient, pending: string[]): Promise<boolean | null> {
+    let queue: { running: string[]; pending: string[] }
     try {
       queue = await client.queueState()
     } catch {
-      return false
+      return null
     }
     return pending.some((p) => queue.running.includes(p) || queue.pending.includes(p))
   }
@@ -828,13 +836,21 @@ export class BatchService extends EventEmitter {
     const candidate = join(base, sub, basename(out.filename))
     const abs = resolveInsideAnyRoot(candidate, [base])
     if (!abs) return null
-    if (!existsSync(abs)) {
-      // History referenced a file that is not on disk — log it so the gap is
-      // visible, and do NOT count it as a produced image.
-      console.warn(`[batch] history output file missing: ${abs}`)
+    // A lexical check cannot see a symlinked subfolder. History output is
+    // untrusted (a malicious/buggy server can return any subfolder), so the
+    // existing file must resolve inside the real output root as well.
+    const real = realpathUnderAnyRoot(abs, [base])
+    if (!real) {
+      console.warn(`[batch] history output escapes the output root: ${abs}`)
       return null
     }
-    return abs
+    if (!existsSync(real)) {
+      // History referenced a file that is not on disk — log it so the gap is
+      // visible, and do NOT count it as a produced image.
+      console.warn(`[batch] history output file missing: ${real}`)
+      return null
+    }
+    return real
   }
 
   private indexPromptOutput(abs: string, job: BatchJob, promptId: string): void {
