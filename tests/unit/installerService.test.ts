@@ -1051,3 +1051,391 @@ describe('installer service internals', () => {
     rmSync(root, { recursive: true, force: true })
   })
 })
+
+// =====================================================================
+// Edge branches: URL/branch validation, user-data protection, venv archive,
+// progress helpers, exec reset/cancel guards and torch verification.
+// =====================================================================
+/* eslint-disable @typescript-eslint/no-explicit-any */
+describe('installer edge branches', () => {
+  it('validates git URLs and branches exhaustively', async () => {
+    const { assertSafeGitUrl, assertSafeBranch, buildGitCloneArgs } =
+      await import('../../src/main/services/installer')
+    for (const bad of [
+      '',
+      '   ',
+      '-oProxyCommand=x',
+      'ext::sh -c evil',
+      'ftp://github.com/a/b.git',
+      'file:///etc/passwd',
+      'https://-bad.example/a',
+      'https://user@/a',
+      'git@-host:org/repo.git',
+      'ssh://ho st/x'
+    ]) {
+      expect(() => assertSafeGitUrl(bad), bad).toThrow()
+    }
+    for (const ok of [
+      'https://github.com/a/b.git',
+      'http://github.com/a/b.git',
+      'ssh://git@github.com/a/b.git',
+      'git@github.com:org/repo.git'
+    ]) {
+      expect(assertSafeGitUrl(ok), ok).toBe(ok)
+    }
+
+    expect(assertSafeBranch('')).toBe('')
+    expect(assertSafeBranch('  main  ')).toBe('main')
+    expect(assertSafeBranch('release/0.2')).toBe('release/0.2')
+    for (const bad of ['-main', 'a..b', 'a b', 'a~1', 'a^b', 'a:b']) {
+      expect(() => assertSafeBranch(bad), bad).toThrow()
+    }
+
+    const withBranch = buildGitCloneArgs('https://github.com/a/b.git', 'D:/dest', 'dev')
+    expect(withBranch).toContain('--branch')
+    expect(withBranch).toContain('dev')
+    const withoutBranch = buildGitCloneArgs('https://github.com/a/b.git', 'D:/dest')
+    expect(withoutBranch).not.toContain('--branch')
+  })
+
+  it('resolves torch channels for every platform and mirror shape', async () => {
+    const {
+      resolveTorchIndex,
+      officialTorchIndex,
+      expectedCudaForChannel,
+      expectedAcceleratorForChannel
+    } = await import('../../src/main/services/installer')
+    const { saveSettings } = await import('../../src/main/services/db')
+    saveSettings({ torchIndexMirror: '' })
+    expect(resolveTorchIndex('cu124' as never)).toContain('cu126')
+    stubPlatform('win32')
+    expect(resolveTorchIndex('rocm')).toContain('rocm10.0')
+    stubPlatform('linux')
+    expect(resolveTorchIndex('rocm')).toContain('rocm7.2')
+    expect(resolveTorchIndex('bogus' as never)).toBe(officialTorchIndex('cpu'))
+
+    saveSettings({ torchIndexMirror: 'https://mirror.example/whl' })
+    expect(resolveTorchIndex('cu126')).toBe('https://mirror.example/whl/cu126/')
+    saveSettings({ torchIndexMirror: 'https://mirror.example' })
+    expect(resolveTorchIndex('cu130')).toBe('https://mirror.example/cu130/')
+    saveSettings({ torchIndexMirror: 'https://download.pytorch.org/whl' })
+    expect(resolveTorchIndex('cu126')).toBe('https://download.pytorch.org/whl/cu126/')
+    saveSettings({ torchIndexMirror: 'https://mirror.example/' })
+    expect(resolveTorchIndex('cpu').endsWith('/')).toBe(true)
+    saveSettings({ torchIndexMirror: '' })
+
+    expect(expectedCudaForChannel('cu126')).toBe('12.6')
+    expect(expectedCudaForChannel('cu130')).toBe('13.0')
+    expect(expectedCudaForChannel('cpu')).toBeNull()
+    expect(expectedAcceleratorForChannel('cu126')).toBe('cuda')
+    expect(expectedAcceleratorForChannel('cu130')).toBe('cuda')
+    expect(expectedAcceleratorForChannel('rocm')).toBe('hip')
+    expect(expectedAcceleratorForChannel('rocm7.2')).toBe('hip')
+    expect(expectedAcceleratorForChannel('rocm10.0')).toBe('hip')
+    expect(expectedAcceleratorForChannel('xpu')).toBe('xpu')
+    expect(expectedAcceleratorForChannel('mps')).toBe('mps')
+    expect(expectedAcceleratorForChannel('cpu')).toBe('cpu')
+  })
+
+  it('protects user data and archives it before replacing ComfyUI', async () => {
+    const {
+      userDataDirsIn,
+      canDeleteComfyDebris,
+      disposeExistingComfyDir,
+      restorePreciousFromArchive
+    } = await import('../../src/main/services/installer')
+    const base = mkdtempSync(join(tmpdir(), 'cp-userdata-'))
+    const comfy = join(base, 'ComfyUI')
+    mkdirSync(join(comfy, 'models'), { recursive: true })
+    expect(userDataDirsIn(comfy)).toEqual([])
+    writeFileSync(join(comfy, 'models', 'x.bin'), '')
+    mkdirSync(join(comfy, 'custom_nodes-backup'), { recursive: true })
+    writeFileSync(join(comfy, 'custom_nodes-backup', 'n.py'), '')
+    expect(userDataDirsIn(comfy).sort()).toEqual(['custom_nodes-backup', 'models'])
+    expect(userDataDirsIn(join(base, 'missing'))).toEqual(['<unreadable>'])
+    // A plain file with a user-data name is precious too (readdir throws).
+    const fileModel = join(base, 'file-model')
+    mkdirSync(fileModel)
+    writeFileSync(join(fileModel, 'models'), 'not a dir')
+    expect(userDataDirsIn(fileModel)).toEqual(['models'])
+    expect(canDeleteComfyDebris(comfy, base)).toBe(false)
+
+    const clean = join(base, 'clean')
+    mkdirSync(clean)
+    writeFileSync(join(clean, 'main.py'), '')
+    expect(canDeleteComfyDebris(clean, join(base, 'no-marker'))).toBe(true)
+    writeFileSync(join(clean, 'notes.txt'), '')
+    expect(canDeleteComfyDebris(clean, join(base, 'no-marker'))).toBe(false)
+    writeFileSync(join(base, '.comfypilot-env.json'), '{}')
+    expect(canDeleteComfyDebris(clean, base)).toBe(true)
+
+    const precious = join(base, 'precious')
+    mkdirSync(join(precious, 'models'), { recursive: true })
+    writeFileSync(join(precious, 'models', 'keep.bin'), 'keep')
+    const disposed = disposeExistingComfyDir(precious, base)
+    expect(disposed.action).toBe('archived')
+    expect(disposed.precious).toEqual(['models'])
+    expect(existsSync(precious)).toBe(false)
+    const dest = join(base, 'restored')
+    mkdirSync(dest)
+    expect(restorePreciousFromArchive(disposed.archivePath!, dest, ['models', 'missing'])).toBe(1)
+    expect(existsSync(join(dest, 'models', 'keep.bin'))).toBe(true)
+
+    const debris = join(base, 'debris')
+    mkdirSync(debris)
+    writeFileSync(join(debris, 'main.py'), '')
+    expect(disposeExistingComfyDir(debris, base).action).toBe('deleted')
+
+    const foreign = join(base, 'foreign')
+    mkdirSync(foreign)
+    writeFileSync(join(foreign, 'notes.txt'), '')
+    expect(() => disposeExistingComfyDir(foreign, join(base, 'other-root'))).toThrow(
+      /Refusing to delete/
+    )
+  })
+
+  it('archives and restores incompatible venvs, including failure paths', async () => {
+    const { archiveIncompatibleVenv, restoreArchivedVenv, probeVenvPython } =
+      await import('../../src/main/services/installer')
+    const base = mkdtempSync(join(tmpdir(), 'cp-venv-extra-'))
+    const pyIn = (v: string): string =>
+      process.platform === 'win32' ? join(v, 'Scripts', 'python.exe') : join(v, 'bin', 'python')
+
+    expect(await archiveIncompatibleVenv(join(base, 'none'), async () => '')).toBeUndefined()
+
+    const emptyVenv = join(base, 'empty-venv')
+    mkdirSync(emptyVenv)
+    const emptyArchived = await archiveIncompatibleVenv(emptyVenv, async () => {
+      throw new Error('probe failed')
+    })
+    expect(emptyArchived?.version).toBe('')
+    expect(existsSync(emptyVenv)).toBe(false)
+    expect(restoreArchivedVenv(emptyVenv, emptyArchived)).toBe(true)
+
+    const venv = join(base, 'venv')
+    mkdirSync(dirname(pyIn(venv)), { recursive: true })
+    writeFileSync(pyIn(venv), '')
+    const archived = await archiveIncompatibleVenv(venv, async () => 'Python 3.13.2', 'stamp')
+    expect(archived).toBeUndefined()
+    expect(existsSync(venv)).toBe(true)
+
+    // A pre-existing archive path makes rename fail loudly instead of deleting.
+    const blocked = join(base, 'blocked')
+    mkdirSync(dirname(pyIn(blocked)), { recursive: true })
+    writeFileSync(pyIn(blocked), '')
+    const archiveTarget = `${blocked}.pre-recreate-stamp2`
+    mkdirSync(archiveTarget)
+    writeFileSync(join(archiveTarget, 'occupied'), '')
+    await expect(
+      archiveIncompatibleVenv(blocked, async () => 'Python 3.12.1', 'stamp2')
+    ).rejects.toThrow(/Could not archive/)
+
+    expect(restoreArchivedVenv(base, undefined)).toBe(false)
+    expect(restoreArchivedVenv(join(base, 'none'), { path: join(base, 'gone'), version: '' })).toBe(
+      false
+    )
+    const existing = join(base, 'existing')
+    mkdirSync(dirname(pyIn(existing)), { recursive: true })
+    writeFileSync(pyIn(existing), '')
+    expect(restoreArchivedVenv(existing, emptyArchived)).toBe(false)
+
+    h.execImpl = (_cmd, _args, _opts, cb) => {
+      queueMicrotask(() => cb(new Error('no python'), '', ''))
+      return { pid: 1, exitCode: null, kill: () => undefined }
+    }
+    expect(await probeVenvPython('missing-python')).toBe('')
+    h.execImpl = (_cmd, _args, _opts, cb) => {
+      queueMicrotask(() => cb(null, 'Python 3.13.2', ''))
+      return { pid: 1, exitCode: null, kill: () => undefined }
+    }
+    expect(await probeVenvPython('python')).toContain('3.13')
+  })
+
+  it('updates installer progress snapshots, trims logs and tolerates missing steps', async () => {
+    const { installerService } = await import('../../src/main/services/installer')
+    const svc = installerService as any
+    const step = { id: 'bootstrap', title: 'B', status: 'running', detail: '', log: [] as string[] }
+    svc.progress = {
+      runId: 'r',
+      step: 'bootstrap',
+      status: 'running',
+      steps: [step],
+      message: '',
+      percent: 0
+    }
+    svc.setStep('bootstrap', 'done', 'detail', 'line', 'stepMsg.bootstrapRun', { a: 1 })
+    expect(step.detail).toBe('detail')
+    expect((step as any).detailKey).toBe('stepMsg.bootstrapRun')
+    svc.setStep('missing', 'done')
+    svc.setStep('bootstrap', 'done', null)
+    for (let i = 0; i < 405; i++) svc.log('bootstrap', `l-${i}`)
+    expect(step.log.length).toBe(400)
+    svc.log('missing', 'ignored')
+    svc.setBytes({ receivedBytes: 1, totalBytes: 2, speedBps: 0, label: 'x' })
+    svc.setBytes(undefined)
+    svc.emitProgress()
+    svc.progress = null
+    svc.setStep('bootstrap', 'done')
+    svc.log('bootstrap', 'x')
+    svc.setBytes()
+    svc.emitProgress()
+  })
+
+  it('refuses reset while children are active and guards stale exec runs', async () => {
+    const { installerService } = await import('../../src/main/services/installer')
+    const svc = installerService as any
+    svc.childrenByRun.set({}, new Set([{ pid: 1 }]))
+    expect(() => svc.reset()).toThrow(/still running/)
+    svc.childrenByRun.clear()
+
+    svc.runEpoch = 0
+    svc.cancelledEpoch = -1
+    const token = {}
+    svc.runToken = token
+    h.execImpl = (_cmd, _args, _opts, cb) => {
+      svc.runToken = {}
+      queueMicrotask(() => cb(null, '', ''))
+      return { pid: 1, exitCode: null, kill: () => undefined }
+    }
+    await expect(svc.run('git', ['status'])).rejects.toThrow(/Installation reset/)
+
+    const token2 = {}
+    svc.runToken = token2
+    svc.cancelledEpoch = -1
+    h.execImpl = (_cmd, _args, _opts, cb) => {
+      svc.cancelledEpoch = svc.runEpoch
+      queueMicrotask(() => cb(null, '', ''))
+      return { pid: 1, exitCode: null, kill: () => undefined }
+    }
+    await expect(svc.run('git', ['status'])).rejects.toThrow(/Installation cancelled/)
+    svc.cancelledEpoch = -1
+    svc.runToken = null
+
+    svc.resolvePython = svc.resolvePython.bind(svc)
+    expect(svc.resolvePython({ pythonPath: '   ' })).toBe('python')
+    expect(svc.resolvePython({ pythonPath: '  C:/py/python.exe ' })).toBe('C:/py/python.exe')
+  })
+
+  it('verifies torch builds for cuda, rocm, xpu, mps and cpu', async () => {
+    const { installerService } = await import('../../src/main/services/installer')
+    const svc = installerService as any
+    const progress = () => {
+      svc.progress = {
+        runId: 'r',
+        step: 'torch',
+        status: 'running',
+        steps: [{ id: 'torch', title: 'T', status: 'running', detail: '', log: [] }],
+        message: '',
+        percent: 0
+      }
+    }
+    const verify = async (out: string, channel: string): Promise<void> => {
+      progress()
+      h.execImpl = (_cmd, _args, _opts, cb) => {
+        queueMicrotask(() => cb(null, out, ''))
+        return { pid: 1, exitCode: null, kill: () => undefined }
+      }
+      try {
+        await svc.verifyTorchChannel('py', channel)
+      } finally {
+        svc.progress = null
+      }
+    }
+
+    await expect(
+      verify('{"cuda":null,"hip":null,"torch":"2.9.0+cpu"}', 'cpu')
+    ).resolves.toBeUndefined()
+    await expect(verify('{"cuda":"12.6","torch":"2.9.0"}', 'cpu')).rejects.toThrow(/CPU-only/)
+    await expect(verify('{"cuda":"12.6","torch":"2.9.0"}', 'cu126')).resolves.toBeUndefined()
+    await expect(verify('{"cuda":"13.0","torch":"2.9.0"}', 'cu130')).resolves.toBeUndefined()
+    await expect(verify('{"cuda":"12.8","torch":"2.9.0"}', 'cu126')).rejects.toThrow(
+      /channel mismatch/
+    )
+    await expect(verify('{"hip":"6.2","torch":"2.9.0"}', 'rocm7.2')).resolves.toBeUndefined()
+    await expect(verify('{"hip":null,"torch":"2.9.0"}', 'rocm7.2')).rejects.toThrow(
+      /no HIP runtime/
+    )
+    await expect(verify('{"xpu":true,"torch":"2.9.0"}', 'xpu')).resolves.toBeUndefined()
+    await expect(verify('{"xpu":false,"torch":"2.9.0"}', 'xpu')).rejects.toThrow(/XPU/)
+    await expect(verify('{"mps":true,"torch":"2.9.0"}', 'mps')).resolves.toBeUndefined()
+    await expect(verify('{"mps":false,"torch":"2.9.0"}', 'mps')).rejects.toThrow(/MPS/)
+    await expect(verify('{"cuda":null,"torch":"2.6.0+cpu"}', 'cpu')).rejects.toThrow(
+      /below ComfyUI's minimum/
+    )
+    await expect(verify('', 'cpu')).rejects.toThrow(/below ComfyUI's minimum/)
+    await expect(verify('not json', 'cpu')).rejects.toThrow(/Could not read torch/)
+
+    progress()
+    h.execImpl = (_cmd, _args, _opts, cb) => {
+      queueMicrotask(() => cb(new Error('import failed'), '', ''))
+      return { pid: 1, exitCode: null, kill: () => undefined }
+    }
+    await expect(svc.verifyTorchChannel('py', 'cpu')).rejects.toThrow(/torch import failed/)
+    svc.progress = null
+  })
+
+  it('maps cu124 to cu126 and rejects invalid plans before starting', async () => {
+    const { installerService } = await import('../../src/main/services/installer')
+    const svc = installerService as any
+    const captured: any[] = []
+    const original = svc.runPlan
+    svc.runPlan = async (p: any) => {
+      captured.push(p)
+    }
+    try {
+      await svc.start({
+        installRoot: join(ROOT, 'cu124-plan'),
+        instanceName: 'Mapped',
+        torchChannel: 'cu124'
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      expect(captured[0].torchChannel).toBe('cu126')
+    } finally {
+      svc.runPlan = original
+      svc.running = false
+      svc.runToken = null
+    }
+
+    await expect(svc.start({ installRoot: '' } as never)).rejects.toThrow(/Invalid install root/)
+    await expect(svc.start({ installRoot: ROOT + '/../x' } as never)).rejects.toThrow(
+      /Invalid install root/
+    )
+    svc.running = true
+    try {
+      await expect(svc.start({ installRoot: join(ROOT, 'busy') } as never)).rejects.toThrow(
+        /already running/
+      )
+    } finally {
+      svc.running = false
+    }
+  })
+
+  it('reports python 3.12/3.14 detail variants and a custom torch disk estimate', async () => {
+    const { installerService } = await import('../../src/main/services/installer')
+    const setVersion = (out: string): void => {
+      h.execImpl = (_cmd, args, _opts, cb) => {
+        if (args[0] === '--version') queueMicrotask(() => cb(null, out, ''))
+        else queueMicrotask(() => cb(null, 'ok', ''))
+        return { pid: 1, exitCode: null, kill: () => undefined }
+      }
+    }
+    const root = join(ROOT, 'preflight-detail')
+    mkdirSync(root, { recursive: true })
+
+    setVersion('Python 3.12.10')
+    let res = await installerService.preflight({ installRoot: root, useUv: false })
+    expect(res.checks.find((c) => c.id === 'python')?.detail).toContain('3.12 is the official')
+
+    setVersion('Python 3.14.0')
+    res = await installerService.preflight({ installRoot: root, useUv: false })
+    expect(res.checks.find((c) => c.id === 'python')?.detail).toContain('3.14+ has torch wheels')
+
+    setVersion('Python 3.13.1')
+    res = await installerService.preflight({
+      installRoot: root,
+      useUv: false,
+      torchChannel: 'cu130'
+    } as never)
+    expect(res.diskNeedGb).toBeGreaterThan(4)
+  })
+})

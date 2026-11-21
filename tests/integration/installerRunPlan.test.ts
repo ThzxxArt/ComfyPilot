@@ -46,6 +46,8 @@ const h = vi.hoisted(() => ({
   desktopImpl: null as null | ((opts: unknown) => Promise<string>),
   instanceStartImpl: null as null | ((id: string) => Promise<void>),
   fetchImpl: null as null | (() => Promise<Response>),
+  modelDownloadImpl: null as null | ((opts: unknown) => Promise<unknown>),
+  modelDownloads: [] as unknown[],
   reset(): void {
     this.execCalls = []
     this.execImpl = null
@@ -55,6 +57,8 @@ const h = vi.hoisted(() => ({
     this.desktopImpl = null
     this.instanceStartImpl = null
     this.fetchImpl = null
+    this.modelDownloadImpl = null
+    this.modelDownloads = []
     this.bootstrap = {
       runtimesDir: 'rt',
       pythonPath: 'C:/portable/python.exe',
@@ -190,6 +194,16 @@ vi.mock('../../src/main/services/instance', () => ({
     start: (id: string) => {
       if (h.instanceStartImpl) return h.instanceStartImpl(id)
       return Promise.resolve(undefined)
+    }
+  }
+}))
+
+vi.mock('../../src/main/services/model', () => ({
+  modelService: {
+    download: (opts: unknown) => {
+      h.modelDownloads.push(opts)
+      if (h.modelDownloadImpl) return h.modelDownloadImpl(opts)
+      return Promise.resolve({ ok: true })
     }
   }
 }))
@@ -721,7 +735,7 @@ describe('installer runPlan (integration)', () => {
     const reused = cfgs.find((c) => c.id === 'same-path-inst')
     // At minimum the original entry must keep its port and there must be no
     // silent double-register of the same path under a second id.
-    const samePathCount = cfgs.filter((c) => /ComfyUI$/i.test(c.path)).length
+    const samePathCount = cfgs.filter((c) => c.path === comfyDir).length
     expect(samePathCount).toBeLessThanOrEqual(2)
     if (reused) {
       expect(reused.port).toBe(8199)
@@ -729,5 +743,101 @@ describe('installer runPlan (integration)', () => {
       // is acceptable as long as the port was not silently reassigned.
       expect(['TestUI', 'Old']).toContain(reused.name)
     }
+  })
+
+  it('registers a brand-new instance with defaults and an unclaimed port', async () => {
+    const root = join(ROOT, `brand-new-${Date.now()}`)
+    const svc = await freshService()
+    await svc.start(plan({ installRoot: root, instanceName: '' }))
+    const p = await waitStatus(svc, (s) => s.status === 'done' || s.status === 'failed')
+    expect(p.status).toBe('done')
+    expect(p.instanceId).toBeTruthy()
+    const { loadInstanceConfigs } = await import('../../src/main/services/db')
+    const cfg = loadInstanceConfigs().find((c) => c.id === p.instanceId)!
+    expect(cfg.name).toBe('ComfyUI')
+    expect(cfg.port).toBeGreaterThan(0)
+    expect(cfg.listen).toBe('127.0.0.1')
+    expect(cfg.extraArgs).toEqual([])
+    expect(cfg.argTemplateId).toBe('default')
+    expect(cfg.notes).toContain('Created by ComfyPilot')
+    expect(cfg.autoStart).toBe(false)
+    expect(cfg.frontendVersion).toBe('')
+    expect(cfg.updateChannel).toBe('stable')
+  })
+
+  it('fullAuto downloads the recommended starter and tolerates a failure', async () => {
+    let svc = await freshService()
+    await svc.start(
+      plan({ installRoot: join(ROOT, 'fullauto-ok'), fullAuto: true, skipStarter: false })
+    )
+    let p = await waitStatus(svc, (s) => s.status === 'done' || s.status === 'failed')
+    expect(p.status).toBe('done')
+    expect(p.steps.find((s) => s.id === 'starter')!.log.join('\n')).toContain(
+      'Starter download started'
+    )
+    expect(h.modelDownloads.length).toBeGreaterThan(0)
+
+    h.modelDownloadImpl = async () => {
+      throw new Error('offline')
+    }
+    svc = await freshService()
+    await svc.start(
+      plan({ installRoot: join(ROOT, 'fullauto-fail'), fullAuto: true, skipStarter: false })
+    )
+    p = await waitStatus(svc, (s) => s.status === 'done' || s.status === 'failed')
+    expect(p.status).toBe('done')
+    expect(p.steps.find((s) => s.id === 'starter')!.log.join('\n')).toContain(
+      'Starter auto-download failed: offline'
+    )
+  })
+
+  it('buffers a response without a readable body and throttles chunk progress', async () => {
+    let svc = await freshService()
+    h.fetchImpl = async () =>
+      ({
+        ok: true,
+        status: 200,
+        headers: { get: () => '' },
+        arrayBuffer: async () => Buffer.from('zip')
+      }) as unknown as Response
+    await svc.start(plan({ installRoot: join(ROOT, 'no-reader') }))
+    let p = await waitStatus(svc, (s) => s.status === 'done' || s.status === 'failed')
+    expect(p.status).toBe('done')
+
+    h.fetchImpl = async () => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array([1]))
+          controller.enqueue(new Uint8Array([2]))
+          controller.close()
+        }
+      })
+      return new Response(stream, { status: 200 })
+    }
+    svc = await freshService()
+    await svc.start(plan({ installRoot: join(ROOT, 'chunked') }))
+    p = await waitStatus(svc, (s) => s.status === 'done' || s.status === 'failed')
+    expect(p.status).toBe('done')
+  })
+
+  it('aborts an in-flight archive download on cancel', async () => {
+    h.fetchImpl = ((_url: string, init?: { signal?: AbortSignal }) =>
+      new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal
+        const onAbort = (): void => reject(new Error('aborted'))
+        if (signal) {
+          if (signal.aborted) onAbort()
+          else signal.addEventListener('abort', onAbort)
+        }
+      })) as never
+    const svc = await freshService()
+    await svc.start(plan({ installRoot: join(ROOT, 'cancel-fetch') }))
+    await waitStatus(
+      svc,
+      (s) => s.steps.find((step) => step.id === 'comfyui')?.status === 'running'
+    )
+    svc.cancel()
+    const p = await waitStatus(svc, (s) => s.status === 'cancelled' || s.status === 'failed', 8000)
+    expect(p.status).toBe('cancelled')
   })
 })
