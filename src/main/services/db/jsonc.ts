@@ -26,13 +26,17 @@ import { fromV2, toV2 } from './schema'
 
 /** Parse JSONC: strip // and /* *\/ comments outside strings, allow trailing commas. */
 export function parseJsonc<T>(text: string): T {
+  // Windows editors (Notepad, some PowerShell/cmd redirection) commonly write a
+  // UTF-8 BOM. JSON.parse rejects it, which used to rename a perfectly valid
+  // data file to `.bad-*` and leave the app empty. Strip exactly one leading BOM.
+  const src = String(text ?? '').replace(/^\uFEFF/, '')
   let out = ''
   let inStr = false
   let inLine = false
   let inBlock = false
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i]
-    const next = text[i + 1]
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i]
+    const next = src[i + 1]
     if (inLine) {
       if (c === '\n') {
         inLine = false

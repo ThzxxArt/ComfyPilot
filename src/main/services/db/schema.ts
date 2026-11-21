@@ -21,7 +21,9 @@ export function toV2(value: unknown): unknown {
     return { schemaVersion: DATA_SCHEMA_VERSION, items: value }
   }
   if (value && typeof value === 'object') {
-    return { schemaVersion: DATA_SCHEMA_VERSION, ...(value as Record<string, unknown>) }
+    // The envelope version is authoritative: a legacy object may still carry
+    // its own `schemaVersion: 1`, and spreading it last used to write v1 back.
+    return { ...(value as Record<string, unknown>), schemaVersion: DATA_SCHEMA_VERSION }
   }
   return { schemaVersion: DATA_SCHEMA_VERSION, value }
 }

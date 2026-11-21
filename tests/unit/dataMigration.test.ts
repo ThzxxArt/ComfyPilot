@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -63,6 +63,36 @@ describe('JSONC v1 -> v2 migration (0.2.0 one-way)', () => {
     })
     expect(db.loadSettings().locale).toBe('en-US')
     expect(db.loadInstanceConfigs()).toHaveLength(1)
+  })
+
+  it('reads a BOM-prefixed v2 file instead of renaming it .bad (0.2.5 WP8)', async () => {
+    const data = join(h.root, 'data')
+    const path = join(data, 'settings.jsonc')
+    writeFileSync(
+      path,
+      '\uFEFF{\n  // Windows editors may add a BOM\n  "schemaVersion": 2,\n  "locale": "en-US",\n}'
+    )
+    const db = await import('../../src/main/services/db')
+    expect(db.loadSettings().locale).toBe('en-US')
+    const names = readdirSync(data)
+    expect(names.some((n) => n.includes('.bad-'))).toBe(false)
+    expect(existsSync(path)).toBe(true)
+  })
+
+  it('migrates a legacy object whose own schemaVersion says 1', async () => {
+    const data = join(h.root, 'data')
+    writeFileSync(
+      join(data, 'settings.jsonc'),
+      JSON.stringify({ schemaVersion: 1, locale: 'en-US', securityLevel: 'normal' })
+    )
+    const db = await import('../../src/main/services/db')
+    expect(db.migrateData().ok).toBe(true)
+    // toV2 must not let the legacy `schemaVersion` overwrite the new envelope.
+    expect(db.loadSettings().locale).toBe('en-US')
+    const stored = JSON.parse(readFileSync(join(data, 'settings.jsonc'), 'utf-8')) as {
+      schemaVersion: number
+    }
+    expect(stored.schemaVersion).toBe(2)
   })
 
   it('rejects a v1 file that appears after the migration', async () => {
