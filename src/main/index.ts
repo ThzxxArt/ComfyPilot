@@ -677,6 +677,10 @@ app.whenReady().then(async () => {
       wc.once('did-finish-load', startProbe)
       // The event may have fired before this block was reached.
       if (!wc.isLoadingMainFrame()) startProbe()
+      // Windows CI occasionally reports isLoadingMainFrame()=true after the
+      // load event already fired; starting again is idempotent and prevents
+      // the smoke test from waiting for the 20s fallback.
+      setTimeout(() => startProbe(), 500)
     }
     // Last-resort exit; never races a probe that is already running.
     setTimeout(() => {

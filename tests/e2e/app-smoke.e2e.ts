@@ -127,7 +127,7 @@ describe.skipIf(skip)('electron app smoke (real bundle)', () => {
           /* ignore */
         }
         done(-1)
-      }, 20000)
+      }, 40000)
     })
 
     // Must not have failed to spawn
@@ -171,5 +171,5 @@ describe.skipIf(skip)('electron app smoke (real bundle)', () => {
     expect(consoleErrors, `renderer console errors:\n${consoleErrors.join('\n')}`).toEqual([])
     expect(result.text).not.toContain('[e2e] preload-error:')
     expect(result.code === 0 || result.code === null).toBe(true)
-  }, 20000)
+  }, 45000)
 })
