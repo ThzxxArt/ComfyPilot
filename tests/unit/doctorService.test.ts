@@ -730,3 +730,126 @@ describe('DoctorService (0.1.10 behaviour)', () => {
     expect(r.message).toContain('pip is not available')
   })
 })
+
+describe('DoctorService edge branches', () => {
+  it('rejects an unknown instance id loudly', async () => {
+    h.state.instances = []
+    const svc = await freshDoctor()
+    await expect(svc.run(undefined as never)).rejects.toThrow(/Instance not found/)
+    await expect(svc.run('missing')).rejects.toThrow(/Instance not found/)
+  })
+
+  it('reports empty instance paths and broken installs', async () => {
+    h.state.instances = [{ id: 'inst-1', name: 'Empty', path: '', venvPath: '' }]
+    let svc = await freshDoctor()
+    let report = await svc.run('inst-1')
+    let byId = new Map(report.checks.map((c: any) => [c.id, c]))
+    expect(byId.get('install-path')?.severity).toBe('warn')
+    expect(byId.get('install-path')?.detail).toContain('No instance path')
+
+    const broken = join(h.state.root, 'broken-install')
+    mkdirSync(broken, { recursive: true })
+    h.state.instances = [{ id: 'inst-1', name: 'Broken', path: broken, venvPath: '' }]
+    svc = await freshDoctor()
+    report = await svc.run('inst-1')
+    byId = new Map(report.checks.map((c: any) => [c.id, c]))
+    expect(byId.get('install-path')?.severity).toBe('fail')
+    expect(byId.get('install-path')?.detail).toContain('main.py missing')
+  })
+
+  it('flags Python 3.12 with a migration fix and 3.14 without one', async () => {
+    const dir = seedMinimalInstall('py312')
+    const venv = join(dir, '.venv')
+    h.state.instances[0].venvPath = venv
+    mkdirSync(venv, { recursive: true })
+    writeFileSync(join(venv, 'pyvenv.cfg'), 'version_info = 3.12.10\nhome = C:/Python312\n')
+    h.state.execHandler = (cmd, args) => {
+      if (args[0] === '--version') return { stdout: 'Python 3.12.10' }
+      return defaultExec(cmd, args)
+    }
+    let svc = await freshDoctor()
+    let report = await svc.run('inst-1')
+    let byId = new Map(report.checks.map((c: any) => [c.id, c]))
+    expect(byId.get('python')?.fixId).toBe('migrate-python-313')
+    expect(byId.get('python')?.fixable).toBe(true)
+    expect(byId.get('python')?.suggestion).toMatch(/official fallback/)
+    expect(byId.get('venv')?.severity).toBe('fail')
+    expect(byId.get('venv')?.fixId).toBe('migrate-python-313')
+
+    writeFileSync(join(venv, 'pyvenv.cfg'), 'version = 3.14.0\n')
+    h.state.execHandler = (cmd, args) => {
+      if (args[0] === '--version') return { stdout: 'Python 3.14.0' }
+      return defaultExec(cmd, args)
+    }
+    svc = await freshDoctor()
+    report = await svc.run('inst-1')
+    byId = new Map(report.checks.map((c: any) => [c.id, c]))
+    expect(byId.get('python')?.fixId).toBeUndefined()
+    expect(byId.get('python')?.suggestion).toMatch(/3\.14/)
+  })
+
+  it('classifies torch import failures, old torch and CUDA-unavailable builds', async () => {
+    seedMinimalInstall('torch-cases')
+    const runTorch = async (out: string): Promise<Map<string, any>> => {
+      h.state.execHandler = (cmd, args) => {
+        if (args[0] === '-c' && String(args[1]).includes('torch')) return { stdout: out }
+        return defaultExec(cmd, args)
+      }
+      const svc = await freshDoctor()
+      const report = await svc.run('inst-1')
+      return new Map(report.checks.map((c: any) => [c.id, c]))
+    }
+    let byId = await runTorch('Traceback: boom')
+    expect(byId.get('torch')?.severity).toBe('fail')
+    expect(byId.get('torch')?.detail).toContain('Traceback')
+
+    byId = await runTorch('2.6.0+cu126 12.6 True')
+    expect(byId.get('torch')?.severity).toBe('fail')
+    expect(byId.get('torch')?.suggestion).toMatch(/below ComfyUI's minimum/)
+
+    byId = await runTorch('2.9.0+cu126 12.6 False')
+    expect(byId.get('torch')?.severity).toBe('warn')
+    expect(byId.get('torch')?.suggestion).toMatch(/cuda.is_available\(\) is False/)
+
+    byId = await runTorch('2.9.0+cpu none False')
+    expect(byId.get('torch')?.suggestion).toMatch(/CPU-only torch build/)
+
+    byId = await runTorch('2.9.0+cu130 13.0 True')
+    expect(byId.get('torch')?.severity).toBe('pass')
+  })
+
+  it('reports offline registry info and a busy owned port', async () => {
+    seedMinimalInstall('offline')
+    h.state.settings = {
+      networkMode: 'offline',
+      modelScanRoots: [],
+      securityLevel: 'normal'
+    }
+    h.state.proxyOk = false
+    h.state.portBusy = true
+    const svc = await freshDoctor()
+    const report = await svc.run('inst-1')
+    const byId = new Map(report.checks.map((c: any) => [c.id, c]))
+    expect(byId.get('registry')?.severity).toBe('info')
+    expect(byId.get('registry')?.detail).toMatch(/Offline mode/)
+    expect(byId.get('port')?.severity).toBeDefined()
+  })
+
+  it('warns for broken extra_model_paths entries and accepts a valid one', async () => {
+    const dir = seedMinimalInstall('emp')
+    writeFileSync(join(dir, 'extra_model_paths.yaml'), 'x')
+    const broken = join(dir, 'missing-models')
+    h.state.empPaths = [broken, join(dir, 'models')] as never
+    let svc = await freshDoctor()
+    let report = await svc.run('inst-1')
+    let check = report.checks.find((c: any) => c.id === 'extra-paths') as any
+    expect(check?.severity).toBe('warn')
+    expect(check?.detail).toMatch(/Broken paths/)
+
+    h.state.empPaths = [join(dir, 'models')] as never
+    svc = await freshDoctor()
+    report = await svc.run('inst-1')
+    check = report.checks.find((c: any) => c.id === 'extra-paths') as any
+    expect(check?.severity).toBe('pass')
+  })
+})

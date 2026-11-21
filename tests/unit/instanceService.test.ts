@@ -2916,3 +2916,45 @@ describe('lifecycle root-cause fixes (0.2.5 WP0)', () => {
     expect(port).toBe(8190)
   })
 })
+
+// ===========================================================================
+// Port suggestion edge branches (0.2.5 WP0)
+// ===========================================================================
+describe('port suggestion edge branches', () => {
+  it('falls back to the sequential range when every random candidate is busy', async () => {
+    const original = svc.checkPort.bind(svc)
+    ;(svc as any).checkPort = async (p: number) => ({ port: p, available: p >= 8193 && p < 8223 })
+    try {
+      const port = await svc.suggestPort()
+      expect(port).toBe(8193)
+    } finally {
+      ;(svc as any).checkPort = original
+    }
+  })
+
+  it('throws when no probed port is free', async () => {
+    const original = svc.checkPort.bind(svc)
+    ;(svc as any).checkPort = async (p: number) => ({ port: p, available: false })
+    try {
+      await expect(svc.suggestPort()).rejects.toThrow(/No free port/)
+      await expect(svc.pickEphemeralPort(8310)).rejects.toThrow(/No free port/)
+    } finally {
+      ;(svc as any).checkPort = original
+    }
+  })
+
+  it('picks a random ephemeral port and skips claimed/avoided candidates', async () => {
+    const original = svc.checkPort.bind(svc)
+    ;(svc as any).checkPort = async (p: number) => ({ port: p, available: true })
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0)
+    try {
+      expect(await svc.pickEphemeralPort(9999)).toBe(8310)
+      register(cfg({ id: 'claimed-ephemeral', port: 8310 }))
+      expect(await svc.pickEphemeralPort(9999)).toBe(8910)
+      expect(await svc.pickEphemeralPort(8310)).toBe(8910)
+    } finally {
+      random.mockRestore()
+      ;(svc as any).checkPort = original
+    }
+  })
+})
