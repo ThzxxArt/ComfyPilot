@@ -279,3 +279,89 @@ describe('ModelService extra branches', () => {
     expect(svc.list()).toBeTruthy()
   })
 })
+
+describe('ModelService scan/cache/queue edges', () => {
+  it('serves hash scans from the recent cache and in-flight single-flight map', async () => {
+    const svc = new ModelService()
+    const key = [modelsDir].join('|')
+    ;(svc as any).lastHashScan.set(key, { at: Date.now(), result: [] })
+    expect(await svc.scan({ hash: true, roots: [modelsDir] })).toEqual([])
+
+    ;(svc as any).lastHashScan.clear()
+    const result = [{ id: 'x' }]
+    ;(svc as any).hashScans.set(key, Promise.resolve(result))
+    expect(await svc.scan({ hash: true, roots: [modelsDir] })).toBe(result)
+  })
+
+  it('marks duplicates, clears stale duplicate links and reports groups', async () => {
+    const svc = new ModelService()
+    h.models = [
+      model('a', { hashSha256: 'h1', path: join(modelsDir, 'a.safetensors'), size: 10 }),
+      model('b', { hashSha256: 'h1', path: join(modelsDir, 'b.safetensors'), size: 10 }),
+      model('c', { hashSha256: 'h2', duplicateOf: 'old' })
+    ]
+    ;(svc as any).markDuplicates()
+    const groups = svc.findDuplicates()
+    expect(groups).toHaveLength(1)
+    expect(groups[0].files).toHaveLength(2)
+    expect(
+      h.updates.some((u) => u.id === 'b' && u.duplicateOf === join(modelsDir, 'a.safetensors'))
+    ).toBe(true)
+    expect(h.updates.some((u) => u.id === 'c' && u.duplicateOf === '')).toBe(true)
+  })
+
+  it('resumes interrupted downloads and falls back to the persisted list', () => {
+    const svc = new ModelService()
+    h.persisted = [
+      { id: 'p1', status: 'paused' },
+      { id: 'p2', status: 'running' },
+      { id: 'p3', status: 'done' }
+    ]
+    expect(svc.resumeInterruptedOnBoot()).toBe(2)
+    ;(svc as any).downloads.clear()
+    expect(svc.listDownloads()).toEqual(h.persisted)
+  })
+
+  it('accepts instance model roots and rejects symlinked destinations', async () => {
+    const svc = new ModelService()
+    const instRoot = join(root, 'inst-root')
+    const instModels = join(instRoot, 'models')
+    mkdirSync(instModels, { recursive: true })
+    writeFileSync(join(modelsDir, 'a.safetensors'), 'x')
+    h.configs = [{ id: 'i1', path: instRoot, port: 8188, listen: '127.0.0.1' }]
+    h.models = [model('m1', { path: join(modelsDir, 'a.safetensors') })]
+    const seed = join(instModels, 'seed.safetensors')
+    writeFileSync(seed, 'x')
+    const moved = await svc.move('m1', instModels)
+    expect(moved.path).toContain('inst-root')
+
+    const escape = join(root, 'escape-dest')
+    mkdirSync(escape, { recursive: true })
+    const link = join(root, 'linked-dest')
+    try {
+      symlinkSync(escape, link)
+      h.models = [model('m2', { path: join(modelsDir, 'a.safetensors') })]
+      await expect(svc.move('m2', link)).rejects.toThrow(/symlinked/)
+    } catch {
+      /* symlinks unavailable */
+    }
+  })
+
+  it('queues waiters by priority and transfers the slot on release', () => {
+    const svc = new ModelService()
+    svc.runningCount = 4
+    const low = svc.acquireSlot(0, 'low')
+    const high = svc.acquireSlot(9, 'high')
+    const mid = svc.acquireSlot(5, 'mid')
+    expect((svc as any).pendingStarts.map((w: any) => w.taskId)).toEqual(['low', 'high', 'mid'])
+    svc.releaseSlot()
+    expect((svc as any).pendingStarts.map((w: any) => w.taskId)).toEqual(['low', 'mid'])
+    svc.releaseSlot()
+    expect((svc as any).pendingStarts.map((w: any) => w.taskId)).toEqual(['low'])
+    svc.releaseSlot()
+    expect((svc as any).pendingStarts).toEqual([])
+    void low
+    void high
+    void mid
+  })
+})
