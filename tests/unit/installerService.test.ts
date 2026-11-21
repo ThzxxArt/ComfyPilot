@@ -1439,3 +1439,58 @@ describe('installer edge branches', () => {
     expect(res.diskNeedGb).toBeGreaterThan(4)
   })
 })
+
+describe('installer archive and progress edges', () => {
+  it('reports a failed archive when the destination already exists', async () => {
+    const { disposeExistingComfyDir } = await import('../../src/main/services/installer')
+    const base = mkdtempSync(join(tmpdir(), 'cp-inst-archive-fail-'))
+    const comfy = join(base, 'ComfyUI')
+    mkdirSync(join(comfy, 'models'), { recursive: true })
+    writeFileSync(join(comfy, 'models', 'x.bin'), 'x')
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(424242)
+    mkdirSync(`${comfy}.cp-old-424242`, { recursive: true })
+    writeFileSync(join(`${comfy}.cp-old-424242`, 'occupied'), 'x')
+    try {
+      expect(() => disposeExistingComfyDir(comfy, base)).toThrow(/could not be archived/)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('trims installer progress logs and tolerates unknown steps', async () => {
+    const { installerService } = await import('../../src/main/services/installer')
+    const svc = installerService as any
+    const step = {
+      id: 'bootstrap',
+      title: 'B',
+      status: 'running',
+      detail: '',
+      log: [] as string[]
+    }
+    svc.progress = {
+      runId: 'r',
+      step: 'bootstrap',
+      status: 'running',
+      steps: [step],
+      message: '',
+      percent: 0
+    }
+    for (let i = 0; i < 405; i++) svc.setStep('bootstrap', 'running', 'd', `l-${i}`)
+    expect(step.log.length).toBe(400)
+    svc.log('missing', 'ignored')
+    svc.setStep('missing', 'done')
+    svc.setBytes({ receivedBytes: 1, totalBytes: 2, speedBps: 0, label: 'x' })
+    svc.setBytes(undefined)
+    svc.emitProgress()
+    svc.progress = null
+    svc.setStep('bootstrap', 'done')
+    expect(true).toBe(true)
+  })
+
+  it('detectGpu tolerates a library response without controllers', async () => {
+    h.graphicsImpl = async () => ({}) as never
+    const { installerService } = await import('../../src/main/services/installer')
+    const gpus = await installerService.detectGpu()
+    expect(gpus[0]).toMatchObject({ vendor: 'none', recommendedTorch: 'cpu' })
+  })
+})

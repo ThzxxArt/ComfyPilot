@@ -476,11 +476,7 @@ const svc = comfyUpdaterService as unknown as {
     onProgress?: (done: number, total: number) => void
   ) => Promise<number>
   fetchAndOverlayZip: (comfyDir: string, stableTag?: string) => Promise<void>
-  performRollback: (
-    comfyDir: string,
-    backupPath: string,
-    kind: 'git' | 'files'
-  ) => Promise<boolean>
+  performRollback: (comfyDir: string, backupPath: string, kind: 'git' | 'files') => Promise<boolean>
   overlayTree: (
     src: string,
     dest: string,
@@ -3327,5 +3323,54 @@ describe('updater edge branches', () => {
     await expect(svc.run('git', ['status'])).rejects.toThrow('stderr-message')
     h.state.execHandler = () => ({ error: new Error('run failed'), stdout: 'stdout-message' })
     await expect(svc.run('git', ['status'])).rejects.toThrow('stdout-message')
+  })
+})
+
+describe('updater rollback failure branches', () => {
+  it('reports ROLLBACK_FAILED with the backup path when restore throws', async () => {
+    seedZipInstall({ withVenv: true, withReq: false })
+    h.state.selfcheckResult = { ok: false, exitCode: 1, output: 'crash' }
+    const original = admin.performRollback
+    admin.performRollback = async () => {
+      throw new Error('restore exploded')
+    }
+    try {
+      const p = await runUpdate({ updateDeps: false })
+      expect(p.status).toBe('failed')
+      expect(p.errorCode).toBe('ROLLBACK_FAILED')
+      expect(p.error).toContain('rollback FAILED')
+      expect(p.error).toContain('restore exploded')
+      const rollback = p.steps.find((s) => s.id === 'rollback')
+      expect(rollback?.status).toBe('failed')
+      expect(String(rollback?.detailParams?.path)).toContain('.cp-backups')
+    } finally {
+      admin.performRollback = original
+      admin.progress = null
+    }
+  })
+
+  it('rolls back a journal whose live instance stops successfully', async () => {
+    const backup = 'C:/fake/.cp-backups/live'
+    h.mkdirPath(backup)
+    h.writeFile(join(backup, 'manifest.json'), JSON.stringify({ kind: 'files' }))
+    h.writeFile(join(backup, 'main.py'), 'old')
+    h.mkdirPath(COMFY)
+    h.writeFile(join(COMFY, 'main.py'), 'new')
+    h.writeFile(
+      'C:/fake/.cp-update-journal.json',
+      JSON.stringify({
+        instanceId: 'inst-1',
+        comfyDir: COMFY,
+        backupPath: backup,
+        backupKind: 'files',
+        startedAt: 1
+      })
+    )
+    h.state.instanceList = [{ id: 'inst-1', status: 'running' }]
+    h.state.instanceStopResult = {}
+    const ok = await comfyUpdaterService.rollbackFromJournal('inst-1')
+    expect(ok).toBe(true)
+    expect(h.state.stopCalls).toContain('inst-1')
+    expect(fget(join(COMFY, 'main.py'))).toBe('old')
   })
 })

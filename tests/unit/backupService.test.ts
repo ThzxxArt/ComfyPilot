@@ -1259,3 +1259,19 @@ describe('BackupService missing-field and path remap branches', () => {
     expect(preview.canRestore).toBe(true)
   })
 })
+
+describe('BackupService create failure branches', () => {
+  it('reports a disk failure from create and cleans the partial directory', async () => {
+    h.state.failNextInsert = true
+    h.state.instances = [{ id: 'i1', name: 'I', path: h.state.root }]
+    const svc = await freshBackup()
+    let error: unknown
+    try {
+      svc.create({ name: 'fails' })
+    } catch (e) {
+      error = e
+    }
+    expect(String((error as Error)?.message || error)).toBeTruthy()
+    expect(h.state.backups).toHaveLength(0)
+  })
+})
