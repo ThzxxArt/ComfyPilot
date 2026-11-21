@@ -1015,6 +1015,29 @@ describe('spawn argv contract', () => {
 // exportLaunchScript
 // ===========================================================================
 describe('exportLaunchScript()', () => {
+  it('picks the platform default script kind for both OS families', async () => {
+    register(cfg({ id: 'def-win', name: 'Win' }))
+    const winDir = join(ROOT, 'export-default-win')
+    mkdirSync(winDir, { recursive: true })
+    const restoreWin = forcePlatform('win32')
+    try {
+      const win = await svc.exportLaunchScript('def-win', { dir: winDir })
+      expect(win.path.endsWith('.bat')).toBe(true)
+    } finally {
+      restoreWin()
+    }
+    register(cfg({ id: 'def-unix', name: 'Unix' }))
+    const unixDir = join(ROOT, 'export-default-unix')
+    mkdirSync(unixDir, { recursive: true })
+    const restoreUnix = forcePlatform('linux')
+    try {
+      const unix = await svc.exportLaunchScript('def-unix', { dir: unixDir })
+      expect(unix.path.endsWith('.sh')).toBe(true)
+    } finally {
+      restoreUnix()
+    }
+  })
+
   it('writes a .bat with cmd-safe escaping (opts.dir skips dialog)', async () => {
     const dir = join(ROOT, 'export-bat')
     mkdirSync(dir, { recursive: true })
@@ -1941,6 +1964,27 @@ describe('forceKill()', () => {
     const info = await svc.forceKill('fk-stuck')
     expect(info.exited).toBe(false)
     expect(svc.list()[0].status).toBe('error')
+  })
+
+  it('kills an owned PID from the ledger when the child handle is gone', async () => {
+    const instance = cfg({ id: 'ledger-kill' })
+    register(instance)
+    const rt = svc.ensureRuntime(instance)
+    rt.pid = process.pid
+    rt.managed = true
+    rt.process = undefined
+    rt.status = 'running'
+    h.state.execHandler = () => ({ stdout: '' })
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((_pid, sig) => {
+      if (sig === 0) throw Object.assign(new Error('gone'), { code: 'ESRCH' })
+      return true
+    })
+    try {
+      const res = await svc.forceKill('ledger-kill')
+      expect(res.exited).toBe(true)
+    } finally {
+      killSpy.mockRestore()
+    }
   })
 
   it('falls back to the OS kill path when the child handle is gone', async () => {
