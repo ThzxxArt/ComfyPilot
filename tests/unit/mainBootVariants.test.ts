@@ -124,7 +124,10 @@ vi.mock('electron', () => {
       ;(this as any).windowOpen = cb
     })
     send = vi.fn()
-    executeJavaScript = vi.fn(async () => h.state.executeResult)
+    executeJavaScript = vi.fn(async () => {
+      if (h.state.executeResult === 'reject') throw new Error('probe failed')
+      return h.state.executeResult
+    })
     isLoadingMainFrame = () => false
     isDestroyed = () => false
     session = {
@@ -167,7 +170,9 @@ vi.mock('electron', () => {
     setAppUserModelId: vi.fn(),
     quit: vi.fn(),
     exit: vi.fn(),
-    isPackaged: true,
+    get isPackaged() {
+      return h.state.packaged
+    },
     getPath: () => '/tmp/cp-main-variants',
     getAppPath: () => process.cwd(),
     getVersion: () => '0.2.5'
@@ -372,6 +377,34 @@ describe('main entry startup variants', () => {
     expect(win.webContents.executeJavaScript).toHaveBeenCalled()
     await new Promise((r) => setTimeout(r, 400))
     expect(app.quit).toHaveBeenCalled()
+  })
+
+  it('loads the dev renderer URL and honours launchOnBoot in dev', async () => {
+    process.env.ELECTRON_RENDERER_URL = 'http://localhost:5173'
+    h.state.packaged = false
+    h.state.settings.launchOnBoot = true
+    await importIndex()
+    expect(h.windows[0].loadURL).toHaveBeenCalledWith('http://localhost:5173')
+    expect(desktopMock.setLaunchOnBoot).toHaveBeenCalledWith(true)
+  })
+
+  it('handles a rejecting E2E renderer probe and startup control', async () => {
+    process.env.COMFYPILOT_E2E = '1'
+    h.state.executeResult = 'reject'
+    process.argv.push('--status')
+    const { app } = await import('electron')
+    try {
+      await importIndex()
+      const win = h.windows[0]
+      win.webContents.emit('did-finish-load')
+      await new Promise((r) => setTimeout(r, 50))
+      await new Promise((r) => setTimeout(r, 400))
+      expect(win.webContents.executeJavaScript).toHaveBeenCalled()
+      expect(app.quit).toHaveBeenCalled()
+    } finally {
+      const idx = process.argv.lastIndexOf('--status')
+      if (idx >= 0) process.argv.splice(idx, 1)
+    }
   })
 
   it('quits immediately when another instance owns the lock', async () => {
