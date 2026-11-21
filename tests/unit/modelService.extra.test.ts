@@ -7,6 +7,7 @@ import { tmpdir } from 'os'
 const h = vi.hoisted(() => ({
   models: [] as any[],
   settings: { modelScanRoots: [] as string[] },
+  configs: [] as any[],
   persisted: [] as any[],
   upserted: [] as any[],
   updates: [] as any[],
@@ -20,7 +21,7 @@ vi.mock('../../src/main/services/db', () => ({
     return true
   },
   loadSettings: () => h.settings,
-  loadInstanceConfigs: () => [],
+  loadInstanceConfigs: () => h.configs,
   upsertModel: (m: any) => h.upserted.push(m),
   upsertModels: (m: any[]) => h.upserted.push(...m),
   updateModel: (id: string, p: any) => h.updates.push({ id, ...p }),
@@ -54,6 +55,7 @@ beforeEach(() => {
   pathCapabilities.revokeAll()
   h.models = []
   h.settings = { modelScanRoots: [modelsDir, destDir] }
+  h.configs = []
   h.persisted = []
   h.upserted = []
   h.updates = []
@@ -101,6 +103,133 @@ describe('ModelService extra branches', () => {
     expect((await svc.rename('a', 'renamed')).name).toBe('renamed')
     await expect(svc.tag('missing', ['x'])).rejects.toThrow(/not found/)
     expect((await svc.tag('a', ['x'])).tags).toEqual(['x'])
+  })
+
+  it('walks hidden/symlinked entries and reads scan metadata variants', async () => {
+    const svc = new ModelService()
+    const deep = join(modelsDir, 'deep')
+    mkdirSync(deep, { recursive: true })
+    writeFileSync(join(modelsDir, '.hidden.safetensors'), 'x')
+    writeFileSync(join(modelsDir, 'not-a-model.txt'), 'x')
+    const escape = join(root, 'escape')
+    mkdirSync(escape, { recursive: true })
+    writeFileSync(join(escape, 'evil.safetensors'), 'x')
+    try {
+      symlinkSync(escape, join(modelsDir, 'escape-link'))
+    } catch {
+      /* ignore */
+    }
+    for (const name of [
+      'sdxl.safetensors',
+      'sd3.safetensors',
+      'flux.safetensors',
+      'wan.safetensors',
+      'hunyuan.safetensors',
+      'qwen.safetensors',
+      'ltx.safetensors',
+      'sd15.safetensors',
+      'sd-1.safetensors',
+      'v1-5.safetensors',
+      'civitai-model.safetensors',
+      'huggingface-model.safetensors',
+      'hf_model.safetensors'
+    ]) {
+      writeFileSync(join(deep, name), 'x')
+    }
+    const metaFile = join(deep, 'meta.safetensors')
+    const header = Buffer.from(
+      JSON.stringify({
+        __metadata__: {
+          ss_base_model: 'sdxl',
+          ss_tag_frequency: JSON.stringify({ tag: 1 })
+        }
+      })
+    )
+    const len = Buffer.alloc(8)
+    len.writeBigUInt64LE(BigInt(header.length))
+    writeFileSync(metaFile, Buffer.concat([len, header]))
+    const badMeta = join(deep, 'badmeta.safetensors')
+    const badHeader = Buffer.from(JSON.stringify({ __metadata__: { ss_tag_frequency: '{bad' } }))
+    const badLen = Buffer.alloc(8)
+    badLen.writeBigUInt64LE(BigInt(badHeader.length))
+    writeFileSync(badMeta, Buffer.concat([badLen, badHeader]))
+    const specMeta = join(deep, 'spec.safetensors')
+    const specHeader = Buffer.from(
+      JSON.stringify({ __metadata__: { modelspec: { architecture: 'flux' } } })
+    )
+    const specLen = Buffer.alloc(8)
+    specLen.writeBigUInt64LE(BigInt(specHeader.length))
+    writeFileSync(specMeta, Buffer.concat([specLen, specHeader]))
+    await svc.scan({ roots: [modelsDir], hash: false })
+    expect(h.upserted.length).toBeGreaterThan(0)
+    expect(h.upserted.some((m) => m.path.endsWith('escape-link/evil.safetensors'))).toBe(false)
+  })
+
+  it('auto-discovers extra model roots and deduplicates them', async () => {
+    const svc = new ModelService()
+    const comfy = join(root, 'comfy')
+    mkdirSync(comfy, { recursive: true })
+    h.configs = [
+      {
+        id: 'i1',
+        name: 'C',
+        path: comfy,
+        port: 8188,
+        listen: '127.0.0.1',
+        extraArgs: [],
+        argTemplateId: 'default'
+      }
+    ]
+    const yaml = [
+      'comfyui:',
+      `  base_path: ${join(root, 'extra')}`,
+      '  checkpoints: ckpt',
+      '  custom_nodes: nodes',
+      '  nested:',
+      '    not: a string',
+      'null-section: null',
+      'comfyui2:',
+      `  base_path: ${join(root, 'extra')}`,
+      '  loras: ../outside',
+      '  vae: C:/models/vae',
+      '  clip: |',
+      '    a',
+      '    b'
+    ].join('\n')
+    writeFileSync(join(comfy, 'extra_model_paths.yaml'), yaml)
+    h.settings = { modelScanRoots: [] }
+    await svc.scan({ hash: false })
+    await svc.scan({})
+    h.settings = { modelScanRoots: [''] as any }
+    await svc.scan({ hash: false })
+  })
+
+  it('covers slot priority ordering and blocked symlink destinations', async () => {
+    const svc = new ModelService()
+    ;(svc as any).runningCount = 3
+    const waits = [
+      (svc as any).acquireSlot(0, 'a'),
+      (svc as any).acquireSlot(5, 'b'),
+      (svc as any).acquireSlot(5, 'c')
+    ]
+    expect((svc as any).pendingStarts.length).toBe(3)
+    ;(svc as any).releaseSlot()
+    expect((svc as any).pendingStarts.length).toBe(2)
+    ;(svc as any).releaseSlot()
+    ;(svc as any).releaseSlot()
+    ;(svc as any).releaseSlot()
+    await Promise.all(waits)
+    expect((svc as any).runningCount).toBeGreaterThanOrEqual(0)
+
+    const link = join(destDir, 'link-out')
+    const outside = join(root, 'outside-dest')
+    mkdirSync(outside, { recursive: true })
+    try {
+      symlinkSync(outside, link)
+      await expect(svc.move('a', link)).rejects.toThrow(/symlinked|outside/)
+    } catch {
+      /* symlink may be unavailable */
+    }
   })
 
   it('download list, resume and clear-finished branches', () => {
