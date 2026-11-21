@@ -167,6 +167,18 @@ describe('health service against real HTTP fixtures (0.2.5 WP2)', () => {
     expect(busy.state).toBe('busy')
   })
 
+  it('reports an adopted external instance as healthy without a child PID', async () => {
+    const c = ctx()
+    const rt = c.runtimes.get('i1')!
+    rt.process = undefined
+    rt.pid = undefined
+    rt.managed = false
+    instanceHealthService.start(c)
+    const health = await instanceHealthService.check('i1')
+    expect(health.processAlive).toBe(true)
+    expect(health.state).toBe('healthy')
+  })
+
   it('walks suspect → unresponsive when the event loop hangs', async () => {
     instanceHealthService.start(ctx())
     server.setMode('hang')

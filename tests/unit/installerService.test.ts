@@ -3,8 +3,8 @@
  * starter models, mirror helpers, zip flatten, kill/cancel, pipArgs.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
-import { mkdirSync, writeFileSync, rmSync, existsSync } from 'fs'
-import { join } from 'path'
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync, existsSync } from 'fs'
+import { join, dirname } from 'path'
 import { tmpdir } from 'os'
 
 const h = vi.hoisted(() => ({
@@ -975,5 +975,79 @@ describe('installer service internals', () => {
       expect(installerService.getStatus()).toBeNull()
       expect(db.loadLatestInstallRun()).toBeNull()
     })
+  })
+
+  it('archives a non-3.13 venv before recreating it, but keeps a 3.13 one', async () => {
+    const { archiveIncompatibleVenv, probeVenvPython, restoreArchivedVenv } =
+      await import('../../src/main/services/installer')
+    const root = mkdtempSync(join(tmpdir(), 'cp-venv-archive-'))
+    const pyIn = (v: string): string =>
+      process.platform === 'win32' ? join(v, 'Scripts', 'python.exe') : join(v, 'bin', 'python')
+    const venv = join(root, '.venv')
+    mkdirSync(dirname(pyIn(venv)), { recursive: true })
+    writeFileSync(pyIn(venv), 'old')
+    const archived = await archiveIncompatibleVenv(
+      venv,
+      async () => 'Python 3.12.10',
+      '2026-01-01T00-00-00-000Z'
+    )
+    expect(archived?.path).toContain('.venv.pre-recreate-')
+    expect(existsSync(pyIn(archived!.path))).toBe(true)
+    expect(existsSync(venv)).toBe(false)
+
+    mkdirSync(dirname(pyIn(venv)), { recursive: true })
+    writeFileSync(pyIn(venv), 'new')
+    await expect(
+      archiveIncompatibleVenv(venv, async () => 'Python 3.13.18')
+    ).resolves.toBeUndefined()
+    expect(existsSync(venv)).toBe(true)
+
+    // The default probe is real; this suite mocks child_process, so provide a
+    // node-like version for the positive case and ENOENT for the negative.
+    h.execImpl = (_cmd, _args, _o, cb) => {
+      cb(null, 'v24.0.0', '')
+      return { pid: 1, exitCode: null, kill: () => undefined }
+    }
+    expect(await probeVenvPython(process.execPath)).toMatch(/v\d+/)
+    h.execImpl = (_cmd, _args, _o, cb) => {
+      cb(new Error('ENOENT'), '', '')
+      return { pid: 1, exitCode: null, kill: () => undefined }
+    }
+    expect(await probeVenvPython(join(root, 'missing-python'))).toBe('')
+
+    // A broken replacement is replaced by the archived environment.
+    const broken = join(root, 'broken')
+    mkdirSync(broken, { recursive: true })
+    const goodArchive = join(root, 'archived-venv')
+    mkdirSync(dirname(pyIn(goodArchive)), { recursive: true })
+    writeFileSync(pyIn(goodArchive), 'restored')
+    expect(restoreArchivedVenv(broken, { path: goodArchive, version: 'Python 3.12.10' })).toBe(true)
+    expect(existsSync(pyIn(broken))).toBe(true)
+    expect(restoreArchivedVenv(broken, undefined)).toBe(false)
+    expect(restoreArchivedVenv(broken, { path: join(root, 'missing-archive'), version: 'x' })).toBe(
+      false
+    )
+    // A usable replacement is never overwritten by the archive.
+    expect(restoreArchivedVenv(venv, archived!)).toBe(false)
+
+    // No venv -> no-op; an unusable venv is archived with an empty version.
+    expect(await archiveIncompatibleVenv(join(root, 'absent'), async () => 'x')).toBeUndefined()
+    const noPython = join(root, 'no-python')
+    mkdirSync(noPython)
+    const noPyArchived = await archiveIncompatibleVenv(noPython, async () => 'x', 'no-py')
+    expect(noPyArchived?.version).toBe('')
+    expect(existsSync(noPython)).toBe(false)
+
+    // Rename failure is loud and leaves the original in place.
+    const collide = join(root, 'collide')
+    mkdirSync(collide)
+    const collideTarget = join(root, 'collide.pre-recreate-collide')
+    mkdirSync(collideTarget, { recursive: true })
+    writeFileSync(join(collideTarget, 'occupied'), 'x')
+    await expect(
+      archiveIncompatibleVenv(collide, async () => 'Python 3.12.1', 'collide')
+    ).rejects.toThrow(/Could not archive/)
+    expect(existsSync(collide)).toBe(true)
+    rmSync(root, { recursive: true, force: true })
   })
 })

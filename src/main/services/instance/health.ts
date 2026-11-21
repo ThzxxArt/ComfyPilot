@@ -297,7 +297,15 @@ export class InstanceHealthService extends EventEmitter {
       }
     }
     const effective = resolveEffectiveInstance(config)
-    const processAlive = Boolean((rt?.process && rt.process.exitCode === null) || pidAlive(rt?.pid))
+    // Adopted external instances have no child handle and no ledger PID — the
+    // only evidence we have is that the server answered when it was adopted.
+    // Treating them as "process gone" made a healthy external ComfyUI show a
+    // grey `stopped` health badge (0.2.5 WP2).
+    const adoptedExternalAlive =
+      rt !== undefined && !rt.managed && rt.ready === true && rt.status === 'running'
+    const processAlive =
+      adoptedExternalAlive ||
+      Boolean((rt?.process && rt.process.exitCode === null) || pidAlive(rt?.pid))
     if (!processAlive) {
       const state: HealthState = rt?.status === 'starting' ? 'suspect' : 'stopped'
       return {

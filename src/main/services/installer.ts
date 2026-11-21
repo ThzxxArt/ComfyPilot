@@ -370,6 +370,67 @@ export function disposeExistingComfyDir(
   return { action: 'deleted', precious }
 }
 
+export function probeVenvPython(pythonPath: string): Promise<string> {
+  return new Promise((resolve) => {
+    try {
+      execFile(pythonPath, ['--version'], { timeout: 8000, windowsHide: true }, (err, stdout) =>
+        resolve(err ? '' : String(stdout || ''))
+      )
+    } catch {
+      resolve('')
+    }
+  })
+}
+
+/**
+ * 0.2.5 WP0 / P1-17: `python -m venv` does not change the interpreter of an
+ * existing venv. Archive a non-3.13 (or unusable) venv before the installer
+ * builds a new one, so an upgrade from a 3.12 install does not fail at the
+ * version check and no user environment is deleted.
+ */
+export async function archiveIncompatibleVenv(
+  venvPath: string,
+  probeVersion: (pythonPath: string) => Promise<string>,
+  stamp = new Date().toISOString().replace(/[:.]/g, '-')
+): Promise<{ path: string; version: string } | undefined> {
+  if (!existsSync(venvPath)) return undefined
+  const win = join(venvPath, 'Scripts', 'python.exe')
+  const unix = join(venvPath, 'bin', 'python')
+  const python = existsSync(win) ? win : existsSync(unix) ? unix : ''
+  const version = python ? String(await probeVersion(python).catch(() => '')).trim() : ''
+  if (/Python\s+3\.13(\.|$)/i.test(version)) return undefined
+  const archive = `${venvPath}.pre-recreate-${stamp}`
+  try {
+    renameSync(venvPath, archive)
+  } catch (e) {
+    throw new Error(
+      `Could not archive the existing venv at ${venvPath} (${e instanceof Error ? e.message : String(e)}) — refusing to overwrite it`
+    )
+  }
+  return { path: archive, version }
+}
+
+/** Put back an archived venv when the replacement never became usable. */
+export function restoreArchivedVenv(
+  venvPath: string,
+  archived: { path: string; version: string } | undefined
+): boolean {
+  if (!archived || !existsSync(archived.path)) return false
+  if (
+    existsSync(join(venvPath, 'Scripts', 'python.exe')) ||
+    existsSync(join(venvPath, 'bin', 'python'))
+  ) {
+    return false
+  }
+  try {
+    if (existsSync(venvPath)) rmSync(venvPath, { recursive: true, force: true })
+    renameSync(archived.path, venvPath)
+    return true
+  } catch {
+    return false
+  }
+}
+
 export class InstallerService extends EventEmitter {
   private progress: InstallProgress | null = null
   /**
@@ -1184,6 +1245,7 @@ export class InstallerService extends EventEmitter {
 
   private async runPlan(plan: InstallPlan, token: object): Promise<void> {
     this.assertRunLive(token)
+    let archivedVenv: { path: string; version: string } | undefined
     try {
       const installRoot = resolve(normalizePathEverySegment(plan.installRoot))
       if (hasParentHop(plan.installRoot)) throw new Error('Invalid install root')
@@ -1283,6 +1345,18 @@ export class InstallerService extends EventEmitter {
       // 3.14 has torch wheels but custom-node compatibility is not guaranteed.
       mkdirSync(installRoot, { recursive: true })
       const venvPath = join(installRoot, '.venv')
+      // 0.2.5 WP0 / P1-17: a reinstall over a 0.1.x root often finds a 3.12
+      // venv. `python -m venv` does NOT change the interpreter of an existing
+      // venv, so the install used to die at the version check. Archive it
+      // first and build a clean 3.13 venv; never delete the old environment.
+      const archived = await archiveIncompatibleVenv(venvPath, probeVenvPython)
+      archivedVenv = archived
+      if (archived) {
+        this.log(
+          'venv',
+          `Archived ${archived.version || 'an unusable'} venv to ${archived.path} before creating 3.13`
+        )
+      }
       this.setStep(
         'venv',
         'running',
@@ -1713,6 +1787,9 @@ export class InstallerService extends EventEmitter {
           rmSync(venvPath, { recursive: true, force: true })
           cleaned.push('.venv')
         }
+        // If we archived an old 3.12/3.14 venv and the new one never became
+        // usable, put the old one back instead of leaving the root broken.
+        restoreArchivedVenv(venvPath, archivedVenv)
       } catch {
         /* cleanup is best-effort */
       }

@@ -1270,6 +1270,9 @@ async function stopInner(
     if (!wasManaged && (wasReady || wasRunning)) {
       // We only adopted an external ComfyUI — be honest instead of pretending we killed it.
       adopted = true
+      // P1-7: "sent a signal" is not "the process exited". Callers (rescue,
+      // batch summaries, updater) must not treat this as a successful stop.
+      exited = false
       ctx.pushLog(
         rt,
         'warn',

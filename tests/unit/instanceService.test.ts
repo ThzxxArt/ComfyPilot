@@ -1879,6 +1879,9 @@ describe('stop()', () => {
     await svc.start('ext', { adoptExternal: true })
     const info = await svc.stop('ext')
     expect(info.status).toBe('stopped')
+    // P1-7: the process was only adopted, so it did NOT exit.
+    expect(info.adopted).toBe(true)
+    expect(info.exited).toBe(false)
     const messages = svc.getLogs('ext').map((l) => l.message)
     expect(messages.some((m) => m.includes('adopted external'))).toBe(true)
   })

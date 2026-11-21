@@ -122,6 +122,7 @@ export async function exportDiagnostics(
             pid: rt?.pid,
             status: rt?.status,
             managed: rt?.managed,
+            safeMode: rt?.safeMode === true,
             startedAt: rt?.startedAt,
             lastLogAt: rt?.lastLogAt,
             lastExit: rt?.lastExit
