@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -364,5 +364,78 @@ describe('ModelService scan/cache/queue edges', () => {
     void low
     void high
     void mid
+  })
+})
+
+describe('ModelService scan batching and download metadata edges', () => {
+  it('handles duplicate roots, many files and unchanged hash reuse', async () => {
+    const svc = new ModelService()
+    const batchDir = join(root, 'batch-models')
+    mkdirSync(batchDir, { recursive: true })
+    for (let i = 0; i < 26; i++) writeFileSync(join(batchDir, `m${i}.safetensors`), `v${i}`)
+    const unchanged = join(batchDir, 'm0.safetensors')
+    const st = statSync(unchanged)
+    h.models = [
+      {
+        id: 'm0',
+        name: 'm0',
+        fileName: 'm0.safetensors',
+        path: unchanged,
+        category: 'checkpoints',
+        size: st.size,
+        tags: [],
+        hashSha256: 'known-hash',
+        modifiedAt: st.mtimeMs
+      }
+    ]
+    h.settings = { modelScanRoots: [batchDir, batchDir] }
+    const out = await svc.scan({ hash: true })
+    expect(out.filter((m: any) => m.path === unchanged)).toHaveLength(1)
+    const rec = h.upserted.find((m: any) => m.path === unchanged)
+    expect(rec?.hashSha256).toBe('known-hash')
+    expect(rec?.pathRoot).toBeTruthy()
+  })
+
+  it('indexes downloaded Civitai metadata and trigger words after a scan', async () => {
+    const svc = new ModelService()
+    const dest = join(root, 'civitai-dl.safetensors')
+    writeFileSync(dest, 'x')
+    h.models = [
+      {
+        id: 'cv',
+        name: 'civitai-dl',
+        fileName: 'civitai-dl.safetensors',
+        path: dest,
+        category: 'checkpoints',
+        size: 1,
+        tags: [],
+        hashSha256: '',
+        metadata: { old: true }
+      }
+    ]
+    ;(svc as any).scan = async () => []
+    const task: any = {
+      id: 't',
+      fileName: 'civitai-dl.safetensors',
+      destPath: dest,
+      status: 'done',
+      metadata: { civitai: { trainedWords: ['word'], previewUrl: 'https://img' } }
+    }
+    ;(svc as any).notifyDownloadResult(task)
+    await new Promise((r) => setTimeout(r, 10))
+    const saved = h.upserted.find((m: any) => m.path === dest)
+    expect(saved?.source).toBe('civitai')
+    expect(saved?.civitaiTrainedWords).toEqual(['word'])
+    expect(saved?.metadata).toMatchObject({ old: true, civitai: { previewUrl: 'https://img' } })
+  })
+
+  it('parses malformed Content-Disposition variants', async () => {
+    const { filenameFromContentDisposition } = await import('../../src/main/services/model')
+    expect(filenameFromContentDisposition(undefined)).toBeUndefined()
+    expect(filenameFromContentDisposition("filename*=UTF-8''bad%ZZ")).toBe('bad%ZZ')
+    expect(filenameFromContentDisposition("filename*=UTF-8''")).toBe("UTF-8'")
+    expect(filenameFromContentDisposition('filename="a.safetensors"')).toBe('a.safetensors')
+    expect(filenameFromContentDisposition('filename=')).toBeUndefined()
+    expect(filenameFromContentDisposition('attachment; filename="dir/a.bin"')).toBe('a.bin')
   })
 })

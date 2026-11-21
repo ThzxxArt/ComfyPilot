@@ -1060,9 +1060,9 @@ describe('BackupService untrusted-input edge branches', () => {
     const preview = svc.preview('b-wf')
     expect(preview.workflowFiles).toHaveLength(3)
     expect(preview.workflowFiles.every((f: any) => f.remapped)).toBe(true)
-    expect(preview.workflowFiles.find((f: any) => f.id === 'unsafe')?.target.endsWith('.json')).toBe(
-      true
-    )
+    expect(
+      preview.workflowFiles.find((f: any) => f.id === 'unsafe')?.target.endsWith('.json')
+    ).toBe(true)
     expect(preview.workflowFiles.find((f: any) => f.id === 'empty')?.missing).toBe(true)
     expect(preview.counts.workflowFiles).toBe(0)
   })
@@ -1103,5 +1103,159 @@ describe('BackupService untrusted-input edge branches', () => {
     const folder = svc.openFolder('..')
     expect(folder).toContain('backups')
     expect(folder).not.toContain('..')
+  })
+})
+
+describe('BackupService create/restore internals', () => {
+  it('creates backups with encrypted remotes, default names and workflow filtering', async () => {
+    const dir = join(h.state.root, 'wf-src')
+    mkdirSync(dir, { recursive: true })
+    const jsonWf = join(dir, 'ok.json')
+    const txtWf = join(dir, 'note.txt')
+    writeFileSync(jsonWf, '{"nodes":[]}')
+    writeFileSync(txtWf, 'x')
+    h.state.remotes = [
+      { id: 'r1', baseUrl: 'https://a.example', apiKey: 'secret' },
+      { id: 'r2', baseUrl: 'https://b.example', apiKey: '' }
+    ]
+    h.state.instances = [{ id: 'i1', name: 'I' }]
+    h.state.settings = {
+      locale: 'zh-CN',
+      modelScanRoots: [dir, '']
+    }
+    h.state.workflows = [
+      { id: 'w1', path: jsonWf },
+      { id: 'w2', path: txtWf },
+      { id: 'w3', path: join(dir, 'missing.json') }
+    ]
+    const svc = await freshBackup()
+    const manifest = svc.create({} as never)
+    expect(manifest.name).toMatch(/^backup-/)
+    const bdir = join(h.state.root, 'backups', manifest.id)
+    const remotes = JSON.parse(readFileSync(join(bdir, 'remote-instances.json'), 'utf-8'))
+    expect(remotes[0].apiKey).toBe('')
+    expect(remotes[1].apiKey).toBe('')
+    const files = JSON.parse(readFileSync(join(bdir, 'workflows.json'), 'utf-8'))
+    expect(files).toHaveLength(3)
+    expect(existsSync(join(bdir, 'workflow-files', 'w1'))).toBe(true)
+    expect(String(manifest.notes || '')).toMatch(/missing|skipped/)
+  })
+
+  it('preserves this machine credential origins and re-encrypts remote keys', async () => {
+    h.state.remotes = [{ id: 'r1', baseUrl: 'https://same.example', apiKey: 'local-key' }]
+    const dir = join(h.state.root, 'backups', 'b-remotes')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      join(dir, 'remote-instances.json'),
+      JSON.stringify([
+        { id: 'r1', baseUrl: 'https://same.example/', apiKey: '' },
+        { id: 'r2', baseUrl: 'https://new.example', apiKey: 'new-key' }
+      ])
+    )
+    const svc = await freshBackup()
+    const result = svc.restore('b-remotes', { sections: ['remotes'] })
+    expect(result.ok).toBe(true)
+    const saved = JSON.parse(
+      readFileSync(join(h.state.root, 'remote_instances.jsonc'), 'utf-8')
+    ) as Array<Record<string, unknown>>
+    const byId = new Map(saved.map((r) => [r.id, r]))
+    expect(String(byId.get('r1')?.apiKey)).toMatch(/^enc:/)
+    expect(Buffer.from(String(byId.get('r1')?.apiKey).slice(4), 'base64').toString()).toBe(
+      'local-key'
+    )
+    expect(Buffer.from(String(byId.get('r2')?.apiKey).slice(4), 'base64').toString()).toBe(
+      'new-key'
+    )
+    expect(byId.get('r2')?.credentialOrigin).toBe('https://new.example')
+  })
+
+  it('keeps path-less workflow records and reports proxy setting changes', async () => {
+    h.state.settings = {
+      locale: 'zh-CN',
+      proxy: { enabled: false, host: 'old.example', port: 8080 }
+    }
+    const dir = join(h.state.root, 'backups', 'b-wf-nopath')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      join(dir, 'settings.json'),
+      JSON.stringify({ locale: 'en-US', proxy: { host: 'new.example' } })
+    )
+    writeFileSync(join(dir, 'workflows.json'), JSON.stringify([{ id: 'wf0', name: 'No path' }]))
+    const svc = await freshBackup()
+    const preview = svc.preview('b-wf-nopath')
+    expect(preview.settingsChanged).toContain('proxy.host')
+    expect(preview.workflowFiles).toEqual([])
+    const result = svc.restore('b-wf-nopath', { sections: ['settings', 'workflows'] })
+    expect(result.ok).toBe(true)
+    const wfs = JSON.parse(readFileSync(join(h.state.root, 'workflows.jsonc'), 'utf-8'))
+    expect(wfs[0]).toMatchObject({ id: 'wf0', name: 'No path' })
+  })
+
+  it('ignores a corrupt restore journal and missing backup directory', async () => {
+    writeFileSync(join(h.state.root, 'restore-journal.json'), '{bad')
+    const svc = await freshBackup()
+    expect(svc.recoverInterruptedRestore()).toEqual({ recovered: false })
+    expect(() => svc.preview('never-created')).toThrow(/Backup not found/)
+    expect(svc.delete('never-created')).toBe(false)
+  })
+})
+
+describe('BackupService missing-field and path remap branches', () => {
+  it('sanitizes records with missing names/ids and unsafe workflow targets', async () => {
+    const dir = join(h.state.root, 'backups', 'b-fields')
+    mkdirSync(join(dir, 'workflow-files', 'wf-one'), { recursive: true })
+    mkdirSync(join(dir, 'workflow-files', 'wf-empty'), { recursive: true })
+    writeFileSync(join(dir, 'workflow-files', 'wf-one', 'one.json'), '{}')
+    writeFileSync(
+      join(dir, 'instances.json'),
+      JSON.stringify([
+        { path: h.state.root },
+        { path: h.state.root, port: 'bad' },
+        { path: h.state.root, listen: '' },
+        { name: 'NoPath' }
+      ])
+    )
+    writeFileSync(join(dir, 'node-packs.json'), JSON.stringify([{ path: '/etc/passwd' }]))
+    writeFileSync(
+      join(dir, 'node-snapshots.json'),
+      JSON.stringify([{ packs: [{ path: '/etc/passwd' }] }])
+    )
+    writeFileSync(join(dir, 'model-manifest.json'), JSON.stringify([{ path: '/etc/passwd' }]))
+    writeFileSync(
+      join(dir, 'remote-instances.json'),
+      JSON.stringify([{ baseUrl: '' }, { id: 'r', baseUrl: 'ftp://x' }])
+    )
+    writeFileSync(
+      join(dir, 'workflows.json'),
+      JSON.stringify([
+        { id: 'wf-one', path: '/' },
+        { id: 'wf-two', path: '/tmp/payload.exe' },
+        { id: 'wf-empty', path: 'C:\\evil.json' }
+      ])
+    )
+    const svc = await freshBackup()
+    const preview = svc.preview('b-fields')
+    const text = preview.warnings.join('\n')
+    expect(text).toMatch(/no path, skipped/)
+    expect(text).toMatch(/invalid port/)
+    expect(text).toMatch(/invalid listen host/)
+    expect(text).toMatch(/node pack \?: path outside roots/)
+    expect(text).toMatch(/snapshot \?: pack path outside roots/)
+    expect(text).toMatch(/remote \?: invalid base URL/)
+    expect(text).toMatch(/remote r: invalid base URL/)
+    expect(preview.invalidPaths.join('\n')).toContain('model ?')
+    expect(preview.workflowFiles).toHaveLength(3)
+    expect(preview.workflowFiles.every((f: any) => String(f.target).endsWith('.json'))).toBe(true)
+    expect(preview.workflowFiles.find((f: any) => f.id === 'wf-one')?.missing).toBe(false)
+    expect(preview.workflowFiles.find((f: any) => f.id === 'wf-empty')?.missing).toBe(true)
+  })
+
+  it('previews an empty backup without a manifest name', async () => {
+    mkdirSync(join(h.state.root, 'backups', 'b-empty'), { recursive: true })
+    const svc = await freshBackup()
+    const preview = svc.preview('b-empty')
+    expect(preview.name).toBe('')
+    expect(preview.counts).toEqual({ workflowFiles: 0, workflows: 0 })
+    expect(preview.canRestore).toBe(true)
   })
 })

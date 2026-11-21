@@ -1047,3 +1047,118 @@ describe('NodesView targetless/race edges', () => {
     }
   }, 60_000)
 })
+
+describe('NodesView banner and audit template branches', () => {
+  async function mountNodes() {
+    const { wrapper, state } = await mountView(
+      '/nodes',
+      () => import('../../src/renderer/src/views/nodes/NodesView.vue')
+    )
+    const dialog = state.dialog
+    if (dialog) {
+      const auto = (opts: any): object => {
+        opts?.onPositiveClick?.()
+        return {}
+      }
+      dialog.warning = auto
+      dialog.info = auto
+    }
+    state.store.instances = instances
+    state.store.activeInstanceId = 'i1'
+    await nextTick()
+    return { wrapper, state }
+  }
+
+  it('renders every update/install/batch banner state', async () => {
+    const { wrapper, state } = await mountNodes()
+    try {
+      state.packs = [pack, broken]
+      state.nodeBatchActive = true
+      state.nodeBatch = { index: 1, total: 3, packName: 'A' }
+      state.nodeUpdatingPack = null
+      state.nodeInstallingPack = null
+      await nextTick()
+      expect(wrapper.html().length).toBeGreaterThan(0)
+
+      state.nodeBatchActive = false
+      state.nodeInstallingPack = 'InstallPack'
+      state.nodeInstallMessage = 'installing msg'
+      await nextTick()
+      expect(wrapper.html()).toContain('InstallPack')
+
+      state.nodeInstallingPack = null
+      state.nodeUpdatingPack = 'UpdatePack'
+      state.nodeUpdateMessage = 'updating msg'
+      await nextTick()
+      expect(wrapper.html()).toContain('UpdatePack')
+    } finally {
+      wrapper.unmount()
+    }
+  }, 60_000)
+
+  it('renders load error, failed load summary and deps-audit variants', async () => {
+    const { wrapper, state } = await mountNodes()
+    try {
+      state.packs = []
+      state.loadError = 'load boom'
+      await nextTick()
+      expect(wrapper.html()).toContain('load boom')
+      state.loadError = null
+
+      state.loadReport = {
+        available: true,
+        entries: [
+          { modulePath: '/a', folder: 'A', seconds: 1, ok: false, prestartup: false, error: 'bad' },
+          {
+            modulePath: '/b',
+            folder: 'B',
+            seconds: 1,
+            ok: false,
+            prestartup: true,
+            error: 'pre'
+          }
+        ],
+        policyRefused: [{ folder: 'C', reason: 'policy' }]
+      }
+      state.packs = [pack, broken]
+      await nextTick()
+      expect(wrapper.html().length).toBeGreaterThan(0)
+
+      state.showDepsAudit = true
+      state.depsAudit = { ok: false, error: 'pip audit down', packs: [], unverifiable: [] }
+      await nextTick()
+      expect(document.body.textContent || '').toContain('pip audit down')
+
+      state.depsAudit = {
+        ok: true,
+        checkedPacks: 0,
+        packs: [],
+        unverifiable: [],
+        pipCheck: { ok: false, message: 'pip missing' }
+      }
+      await nextTick()
+
+      state.depsAudit = {
+        ok: true,
+        checkedPacks: 1,
+        packs: [
+          {
+            id: 'p1',
+            name: 'PackOne',
+            ok: false,
+            missing: ['m'],
+            mismatched: ['x'],
+            skipped: ['s'],
+            unsupported: ['u']
+          }
+        ],
+        unverifiable: ['u'],
+        pipCheck: { ok: true }
+      }
+      await nextTick()
+      expect(wrapper.html().length).toBeGreaterThan(0)
+    } finally {
+      wrapper.unmount()
+    }
+  }, 60_000)
+})

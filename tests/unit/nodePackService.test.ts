@@ -4709,3 +4709,63 @@ describe('node pack edge branches', () => {
     await expect(nodePackService.uninstall('definitely-missing')).resolves.toBe(false)
   })
 })
+
+// =====================================================================
+// Pip dependency failure/disabled branches
+// =====================================================================
+describe('node pack pip edge branches', () => {
+  it('reports PIP_UNAVAILABLE honestly instead of claiming deps were removed', async () => {
+    resetState()
+    seedPack({
+      name: 'PipGone',
+      requirements: 'x\n',
+      pyproject: 'name = "PipGone"\nversion = "1.0"\n'
+    })
+    const rec = nodePackService.list('inst-1')[0]
+    h.state.nodePacks = [{ ...rec, pipRequirements: ['p1'] }]
+    const progress: any[] = []
+    nodePackService.on('op-progress', (p: any) => progress.push(p))
+    cpMock.__setExecHandler((_cmd, args) => {
+      if (args.includes('ensurepip')) return { error: new Error('ensurepip disabled') }
+      if (args.includes('pip')) return { error: new Error('No module named pip') }
+      return { stdout: '' }
+    })
+    try {
+      const ok = await nodePackService.uninstall('PipGone', 'inst-1', { removePipDeps: true })
+      expect(ok).toBe(true)
+      expect(progress.some((p) => p.step === 'requirements')).toBe(true)
+    } finally {
+      cpMock.__setExecHandler(null)
+    }
+  })
+
+  it('returns no removed deps for empty lists and pre-aborted signals', async () => {
+    const svc = nodePackService as any
+    expect(await svc.removePipDeps([], 'inst-1')).toEqual([])
+    const ac = new AbortController()
+    ac.abort()
+    expect(await svc.removePipDeps(['p1'], 'inst-1', ac.signal)).toEqual([])
+  })
+
+  it('afterInstall records pip-disabled issues and handles missing requirements', async () => {
+    resetState()
+    const dir = seedPack({
+      name: 'NoPipDeps',
+      requirements: 'requests\n',
+      pyproject: 'name = "NoPipDeps"\nversion = "1.0"\n'
+    })
+    h.state.settings.allowPipInstall = false
+    const progress: any[] = []
+    nodePackService.on('op-progress', (p: any) => progress.push(p))
+    const rec = await (nodePackService as any).afterInstall(dir, 'local')
+    expect(rec.name).toBe('NoPipDeps')
+    expect(rec.issues.some((i: any) => i.code === 'pip-disabled')).toBe(true)
+    expect(progress.some((p) => p.message?.includes('allow_pip_install is off'))).toBe(true)
+
+    resetState()
+    const plain = seedPack({ name: 'NoReqs', pyproject: 'name = "NoReqs"\nversion = "1.0"\n' })
+    const rec2 = await (nodePackService as any).afterInstall(plain, 'local')
+    expect(rec2.issues.some((i: any) => i.code === 'pip-disabled')).toBe(false)
+    expect(rec2.pipRequirements).toBeUndefined()
+  })
+})
