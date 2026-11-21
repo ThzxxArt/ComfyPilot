@@ -1059,11 +1059,11 @@ describe('BackupService untrusted-input edge branches', () => {
     const svc = await freshBackup()
     const preview = svc.preview('b-wf')
     expect(preview.workflowFiles).toHaveLength(3)
-    expect(preview.workflowFiles.every((f) => f.remapped)).toBe(true)
-    expect(preview.workflowFiles.find((f) => f.id === 'unsafe')?.target.endsWith('.json')).toBe(
+    expect(preview.workflowFiles.every((f: any) => f.remapped)).toBe(true)
+    expect(preview.workflowFiles.find((f: any) => f.id === 'unsafe')?.target.endsWith('.json')).toBe(
       true
     )
-    expect(preview.workflowFiles.find((f) => f.id === 'empty')?.missing).toBe(true)
+    expect(preview.workflowFiles.find((f: any) => f.id === 'empty')?.missing).toBe(true)
     expect(preview.counts.workflowFiles).toBe(0)
   })
 
