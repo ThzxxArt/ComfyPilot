@@ -4465,7 +4465,9 @@ describe('node pack edge branches', () => {
     })
     expect(rec.name).toBe('Pinned')
     expect((rec as { pinnedVersion?: string }).pinnedVersion).toBeUndefined()
-    expect(rec.meta?.['installNote'] || '').toBeDefined()
+    expect((rec as unknown as { installNote?: string }).installNote || '').toContain(
+      'requested v9.9.9'
+    )
   })
 
   it('turns an aborted install into an OP_CANCELLED error', async () => {
