@@ -2958,3 +2958,67 @@ describe('port suggestion edge branches', () => {
     }
   })
 })
+
+describe('waitReady and sweep edge branches', () => {
+  it('handles unknown ids, error runtimes, stopped runtimes and waiter timeouts', async () => {
+    await expect(svc.waitReady('missing-id')).rejects.toThrow(/Instance not found/)
+    const cfgObj = cfg({ id: 'wait-edge', path: COMFY, port: 18191 })
+    register(cfgObj)
+    const rt = svc.ensureRuntime(cfgObj)
+    rt.status = 'error'
+    rt.lastError = ''
+    const errored = await svc.waitReady('wait-edge')
+    expect(errored.ready).toBe(false)
+    expect(errored.error).toMatch(/error state/)
+
+    rt.status = 'stopped'
+    rt.process = undefined
+    rt.lastError = ''
+    const stopped = await svc.waitReady('wait-edge')
+    expect(stopped.ready).toBe(false)
+    expect(stopped.error).toMatch(/not running/)
+
+    rt.status = 'starting'
+    rt.process = { pid: 1, exitCode: null, kill: () => undefined } as never
+    const started = Date.now()
+    const timeout = await svc.waitReady('wait-edge', 10)
+    expect(timeout.ready).toBe(false)
+    expect(timeout.error).toMatch(/did not become ready/)
+    expect(Date.now() - started).toBeLessThan(1000)
+    expect(rt.readyWaiters).toHaveLength(0)
+  })
+
+  it('kills a verified orphan on POSIX and uses taskkill on win32', async () => {
+    const realPlatform = process.platform
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => true)
+    try {
+      mkdirSync(LOGS, { recursive: true })
+      writeFileSync(
+        join(LOGS, 'pids.json'),
+        JSON.stringify({
+          orphan: { pid: process.pid, path: 'node', startedAt: Date.now() }
+        })
+      )
+      const res = await svc.sweepStaleProcesses()
+      expect(res.killed.length).toBe(1)
+      expect(res.unverified).toEqual([])
+
+      writeFileSync(
+        join(LOGS, 'pids.json'),
+        JSON.stringify({
+          orphan2: { pid: process.pid, path: 'node', startedAt: Date.now() }
+        })
+      )
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+      h.state.execHandler = (cmd, args) =>
+        args.some((a) => String(a).includes('Get-CimInstance'))
+          ? { stdout: 'node ComfyUI' }
+          : { stdout: '' }
+      const win = await svc.sweepStaleProcesses()
+      expect(win.killed.length).toBe(1)
+    } finally {
+      Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true })
+      kill.mockRestore()
+    }
+  })
+})
