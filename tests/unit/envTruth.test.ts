@@ -3,6 +3,7 @@
  * recreateVenv must archive the old venv before creating a new one.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { EventEmitter } from 'events'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -68,7 +69,23 @@ vi.mock('child_process', () => {
         else resolve({ stdout: r.stdout, stderr: '' })
       })
     })
-  return { execFile, execFileSync: () => '', spawn: () => ({ pid: 1, kill: () => undefined }) }
+  const spawn = (cmd: string, args: string[]): any => {
+    const child: any = new EventEmitter()
+    child.stdout = new EventEmitter()
+    child.stderr = new EventEmitter()
+    child.pid = 1
+    child.kill = (): void => undefined
+    queueMicrotask(() => {
+      const r = run(cmd, args)
+      if (r instanceof Error) child.emit('error', r)
+      else {
+        if (r.stdout) child.stdout.emit('data', Buffer.from(r.stdout))
+        child.emit('close', 0)
+      }
+    })
+    return child
+  }
+  return { execFile, execFileSync: () => '', spawn }
 })
 
 import { envService } from '../../src/main/services/env'
@@ -145,9 +162,9 @@ describe('repairEnv truth (0.2.5 WP0)', () => {
         return { stdout: '' }
       }
       if (args[0] === '-c') return { stdout: '{"torch":"2.9.0","cuda":null}' }
+      if (args.includes('install')) return new Error('stop after archive check')
       if (args.includes('--version') || args[0] === '-m') return { stdout: 'pip 25.0' }
       if (args.includes('list')) return { stdout: '[]' }
-      if (args.includes('install')) return new Error('stop after archive check')
       return { stdout: '' }
     }
     await expect(
@@ -242,5 +259,41 @@ describe('repairEnv edge branches', () => {
     await expect(envService.repairEnv({ instanceId: 'i1' })).rejects.toThrow(
       /no Python 3.13 runtime/
     )
+  })
+})
+
+describe('repairEnv success branches', () => {
+  beforeEach(async () => {
+    ;(envService as unknown as { repairAbort: AbortController | null }).repairAbort = null
+    writeFileSync(join(comfy, 'requirements.txt'), 'numpy\n')
+    h.handler = (cmd, args) => {
+      if (args[0] === '--version') return { stdout: 'Python 3.13.5' }
+      if (args[0] === '-c') return { stdout: '{"torch":"2.9.0","cuda":null}' }
+      if (args[0] === '-m' && args[1] === 'pip' && args[2] === '--version') {
+        return { stdout: 'pip 25.0' }
+      }
+      if (args[0] === '-m' && args[1] === 'pip' && args[2] === 'list') return { stdout: '[]' }
+      if (args.includes('install')) return { stdout: 'Successfully installed torch' }
+      return { stdout: '' }
+    }
+  })
+
+  it('completes a CPU repair, emits done and persists the venv/version', async () => {
+    const probe = await envService.repairEnv({ instanceId: 'i1', torchChannel: 'cpu' })
+    expect(probe.pythonVersion).toContain('3.13')
+    const saved = h.upserts.at(-1)
+    expect(saved?.venvPath).toBe(venv)
+    expect(saved?.migrationState).toBe('none')
+    const progress = envService.getRepairProgress()
+    expect(progress?.status).toBe('done')
+    expect(progress?.steps.find((s) => s.id === 'torch')?.status).toBe('done')
+    expect(existsSync(join(h.root, '.comfypilot-env.json'))).toBe(true)
+  })
+
+  it('fails honestly when a CUDA channel does not produce a CUDA build', async () => {
+    await expect(envService.repairEnv({ instanceId: 'i1', torchChannel: 'cu126' })).rejects.toThrow(
+      /CUDA is still unavailable/
+    )
+    expect(envService.getRepairProgress()?.status).toBe('failed')
   })
 })

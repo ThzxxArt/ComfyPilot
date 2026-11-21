@@ -426,3 +426,95 @@ describe('outputIndicatesFailure (0.1.13)', () => {
     ).toBe(true)
   })
 })
+
+describe('EnvService progress and discovery edges', () => {
+  it('builds repair progress snapshots and trims long logs', async () => {
+    const { envService } = await import('../../src/main/services/env')
+    const svc = envService as unknown as {
+      repairProgress: any
+      emitRepair: (...a: any[]) => void
+      repairLog: (line: string) => void
+      emit: (event: string, p: unknown) => void
+    }
+    svc.repairProgress = null
+    svc.emitRepair('i1', 'preflight', 'running', 'Locating')
+    expect(svc.repairProgress.instanceId).toBe('i1')
+    const events: any[] = []
+    svc.emit = (_e, p) => events.push(p)
+    svc.emitRepair('i1', 'venv', 'done', 'Venv ready', 'line', 'stepMsg.venv', { a: 1 })
+    expect(svc.repairProgress.steps.find((s: any) => s.id === 'venv').status).toBe('done')
+    svc.emitRepair('i1', 'done', 'failed', 'boom')
+    expect(svc.repairProgress.status).toBe('failed')
+    svc.emitRepair('i1', 'done', 'cancelled', 'cancelled')
+    expect(svc.repairProgress.status).toBe('cancelled')
+    svc.emitRepair('i1', 'done', 'done', 'finished')
+    expect(svc.repairProgress.status).toBe('done')
+    svc.emitRepair('i2', 'preflight', 'running', 'another')
+    expect(svc.repairProgress.instanceId).toBe('i2')
+    svc.emitRepair('i2', 'missing-step', 'running', 'noop')
+    svc.emitRepair('i2', 'venv', 'running', 'logging')
+
+    for (let i = 0; i < 405; i++) svc.repairLog(`l-${i}`)
+    const active = svc.repairProgress.steps.find((s: any) => s.id === 'venv') as any
+    expect(active.log.length).toBeLessThanOrEqual(400)
+    svc.repairProgress = null
+    svc.repairLog('ignored')
+    expect(events.length).toBeGreaterThan(0)
+  })
+
+  it('creates a uv venv, installs torch and lists Windows candidates', async () => {
+    const { envService } = await import('../../src/main/services/env')
+    const svc = envService as any
+    h.state.handler = (_cmd, args) => {
+      if (args[0] === 'venv') {
+        const venv = args[1]
+        mkdirSync(join(venv, 'bin'), { recursive: true })
+        writeFileSync(join(venv, 'bin', 'python'), '')
+        return { stdout: '' }
+      }
+      if (args[0] === '--version') return { stdout: 'Python 3.13.2' }
+      if (args[0] === '-c') return { stdout: '{"torch":"2.9.0","cuda":null}' }
+      if (args[0] === '-m' && args[1] === 'pip' && args[2] === '--version') {
+        return { stdout: 'pip 25.0' }
+      }
+      if (args[0] === '-m' && args[1] === 'pip' && args[2] === 'list') return { stdout: '[]' }
+      return { stdout: 'Successfully installed torch' }
+    }
+    const probe = await svc.createVenv({
+      basePath: join(h.state.root, 'uvbase'),
+      name: 'uvvenv',
+      pythonPath: 'python',
+      useUv: true,
+      torchIndex: 'https://download.pytorch.org/whl/cpu'
+    })
+    expect(probe.pythonPath).toContain('uvvenv')
+    expect(h.state.calls.some((c) => c.cmd === 'uv')).toBe(true)
+    expect(h.state.calls.some((c) => c.args.includes('torch'))).toBe(true)
+
+    h.state.portablePython = join(h.state.root, 'portable-python')
+    const list = await svc.listPythons()
+    expect(list.some((p: any) => p.path === h.state.portablePython)).toBe(true)
+    expect(list.length).toBeGreaterThan(0)
+  })
+
+  it('probes missing torch fields, pip failures and malformed package lists', async () => {
+    const { envService } = await import('../../src/main/services/env')
+    const svc = envService as any
+    h.state.handler = (_cmd, args) => {
+      if (args[0] === '--version') return { stdout: 'not-a-python' }
+      if (args[0] === '-c') return { stdout: '{"torch":""}' }
+      if (args[0] === '-m' && args[1] === 'pip' && args[2] === '--version') {
+        return { stdout: 'No module named pip' }
+      }
+      if (args[0] === '-m' && args[1] === 'pip' && args[2] === 'list') {
+        return { stdout: 'not json' }
+      }
+      return { stdout: '' }
+    }
+    const probe = await svc.probe({ pythonPath: 'python' })
+    expect(probe.ok).toBe(false)
+    expect(probe.pip.present).toBe(false)
+    expect(probe.packages.some((p: any) => p.name === 'torch')).toBe(true)
+    expect(probe.errors.join(' ')).toMatch(/pip is not available/)
+  })
+})

@@ -2320,3 +2320,131 @@ describe('output scanAsync (review fix)', () => {
     expect(res.scanned).toBeGreaterThanOrEqual(0)
   })
 })
+
+describe('p1p2 batch/output edge branches', () => {
+  beforeEach(() => {
+    cleanData()
+    mkdirSync(join(ROOT, 'wf'), { recursive: true })
+    mkdirSync(join(ROOT, 'comfy', 'output'), { recursive: true })
+  })
+
+  it('rejects resume/retry/start/wait/cancel on missing or finished jobs', async () => {
+    const { batchService } = await freshP1p2()
+    await seedInstance()
+    const p = join(ROOT, 'wf', 'edges.json')
+    writeFileSync(p, uiGraph())
+    const job = batchService.create({
+      name: 'edges',
+      instanceId: 'inst-1',
+      items: [{ workflowPath: p, count: 1 }]
+    })
+    const { upsertBatchJob, flushPendingWrites } = await import('../../src/main/services/db')
+    expect(() => batchService.startAsync('missing')).toThrow(/not found/)
+    await expect(batchService.start('missing')).rejects.toThrow(/not found/)
+    await expect(batchService.resume('missing')).rejects.toThrow(/not found/)
+    await expect(batchService.retryFailed('missing')).rejects.toThrow(/not found/)
+    await expect(batchService.wait('missing')).resolves.toBeNull()
+    expect(() => batchService.cancel('missing')).toThrow(/not found/)
+    expect(batchService.remove('missing')).toBe(false)
+    expect(() => batchService.cancelItem('missing', p)).toThrow(/not found/)
+  })
+
+  it('marks interrupted submit counters as lost and retries only failed legs', async () => {
+    const { batchService } = await freshP1p2()
+    await seedInstance()
+    const p = join(ROOT, 'wf', 'lost.json')
+    writeFileSync(p, uiGraph())
+    const job = batchService.create({
+      name: 'lost',
+      instanceId: 'inst-1',
+      items: [{ workflowPath: p, count: 2 }]
+    })
+    const events: string[] = []
+    const listener = (j: any): number => events.push(j.status)
+    batchService.on('progress', listener)
+    const lostJob: any = {
+      id: job.id,
+      items: [{ name: 'a', submitted: 2, completed: 1, failed: 0 }],
+      submitted: 2,
+      completed: 1,
+      failed: 0,
+      execFailed: 0,
+      notes: '',
+      errorSummary: ''
+    }
+    ;(batchService as any).markLostPrompts(lostJob)
+    expect(lostJob.failed).toBe(1)
+    expect(lostJob.execFailed).toBe(1)
+    expect(lostJob.errorSummary).toMatch(/Lost 1 in-flight/)
+    expect(events.length).toBeGreaterThan(0)
+    batchService.off('progress', listener)
+  })
+
+  it('scans root filters, depth clamps, symlink escapes and deleted ghosts', async () => {
+    const { outputService } = await freshP1p2()
+    const root = join(ROOT, 'out-edge')
+    rmSync(root, { recursive: true, force: true })
+    mkdirSync(join(root, 'a', 'b', 'c'), { recursive: true })
+    writeFileSync(join(root, 'a', 'b', 'c', 'deep.png'), 'x')
+    writeFileSync(join(root, 'top.png'), 'x')
+    expect(outputService.scan(join(ROOT, 'missing-output-root'))).toBe(0)
+
+    const link = join(ROOT, 'out-link')
+    rmSync(link, { force: true })
+    try {
+      symlinkSync(root, link)
+      expect(outputService.scan(link)).toBe(0)
+    } catch {
+      /* symlinks unavailable */
+    }
+
+    const { saveSettings, loadSettings, listOutputAssetsAll } =
+      await import('../../src/main/services/db')
+    saveSettings({ ...loadSettings(), outputScanDepth: 2 })
+    outputService.scan(root)
+    let listed = outputService.list({ root, limit: 1, offset: 100 })
+    expect(listed.items).toEqual([])
+    expect(listed.truncated).toBe(false)
+
+    saveSettings({ ...loadSettings(), outputScanDepth: 100 })
+    outputService.scan(root)
+    listed = outputService.list({ root, limit: 999, offset: -5 })
+    expect(listed.items.some((a: any) => a.fileName === 'deep.png')).toBe(true)
+
+    const now = Date.now()
+    expect(outputService.list({ createdFrom: now + 10_000 }).items).toEqual([])
+    expect(outputService.list({ createdTo: 1 }).items).toEqual([])
+    expect(outputService.list({ favorite: true }).items).toEqual([])
+    expect(outputService.list({ workflowIds: ['none'] }).items).toEqual([])
+
+    const top = listed.items.find((a: any) => a.fileName === 'top.png')!
+    rmSync(top.path, { force: true })
+    outputService.scan(root)
+    expect(listOutputAssetsAll().some((a: any) => a.path === top.path)).toBe(false)
+  })
+
+  it('honours scan cancellation and delete containment guards', async () => {
+    const { outputService } = await freshP1p2()
+    const root = join(ROOT, 'out-cancel')
+    mkdirSync(root, { recursive: true })
+    writeFileSync(join(root, 'a.png'), 'x')
+    outputService.cancelScan()
+    expect(outputService.scan(root)).toBeGreaterThanOrEqual(0)
+
+    expect(outputService.remove('missing', true)).toBe(false)
+    expect(outputService.favorite('missing', true)).toBe(false)
+    const outside = join(ROOT, 'outside-file.png')
+    writeFileSync(outside, 'x')
+    const { upsertOutputAsset } = await import('../../src/main/services/db')
+    upsertOutputAsset({
+      id: 'outside-asset',
+      path: outside,
+      fileName: 'outside-file.png',
+      type: 'image',
+      size: 1,
+      createdAt: 1,
+      params: {}
+    })
+    expect(() => outputService.remove('outside-asset', true)).toThrow(/outside the output roots/)
+  })
+})
