@@ -164,15 +164,19 @@ export async function restore(
 }
 
 export async function clickEveryButton(wrapper: VueWrapper): Promise<void> {
-  const count = wrapper.findAll('button').length
-  for (let i = 0; i < count; i++) {
-    try {
-      const b = wrapper.findAll('button')[i]
-      if (b) await b.trigger('click')
-      await flushPromises()
-    } catch {
-      /* stale/teleported */
+  for (let round = 0; round < 3; round++) {
+    const elements = new Set<HTMLElement>()
+    for (const b of wrapper.findAll('button')) elements.add(b.element as HTMLElement)
+    for (const b of Array.from(document.querySelectorAll('button'))) elements.add(b)
+    for (const el of elements) {
+      try {
+        el.click()
+        await flushPromises()
+      } catch {
+        /* detached/teleported */
+      }
     }
+    await nextTick()
   }
 }
 
@@ -205,6 +209,9 @@ export async function exerciseView(
     if (['t', 'locale', 'message', 'dialog'].includes(name)) continue
     if (opts.maxFunctions && n++ >= opts.maxFunctions) break
     for (const args of argsSets) {
+      // A no-arg confirm* opens a dialog around an undefined record and can
+      // schedule an unhandled async action; targeted tests call it explicitly.
+      if (args.length === 0 && /^confirm/i.test(name)) continue
       await restore(state, snap)
       try {
         const r = (value as (...a: unknown[]) => unknown)(...args)
