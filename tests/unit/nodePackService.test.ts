@@ -4409,3 +4409,125 @@ describe('effective custom_nodes root (0.2.5 WP1)', () => {
     expect(typeof (await resolveGitBinaryAsync())).toBe('string')
   })
 })
+
+// =====================================================================
+// Edge branches: default instance ids, pinned fallback, abort/cancel,
+// flagged registry status, manager fallback and uninstall stream defaults.
+// =====================================================================
+describe('node pack edge branches', () => {
+  beforeEach(() => {
+    process.env.COMFYUI_PATH = COMFY
+    h.mkdirPath(ROOT)
+  })
+  afterEach(() => {
+    delete process.env.COMFYUI_PATH
+  })
+
+  function seedRegistryNoInstance(writer: (dest: string) => void): void {
+    setFetch(async (url) => {
+      if (url.includes('/install')) return makeRes({ url: 'https://cdn.example/pack.zip' })
+      if (url.includes('pack.zip')) return makeRes('zip-bytes')
+      throw new Error('unexpected ' + url)
+    })
+    zipSafeMock.safeUnzip.mockImplementation(async (_zip: string, dest?: string) => {
+      const target = (dest as string) || join(ROOT, 'DefaultPack')
+      writer(target)
+    })
+  }
+
+  it('installs without an explicit instance id and streams the default guard', async () => {
+    seedRegistryNoInstance((dest) => {
+      h.mkdirPath(dest)
+      h.writeFile(join(dest, '__init__.py'), 'NODE_CLASS_MAPPINGS = {"DefaultNode": None}\n')
+      h.writeFile(join(dest, 'pyproject.toml'), 'name = "DefaultPack"\nversion = "1.0.0"\n')
+    })
+    const rec = await nodePackService.install({ id: 'DefaultPack', source: 'registry' })
+    expect(rec.name).toBe('DefaultPack')
+  })
+
+  it('falls back to the default branch when a pinned ref cannot be checked out', async () => {
+    cpMock.__setExecHandler((cmd, args) => {
+      if (args.includes('clone')) {
+        const dest = args[args.length - 1]
+        h.mkdirPath(dest)
+        h.writeFile(join(dest, '__init__.py'), 'NODE_CLASS_MAPPINGS = {}\n')
+        h.writeFile(join(dest, 'pyproject.toml'), 'name = "Pinned"\nversion = "1.0.0"\n')
+        return { stdout: '' }
+      }
+      if (args.includes('fetch')) return { stdout: '' }
+      if (args.includes('checkout')) return { error: new Error('missing ref') }
+      return { stdout: '' }
+    })
+    const rec = await nodePackService.install({
+      id: 'https://github.com/u/Pinned.git',
+      source: 'git',
+      version: 'v9.9.9'
+    })
+    expect(rec.name).toBe('Pinned')
+    expect((rec as { pinnedVersion?: string }).pinnedVersion).toBeUndefined()
+    expect(rec.meta?.['installNote'] || '').toBeDefined()
+  })
+
+  it('turns an aborted install into an OP_CANCELLED error', async () => {
+    seedRegistryNoInstance((dest) => {
+      h.mkdirPath(dest)
+      h.writeFile(join(dest, 'pyproject.toml'), 'name = "AbortPack"\n')
+    })
+    const ac = new AbortController()
+    ac.abort()
+    await expect(
+      nodePackService.install(
+        { id: 'AbortPack', source: 'registry' },
+        { signal: ac.signal, reuseStream: true }
+      )
+    ).rejects.toMatchObject({ code: 'OP_CANCELLED' })
+  })
+
+  it('warns for a flagged registry status and still downloads', async () => {
+    setFetch(async (url) => {
+      if (url.endsWith('/nodes/Flagged')) return makeRes({ node: { status: 'flagged' } })
+      if (url.includes('/install')) return makeRes({ downloadUrl: 'https://cdn.example/pack.zip' })
+      if (url.includes('pack.zip')) return makeRes('zip-bytes')
+      throw new Error('unexpected ' + url)
+    })
+    zipSafeMock.safeUnzip.mockImplementation(async (_zip: string, dest?: string) => {
+      const target = (dest as string) || join(ROOT, 'Flagged')
+      h.mkdirPath(target)
+      h.writeFile(join(target, 'pyproject.toml'), 'name = "Flagged"\nversion = "1.0.0"\n')
+    })
+    const logs: string[] = []
+    nodePackService.on('op-log', (e: { line?: string }) => logs.push(String(e.line || '')))
+    const rec = await nodePackService.install({
+      id: 'Flagged',
+      source: 'registry',
+      repository: 'https://github.com/example/Flagged.git'
+    })
+    expect(rec.name).toBe('Flagged')
+    expect(logs.join('\n')).toContain('flagged')
+  })
+
+  it('rejects a manager pack with no repository and survives a failing channel list', async () => {
+    setFetch(async () => {
+      throw new Error('manager offline')
+    })
+    await expect(nodePackService.install({ id: 'NoRepo', source: 'manager' })).rejects.toThrow(
+      /no repository/i
+    )
+  })
+
+  it('uninstalls without an instance id and skips pip when not requested', async () => {
+    const dir = seedPack({ name: 'DefaultUninstall' })
+    h.state.nodePacks.push({
+      id: 'default-uninstall',
+      name: 'DefaultUninstall',
+      path: dir,
+      version: '1.0.0',
+      enabled: true,
+      locked: false
+    })
+    const ok = await nodePackService.uninstall('DefaultUninstall')
+    expect(ok).toBe(true)
+    expect(h.state.dirs.has(dir)).toBe(false)
+    await expect(nodePackService.uninstall('definitely-missing')).resolves.toBe(false)
+  })
+})
