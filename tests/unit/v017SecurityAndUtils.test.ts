@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { join } from 'path'
+import { join, resolve } from 'path'
 
 const readSrc = (rel: string): string => {
   const { readFileSync } = require('fs')
@@ -76,7 +76,8 @@ describe('security: path safety', () => {
     // Absolute input is NOT honored as a system path: per the comfy-pilot:// protocol
     // contract, leading separators are stripped and the result must stay under the root.
     const abs = safeResolveUnder('/a/b', '/etc/passwd')
-    expect(abs === null || abs.startsWith('/a/b')).toBe(true)
+    const root = resolve('/a/b').replace(/\\/g, '/')
+    expect(abs === null || abs.replace(/\\/g, '/').startsWith(root)).toBe(true)
     expect(abs).not.toBe('/etc/passwd')
   })
 })

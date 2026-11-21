@@ -79,7 +79,7 @@ describe('security extra branches', () => {
     expect(resolveInsideAnyRoot('/a/b', ['/a'])).toBe(resolve('/a/b'))
     expect(resolveInsideAnyRoot('/b', ['/a'])).toBeNull()
     expect(resolveInsideAnyRoot('/a/../b', ['/b'])).toBeNull()
-    expect(safeJoinFile('/root', 'a/b')).toBe(resolve('/root', 'b'))
+    expect(safeJoinFile('/root', 'a/b')).toBe(join('/root', 'b'))
     expect(() => safeJoinFile('/root', '..')).toThrow()
     expect(isAbsoluteOrRelativePath('/x')).toBe(true)
     expect(isAbsoluteOrRelativePath('x/y')).toBe(true)

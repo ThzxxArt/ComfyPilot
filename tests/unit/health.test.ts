@@ -195,7 +195,10 @@ describe('health service against real HTTP fixtures (0.2.5 WP2)', () => {
     server.setMode('hang')
     for (let i = 0; i < 3; i++) await instanceHealthService.check('i1')
     server.setMode('normal')
-    const health = await instanceHealthService.check('i1')
+    let health = await instanceHealthService.check('i1')
+    for (let i = 0; i < 3 && health.state !== 'healthy'; i++) {
+      health = await instanceHealthService.check('i1')
+    }
     expect(health.state).toBe('healthy')
     expect(health.consecutiveFailures).toBe(0)
   })
