@@ -6,7 +6,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createHash } from 'crypto'
 import {
-  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -94,10 +93,6 @@ function stubPlatform(p: string, arch = process.arch): void {
 
 function sha(data: string): string {
   return createHash('sha256').update(data).digest('hex')
-}
-
-function json(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), { status })
 }
 
 async function freshService(): Promise<any> {
