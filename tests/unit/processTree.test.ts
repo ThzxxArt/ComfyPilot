@@ -6,7 +6,8 @@
 import { describe, it, expect, vi } from 'vitest'
 
 const h = vi.hoisted(() => ({
-  execCalls: [] as Array<{ cmd: string; args: string[] }>
+  execCalls: [] as Array<{ cmd: string; args: string[] }>,
+  execSyncOut: '' as string | ((args: string[]) => string)
 }))
 
 vi.mock('child_process', async (importOriginal) => {
@@ -17,7 +18,9 @@ vi.mock('child_process', async (importOriginal) => {
       h.execCalls.push({ cmd, args })
       queueMicrotask(() => cb?.())
       return { pid: 1 }
-    }
+    },
+    execFileSync: (_cmd: string, args: string[]) =>
+      typeof h.execSyncOut === 'function' ? h.execSyncOut(args) : h.execSyncOut
   }
 })
 
@@ -103,6 +106,29 @@ describe('killProcessTree', () => {
       await killProcessTree(posixDead as never)
       expect(posixDead.kills).toEqual(['SIGKILL'])
     } finally {
+      Object.defineProperty(process, 'platform', { value: real, configurable: true })
+    }
+  })
+
+  it('sweeps nested POSIX descendants from ps output', async () => {
+    const real = process.platform
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => true)
+    h.execSyncOut = (args) => {
+      const parent = args[args.length - 1]
+      if (parent === '500') return '11\n12\n'
+      if (parent === '11') return '21\n'
+      return ''
+    }
+    try {
+      const child = fakeChild(500)
+      await killProcessTree(child as never, { waitMs: 0 })
+      expect(kill).toHaveBeenCalledWith(11, 'SIGKILL')
+      expect(kill).toHaveBeenCalledWith(12, 'SIGKILL')
+      expect(kill).toHaveBeenCalledWith(21, 'SIGKILL')
+    } finally {
+      kill.mockRestore()
+      h.execSyncOut = ''
       Object.defineProperty(process, 'platform', { value: real, configurable: true })
     }
   })
