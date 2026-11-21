@@ -8,6 +8,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, existsSync } from 'fs'
+import { createHash } from 'crypto'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -18,7 +19,17 @@ const h = vi.hoisted(() => ({
   downloads: [] as any[],
   fetchCalls: [] as Array<{ url: string; headers: Record<string, string> }>,
   handler: null as null | ((url: string, headers: Record<string, string>) => Response),
-  abortReject: null as null | ((err: Error) => void)
+  abortReject: null as null | ((err: Error) => void),
+  settings: {
+    useAria2: false,
+    aria2Path: '',
+    hfEndpoint: '',
+    civitaiEndpoint: '',
+    proxy: { enabled: false }
+  },
+  bypass: true,
+  aria2Available: false,
+  aria2Impl: null as null | ((url: string, dest: string) => Promise<{ ok: boolean; log: string }>)
 }))
 
 vi.mock('electron', () => ({
@@ -41,7 +52,7 @@ vi.mock('electron', () => ({
 }))
 
 vi.mock('../../src/main/services/proxy', () => ({
-  shouldBypass: () => true,
+  shouldBypass: () => h.bypass,
   buildBypassList: () => [],
   proxyFetch: async (
     url: string,
@@ -59,12 +70,17 @@ vi.mock('../../src/main/services/proxy', () => ({
   }
 }))
 
+vi.mock('../../src/main/services/media', () => ({
+  aria2Service: {
+    available: () => h.aria2Available,
+    download: (url: string, dest: string) =>
+      h.aria2Impl ? h.aria2Impl(url, dest) : Promise.resolve({ ok: true, log: '' })
+  }
+}))
+
 vi.mock('../../src/main/services/db', () => ({
   loadSettings: () => ({
-    proxy: { enabled: false },
-    useAria2: false,
-    hfEndpoint: '',
-    civitaiEndpoint: '',
+    ...h.settings,
     modelScanRoots: h.roots,
     githubEndpoint: ''
   }),
@@ -95,6 +111,13 @@ function streamResponse(
     status: init.status,
     headers: init.headers
   })
+}
+
+async function waitTask(task: any, pred: (t: any) => boolean, timeoutMs = 8000): Promise<void> {
+  const t0 = Date.now()
+  while (!pred(task) && Date.now() - t0 < timeoutMs) {
+    await new Promise((r) => setTimeout(r, 25))
+  }
 }
 
 async function makeService(): Promise<any> {
@@ -130,6 +153,16 @@ describe('ModelService resume integrity (0.1.18 P0-2)', () => {
     h.downloads = []
     h.fetchCalls = []
     h.handler = null
+    h.settings = {
+      useAria2: false,
+      aria2Path: '',
+      hfEndpoint: '',
+      civitaiEndpoint: '',
+      proxy: { enabled: false }
+    }
+    h.bypass = true
+    h.aria2Available = false
+    h.aria2Impl = null
   })
 
   afterEach(() => {
@@ -298,6 +331,16 @@ describe('Civitai download naming (0.2.5 WP9)', () => {
     h.downloads = []
     h.fetchCalls = []
     h.handler = null
+    h.settings = {
+      useAria2: false,
+      aria2Path: '',
+      hfEndpoint: '',
+      civitaiEndpoint: '',
+      proxy: { enabled: false }
+    }
+    h.bypass = true
+    h.aria2Available = false
+    h.aria2Impl = null
   })
 
   afterEach(() => rmSync(root, { recursive: true, force: true }))
@@ -393,6 +436,7 @@ describe('Civitai download naming (0.2.5 WP9)', () => {
       destDir: root
     })
     expect(fallback.fileName).toContain('civitai-model-999')
+    svc.cancelDownload(fallback.id)
   })
 
   it('verifies downloads and removes corrupt partials', async () => {
@@ -514,5 +558,315 @@ describe('Civitai download naming (0.2.5 WP9)', () => {
     expect(task.fileName).toBe('api-name.safetensors')
     svc.cancelDownload(task.id)
     await new Promise((r) => setTimeout(r, 50))
+  })
+})
+
+// =====================================================================
+// Additional download branches: Civitai naming, 416 completion, aria2,
+// proxy routing, pause/resume/prioritize errors and sidecar checks.
+// =====================================================================
+describe('download edge branches', () => {
+  let root = ''
+  let dest = ''
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'cp-resume-edge-'))
+    dest = join(root, 'x.safetensors')
+    h.roots = [root]
+    h.downloads = []
+    h.fetchCalls = []
+    h.handler = null
+  })
+
+  afterEach(() => {
+    if (root) rmSync(root, { recursive: true, force: true })
+  })
+
+  it('uses HEAD names and falls back when the Civitai API is unusable', async () => {
+    const svc = await makeService()
+    h.handler = (url) => {
+      if (url.includes('/api/v1/model-versions/')) return new Response('nope', { status: 404 })
+      if (url.endsWith('.sha256')) return new Response('', { status: 404 })
+      return new Response('', {
+        status: 200,
+        headers: { 'content-disposition': 'attachment; filename="head-name.safetensors"' }
+      })
+    }
+    const headTask = await svc.download({
+      url: 'https://civitai.com/api/download/models/111',
+      destDir: root
+    })
+    expect(headTask.fileName).toBe('head-name.safetensors')
+    svc.cancelDownload(headTask.id)
+
+    h.handler = (url) => {
+      if (url.includes('/api/v1/model-versions/')) {
+        return new Response(
+          JSON.stringify({
+            files: 'not-an-array',
+            model: null,
+            trainedWords: 'nope',
+            images: 'nope'
+          }),
+          { status: 200 }
+        )
+      }
+      if (url.endsWith('.sha256')) return new Response('', { status: 404 })
+      return new Response('', { status: 200 })
+    }
+    const fallback = await svc.download({
+      url: 'https://civitai.com/api/download/models/222',
+      destDir: root
+    })
+    expect(fallback.fileName).toBe('civitai-model-222.safetensors')
+    expect((fallback.metadata as any).civitai.trainedWords).toEqual([])
+    svc.cancelDownload(fallback.id)
+
+    h.handler = (url) => {
+      if (url.includes('/api/v1/model-versions/')) {
+        return new Response(
+          JSON.stringify({
+            files: [{ name: 'first.safetensors' }],
+            model: { id: 1, name: 'M' },
+            images: [{ url: 'https://img' }]
+          }),
+          { status: 200 }
+        )
+      }
+      if (url.endsWith('.sha256')) return new Response('', { status: 404 })
+      return new Response('', { status: 200 })
+    }
+    const firstFile = await svc.download({
+      url: 'https://civitai.com/api/download/models/333',
+      destDir: root
+    })
+    expect(firstFile.fileName).toBe('first.safetensors')
+    expect((firstFile.metadata as any).civitai.previewUrl).toBe('https://img')
+    svc.cancelDownload(firstFile.id)
+  })
+
+  it('rewrites HF mirrors and Civitai model URLs', async () => {
+    const svc = await makeService()
+    h.settings.hfEndpoint = 'https://hf-mirror.test/'
+    h.handler = (url) => {
+      if (url.endsWith('.sha256')) return new Response('', { status: 404 })
+      return new Response('', { status: 200 })
+    }
+    const hf = await svc.download({
+      url: 'https://huggingface.co/org/repo/resolve/main/a.safetensors',
+      destDir: root
+    })
+    expect(hf.url).toBe('https://hf-mirror.test/org/repo/resolve/main/a.safetensors')
+    svc.cancelDownload(hf.id)
+
+    const versioned = await svc.download({
+      url: 'https://civitai.com/models/123?modelVersionId=456',
+      destDir: root
+    })
+    expect(versioned.url).toBe('https://civitai.com/api/download/models/456')
+    svc.cancelDownload(versioned.id)
+
+    const plain = await svc.download({
+      url: 'https://civitai.com/models/789',
+      destDir: root
+    })
+    expect(plain.url).toBe('https://civitai.com/api/download/models/789')
+    svc.cancelDownload(plain.id)
+  })
+
+  it('fetches Civitai metadata and tolerates HTTP/network failures', async () => {
+    const svc = await makeService()
+    h.handler = () => new Response(JSON.stringify({ id: 1, name: 'M' }), { status: 200 })
+    expect(await svc.fetchCivitaiMeta('https://civitai.com/models/123?x=1')).toEqual({
+      id: 1,
+      name: 'M'
+    })
+    h.handler = () => new Response('nope', { status: 500 })
+    expect(await svc.fetchCivitaiMeta('123')).toBeNull()
+    h.handler = () => {
+      throw new Error('offline')
+    }
+    expect(await svc.fetchCivitaiMeta('123')).toBeNull()
+  })
+
+  it('finishes a 416 resume after verification and retries a corrupt leftover', async () => {
+    const svc = await makeService()
+    writeFileSync(dest, 'good')
+    const good = seedTask(svc, dest, 4)
+    good.status = 'paused'
+    h.handler = () => new Response('', { status: 416 })
+    const paused = svc.pauseDownload(good.id)
+    expect(paused.status).toBe('paused')
+    await svc.resumeDownload(good.id)
+    expect(good.status).toBe('done')
+    expect(readFileSync(dest, 'utf-8')).toBe('good')
+
+    rmSync(dest, { force: true })
+    writeFileSync(dest, 'bad')
+    const bad = seedTask(svc, dest, 3)
+    bad.id = 't-bad'
+    svc.downloads.set(bad.id, bad)
+    h.handler = (url) => {
+      if (url.endsWith('.sha256')) return new Response('', { status: 404 })
+      return streamResponse(Buffer.from('new'), {
+        status: 200,
+        headers: { 'content-length': '3' }
+      })
+    }
+    await svc.resumeDownload(bad.id)
+    expect(bad.status).toBe('done')
+    expect(readFileSync(dest, 'utf-8')).toBe('new')
+  })
+
+  it('uses aria2 when available and falls back after aria2 failures', async () => {
+    const svc = await makeService()
+    h.settings.useAria2 = true
+    h.settings.aria2Path = 'aria2c'
+    h.aria2Available = true
+    h.aria2Impl = async (_url, part) => {
+      writeFileSync(part, 'aria-data')
+      return { ok: true, log: '' }
+    }
+    const task = await svc.download({
+      url: 'https://example.test/a.safetensors',
+      destDir: root
+    })
+    await waitTask(task, (t) => t.status === 'done' || t.status === 'error')
+    expect(task.status).toBe('done')
+    expect(task.totalBytes).toBe(9)
+
+    h.aria2Impl = async () => ({ ok: false, log: 'aria failed'.repeat(40) })
+    const failed = await svc.download({
+      url: 'https://example.test/b.safetensors',
+      destDir: root
+    })
+    await waitTask(failed, (t) => t.status === 'error', 12000)
+    expect(failed.status).toBe('error')
+    expect(failed.error?.length).toBeLessThanOrEqual(300)
+
+    h.aria2Impl = async () => {
+      throw new Error('aria crashed')
+    }
+    h.handler = (url) => {
+      if (url.endsWith('.sha256')) return new Response('', { status: 404 })
+      return streamResponse(Buffer.from('native'), {
+        status: 200,
+        headers: { 'content-length': '6' }
+      })
+    }
+    const fallback = await svc.download({
+      url: 'https://example.test/c.safetensors',
+      destDir: root
+    })
+    await waitTask(fallback, (t) => t.status === 'done' || t.status === 'error')
+    expect(fallback.status).toBe('done')
+  })
+
+  it('routes through the session proxy and rejects incomplete bodies', async () => {
+    const svc = await makeService()
+    h.settings.proxy.enabled = true
+    h.bypass = false
+    h.handler = () =>
+      streamResponse(Buffer.from('proxy'), {
+        status: 200,
+        headers: { 'content-length': '5' }
+      })
+    const proxied = await svc.download({
+      url: 'https://example.test/p.safetensors',
+      destDir: root
+    })
+    await waitTask(proxied, (t) => t.status === 'done' || t.status === 'error')
+    expect(proxied.status).toBe('done')
+
+    h.handler = () =>
+      streamResponse(Buffer.from('short'), {
+        status: 200,
+        headers: { 'content-length': '50' }
+      })
+    const incomplete = await svc.download({
+      url: 'https://example.test/short.safetensors',
+      destDir: root
+    })
+    await waitTask(incomplete, (t) => t.status === 'error')
+    expect(incomplete.status).toBe('error')
+    expect(incomplete.error).toMatch(/incomplete/i)
+
+    h.handler = () =>
+      ({ ok: true, status: 200, headers: { get: () => null } }) as unknown as Response
+    const noBody = await svc.download({
+      url: 'https://example.test/nobody.safetensors',
+      destDir: root
+    })
+    await waitTask(noBody, (t) => t.status === 'error', 12000)
+    expect(noBody.status).toBe('error')
+  })
+
+  it('errors for missing pause/resume/prioritize targets and handles waiters', async () => {
+    const svc = await makeService()
+    expect(() => svc.pauseDownload('missing')).toThrow(/not found/)
+    await expect(svc.resumeDownload('missing')).rejects.toThrow(/not found/)
+    expect(() => svc.prioritizeDownload('missing')).toThrow(/not found/)
+
+    const persisted = seedTask(svc, join(root, 'persisted.safetensors'), 1)
+    svc.downloads.delete(persisted.id)
+    h.downloads.push({ ...persisted })
+    expect(svc.pauseDownload(persisted.id).status).toBe('paused')
+    expect(svc.prioritizeDownload(persisted.id).priority).toBe(0)
+
+    const waiterTask = seedTask(svc, join(root, 'waiter.safetensors'), 1)
+    waiterTask.id = 'waiter'
+    svc.downloads.set(waiterTask.id, waiterTask)
+    let resolved = false
+    svc.pendingStarts = [
+      { priority: 0, seq: 1, taskId: 'other', resolve: () => undefined },
+      { priority: 0, seq: 2, taskId: 'waiter', resolve: () => (resolved = true) }
+    ]
+    const promoted = svc.prioritizeDownload('waiter')
+    expect(promoted.priority).toBeGreaterThan(0)
+    expect(svc.pendingStarts.find((w: any) => w.taskId === 'waiter').seq).toBe(0)
+    void resolved
+
+    const active = seedTask(svc, join(root, 'active.safetensors'), 1)
+    active.id = 'active'
+    svc.downloads.set(active.id, active)
+    svc.abortControllers.set(active.id, new AbortController())
+    await expect(svc.resumeDownload(active.id)).rejects.toThrow(/already in progress/)
+    svc.abortControllers.clear()
+  })
+
+  it('verifies companion sidecars strictly and defaults to the task path', async () => {
+    const svc = await makeService()
+    const file = join(root, 'sidecar.safetensors')
+    writeFileSync(file, 'abc')
+    const task: any = {
+      id: 'side',
+      url: 'https://example.test/side.safetensors',
+      destPath: file,
+      fileName: 'side.safetensors',
+      totalBytes: 3,
+      receivedBytes: 3,
+      status: 'running',
+      startedAt: Date.now()
+    }
+    h.handler = () => new Response('<html>deadbeef</html>', { status: 200 })
+    expect(await svc.verifyDownload(task)).toBe(true)
+    expect(task.verified).toBe('length')
+
+    writeFileSync(file, 'abc')
+    const realHash = createHash('sha256').update('abc').digest('hex')
+    h.handler = () => new Response(`${realHash}  side.safetensors`, { status: 200 })
+    expect(await svc.verifyDownload(task)).toBe(true)
+    expect(task.verified).toBe('sha256')
+
+    writeFileSync(file, 'abc')
+    h.handler = () => new Response('b'.repeat(64), { status: 200 })
+    expect(await svc.verifyDownload(task)).toBe(false)
+    expect(task.error).toMatch(/Companion .sha256 mismatch/)
+
+    writeFileSync(file, 'abc')
+    h.handler = () => {
+      throw new Error('offline')
+    }
+    expect(await svc.verifyDownload(task)).toBe(true)
   })
 })
