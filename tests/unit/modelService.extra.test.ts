@@ -349,16 +349,17 @@ describe('ModelService scan/cache/queue edges', () => {
 
   it('queues waiters by priority and transfers the slot on release', () => {
     const svc = new ModelService()
-    svc.runningCount = 4
-    const low = svc.acquireSlot(0, 'low')
-    const high = svc.acquireSlot(9, 'high')
-    const mid = svc.acquireSlot(5, 'mid')
+    const admin = svc as any
+    admin.runningCount = 4
+    const low = admin.acquireSlot(0, 'low')
+    const high = admin.acquireSlot(9, 'high')
+    const mid = admin.acquireSlot(5, 'mid')
     expect((svc as any).pendingStarts.map((w: any) => w.taskId)).toEqual(['low', 'high', 'mid'])
-    svc.releaseSlot()
+    admin.releaseSlot()
     expect((svc as any).pendingStarts.map((w: any) => w.taskId)).toEqual(['low', 'mid'])
-    svc.releaseSlot()
+    admin.releaseSlot()
     expect((svc as any).pendingStarts.map((w: any) => w.taskId)).toEqual(['low'])
-    svc.releaseSlot()
+    admin.releaseSlot()
     expect((svc as any).pendingStarts).toEqual([])
     void low
     void high
