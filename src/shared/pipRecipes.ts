@@ -37,7 +37,7 @@ export interface PipRecipe {
 }
 
 const SAGEATTENTION_WHEEL =
-  'https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows.post4/sageattention-2.2.0+cu130torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl'
+  'https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows.post6/sageattention-2.2.0+cu130torch2.10.0andhigher.post6-cp310-abi3-win_amd64.whl'
 
 export const PIP_RECIPES: PipRecipe[] = [
   {
@@ -54,19 +54,32 @@ export const PIP_RECIPES: PipRecipe[] = [
     titleKey: 'deps.recipe.sageattention.title',
     descKey: 'deps.recipe.sageattention.desc',
     matchModules: ['sageattention', 'sageattn3', 'sageattn'],
-    // Verified Windows wheel (abi3, torch 2.9+ / cu130). triton-windows is
+    // Verified Windows wheel (abi3, torch 2.10+ / cu130). triton-windows is
     // required first — sageattention imports triton kernels at runtime.
+    // 2.2.0 is also the minimum for KJNodes' MiniMax H3 / LTX2 / WanVideo
+    // memory-efficient attention patches; 1.0.6 from PyPI is too old.
     platform: ['win32'],
     steps: [
       { kind: 'pip', spec: 'triton-windows' },
       {
         kind: 'wheel',
         url: SAGEATTENTION_WHEEL,
-        sha256: 'f7261c53a1d46202059daff6b8feac5ee806274d47e3e7fb7abf8c5f6d410c92',
-        sizeBytes: 12321863
+        sha256: '1635283f5c01ec3cda58a784d0d7eabbcaffaf9511d1b263db4750e1ed7958bb',
+        sizeBytes: 16656067
       }
     ],
     sourceUrl: 'https://github.com/woct0rdho/SageAttention/releases',
+    experimental: true
+  },
+  {
+    id: 'xformers',
+    titleKey: 'deps.recipe.xformers.title',
+    descKey: 'deps.recipe.xformers.desc',
+    matchModules: ['xformers'],
+    // xformers 0.0.36 declares torch>=2.10; macOS is not supported here.
+    platform: ['win32', 'linux'],
+    steps: [{ kind: 'pip', spec: 'xformers' }],
+    sourceUrl: 'https://pypi.org/project/xformers/',
     experimental: true
   },
   {

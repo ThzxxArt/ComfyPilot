@@ -121,7 +121,13 @@ export type {
   BackupRestoreResult
 } from './backup'
 
-export type { EnvProbe, EnvCreateRequest, RepairEnvOptions } from './env'
+export type {
+  AttentionSelfTestPackage,
+  AttentionSelfTestResult,
+  EnvProbe,
+  EnvCreateRequest,
+  RepairEnvOptions
+} from './env'
 
 export type {
   BatchJobStatus,

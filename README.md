@@ -75,8 +75,8 @@ ComfyPilot **不替代** ComfyUI 的节点画布。它把画布之外的一切�
   <a href="https://github.com/ThzxxArt/ComfyPilot/releases/latest">
     <img src="https://img.shields.io/badge/Download-Windows%20x64-4F6EF7?style=for-the-badge&logo=windows11&logoColor=white" alt="Download ComfyPilot for Windows">
   </a>
-  <a href="https://github.com/ThzxxArt/ComfyPilot/releases/tag/v0.2.5">
-    <img src="https://img.shields.io/badge/Release-v0.2.5-22C55E?style=for-the-badge&logo=github&logoColor=white" alt="ComfyPilot v0.2.5">
+  <a href="https://github.com/ThzxxArt/ComfyPilot/releases/tag/v0.2.6">
+    <img src="https://img.shields.io/badge/Release-v0.2.6-22C55E?style=for-the-badge&logo=github&logoColor=white" alt="ComfyPilot v0.2.6">
   </a>
 </p>
 
@@ -244,7 +244,7 @@ flowchart TB
 | VC++ Redistributable | Windows 运行 Electron 需要；缺失时启动会提示                          |
 | Python / Git / uv    | **无需预装**；一键装机自动下载便携运行时                              |
 
-1. 下载并运行 `ComfyPilot-0.2.5-win-x64.exe`。
+1. 下载并运行 `ComfyPilot-0.2.6-win-x64.exe`。
 2. 打开应用 → 空态三步引导 →「全自动安装」。
 3. 完成后「立即启动并打开 Frontend」→ 下载基础模型 → 出图。
 
@@ -384,7 +384,7 @@ cmd /c "node node_modules\electron-builder\cli.js --win --config electron-builde
 
 ```text
 ComfyPilot/
-├── package.json                 # v0.2.5 · MIT · ThzxxArt
+├── package.json                 # v0.2.6 · MIT · ThzxxArt
 ├── electron.vite.config.ts
 ├── electron-builder.yml         # Win NSIS（已发布）；macOS/Linux 目标存在但未验证
 ├── vitest.config.ts             # 全量运行时覆盖率门禁
@@ -430,6 +430,14 @@ ComfyPilot/
 
 ## 🗓️ 版本与变更
 
+### 0.2.6 · 注意力加速可管理
+
+- **实例详情新卡片**：「注意力加速」集中展示 SageAttention / xFormers 的安装状态、版本、兼容性和启动开关。
+- **SageAttention 版本修复**：识别 `sageattention is not new enough version`，不再误判为缺模块；一键升级到 2.2.0 预编译 wheel（Windows + cu130 + torch 2.10+，SHA256 校验）。
+- **xFormers 独立管理**：新增 xFormers 安装 recipe，安装后可运行自检；启用/禁用直接写入 `--disable-xformers`。
+- **真实自检**：在实例 venv 内执行固定脚本，检查 import、版本、CUDA 架构，并跑一个小 attention 内核；自检失败不会静默标记为可用。
+- **启动配置联动**：SageAttention 开关写入 `--use-sage-attention`，修改后提示重启实例；与其它 attention 后端互斥。
+
 ### 0.2.5 · 运行真相、卡死救援、上游对齐
 
 - **运行真相**：健康状态由 HTTP、TCP、进程、日志、队列/WS 证据共同判定；卡死不再显示绿色“运行中”，默认只告警、不自动杀。
@@ -452,6 +460,7 @@ ComfyPilot/
 
 | 版本              | 主题                                                                                         |
 | ----------------- | -------------------------------------------------------------------------------------------- |
+| **0.2.6**         | 注意力加速卡片、SageAttention 2.2 升级、xFormers 管理、真实自检、启动后端开关                |
 | **0.2.5**         | 健康看门狗、锁屏救援、有效路径解析、Manager v4.4、stable 更新、torch 矩阵、安全边界、资产 P0 |
 | **0.2.4**         | 启动诊断、日志真实性、可选依赖归因、uv Python 归属、Impact Pack 配置修复                     |
 | **0.2.3**         | 全量代码/功能/逻辑/视觉审查修复；IPC 运行时契约全量对齐；覆盖率分母改为全部运行时代码        |

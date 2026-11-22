@@ -88,6 +88,39 @@ describe('ExecDiagnosticsService (0.1.12)', () => {
     expect(notifies).toHaveLength(2)
   })
 
+  it('records an installed-but-outdated dependency from a WS guard message', async () => {
+    const svc = await fresh()
+    const message =
+      'sageattention is not new enough version or could not determine CUDA architecture, cannot apply MiniMax H3 Memory Efficient Sage Attention Patch.'
+    svc.recordWs(
+      'i1',
+      errEvent({
+        errorType: 'RuntimeError',
+        errorMessage: message
+      })
+    )
+    const [failure] = svc.list('i1')
+    expect(failure.errorType).toBe('RuntimeError')
+    expect(failure.outdatedModule).toBe('sageattention')
+    expect(failure.missingModule).toBeUndefined()
+  })
+
+  it('uses honest defaults for partial WS payloads and ignores non-trigger lines', async () => {
+    const svc = await fresh()
+    expect(svc.instanceIdForBaseUrl('')).toBeUndefined()
+    svc.noteLogLine('i1', 'ordinary log line')
+    await vi.advanceTimersByTimeAsync(600)
+    expect(svc.list('i1')).toHaveLength(0)
+
+    svc.recordWs(
+      'i1',
+      errEvent({ errorType: undefined, errorMessage: undefined, errorTraceback: undefined })
+    )
+    const [failure] = svc.list('i1')
+    expect(failure.errorType).toBe('ExecutionError')
+    expect(failure.message).toBe('Execution failed')
+  })
+
   it('ignores non-error events', async () => {
     const svc = await fresh()
     expect(svc.recordWs('i1', { type: 'status', baseUrl: 'x' } as any)).toBeNull()

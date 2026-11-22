@@ -23,6 +23,8 @@ export interface ParsedExecError {
   message: string
   /** Extracted from `No module named 'x'` when present. */
   missingModule?: string
+  /** Extracted from `X is not new enough version` when present. */
+  outdatedModule?: string
   /** custom_nodes sub-folder the failing file lives in (pack attribution). */
   packFolder?: string
   /** ANSI-stripped follow-up lines of the block (bounded, includes traceback). */
@@ -41,6 +43,14 @@ const TRIGGER_RE = /!!!\s*Exception during processing\s*!!!\s*(.*)$/i
 const EXC_LINE_RE =
   /^([A-Za-z_][A-Za-z0-9_.]*Error|Exception[A-Za-z0-9_.]*|[A-Za-z_][A-Za-z0-9_.]*Exception)\s*:\s*(.*)$/
 const MISSING_MODULE_RE = /No module named\s+['"]([^'"]+)['"]/i
+/**
+ * Optional-accelerator guards (KJNodes' memory-efficient attention patches)
+ * say `sageattention is not new enough version or could not determine CUDA
+ * architecture, …` when an old package is installed. This is a version
+ * problem, not a missing import, and needs the recipe upgrade path instead
+ * of a plain `pip install`.
+ */
+const OUTDATED_MODULE_RE = /\b([A-Za-z_][A-Za-z0-9_.-]*)\s+is not new enough version\b/i
 /** Windows + POSIX traceback file paths inside custom_nodes. */
 const NODE_FILE_RE = /File\s+"([^"]*custom_nodes[\\/][^\\/"]+[\\/][^"]*)"/i
 /** Block terminators — a fresh log statement that is NOT part of the traceback. */
@@ -59,6 +69,12 @@ const MAX_BLOCK_MS = 20_000
 function firstCustomNodeFolder(path: string): string | undefined {
   const m = path.match(/custom_nodes[\\/]([^\\/]+)/i)
   return m ? m[1] : undefined
+}
+
+/** Extract the dependency named by an "is not new enough version" guard. */
+export function detectOutdatedModule(text: string): string | undefined {
+  const m = String(text || '').match(OUTDATED_MODULE_RE)
+  return m ? m[1].toLowerCase() : undefined
 }
 
 /**
@@ -140,11 +156,20 @@ export function parseExecErrors(lines: ComfyLogLine[] | string[]): ParsedExecErr
       if (mm) missingModule = mm[1]
     }
 
+    let outdatedModule = detectOutdatedModule(message || tail)
+    if (!outdatedModule) {
+      for (const line of block) {
+        outdatedModule = detectOutdatedModule(line.text)
+        if (outdatedModule) break
+      }
+    }
+
     out.push({
       at,
       errorType,
       message: message || tail || errorType,
       missingModule,
+      outdatedModule,
       packFolder,
       traceback: block
         .map((b) => b.text)
@@ -162,6 +187,7 @@ export function formatExecErrorReport(e: {
   errorType: string
   message: string
   missingModule?: string
+  outdatedModule?: string
   packFolder?: string
   nodeType?: string
   nodeId?: string
@@ -174,6 +200,7 @@ export function formatExecErrorReport(e: {
     `Message: ${e.message}`
   ]
   if (e.missingModule) lines.push(`Missing module: ${e.missingModule}`)
+  if (e.outdatedModule) lines.push(`Outdated module: ${e.outdatedModule}`)
   if (e.packFolder) lines.push(`Custom node pack: ${e.packFolder}`)
   if (e.nodeType) lines.push(`Node: ${e.nodeType}${e.nodeId ? ` (id ${e.nodeId})` : ''}`)
   if (e.promptId) lines.push(`Prompt: ${e.promptId}`)

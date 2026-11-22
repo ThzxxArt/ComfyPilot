@@ -21,6 +21,29 @@ export interface EnvProbe {
   errors: string[]
 }
 
+/** One optional attention package after an in-venv self-test (0.2.6). */
+export interface AttentionSelfTestPackage {
+  installed: boolean
+  version?: string
+  ok: boolean
+  error?: string
+}
+
+/** Fixed-script SageAttention / xFormers probe result (0.2.6). */
+export interface AttentionSelfTestResult {
+  ok: boolean
+  testedAt: number
+  pythonVersion?: string
+  torchVersion?: string
+  cudaVersion?: string
+  gpuName?: string
+  computeCapability?: string
+  cudaAvailable: boolean
+  sageattention: AttentionSelfTestPackage
+  xformers: AttentionSelfTestPackage
+  error?: string
+}
+
 export interface EnvCreateRequest {
   basePath: string
   pythonPath: string

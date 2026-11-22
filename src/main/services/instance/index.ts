@@ -1,5 +1,6 @@
 import { EventEmitter } from 'events'
 import type {
+  AttentionSelfTestResult,
   ComfyInstanceConfig,
   ComfyInstanceInfo,
   ComfyLogLine,
@@ -13,6 +14,7 @@ import type {
   PortCheckResult,
   WaitReadyResult
 } from '@shared/types'
+import * as attention from './attention'
 import * as diagnostics from './diagnostics'
 import * as discovery from './discovery'
 import * as envProbe from './envProbe'
@@ -184,6 +186,10 @@ export class InstanceService extends EventEmitter {
 
   async probeEnv(id: string): Promise<EnvProbe> {
     return envProbe.probeEnv(this.ctx, id)
+  }
+
+  async attentionSelfTest(id: string): Promise<AttentionSelfTestResult> {
+    return attention.selfTest(this.ctx, id)
   }
 
   async exportDiagnostics(id: string): Promise<DiagnosticPackage> {

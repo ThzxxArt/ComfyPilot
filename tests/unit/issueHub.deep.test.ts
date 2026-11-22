@@ -257,6 +257,26 @@ describe('issueHub service', () => {
     expect(list.some((i) => i.id === 'old-doctor')).toBe(true)
   })
 
+  it('surfaces an outdated exec dependency with a repair action', async () => {
+    h.startup = { issues: [] }
+    h.packs = [{ name: 'Pack', path: '/tmp/pack' }]
+    h.failures = [
+      {
+        packFolder: 'Pack',
+        outdatedModule: 'sageattention',
+        errorType: 'RuntimeError',
+        message: 'sageattention is not new enough version',
+        nodeType: 'MiniMaxH3MemoryEfficientSageAttentionPatch'
+      }
+    ]
+    const svc = new IssueHubService()
+    const list = await svc.scan('i1')
+    const issue = list.find((i) => i.kind === 'exec')
+    expect(issue?.module).toBe('sageattention')
+    expect(issue?.title).toBe('Outdated dependency: sageattention')
+    expect(issue?.actions.map((a) => a.labelKey)).toContain('issues.actionInstallModule')
+  })
+
   it('rejects unknown instances', async () => {
     const svc = new IssueHubService()
     await expect(svc.scan('missing')).rejects.toThrow(/not found/)

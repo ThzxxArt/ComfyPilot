@@ -5,7 +5,12 @@
  * traceback block), plus a prefix-free legacy variant.
  */
 import { describe, it, expect } from 'vitest'
-import { parseExecErrors, formatExecErrorReport, stripAnsi } from '../../src/shared/execError'
+import {
+  detectOutdatedModule,
+  parseExecErrors,
+  formatExecErrorReport,
+  stripAnsi
+} from '../../src/shared/execError'
 import type { ComfyLogLine } from '../../src/shared/types'
 
 const T0 = Date.parse('2026-10-14T21:19:11.000Z')
@@ -49,6 +54,28 @@ describe('parseExecErrors (0.1.12)', () => {
     expect(e.at).toBe(T0 + 1000)
     // `[INFO] Prompt executed` ends the block — no trailing junk.
     expect(e.traceback.join('\n')).not.toContain('Prompt executed')
+  })
+
+  it('detects an installed-but-outdated dependency (KJNodes SageAttention guard)', () => {
+    const msg =
+      'sageattention is not new enough version or could not determine CUDA architecture, cannot apply MiniMax H3 Memory Efficient Sage Attention Patch.'
+    const logs: ComfyLogLine[] = [
+      line(0, `[ERROR] !!! Exception during processing !!! ${msg}`),
+      line(10, '[ERROR] Traceback (most recent call last):'),
+      line(
+        20,
+        '  File "D:\\ComfyPilotRuntimes\\comfy-main\\ComfyUI\\custom_nodes\\ComfyUI-KJNodes\\nodes\\ltxv_nodes.py", line 2183, in execute'
+      ),
+      line(30, `[ERROR] RuntimeError: ${msg}`),
+      line(40, '[INFO] Prompt executed in 1.00 seconds')
+    ]
+    const out = parseExecErrors(logs)
+    expect(out).toHaveLength(1)
+    expect(out[0].errorType).toBe('RuntimeError')
+    expect(out[0].missingModule).toBeUndefined()
+    expect(out[0].outdatedModule).toBe('sageattention')
+    expect(out[0].packFolder).toBe('ComfyUI-KJNodes')
+    expect(formatExecErrorReport(out[0])).toContain('Outdated module: sageattention')
   })
 
   it('handles a prefix-free legacy traceback (old ComfyUI versions)', () => {
@@ -112,6 +139,30 @@ describe('parseExecErrors (0.1.12)', () => {
     const out = parseExecErrors(logs)
     expect(out[0].errorType).toBe('Exception')
     expect(out[0].missingModule).toBe('triton')
+  })
+
+  it('detects outdated-module text defensively and accepts raw string logs', () => {
+    expect(detectOutdatedModule('')).toBeUndefined()
+    expect(detectOutdatedModule('SageAttention is not new enough version')).toBe('sageattention')
+    const out = parseExecErrors([
+      '!!! Exception during processing !!! RuntimeError: raw string log',
+      'RuntimeError: raw string log'
+    ])
+    expect(out[0].errorType).toBe('RuntimeError')
+    expect(out[0].message).toBe('raw string log')
+    expect(
+      formatExecErrorReport({ at: 0, errorType: 'RuntimeError', message: 'raw string log' })
+    ).not.toContain('Custom node pack')
+  })
+
+  it('parses a typed exception from the trigger tail without a traceback', () => {
+    const logs: ComfyLogLine[] = [
+      line(0, '!!! Exception during processing !!! RuntimeError: tail only'),
+      line(10, '[INFO] Prompt executed in 0.1 seconds')
+    ]
+    const out = parseExecErrors(logs)
+    expect(out[0].errorType).toBe('RuntimeError')
+    expect(out[0].message).toBe('tail only')
   })
 
   it('formats a human-readable failure report', () => {

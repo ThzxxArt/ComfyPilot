@@ -116,6 +116,8 @@ export interface ExecFailure {
   errorType: string
   message: string
   missingModule?: string
+  /** Installed dependency that is too old for the failing node's guard. */
+  outdatedModule?: string
   /** custom_nodes folder the failing file belongs to (pack attribution). */
   packFolder?: string
   traceback?: string[]

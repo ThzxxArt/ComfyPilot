@@ -334,11 +334,12 @@ export class IssueHubService {
         for (const failure of execDiagnosticsService.list(id)) {
           const pack = failure.packFolder || ''
           if (!packVisible(pack)) continue
+          const module = failure.outdatedModule || failure.missingModule
           const fp = fingerprint([
             'exec',
             id,
             pack || failure.nodeType || 'unknown',
-            failure.missingModule || failure.errorType,
+            module || failure.errorType,
             Math.round(packMtime(packs, pack))
           ])
           fresh.push(
@@ -347,11 +348,13 @@ export class IssueHubService {
               kind: 'exec',
               instanceId: id,
               pack,
-              module: failure.missingModule,
+              module,
               severity: 'error',
-              title: failure.missingModule
-                ? `Missing module: ${failure.missingModule}`
-                : `Execution failed: ${failure.errorType || failure.nodeType || 'unknown'}`,
+              title: failure.outdatedModule
+                ? `Outdated dependency: ${failure.outdatedModule}`
+                : failure.missingModule
+                  ? `Missing module: ${failure.missingModule}`
+                  : `Execution failed: ${failure.errorType || failure.nodeType || 'unknown'}`,
               detail: failure.message
             })
           )

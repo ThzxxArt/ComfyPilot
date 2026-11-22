@@ -37,7 +37,12 @@ import {
   wrap,
   type IpcContext
 } from '../context'
-import { requireLocalInstanceId, safeInstanceId, safeInstanceTarget } from '../trust'
+import {
+  requireLocalInstanceId,
+  requireLocalTarget,
+  safeInstanceId,
+  safeInstanceTarget
+} from '../trust'
 
 /** ComfyUI locations the discovery flow is allowed to find. */
 function discoveredComfyRoots(): string[] {
@@ -416,6 +421,9 @@ export function createInstanceHandlers(ctx: IpcContext) {
       notifyPipResult(result)
       return result
     }),
+    attentionSelfTest: wrap((id: string) =>
+      instanceService.attentionSelfTest(requireLocalTarget(id))
+    ),
     pipCancel: wrap(async (id: string) => {
       const target = requireLocalInstanceId(id)
       // Nothing to cancel for an absent/remote target — answer honestly.

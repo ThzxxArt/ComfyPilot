@@ -123,6 +123,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle('instance.checkPort', instances.checkPort)
   ipcMain.handle('instance.suggestPort', instances.suggestPort)
   ipcMain.handle('instance.probeEnv', instances.probeEnv)
+  ipcMain.handle('instance.attentionSelfTest', instances.attentionSelfTest)
   ipcMain.handle('instance.exportDiagnostics', instances.exportDiagnostics)
   ipcMain.handle('instance.copyDiagnostics', instances.copyDiagnostics)
   ipcMain.handle('instance.exportLogs', instances.exportLogs)

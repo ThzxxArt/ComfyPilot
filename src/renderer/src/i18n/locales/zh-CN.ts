@@ -1775,12 +1775,44 @@ export default {
     appCrash: 'ComfyPilot 发生错误',
     appCrashMsg: '{message}'
   },
+  attention: {
+    title: '注意力加速',
+    subtitle: 'SageAttention / xFormers 状态、安装与启动开关',
+    probe: '重新探测',
+    probeHint: '先点击「环境探测」读取 Python / torch 和已安装的包。',
+    selfTest: '自检',
+    selfTestResult: '自检结果',
+    selfTestOk: '自检通过',
+    selfTestWarn: '自检未完全通过，请查看结果',
+    install: '安装',
+    upgrade: '升级/修复',
+    reinstall: '重新安装',
+    noVersion: '未安装',
+    useSage: '使用 SageAttention 启动',
+    disableXformers: '禁用 xFormers',
+    saved: '启动配置已保存',
+    pass: '通过',
+    fail: '失败',
+    sageHint:
+      '需要 SageAttention 2.2+，自动安装仅支持 Windows + NVIDIA + cu130 + torch 2.10+；与其它 attention 后端互斥。',
+    xformersHint:
+      'xFormers 由 ComfyUI 自动启用；不稳定时请禁用。安装后必须自检通过，再作为可选加速使用。',
+    restartHint: '修改启动后端后需要重启实例生效。',
+    status: {
+      unknown: '未探测',
+      notInstalled: '未安装',
+      installed: '已安装',
+      outdated: '版本过旧',
+      unsupported: '当前环境不支持自动安装'
+    }
+  },
   exec: {
     title: '运行失败诊断（{n}）',
-    hint: '定位到节点包与缺失模块，可直接安装修复',
+    hint: '定位到节点包与缺失/过旧依赖，可直接修复',
     clear: '清除记录',
     cleared: '失败记录已清除',
     missingTag: '缺模块 {name}',
+    outdatedTag: '版本过旧 {name}',
     fixRecipe: '按配方修复 {name}',
     fixPip: '安装 {name}',
     openPack: '查看节点包',
@@ -1815,7 +1847,11 @@ export default {
       },
       sageattention: {
         title: 'SageAttention 2.2（预编译 wheel）',
-        desc: '先装 triton-windows，再安装与 torch 2.9+/cu130 匹配的 SageAttention 2.2.0 Windows 预编译 wheel（带 SHA256 校验）。仅适用于 Windows + NVIDIA GPU；版本不匹配时请改用「旁路该节点」。'
+        desc: '先装 triton-windows，再安装与 torch 2.10+/cu130 匹配的 SageAttention 2.2.0 Windows 预编译 wheel（带 SHA256 校验）。适用于 Windows + NVIDIA GPU；1.0.6 等旧版本也会被升级，版本不匹配时请改用「旁路该节点」。'
+      },
+      xformers: {
+        title: 'xFormers',
+        desc: '安装 xFormers 到实例环境。安装后请在「注意力加速」卡片中运行自检；不稳定或内核不兼容时，用 --disable-xformers 保持禁用。'
       },
       onnx: {
         title: 'onnx',
@@ -1914,7 +1950,7 @@ export default {
     restore: '恢复',
     actionOpenNodes: '打开节点页',
     actionAudit: '运行依赖体检',
-    actionInstallModule: '安装缺失模块',
+    actionInstallModule: '安装/修复依赖',
     actionCleanLeftover: '清理隔离残留',
     actionRecovery: '打开残留清理',
     actionUnavailable: '该动作暂不可用',

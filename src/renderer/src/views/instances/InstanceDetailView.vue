@@ -46,9 +46,11 @@ import { useAutoFollow } from '@/composables/useAutoFollow'
 import { useExecDiagnostics } from '@/composables/useExecDiagnostics'
 import { usePipOps } from '@/composables/usePipOps'
 import ComfyUpdateProgressModal from '@/components/ComfyUpdateProgressModal.vue'
+import AttentionAccelerationCard from '@/components/AttentionAccelerationCard.vue'
 import { useI18n } from 'vue-i18n'
 import { isNoiseLogLine } from '@shared/logLine'
-import type { InstanceStartupIssues } from '@shared/types'
+import type { AttentionSelfTestResult, InstanceStartupIssues } from '@shared/types'
+import type { AttentionPackageId } from '@shared/attention'
 import type {
   ComfyInstanceInfo,
   ComfyLogLine,
@@ -502,10 +504,16 @@ function openPipProgress(): void {
   if (id.value) void openPipFor(id.value)
 }
 
-/** Platform-compatible recipe for a failure's missing module (if any). */
+/** Dependency a failure can fix (missing import or installed-but-outdated). */
+function fixModule(f: ExecFailure): string {
+  return f.outdatedModule || f.missingModule || ''
+}
+
+/** Platform-compatible recipe for a failure's missing/outdated module. */
 function recipeFor(f: ExecFailure): PipRecipe | undefined {
-  if (!f.missingModule) return undefined
-  const r = recipeForModule(f.missingModule)
+  const module = fixModule(f)
+  if (!module) return undefined
+  const r = recipeForModule(module)
   return r && recipeSupportsPlatform(r) ? r : undefined
 }
 
@@ -562,7 +570,7 @@ async function fixByRecipe(f: ExecFailure): Promise<void> {
           if (result.cancelled) return
           // Failed recipe → disclose the fallback explicitly (plain pip install
           // may hit an incompatible PyPI build — say so, and offer bypass too).
-          const module = f.missingModule || ''
+          const module = fixModule(f)
           dialog.warning({
             title: t('deps.recipeFailedTitle'),
             content: t('deps.recipeFailedBody', {
@@ -621,6 +629,9 @@ async function clearFailures(): Promise<void> {
 const envProbeResult = ref<EnvProbe | null>(null)
 const probingEnv = ref(false)
 const fixingPip = ref(false)
+const attentionSelfTest = ref<AttentionSelfTestResult | null>(null)
+const attentionTesting = ref(false)
+const attentionInstalling = ref<AttentionPackageId | ''>('')
 
 async function probeEnvNow(): Promise<void> {
   if (!instance.value) return
@@ -632,6 +643,76 @@ async function probeEnvNow(): Promise<void> {
   } finally {
     probingEnv.value = false
   }
+}
+
+async function installAttention(id: AttentionPackageId): Promise<void> {
+  const target = instance.value
+  if (!target || attentionInstalling.value) return
+  attentionInstalling.value = id
+  try {
+    const r = await startRecipe(target.id, id)
+    if (r.ok) {
+      attentionSelfTest.value = null
+      if (envProbeResult.value) void probeEnvNow()
+    } else if (!r.cancelled && r.error) {
+      message.error(r.error)
+    }
+  } catch (err) {
+    handlePipFailure(err)
+  } finally {
+    attentionInstalling.value = ''
+  }
+}
+
+async function runAttentionSelfTest(): Promise<void> {
+  const target = instance.value
+  if (!target || attentionTesting.value) return
+  attentionTesting.value = true
+  try {
+    const result = await ipc('instance.attentionSelfTest', target.id)
+    if (instance.value?.id === target.id) attentionSelfTest.value = result
+    if (result.ok) message.success(t('attention.selfTestOk'))
+    else message.warning(t('attention.selfTestWarn'))
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  } finally {
+    attentionTesting.value = false
+  }
+}
+
+async function patchLaunchProfile(profile: LaunchProfile): Promise<void> {
+  const target = instance.value
+  if (!target) return
+  try {
+    await ipc('instance.patch', target.id, { launchProfile: profile })
+    if (instance.value?.id === target.id) {
+      instance.value = { ...instance.value, launchProfile: profile }
+      message.success(t('attention.saved'))
+      if (instanceRunning.value) message.info(t('launchArgs.restartToApply'))
+    }
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function setSageAttention(active: boolean): Promise<void> {
+  const target = instance.value
+  if (!target) return
+  const profile: LaunchProfile = {
+    ...(target.launchProfile || {}),
+    attention: active ? 'sage' : 'default'
+  }
+  await patchLaunchProfile(profile)
+}
+
+async function setXformersDisabled(disabled: boolean): Promise<void> {
+  const target = instance.value
+  if (!target) return
+  const profile: LaunchProfile = {
+    ...(target.launchProfile || {}),
+    disableXformers: disabled
+  }
+  await patchLaunchProfile(profile)
 }
 
 async function fixPipNow(): Promise<void> {
@@ -1242,6 +1323,7 @@ watch(
     logQuery.value = ''
     logLevelFilter.value = 'all'
     envProbeResult.value = null
+    attentionSelfTest.value = null
     tab.value = initialTab()
     void refresh()
   }
@@ -1753,6 +1835,21 @@ watch(
                 </div>
               </div>
 
+              <AttentionAccelerationCard
+                v-if="instance"
+                :instance="instance"
+                :probe="envProbeResult"
+                :self-test="attentionSelfTest"
+                :probing="probingEnv"
+                :testing="attentionTesting"
+                :installing="attentionInstalling"
+                @probe="probeEnvNow"
+                @self-test="runAttentionSelfTest"
+                @install="installAttention"
+                @toggle-sage="setSageAttention"
+                @toggle-xformers="setXformersDisabled"
+              />
+
               <div v-if="updateInfo" class="update-result">
                 <div class="update-result-title">{{ $t('instance.checkUpdate') }}</div>
                 <div class="update-result-line">
@@ -1953,6 +2050,9 @@ watch(
                     <NTag v-if="f.missingModule" size="tiny" round type="info">
                       {{ $t('exec.missingTag', { name: f.missingModule }) }}
                     </NTag>
+                    <NTag v-if="f.outdatedModule" size="tiny" round type="warning">
+                      {{ $t('exec.outdatedTag', { name: f.outdatedModule }) }}
+                    </NTag>
                   </div>
                   <NSpace :size="6" class="exec-actions">
                     <NButton
@@ -1962,7 +2062,7 @@ watch(
                       secondary
                       @click="fixByRecipe(f)"
                     >
-                      {{ $t('exec.fixRecipe', { name: f.missingModule }) }}
+                      {{ $t('exec.fixRecipe', { name: fixModule(f) }) }}
                     </NButton>
                     <NButton v-if="f.missingModule" size="tiny" secondary @click="fixByPip(f)">
                       {{ $t('exec.fixPip', { name: f.missingModule }) }}

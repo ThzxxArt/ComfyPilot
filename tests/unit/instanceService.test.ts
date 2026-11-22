@@ -1427,6 +1427,45 @@ describe('probeEnv()', () => {
 })
 
 // ===========================================================================
+// attentionSelfTest
+// ===========================================================================
+describe('attentionSelfTest()', () => {
+  it('runs the fixed self-test through the instance interpreter', async () => {
+    register(cfg({ id: 'attn', pythonPath: 'C:/py/python.exe' }))
+    let script = ''
+    h.state.execHandler = (_cmd, args) => {
+      if (args[0] === '-c') {
+        script = String(args[1])
+        return {
+          stdout: JSON.stringify({
+            ok: true,
+            pythonVersion: '3.13.18',
+            torchVersion: '2.14.1+cu130',
+            cudaVersion: '13.0',
+            cudaAvailable: true,
+            sageattention: { installed: true, version: '2.2.0', ok: true },
+            xformers: { installed: false, version: '', ok: false, error: 'missing' }
+          })
+        }
+      }
+      return { stdout: '' }
+    }
+    const out = await svc.attentionSelfTest('attn')
+    expect(out.ok).toBe(true)
+    expect(out.sageattention.version).toBe('2.2.0')
+    expect(out.xformers.installed).toBe(false)
+    expect(script).toContain('from sageattention import sageattn')
+    expect(script).toContain('from xformers.ops import memory_efficient_attention')
+  })
+
+  it('returns a failed result for an unknown instance', async () => {
+    const out = await svc.attentionSelfTest('missing-attn')
+    expect(out.ok).toBe(false)
+    expect(out.error).toContain('Instance not found')
+  })
+})
+
+// ===========================================================================
 // exportDiagnostics / copyDiagnostics
 // ===========================================================================
 describe('exportDiagnostics()', () => {

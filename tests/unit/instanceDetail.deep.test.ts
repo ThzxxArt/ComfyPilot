@@ -132,8 +132,24 @@ const probe = {
   venvPath: '/tmp/comfy/.venv',
   torchVersion: '2.9.0+cu130',
   torchChannel: 'cu130',
+  packages: [
+    { name: 'sageattention', version: '2.2.0' },
+    { name: 'xformers', version: '0.0.36' }
+  ],
   ok: true,
   warnings: ['warn']
+}
+const attentionSelfTest = {
+  ok: true,
+  testedAt: now,
+  pythonVersion: '3.13.5',
+  torchVersion: '2.14.1+cu130',
+  cudaVersion: '13.0',
+  gpuName: 'NVIDIA GeForce RTX 4070 Ti SUPER',
+  computeCapability: '8.9',
+  cudaAvailable: true,
+  sageattention: { installed: true, version: '2.2.0', ok: true },
+  xformers: { installed: true, version: '0.0.36', ok: true }
 }
 const health = {
   instanceId: 'i1',
@@ -206,6 +222,8 @@ function dataFor(channel: string): unknown {
     case 'instance.probeEnv':
     case 'env.probe':
       return probe
+    case 'instance.attentionSelfTest':
+      return attentionSelfTest
     case 'instance.previewLaunch':
       return {
         python: '/tmp/comfy/.venv/bin/python',
@@ -222,6 +240,7 @@ function dataFor(channel: string): unknown {
     case 'instance.migratePython':
       return { fromVersion: '3.12.10', toVersion: '3.13.18', channel: 'cu130' }
     case 'instance.save':
+    case 'instance.patch':
     case 'instance.restart':
     case 'instance.launch':
     case 'instance.stop':
@@ -471,8 +490,21 @@ describe('InstanceDetailView deep coverage', () => {
       state.handlePipFailure({ code: 'OP_BUSY' })
       state.handlePipFailure({ code: 'REMOTE_NOT_SUPPORTED' })
       state.handlePipFailure(new Error('plain'))
+      state.envProbeResult = probe
+      overrides['instance.applyRecipe'] = { ok: true, requested: [], installed: [] }
+      await state.installAttention('sageattention')
+      await state.installAttention('xformers')
+      await state.runAttentionSelfTest()
+      await state.setSageAttention(true)
+      await state.setXformersDisabled(true)
       expect(state.recipeFor(failures[0])).toBeTruthy()
       expect(state.recipeFor({ ...failures[0], missingModule: '' })).toBeUndefined()
+      expect(
+        state.fixModule({ ...failures[0], missingModule: '', outdatedModule: 'sageattention' })
+      ).toBe('sageattention')
+      expect(
+        state.recipeFor({ ...failures[0], missingModule: '', outdatedModule: 'onnx' })
+      ).toBeTruthy()
       expect(state.warningText({ code: 'unknown-flag', flag: '--x' })).toBeTruthy()
       expect(state.errorCodeLabel({ code: 'invalid-number', flag: '--port' })).toBeTruthy()
       expect(state.errorCodeLabel({ code: 'other' })).toBeTruthy()
@@ -570,6 +602,15 @@ describe('InstanceDetailView deep coverage', () => {
           nodeType: 'KSampler',
           packFolder: 'BrokenPack',
           missingModule: 'onnx'
+        },
+        {
+          ...failures[0],
+          id: 'f-outdated',
+          nodeType: 'MiniMaxH3MemoryEfficientSageAttentionPatch',
+          packFolder: 'ComfyUI-KJNodes',
+          missingModule: undefined,
+          outdatedModule: 'sageattention',
+          message: 'sageattention is not new enough version'
         }
       ]
       await click()

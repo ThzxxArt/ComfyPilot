@@ -615,7 +615,7 @@ describe('PipOpsService (0.1.12)', () => {
     const { wheelPackageName } = await import('../../src/main/services/pipOps')
     expect(
       wheelPackageName(
-        'https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0/sageattention-2.2.0+cu130torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl'
+        'https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows.post6/sageattention-2.2.0+cu130torch2.10.0andhigher.post6-cp310-abi3-win_amd64.whl'
       )
     ).toBe('sageattention')
     expect(wheelPackageName('C:\\tmp\\Flash_Attn-2.6.0-cp312.whl')).toBe('flash-attn')

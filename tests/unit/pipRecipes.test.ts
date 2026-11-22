@@ -31,8 +31,10 @@ describe('pip recipes', () => {
   it('matches modules to recipes (sageattention incl. aliases)', () => {
     expect(recipeForModule('sageattention')?.id).toBe('sageattention')
     expect(recipeForModule('triton')?.id).toBe('triton')
+    expect(recipeForModule('xformers')?.id).toBe('xformers')
     expect(recipeForModule('onnx')?.id).toBe('onnx')
     expect(recipeForModule(' SAGEATTENTION ')?.id).toBe('sageattention')
+    expect(recipeForModule('')).toBeUndefined()
     expect(recipeForModule('nonexistent')).toBeUndefined()
   })
 
@@ -43,6 +45,20 @@ describe('pip recipes', () => {
     expect(r.steps[0].kind).toBe('pip')
     expect(r.steps[0].spec).toBe('triton-windows')
     expect(r.steps[1].kind).toBe('wheel')
+    expect(r.steps[1].url).toContain('v2.2.0-windows.post6')
+    expect(r.steps[1].url).toContain('cu130torch2.10.0andhigher')
+    expect(r.steps[1].sha256).toBe(
+      '1635283f5c01ec3cda58a784d0d7eabbcaffaf9511d1b263db4750e1ed7958bb'
+    )
+    expect(r.steps[1].sizeBytes).toBe(16656067)
+  })
+
+  it('ships an xformers pip recipe for Windows/Linux', () => {
+    const r = recipeById('xformers')!
+    expect(recipeSupportsPlatform(r, 'win32')).toBe(true)
+    expect(recipeSupportsPlatform(r, 'linux')).toBe(true)
+    expect(recipeSupportsPlatform(r, 'darwin')).toBe(false)
+    expect(r.steps).toEqual([{ kind: 'pip', spec: 'xformers' }])
   })
 
   it('platform-free recipes apply everywhere', () => {
@@ -69,6 +85,8 @@ describe('pip recipes', () => {
       expect(currentPlatform()).toBe('win32')
       setGlobal('navigator', { userAgent: 'Mozilla/5.0 (X11; Linux x86_64)' })
       expect(currentPlatform()).toBe('linux')
+      setGlobal('navigator', { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)' })
+      expect(currentPlatform()).toBe('darwin')
       setGlobal('navigator', undefined)
       expect(currentPlatform()).toBe('unknown')
     } finally {

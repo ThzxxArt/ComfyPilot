@@ -16,7 +16,7 @@
 import { EventEmitter } from 'events'
 import { randomUUID } from 'crypto'
 import type { ExecFailure, ExecProgressEvent } from '@shared/types'
-import { parseExecErrors, stripAnsi } from '@shared/execError'
+import { detectOutdatedModule, parseExecErrors, stripAnsi } from '@shared/execError'
 import { instanceService } from './instance'
 import { capabilityService } from './capabilities'
 import { loadInstanceConfigs } from './db'
@@ -75,6 +75,8 @@ export class ExecDiagnosticsService extends EventEmitter {
     )
     if (dupLog) return null
     const missing = String(evt.errorMessage || '').match(/No module named\s+['"]([^'"]+)['"]/i)
+    const outdated =
+      detectOutdatedModule(message) || detectOutdatedModule((evt.errorTraceback || []).join('\n'))
     const failure: ExecFailure = {
       id: randomUUID(),
       instanceId,
@@ -86,6 +88,7 @@ export class ExecDiagnosticsService extends EventEmitter {
       errorType,
       message,
       missingModule: missing ? missing[1] : undefined,
+      outdatedModule: outdated,
       traceback: evt.errorTraceback
     }
     this.push(this.wsFailures, instanceId, failure)
@@ -142,6 +145,7 @@ export class ExecDiagnosticsService extends EventEmitter {
         errorType: p.errorType,
         message: p.message,
         missingModule: p.missingModule,
+        outdatedModule: p.outdatedModule,
         packFolder: p.packFolder,
         traceback: p.traceback
       }

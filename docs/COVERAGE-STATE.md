@@ -1,61 +1,59 @@
-# 0.2.5 Coverage State
+# 0.2.6 Coverage State
 
 ## Status
 
-Coverage is complete and merged to `master`. The v0.2.5 Windows release has
-been packaged and published.
+Coverage and repository gates are complete for the 0.2.6 working tree. The
+version has not been tagged or published yet.
 
-Latest full `npm run test:coverage` result (2026-11-21, release commit
-`7e82a0f87acef6325f2e10cef5f938fe95b4f8f7`):
+Latest full `npm run test:coverage` result (2026-11-22):
 
 | Metric     |                   Result |
 | ---------- | -----------------------: |
-| Statements |     91.21% (24694/27072) |
-| Branches   | **85.12% (16555/19448)** |
-| Functions  |       87.94% (4960/5640) |
-| Lines      |     92.55% (21828/23583) |
+| Statements |     91.14% (24850/27264) |
+| Branches   | **85.12% (16739/19664)** |
+| Functions  |       88.00% (5009/5692) |
+| Lines      |     92.48% (21966/23752) |
 
-- Test run: **200 files / 2493 cases passed**.
+- Test run: **204 files / 2525 cases passed**.
 - Global thresholds: all four metrics are >= 85%.
-- Per-file ratchet: OK — 181 files compared; baseline not lowered.
-- `npm run test:behavior`: passed (>= 90% behaviour ratio).
-- The same gate set passed locally and in CI, including:
-  - `typecheck`, `typecheck:test`, `lint:check`, `format:check`
-  - `test:coverage`, `test:behavior`
-  - version, i18n, hardcoded-Chinese, CSP and test-polarity checks
-  - production build, `check-asar`, and E2E
-- CI run `44896208023`: Windows and Ubuntu jobs both succeeded.  
-  https://github.com/ThzxxArt/ComfyPilot/actions/runs/44896208023
+- Per-file ratchet: OK — 185 files compared (181 existing + 4 new files).
+- `npm run test:behavior`: 97.4% (target >= 90%).
+- `typecheck`, `typecheck:test`, `lint:check`, `format:check`, version, i18n,
+  hardcoded-Chinese, CSP and test-polarity checks pass.
+- Production build, `check-asar`, and the Electron smoke E2E pass.
 - No `istanbul ignore`, no excluded `.vue` files, no threshold/baseline
   reductions, no `coverage:accept`, no skipped/deleted tests.
 
-## Release packaging
+## 0.2.6 feature state
 
-- Windows NSIS x64 installer built by WSL invoking the Windows-side Node.js and
-  electron-builder (`ComfyPilot-0.2.5-win-x64.exe`).
-- `release/win-unpacked/ComfyPilot.exe --e2e-smoke` passed: renderer mounted,
-  preload bridge present, IPC round-trip OK (PLAN §8.2 scenario 10).
-- `check-asar` passed against the real packaged `app.asar`.
-- `latest.yml` and all version consumers report `0.2.5`.
-- Published release: https://github.com/ThzxxArt/ComfyPilot/releases/tag/v0.2.5
+- Instance-detail **Attention acceleration** card with SageAttention/xFormers
+  status, install/upgrade, self-test and launch-profile switches.
+- KJNodes `sageattention is not new enough version` is classified as an
+  outdated dependency and routes to the pinned SageAttention 2.2 recipe.
+- SageAttention recipe upgraded to the post6 wheel:
+  `2.2.0+cu130torch2.10.0andhigher` (SHA-256 pinned).
+- xFormers is available as a curated pip recipe on Windows/Linux.
+- The self-test IPC runs a fixed script in the instance venv and reports
+  package imports, CUDA device facts, and a small attention-kernel result.
 
 ## Remaining external verification (UNVERIFIED)
 
-These are release-environment checks, not repository coverage gates. They were
-**not executed** in this environment and must not be reported as passing:
+These are release-environment checks, not repository gates. They were **not
+executed** in this workspace and must not be reported as passing:
 
-- Windows 10/11 real-machine scenarios 1–9 (stuck detection, lock-screen
-  rescue, safe mode, Manager 4.4.2, stable update/rollback, custom directories,
-  port/listen overrides, security boundary attempts, Civitai/batch/backup).
-- Installer install/uninstall, tray, and launch-on-boot on a real Windows host.
-- Real ComfyUI 0.46, Manager 4.4.2, Civitai and cross-machine backup flows.
-- Installer package signing and SmartScreen reputation; the installer is
-  unsigned.
-- macOS / Linux packages and real-device validation; this release ships Windows
-  x64 only.
+- Full UI walkthrough of the Attention acceleration card on a real Windows
+  desktop, including install progress and restart prompts.
+- xFormers install and GPU self-test on Windows; only PyPI resolution was
+  checked here.
+- App-level self-test against a live ComfyUI instance on Windows (the
+  SageAttention 2.2 wheel itself was validated directly in the venv).
+- Windows NSIS packaging for 0.2.6, install/uninstall, tray and launch-on-boot.
+- Code signing and SmartScreen reputation.
+- macOS / Linux packages and real-device validation.
 
 ## Notes for future work
 
-- Remaining uncovered branches are concentrated in defensive/error-only paths
-  and platform-specific code (Windows GPU counters, process tree failure paths).
-- The coverage baseline must not be lowered; new code should arrive with tests.
+- The four new files are accepted by the ratchet's new-file floor; future
+  changes should raise their floors rather than lowering existing ones.
+- Keep the self-test script fixed and review any new attention backend for the
+  same import-then-kernel verification.

@@ -1854,12 +1854,44 @@ export default {
     appCrash: 'ComfyPilot error',
     appCrashMsg: '{message}'
   },
+  attention: {
+    title: 'Attention acceleration',
+    subtitle: 'SageAttention / xFormers status, install and launch switches',
+    probe: 'Probe again',
+    probeHint: 'Run “Environment probe” first to read Python / torch and installed packages.',
+    selfTest: 'Self-test',
+    selfTestResult: 'Self-test result',
+    selfTestOk: 'Self-test passed',
+    selfTestWarn: 'Self-test did not fully pass — review the result',
+    install: 'Install',
+    upgrade: 'Upgrade / repair',
+    reinstall: 'Reinstall',
+    noVersion: 'not installed',
+    useSage: 'Launch with SageAttention',
+    disableXformers: 'Disable xFormers',
+    saved: 'Launch configuration saved',
+    pass: 'pass',
+    fail: 'fail',
+    sageHint:
+      'Requires SageAttention 2.2+. Automatic install is Windows + NVIDIA + cu130 + torch 2.10+ only; mutually exclusive with other attention backends.',
+    xformersHint:
+      'ComfyUI enables xFormers automatically; disable it when unstable. After installing, require a passing self-test before relying on it.',
+    restartHint: 'Restart the instance after changing the launch backend.',
+    status: {
+      unknown: 'not probed',
+      notInstalled: 'not installed',
+      installed: 'installed',
+      outdated: 'outdated',
+      unsupported: 'automatic install unsupported'
+    }
+  },
   exec: {
     title: 'Runtime failures ({n})',
-    hint: 'Attributed to node packs and missing modules — fix in one click',
+    hint: 'Attributed to node packs and missing/outdated dependencies — fix in one click',
     clear: 'Clear',
     cleared: 'Failure records cleared',
     missingTag: 'missing {name}',
+    outdatedTag: 'outdated {name}',
     fixRecipe: 'Fix via recipe: {name}',
     fixPip: 'Install {name}',
     openPack: 'Open node pack',
@@ -1896,7 +1928,11 @@ export default {
       },
       sageattention: {
         title: 'SageAttention 2.2 (prebuilt wheel)',
-        desc: 'Installs triton-windows first, then the Windows prebuilt SageAttention 2.2.0 wheel matching torch 2.9+/cu130 (SHA256-verified). Windows + NVIDIA only; if the version does not match, bypass the node instead.'
+        desc: 'Installs triton-windows first, then the Windows prebuilt SageAttention 2.2.0 wheel matching torch 2.10+/cu130 (SHA256-verified). Windows + NVIDIA only; this also upgrades older 1.0.6 installs. If the version does not match, bypass the node instead.'
+      },
+      xformers: {
+        title: 'xFormers',
+        desc: 'Installs xFormers into the instance environment. Run the self-test in the Attention acceleration card afterwards; keep it disabled with --disable-xformers if the kernel is unstable or incompatible.'
       },
       onnx: {
         title: 'onnx',
@@ -1997,7 +2033,7 @@ export default {
     restore: 'Restore',
     actionOpenNodes: 'Open node page',
     actionAudit: 'Run dependency audit',
-    actionInstallModule: 'Install missing module',
+    actionInstallModule: 'Install/fix dependency',
     actionCleanLeftover: 'Clean up leftover',
     actionRecovery: 'Open recovery',
     actionUnavailable: 'That action is not available yet',

@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.2.6 — 2026-11-22
+
+> Attention accelerators become a first-class, testable feature.
+> **No data migration:** `schemaVersion` remains 2; 0.2.5 data loads as-is.
+
+### Added
+
+- Instance-detail **Attention acceleration** card: SageAttention and xFormers
+  status, installed version, compatibility, install/upgrade, self-test and
+  launch-profile switches in one place.
+- Fixed-script attention self-test (`instance.attentionSelfTest`) runs in the
+  instance venv, reports Python/torch/CUDA/GPU architecture, imports both
+  optional packages and runs a small CUDA attention kernel. A non-zero exit
+  still returns parsed output; failures are never silently marked as usable.
+- SageAttention launch switch writes `--use-sage-attention`; xFormers switch
+  writes/removes `--disable-xformers`. Both prompt for an instance restart.
+- `xformers` curated pip recipe (Windows/Linux, torch >= 2.10).
+
+### Changed
+
+- SageAttention recipe upgraded from the post4 wheel to
+  `2.2.0+cu130torch2.10.0andhigher.post6` (SHA-256 pinned), matching the
+  current torch 2.10+ / cu130 runtime and the KJNodes 2.2 API requirement.
+- Issue Center maps an outdated execution dependency to an actionable issue
+  and uses “install/fix dependency” instead of “install missing module”.
+
+### Fixed
+
+- KJNodes `sageattention is not new enough version or could not determine CUDA
+architecture` is now classified as an **outdated dependency**, not a missing
+  module. The failure card offers the upgrade recipe instead of a plain
+  `pip install sageattention` (which still resolves to 1.0.6 on PyPI).
+- The old error text no longer sends users down the “missing module” path when
+  SageAttention is installed but too old.
+
 ## 0.2.5 — 2026-11-20
 
 > Runtime truth, stuck-instance rescue, and upstream alignment.

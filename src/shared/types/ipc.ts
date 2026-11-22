@@ -25,7 +25,7 @@ import type {
   BackupRestoreResult
 } from './backup'
 import type { DoctorReport } from './doctor'
-import type { EnvCreateRequest, EnvProbe, RepairEnvOptions } from './env'
+import type { AttentionSelfTestResult, EnvCreateRequest, EnvProbe, RepairEnvOptions } from './env'
 import type {
   BootstrapStatus,
   ComfyUpdateInfo,
@@ -267,6 +267,7 @@ export type IpcChannelMap = {
   'instance.checkPort': { args: [number]; result: PortCheckResult }
   'instance.suggestPort': { args: []; result: number }
   'instance.probeEnv': { args: [string]; result: EnvProbe }
+  'instance.attentionSelfTest': { args: [string]; result: AttentionSelfTestResult }
   'instance.exportDiagnostics': { args: [string]; result: DiagnosticPackage }
   'instance.copyDiagnostics': { args: [string]; result: string }
   'instance.exportLogs': { args: [string]; result: { path: string } }
@@ -764,6 +765,7 @@ export const IPC_CHANNELS = [
   'installer.status',
   'installer.suggestInstallRoot',
   'instance.applyRecipe',
+  'instance.attentionSelfTest',
   'instance.cancelUpdate',
   'instance.capabilities',
   'instance.checkComfyUpdate',
